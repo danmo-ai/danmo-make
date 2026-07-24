@@ -1,4 +1,4 @@
-# AGENTS.md — DanQing Studio v4 (丹青工作室)
+# AGENTS.md — Danmo Make v4
 
 Operational guide for contributors and coding agents. User-facing overview: [README.md](README.md) (English default, bilingual).
 
@@ -6,7 +6,7 @@ Operational guide for contributors and coding agents. User-facing overview: [REA
 
 ## What this is
 
-DanQing Studio — plugin-style **image / video** generation on **MLX** (Apple Silicon) and **CUDA** (NVIDIA). Split stack: FastAPI + Vue 3 SPA + CLI + SQLite. Models are declared in JSON and implemented under `backend/engine/families/`.
+Danmo Make — plugin-style **image / video** generation on **MLX** (Apple Silicon) and **CUDA** (NVIDIA). Split stack: FastAPI + Vue 3 SPA + CLI + SQLite. Models are declared in JSON and implemented under `backend/engine/families/`.
 
 ---
 

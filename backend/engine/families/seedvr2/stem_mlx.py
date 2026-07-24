@@ -91,7 +91,7 @@ SCHEDULER_REGISTRY: dict[str, type] = {
 
 def try_import_external_scheduler(scheduler_object_path: str) -> None:
     raise RuntimeError(
-        f"External scheduler {scheduler_object_path!r} is not supported for SeedVR2 in DanQing."
+        f"External scheduler {scheduler_object_path!r} is not supported for SeedVR2 in Danmo Make."
     )
 
 

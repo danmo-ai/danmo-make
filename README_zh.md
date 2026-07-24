@@ -1,4 +1,4 @@
-# DanQing Studio v4 (丹青工作室)
+# Danmo Make v4
 
 Language: [English](README.md) | **中文**
 
@@ -106,8 +106,8 @@ Invoke 风格 **结构条件**（仅 FLUX.1 基底，如 `flux1-dev`）：
 ### 安装
 
 ```bash
-git clone <仓库地址> DanQing-Studio
-cd DanQing-Studio
+git clone <仓库地址> danmo-make
+cd danmo-make
 
 python3.11 -m venv .venv
 source .venv/bin/activate
@@ -124,7 +124,7 @@ make dev
 
 浏览器打开 **http://localhost:5800**（Vite，代理 `/api` → :7800），API 文档 **/docs**。
 
-### 开发端口（丹青家族）
+### 开发端口（Danmo 产品线）
 
 后端 **`78xx`**，前端 **`58xx`** — 后两位相同 = 同一项目。三个仓库可同时 `make dev`。
 
@@ -190,7 +190,7 @@ make verify-engine-stack # 引擎规则检查 + 单元测试
 ## 项目结构
 
 ```
-DanQing-Studio/
+danmo-make/
 ├── backend/
 │   ├── api/routes/          # REST（images, videos, tasks, assets, registry, …）
 │   ├── cli/                 # bin/danqing-*（与 REST 对应）

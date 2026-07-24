@@ -1,4 +1,4 @@
-# DanQing Studio — Tauri 2 桌面壳
+# Danmo Make — Tauri 2 桌面壳
 
 本目录提供 **Tauri 2** 原生窗口；业务仍由 **FastAPI REST**（PyInstaller 打包的 `danqing-api` sidecar）提供。
 
@@ -60,17 +60,17 @@ CI（`.github/workflows/release.yml`）在打 `v*` tag 时并行构建三端：m
 
 **任选一种方式：**
 
-1. **右键打开**：在「应用程序」里找到 **DanQing Studio** → 按住 Control 点按 → **打开** → 再点 **打开**（仅首次）。
+1. **右键打开**：在「应用程序」里找到 **Danmo Make** → 按住 Control 点按 → **打开** → 再点 **打开**（仅首次）。
 2. **去掉隔离属性**（把路径换成你的 `.app` 实际位置）：
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/DanQing Studio.app"
+xattr -dr com.apple.quarantine "/Applications/Danmo Make.app"
 ```
 
 若仍在 DMG 卷宗里安装：
 
 ```bash
-xattr -dr com.apple.quarantine "/Volumes/DanQing Studio/DanQing Studio.app"
+xattr -dr com.apple.quarantine "/Volumes/Danmo Make/Danmo Make.app"
 ```
 
 然后拖入「应用程序」再启动。
@@ -84,7 +84,7 @@ xattr -dr com.apple.quarantine "/Volumes/DanQing Studio/DanQing Studio.app"
 若仍有残留挂载导致失败，可先执行：
 
 ```bash
-hdiutil detach "/Volumes/DanQing Studio" -force 2>/dev/null || true
+hdiutil detach "/Volumes/Danmo Make" -force 2>/dev/null || true
 find out/desktop/cargo -name 'rw.*.dmg' -delete
 make desktop-tauri
 ```

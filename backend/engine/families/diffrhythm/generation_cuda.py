@@ -20,7 +20,7 @@ from backend.engine.families.diffrhythm.generation import (
 logger = logging.getLogger(__name__)
 
 _NOT_INTEGRATED_MSG = (
-    "DiffRhythm 2 CUDA inference is not yet integrated in DanQing Studio. "
+    "DiffRhythm 2 CUDA inference is not yet integrated in Danmo Make. "
     "Required components: CFM block flow matching (sample_block_cache), "
     "MuQ-MuLan style encoder, G2P lyric tokenizer, and BigVGAN decoder. "
     "See ASLP-lab/DiffRhythm2 inference.py for the reference pipeline."

@@ -1,5 +1,5 @@
 /*
- * DanQing Studio — 业务布局与页面结构（配色 / 组件外观由 `@danqing/dq-tokens` + `@danqing/dq-ui` 提供）。
+ * Danmo Make — 业务布局与页面结构（配色 / 组件外观由 `@danqing/dq-tokens` + `@danqing/dq-ui` 提供）。
  * 主题经 `applyDqTheme` / `stores/theme` 切换；默认 macOS 暗色。
  * 勿使用 Vue SFC 的 `:deep()`；用普通后代选择器（如 `.foo .dq-surface-card__body`）。
  */

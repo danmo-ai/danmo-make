@@ -1,5 +1,5 @@
 """
-Shared PyInstaller metadata for DanQing Studio desktop sidecar.
+Shared PyInstaller metadata for Danmo Make desktop sidecar.
 
 Profiles (platform-specific bundles — do not mix MLX + CUDA in one sidecar):
   mlx  — macOS Apple Silicon: MLX only, no torch/CUDA.

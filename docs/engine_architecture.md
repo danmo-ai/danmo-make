@@ -1,4 +1,4 @@
-# DanQing Engine Architecture
+# Danmo Make Engine Architecture
 
 **Single source of truth** for engine layout, plugin model, new-family integration, and CI gates.
 

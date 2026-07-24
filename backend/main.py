@@ -1,5 +1,5 @@
 """
-DanQing Studio — FastAPI 主入口 (v4 引擎)
+Danmo Make — FastAPI 主入口 (v4 引擎)
 """
 from __future__ import annotations
 
@@ -97,8 +97,8 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="DanQing Studio API",
-        description="DanQing Studio — MLX/CUDA 双后端图像/视频生成引擎",
+        title="Danmo Make API",
+        description="Danmo Make — MLX/CUDA 双后端图像/视频生成引擎",
         version="4.0.0",
         lifespan=lifespan,
     )

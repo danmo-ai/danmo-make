@@ -15,7 +15,7 @@ import out_paths as op  # noqa: E402
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Clean DanQing Studio build outputs")
+    parser = argparse.ArgumentParser(description="Clean Danmo Make build outputs")
     parser.add_argument(
         "--keep-frontend",
         action="store_true",

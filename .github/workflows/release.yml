@@ -30,7 +30,7 @@ jobs:
       - name: Checkout dq-ui
         uses: actions/checkout@v6
         with:
-          repository: danqing-ai/dq-ui
+          repository: danmo-ai/dq-ui
           path: dq-ui
 
       - name: Setup Python
@@ -118,7 +118,7 @@ jobs:
       - name: Checkout dq-ui
         uses: actions/checkout@v6
         with:
-          repository: danqing-ai/dq-ui
+          repository: danmo-ai/dq-ui
           path: dq-ui
 
       - name: Setup Python
@@ -194,7 +194,7 @@ jobs:
       - name: Checkout dq-ui
         uses: actions/checkout@v6
         with:
-          repository: danqing-ai/dq-ui
+          repository: danmo-ai/dq-ui
           path: dq-ui
 
       - name: Setup Python

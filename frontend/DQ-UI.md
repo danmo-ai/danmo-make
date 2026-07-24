@@ -1,6 +1,6 @@
-# DanQing UI in Studio
+# Danmo Make UI
 
-Shared packages live in the sibling repo [danqing-ai/dq-ui](https://github.com/danqing-ai/dq-ui) (`file:../../dq-ui/packages/*` in `package.json`).
+Shared packages live in the sibling repo [danmo-ai/dq-ui](https://github.com/danmo-ai/dq-ui) (`file:../../dq-ui/packages/*` in `package.json`).
 
 GitHub Actions checks out `dq-ui` next to the repo so `npm install` resolves those paths (see `.github/workflows/release.yml`).
 

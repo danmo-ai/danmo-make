@@ -3,19 +3,19 @@
   "engines": {
     "danqing-image": {
       "media": "image",
-      "description": "DanQing image engine (MLX/CUDA)"
+      "description": "Danmo Make image engine (MLX/CUDA)"
     },
     "danqing-video": {
       "media": "video",
-      "description": "DanQing video engine (MLX/CUDA)"
+      "description": "Danmo Make video engine (MLX/CUDA)"
     },
     "danqing-audio": {
       "media": "audio",
-      "description": "DanQing audio engine (MLX/CUDA)"
+      "description": "Danmo Make audio engine (MLX/CUDA)"
     },
     "danqing-llm": {
       "media": "llm",
-      "description": "DanQing LLM engine (MLX)"
+      "description": "Danmo Make LLM engine (MLX)"
     }
   },
   "categories": {

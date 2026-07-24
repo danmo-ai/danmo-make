@@ -73,7 +73,7 @@ def validate_image_generation_params(*, entry: Any, config: Any, **_: Any) -> No
     if variant:
         raise RuntimeError(
             f"Step1X-Edit variant {variant!r} is not supported. "
-            "DanQing Studio ships Step1X-Edit v1.1 only (stepfun-ai/Step1X-Edit bundle)."
+            "Danmo Make ships Step1X-Edit v1.1 only (stepfun-ai/Step1X-Edit bundle)."
         )
 
 

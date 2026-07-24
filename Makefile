@@ -353,7 +353,7 @@ release-windows-cuda: pack-windows-server
 # ============================================================================
 
 help:
-	@echo "DanQing Studio v4 — Makefile"
+	@echo "Danmo Make v4 — Makefile"
 	@echo ""
 	@echo "Benchmark:"
 	@echo "  bench-setup / bench-download-judge / bench-eval / bench-eval-smoke / bench-eval-case"

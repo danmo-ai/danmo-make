@@ -61,7 +61,7 @@ default_cfg = resolve_default_config_root(bootstrap_root=root, bundle_root=None)
 prepare_data_directories(root, default_config_root=default_cfg)
 "
 
-echo "==> Starting DanQing Studio (dev) [${DQ_PROJECT}]"
+echo "==> Starting Danmo Make (dev) [${DQ_PROJECT}]"
 echo "    Backend : http://127.0.0.1:${BACKEND_PORT}  (uvicorn --reload)"
 echo "    Frontend: http://localhost:${FRONTEND_PORT}/  (Vite HMR)"
 echo "    Stop: make stop"
