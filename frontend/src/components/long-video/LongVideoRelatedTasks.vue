@@ -11,7 +11,7 @@
         <li v-for="row in rows" :key="row.phase" class="lv-related-tasks__row">
           <span class="lv-related-tasks__label">{{ row.label }}</span>
           <code class="lv-related-tasks__tid" :title="row.taskId">{{ shortId(row.taskId) }}</code>
-          <DqTag size="small" effect="plain" :type="statusTagType(row.status)">
+          <DqTag size="sm" effect="plain" :type="statusTagType(row.status)">
             {{ statusLabel(row.status) }}
           </DqTag>
           <span v-if="row.at" class="lv-related-tasks__time">{{ formatTime(row.at) }}</span>

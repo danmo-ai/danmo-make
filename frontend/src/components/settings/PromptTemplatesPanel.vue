@@ -135,7 +135,7 @@ function handleActionSelect(action: string) {
         <div class="templates-page__header-title">
           <DqIcon v-if="activeAction" class="templates-page__header-icon"><MagicStick /></DqIcon>
           <span>{{ activeAction ? $tt(`action.image.${activeAction}`) || $tt(`action.video.${activeAction}`) : (activeCategory === 'all' ? $t('settings.allTemplates') : (activeCategory === 'video' ? $t('settings.presetMediaVideo') : $t('settings.presetMediaImage'))) }}</span>
-          <DqTag v-if="presetList.length > 0" size="small" type="info" class="templates-page__count-tag">{{ presetList.length }}</DqTag>
+          <DqTag v-if="presetList.length > 0" size="sm" type="info" class="templates-page__count-tag">{{ presetList.length }}</DqTag>
         </div>
 
         <div class="templates-page__header-center">
@@ -187,13 +187,13 @@ function handleActionSelect(action: string) {
             <div class="template-card__title-row">
               <span class="template-card__name">{{ row.name }}</span>
               <div class="template-card__tags">
-                <DqTag :type="presetMediaTagType(row.preset)" size="small" effect="plain">
+                <DqTag :type="presetMediaTagType(row.preset)" size="sm" effect="plain">
                   {{ presetMediaLabel(row.preset) }}
                 </DqTag>
                 <DqTag
                   v-for="action in presetAppliesSummary(row.preset)"
                   :key="action"
-                  size="small"
+                  size="sm"
                   type="info"
                   effect="plain"
                 >

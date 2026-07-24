@@ -100,7 +100,7 @@
             <div class="lv-scene-workshop__detail-copy">
               <DqInput
                 :model-value="selectedScene.name"
-                size="small"
+                size="sm"
                 class="lv-scene-workshop__detail-name"
                 :placeholder="$tt('video.longVideoSceneNamePh')"
                 @update:model-value="onSceneName(selectedIndex, $event)"
@@ -191,7 +191,7 @@
                 <span class="lv-scene-workshop__field-label">{{ $tt('video.longVideoSceneVariantPh') }}</span>
                 <DqInput
                   :model-value="lk.label"
-                  size="small"
+                  size="sm"
                   class="lv-scene-workshop__look-label"
                   :placeholder="formatSceneLookOptionLabel(lk, uiLocale)"
                   @update:model-value="onLookLabel(selectedIndex, li, $event)"
@@ -203,7 +203,7 @@
                   :model-value="lk.body"
                   type="textarea"
                   :rows="3"
-                  size="small"
+                  size="sm"
                   class="lv-scene-workshop__look-desc"
                   :placeholder="$tt('video.longVideoSceneBodyPh')"
                   @update:model-value="onLookBody(selectedIndex, li, $event)"
@@ -215,7 +215,7 @@
                   :model-value="lk.vision_description || ''"
                   type="textarea"
                   :rows="2"
-                  size="small"
+                  size="sm"
                   class="lv-scene-workshop__look-vision"
                   :placeholder="$tt('video.longVideoSceneVisionDescriptionExamplePh')"
                   @update:model-value="onLookVisionDescription(selectedIndex, li, $event)"

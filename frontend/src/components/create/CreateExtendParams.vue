@@ -10,7 +10,7 @@ defineProps<{
 <template>
   <DqPrefPane class="studio-create-pref-pane studio-editor-drawer-pref-pane">
     <DqPrefRow :label="$t('studio.model')">
-      <DqSelect :model-value="modelValue" @update:model-value="$emit('update:modelValue', $event)" size="small" style="width: 100%" :placeholder="$t('studio.selectModel')">
+      <DqSelect :model-value="modelValue" @update:model-value="$emit('update:modelValue', $event)" size="sm" style="width: 100%" :placeholder="$t('studio.selectModel')">
         <DqOption
           v-for="item in (modelOptions || [])"
           :key="item.value"
@@ -20,7 +20,7 @@ defineProps<{
         >
           <DqTag
             v-if="item.commercialUseAllowed"
-            size="mini"
+            size="sm"
             type="success"
             class="studio-drawer-model-badge"
           >
@@ -44,7 +44,7 @@ defineProps<{
         :min="64"
         :max="2048"
         :step="64"
-        size="small"
+        size="sm"
         style="width: 120px"
       />
     </DqPrefRow>

@@ -178,7 +178,7 @@
       <div v-if="editorMode === 'retouch'" class="studio-retouch-panel">
         <DqPrefPane class="studio-create-pref-pane studio-editor-drawer-pref-pane">
           <DqPrefRow :label="$t('studio.model')">
-            <DqSelect v-model="retouchModelVersion" size="small" style="width: 100%" :placeholder="$t('studio.selectModel')">
+            <DqSelect v-model="retouchModelVersion" size="sm" style="width: 100%" :placeholder="$t('studio.selectModel')">
               <DqOption
                 v-for="item in retouchModelOptions"
                 :key="item.value"
@@ -188,7 +188,7 @@
               >
                 <DqTag
                   v-if="item.commercialUseAllowed"
-                  size="mini"
+                  size="sm"
                   type="success"
                   class="studio-drawer-model-badge"
                 >

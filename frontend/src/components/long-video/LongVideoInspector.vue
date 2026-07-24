@@ -4,7 +4,8 @@
       <DqSegmented
         v-model="activeTab"
         block
-        class="lv-inspector-segmented dq-segmented--sm"
+        size="sm"
+        class="lv-inspector-segmented"
         :options="inspectorTabOptions"
       />
     </div>

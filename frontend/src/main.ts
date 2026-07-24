@@ -22,6 +22,7 @@ import '@danqing/dq-tokens/dq-catppuccin-latte.css';
 import '@danqing/dq-tokens/dq-nord-light.css';
 import '@danqing/dq-tokens/dq-github-light.css';
 import '@danqing/dq-tokens/dq-glass.css';
+import '@danqing/dq-tokens/dq-agent.css';
 import '@danqing/dq-ui/style.css';
 import '@danqing/dq-shell/style.css';
 import './styles/theme.css';

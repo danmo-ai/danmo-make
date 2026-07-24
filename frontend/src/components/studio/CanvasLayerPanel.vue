@@ -124,7 +124,7 @@
               v-if="renamingPath === entry.path"
               ref="renameInputRef"
               v-model="renameDraft"
-              size="small"
+              size="sm"
               class="canvas-layer__rename-input"
               :placeholder="$t('canvas.renameNodePlaceholder')"
               @keydown.enter.stop="commitRename(entry.path)"

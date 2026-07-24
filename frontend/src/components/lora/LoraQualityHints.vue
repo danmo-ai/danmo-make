@@ -9,7 +9,7 @@
         >
           <DqTag
             v-if="hint.source === 'vlm'"
-            size="small"
+            size="sm"
             type="info"
             effect="plain"
             class="lora-quality-hints__tag"

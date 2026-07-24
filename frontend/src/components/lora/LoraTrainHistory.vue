@@ -33,12 +33,12 @@
               {{ runOutputName(run) }}
             </span>
             <span v-if="variant === 'sidebar'" class="lora-train-history__item-badges">
-              <DqTag size="small" :type="statusType(String(run.status || ''))" effect="plain">
+              <DqTag size="sm" :type="statusType(String(run.status || ''))" effect="plain">
                 {{ statusLabel(String(run.status || '')) }}
               </DqTag>
               <DqTag
                 v-if="userLoraForRun(run)"
-                size="small"
+                size="sm"
                 type="success"
                 effect="plain"
                 class="lora-train-history__registered"
@@ -47,12 +47,12 @@
               </DqTag>
             </span>
             <template v-else>
-              <DqTag size="small" :type="statusType(String(run.status || ''))" effect="plain">
+              <DqTag size="sm" :type="statusType(String(run.status || ''))" effect="plain">
                 {{ statusLabel(String(run.status || '')) }}
               </DqTag>
               <DqTag
                 v-if="userLoraForRun(run)"
-                size="small"
+                size="sm"
                 type="success"
                 effect="plain"
                 class="lora-train-history__registered"

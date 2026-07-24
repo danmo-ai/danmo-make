@@ -1,7 +1,7 @@
 <template>
   <DqSegmented
     :model-value="modelValue"
-    size="small"
+    size="sm"
     class="studio-view-mode-switch"
     :options="options"
     @update:model-value="$emit('update:modelValue', $event as 'grid' | 'canvas')"

@@ -3,7 +3,7 @@
     <div class="lv-kf-compose__toolbar">
       <DqSegmented
         :model-value="mode"
-        size="small"
+        size="sm"
         :options="modeOptions"
         @update:model-value="$emit('update:mode', $event)"
       />
@@ -50,7 +50,7 @@
           <DqDropdown
             v-if="Object.keys(styles).length > 0"
             trigger="click"
-            size="small"
+            size="sm"
             @command="onStyleCommand"
           >
             <DqIconButton type="text" size="sm" :label="$tt('create.composerTip.preset')">

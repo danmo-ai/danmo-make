@@ -92,7 +92,7 @@
       >
         <DqIcon :size="14"><Menu /></DqIcon>
       </DqIconButton>
-      <DqDropdown trigger="click" size="small" @command="onMoreCommand">
+      <DqDropdown trigger="click" size="sm" @command="onMoreCommand">
         <DqIconButton
           type="text"
           size="xs"

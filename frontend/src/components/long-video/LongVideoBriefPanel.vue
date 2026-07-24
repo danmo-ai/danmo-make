@@ -36,7 +36,7 @@
               <span class="lv-script-studio__parse-duration-label">{{ $tt('video.longVideoScriptParseLlm') }}</span>
               <DqSelect
                 :model-value="scriptParseLlmModel"
-                size="small"
+                size="sm"
                 class="lv-script-studio__parse-duration-select lv-script-studio__parse-llm-select"
                 :title="$tt('video.longVideoScriptParseLlmHint')"
                 @update:model-value="onScriptParseLlmChange"
@@ -53,7 +53,7 @@
               <span class="lv-script-studio__parse-duration-label">{{ $tt('video.longVideoTargetDuration') }}</span>
               <DqSelect
                 :model-value="targetDurationSec"
-                size="small"
+                size="sm"
                 class="lv-script-studio__parse-duration-select"
                 :title="$tt('video.longVideoTargetDurationHint')"
                 @update:model-value="onDurationChange"
@@ -73,7 +73,7 @@
               <span class="lv-script-studio__parse-duration-label">{{ $tt('video.longVideoSegmentDuration') }}</span>
               <DqSelect
                 :model-value="segmentDurationSec"
-                size="small"
+                size="sm"
                 class="lv-script-studio__parse-duration-select"
                 :title="$tt('video.longVideoSegmentDurationHint')"
                 @update:model-value="onSegmentDurationChange"
@@ -216,7 +216,8 @@
               <DqSegmented
                 v-model="insightTab"
                 block
-                class="lv-script-studio__insight-segmented dq-segmented--sm"
+                size="sm"
+                class="lv-script-studio__insight-segmented"
                 :options="insightTabOptions"
               />
             </div>
@@ -244,7 +245,7 @@
                   <span class="lv-script-studio__insight-field-label">{{ $tt('video.longVideoScriptStyleTitle') }}</span>
                   <DqInput
                     :model-value="styleAnchor"
-                    size="small"
+                    size="sm"
                     class="lv-script-studio__style-input"
                     :placeholder="$tt('video.longVideoProjectStylePh')"
                     :title="$tt('video.longVideoProjectStyleHint')"
@@ -300,7 +301,7 @@
                           </span>
                           <DqSelect
                             :model-value="parsedSceneBeat(scene.beat).shotSize"
-                            size="small"
+                            size="sm"
                             class="lv-script-studio__scene-shot-select"
                             @update:model-value="onSceneFieldInput(idx, 'shotSize', $event)"
                           >
@@ -318,7 +319,7 @@
                           </span>
                           <DqInput
                             :model-value="parsedSceneBeat(scene.beat).location"
-                            size="small"
+                            size="sm"
                             @update:model-value="onSceneFieldInput(idx, 'location', $event)"
                           />
                         </label>

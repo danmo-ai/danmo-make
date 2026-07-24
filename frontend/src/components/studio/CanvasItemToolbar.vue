@@ -93,7 +93,7 @@
       <DqIcon :size="14"><Plus /></DqIcon>
     </DqIconButton>
 
-    <DqDropdown trigger="click" size="small" @command="(cmd: string) => $emit('action', cmd)">
+    <DqDropdown trigger="click" size="sm" @command="(cmd: string) => $emit('action', cmd)">
       <DqIconButton type="text" size="sm" :label="$t('canvas.moreMenu')" @click.stop>
         <DqIcon :size="14"><Menu /></DqIcon>
       </DqIconButton>

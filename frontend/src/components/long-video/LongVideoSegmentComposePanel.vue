@@ -4,7 +4,7 @@
       <span class="lv-seg-compose__meta-label">{{ $tt('video.longVideoShotDuration') }}</span>
       <DqSelect
         :model-value="durationSec"
-        size="small"
+        size="sm"
         class="lv-seg-compose__duration"
         @update:model-value="$emit('update:duration', Number($event))"
       >
@@ -21,7 +21,7 @@
       <span class="lv-seg-compose__meta-label">{{ $tt('video.longVideoSegmentChainMode') }}</span>
       <DqSelect
         :model-value="chainMode"
-        size="small"
+        size="sm"
         class="lv-seg-compose__chain"
         :title="chainModeHint"
         @update:model-value="$emit('update:chainMode', $event)"

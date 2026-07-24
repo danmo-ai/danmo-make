@@ -36,7 +36,8 @@ const emit = defineEmits<{
         <div class="settings-stacked-control">
           <DqSegmented
             v-model="presetForm.media_scope"
-            class="settings-media-scope-group dq-segmented--sm"
+            size="sm"
+            class="settings-media-scope-group"
             :options="[
               { label: $t('settings.presetMediaImage'), value: 'image' },
               { label: $t('settings.presetMediaVideo'), value: 'video' },

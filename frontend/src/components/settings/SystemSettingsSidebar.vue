@@ -73,7 +73,7 @@ function progressColor(percent: number) {
               <DqTag
                 v-for="(version, name) in systemInfo.dependencies"
                 :key="name"
-                size="small"
+                size="sm"
                 type="info"
                 effect="plain"
               >

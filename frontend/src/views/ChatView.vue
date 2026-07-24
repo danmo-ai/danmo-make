@@ -31,7 +31,7 @@
         </nav>
 
         <div v-if="modelInfo" class="copilot-page__status-panel">
-          <DqTag size="small" :type="llmReady ? 'success' : 'warning'" effect="plain">
+          <DqTag size="sm" :type="llmReady ? 'success' : 'warning'" effect="plain">
             {{ llmReady ? $t('assistant.llmReady') : $t('assistant.modelNotReady') }}
           </DqTag>
           <span v-if="llmReady" class="copilot-page__status-model">{{ chatModelLabel }}</span>
@@ -164,7 +164,7 @@
         <div v-if="lastResult" class="copilot-page__result">
           <div class="copilot-page__result-head">
             <span class="copilot-page__label">{{ $t('assistant.resultLabel') }}</span>
-            <DqTag v-if="lastResult.visionUsed" size="small" type="info" effect="plain">
+            <DqTag v-if="lastResult.visionUsed" size="sm" type="info" effect="plain">
               {{ $t('assistant.visionUsed') }}
             </DqTag>
           </div>
@@ -245,7 +245,7 @@
               </p>
             </div>
             <div class="copilot-page__card-tools" @click.stop>
-              <DqTag size="small" effect="plain" :type="taskStatusType(task.status)">
+              <DqTag size="sm" effect="plain" :type="taskStatusType(task.status)">
                 {{ taskStatusLabel(task.status) }}
               </DqTag>
               <DqIconButton

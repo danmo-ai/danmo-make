@@ -45,7 +45,7 @@
               {{ $t('loraTrain.imageCount', { count: d.image_count || 0 }) }}
               <DqTag
                 v-if="(d.image_count || 0) >= minImages"
-                size="small"
+                size="sm"
                 type="success"
                 effect="plain"
                 class="lora-dataset-panel__ready-tag"
@@ -95,7 +95,7 @@
           </div>
           <div class="lora-dataset-panel__workspace-head-actions">
             <DqTag
-              size="small"
+              size="sm"
               :type="imageCount >= minImages ? 'success' : 'warning'"
               effect="plain"
             >

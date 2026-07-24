@@ -67,7 +67,7 @@
       role="status"
     >
       <div class="gen-task-log-panel__progress-head">
-        <span class="gen-task-log-panel__progress-dot" aria-hidden="true" />
+        <span class="dq-status-dot dq-status-dot--running" aria-hidden="true" />
         <span class="gen-task-log-panel__progress-text">{{ activeProgress.title }}</span>
         <time class="gen-task-log-panel__progress-time">{{ activeProgress.time }}</time>
       </div>
@@ -361,15 +361,6 @@ watch(
   min-width: 0;
 }
 
-.gen-task-log-panel__progress-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--dq-accent);
-  flex-shrink: 0;
-  animation: gen-log-pulse 1.6s ease-in-out infinite;
-}
-
 .gen-task-log-panel__progress-text {
   flex: 1;
   min-width: 0;
@@ -645,8 +636,4 @@ watch(
   word-break: break-word;
 }
 
-@keyframes gen-log-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.55; transform: scale(0.92); }
-}
 </style>

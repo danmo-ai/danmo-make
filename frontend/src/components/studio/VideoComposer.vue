@@ -24,7 +24,7 @@
     <div class="video-composer__title-wrap">
       <DqInput
         v-model="localTitle"
-        size="small"
+        size="sm"
         :placeholder="$tt('studio.workTitlePlaceholder')"
         class="video-composer__title"
       />
@@ -188,7 +188,7 @@
         <DqDropdown
           v-if="styles && Object.keys(styles).length > 0"
           trigger="click"
-          size="small"
+          size="sm"
           @command="onStyleCommand"
         >
           <DqIconButton
@@ -233,7 +233,7 @@
       <template #mode>
         <DqSegmented
           :model-value="localWorkMode"
-          size="small"
+          size="sm"
           :options="workModeOptions"
           @update:model-value="localWorkMode = $event"
         />
@@ -241,8 +241,11 @@
       <template #controls>
         <DqSelect
           v-model="localModel"
-          size="small"
+          size="sm"
+          variant="ghost"
+          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--model"
+          
           @change="(val: string) => emit('model-change', val)"
         >
           <DqOption
@@ -254,7 +257,7 @@
           >
             <DqTag
               v-if="item.commercialUseAllowed"
-              size="mini"
+              size="sm"
               type="success"
               class="video-composer__model-badge"
             >
@@ -266,8 +269,10 @@
         <DqSelect
           v-if="sizeOptions.length > 0"
           v-model="localSize"
-          size="small"
+          size="sm"
+          variant="ghost"
           class="studio-composer-toolbar__select studio-composer-toolbar__select--size"
+        variant="ghost"
         >
           <DqOption
             v-for="opt in sizeOptions"
@@ -279,8 +284,11 @@
 
         <DqSelect
           v-model="localDuration"
-          size="small"
+          size="sm"
+          variant="ghost"
+          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--duration"
+        
         >
           <DqOption v-for="opt in durationOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
         </DqSelect>
@@ -289,8 +297,11 @@
         <DqSelect
           v-if="showBatchCount"
           v-model="localBatchCount"
-          size="small"
+          size="sm"
+          variant="ghost"
+          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--batch"
+        
         >
           <DqOption
             v-for="n in 4"
@@ -383,7 +394,7 @@
             <div v-if="showSeedField" class="video-composer__field">
               <label>{{ $tt('create.seed') }}</label>
               <div class="video-composer__seed-wrap">
-                <DqInput v-model="localParams.seed" size="small" style="width: 100px" :placeholder="$tt('studio.seedPlaceholder')" />
+                <DqInput v-model="localParams.seed" size="sm" style="width: 100px" :placeholder="$tt('studio.seedPlaceholder')" />
                 <DqIconButton
                   type="text"
                   size="xs"
@@ -399,7 +410,7 @@
             <div class="video-composer__field">
               <label>{{ $tt('create.seed') }}</label>
               <div class="video-composer__seed-wrap">
-                <DqInput v-model="localParams.seed" size="small" style="width: 100px" :placeholder="$tt('studio.seedPlaceholder')" />
+                <DqInput v-model="localParams.seed" size="sm" style="width: 100px" :placeholder="$tt('studio.seedPlaceholder')" />
                 <DqIconButton
                   type="text"
                   size="xs"
@@ -425,7 +436,7 @@
               <label>{{ $tt('studio.loraLabel') }}</label>
               <DqSelect
                 v-model="localParams.lora"
-                size="small"
+                size="sm"
                 clearable
                 :placeholder="$tt('studio.noLora')"
                 style="flex: 1; max-width: 300px"
@@ -464,7 +475,7 @@
             <label>{{ paramFieldLabel(paramKey) }}</label>
             <DqSelect
               v-model="localParams[paramKey]"
-              size="small"
+              size="sm"
               class="video-composer__select"
             >
               <DqOption

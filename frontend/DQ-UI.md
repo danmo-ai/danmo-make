@@ -33,6 +33,9 @@ Hosts mount via `installDanQingFeedback` in `plugins/dq-ui.ts`.
 
 - **主题切换**：`stores/theme.ts` → `applyDqTheme` / `THEME_OPTIONS`（`@danqing/dq-tokens`）。默认 **`mac`**（macOS 暗色）。旧值 `apple-dark` 自动迁移为 `mac`。
 - **间距 / 半径**：优先 `--dq-space-*`、`--dq-radius-*`；产品兼容别名 `--primary` / `--bg-*` / `--radius-*` 仅作过渡。
+- **Size**：紧凑控件只用 `size="sm"`（禁止 `small` / `mini`）。
+- **Select**：工具栏紧凑选择器用 `size="sm" variant="ghost"`。
+- **Agent tokens**：`main.ts` 引入 `@danqing/dq-tokens/dq-agent.css`（`.dq-prose` / `.dq-status-dot` / `.dq-kbd`）。状态点用 `.dq-status-dot`，勿自造平行实现。
 - **焦点 / 悬停**：`--dq-focus-ring`、`.dq-hoverable`；禁止自造 focus ring。
 - **禁止**全局 `html * { transition: ... }`。
 - 模板仅使用 `Dq*`（无 Element Plus）。

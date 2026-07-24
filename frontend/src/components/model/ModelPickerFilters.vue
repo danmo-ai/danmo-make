@@ -17,18 +17,18 @@ const currentModelsOnly = defineModel<boolean>('currentModelsOnly', { default: f
     <DqCheckbox
       v-if="showInstalledFilter"
       v-model="installedOnly"
-      size="small"
+      size="sm"
       class="model-picker-filters__item"
     >
       {{ $t('download.filterReadyOnly') }}
     </DqCheckbox>
-    <DqCheckbox v-model="commercialOnly" size="small" class="model-picker-filters__item">
+    <DqCheckbox v-model="commercialOnly" size="sm" class="model-picker-filters__item">
       {{ $t(showInstalledFilter ? 'download.filterCommercialOnly' : 'studio.filterCommercialOnly') }}
     </DqCheckbox>
     <DqCheckbox
       v-if="showInstalledFilter"
       v-model="currentModelsOnly"
-      size="small"
+      size="sm"
       class="model-picker-filters__item"
     >
       {{ $t('download.filterCurrentModelsOnly') }}

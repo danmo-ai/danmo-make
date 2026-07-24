@@ -3,7 +3,7 @@
     <template v-if="ready">
       <DqSelect
       :model-value="sessionId"
-      size="small"
+      size="sm"
       class="studio-canvas-session-controls__select"
       :placeholder="$t('canvas.sessionSelect')"
       @update:model-value="onSwitchSession"
@@ -56,7 +56,7 @@
   >
     <DqInput
       v-model="titleDraft"
-      size="small"
+      size="sm"
       :placeholder="$t('canvas.sessionSelect')"
       @keydown.enter="commitRename"
     />

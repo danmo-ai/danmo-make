@@ -5,23 +5,23 @@
     <p v-if="!mlxAvailable" class="zimage-merge-panel__warn">{{ $t('tools.mergeMlxRequired') }}</p>
     <DqPrefPane class="zimage-merge-panel__form">
       <DqPrefRow :label="$t('tools.mergeModelA')">
-        <DqSelect v-model="form.model_a" size="small" filterable :placeholder="$t('tools.mergePickModel')">
+        <DqSelect v-model="form.model_a" size="sm" filterable :placeholder="$t('tools.mergePickModel')">
           <DqOption v-for="m in mergeModels" :key="m.id" :label="modelLabel(m)" :value="m.id" />
         </DqSelect>
       </DqPrefRow>
       <DqPrefRow :label="$t('tools.mergeModelB')">
-        <DqSelect v-model="form.model_b" size="small" filterable clearable :placeholder="$t('tools.mergePickModel')">
+        <DqSelect v-model="form.model_b" size="sm" filterable clearable :placeholder="$t('tools.mergePickModel')">
           <DqOption v-for="m in mergeModels" :key="`b-${m.id}`" :label="modelLabel(m)" :value="m.id" />
         </DqSelect>
       </DqPrefRow>
       <DqPrefRow :label="$t('tools.mergeMethod')">
-        <DqSelect v-model="form.method" size="small">
+        <DqSelect v-model="form.method" size="sm">
           <DqOption value="weighted_sum" :label="$t('tools.mergeWeightedSum')" />
           <DqOption value="add_difference" :label="$t('tools.mergeAddDifference')" />
         </DqSelect>
       </DqPrefRow>
       <DqPrefRow v-if="form.method === 'add_difference'" :label="$t('tools.mergeModelC')">
-        <DqSelect v-model="form.model_c" size="small" filterable clearable :placeholder="$t('tools.mergePickModel')">
+        <DqSelect v-model="form.model_c" size="sm" filterable clearable :placeholder="$t('tools.mergePickModel')">
           <DqOption v-for="m in mergeModels" :key="`c-${m.id}`" :label="modelLabel(m)" :value="m.id" />
         </DqSelect>
       </DqPrefRow>
@@ -30,7 +30,7 @@
         <span class="zimage-merge-panel__alpha">{{ form.alpha.toFixed(2) }}</span>
       </DqPrefRow>
       <DqPrefRow :label="$t('tools.mergeOutputName')">
-        <DqInput v-model="form.output_name" size="small" />
+        <DqInput v-model="form.output_name" size="sm" />
       </DqPrefRow>
       <DqPrefRow :label="$t('tools.mergeAutoRegister')">
         <DqSwitch v-model="form.auto_register" />

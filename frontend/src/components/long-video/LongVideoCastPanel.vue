@@ -103,7 +103,7 @@
             <div class="lv-cast-workshop__detail-copy">
               <DqInput
                 :model-value="selectedCharacter.name"
-                size="small"
+                size="sm"
                 class="lv-cast-workshop__detail-name"
                 :placeholder="$tt('video.longVideoCastNameExamplePh')"
                 @update:model-value="onCharacterName(selectedIndex, $event)"
@@ -197,7 +197,7 @@
                 <span class="lv-cast-workshop__field-label">{{ $tt('video.longVideoCastLookLabelPh') }}</span>
                 <DqInput
                   :model-value="lk.label"
-                  size="small"
+                  size="sm"
                   class="lv-cast-workshop__look-label"
                   :placeholder="$tt('video.longVideoCastLookLabelExamplePh')"
                   @update:model-value="onLookLabel(selectedIndex, li, $event)"
@@ -209,7 +209,7 @@
                   :model-value="lk.body"
                   type="textarea"
                   :rows="3"
-                  size="small"
+                  size="sm"
                   class="lv-cast-workshop__look-desc"
                   :placeholder="$tt('video.longVideoCastLookBodyExamplePh')"
                   @update:model-value="onLookBody(selectedIndex, li, $event)"
@@ -221,7 +221,7 @@
                   :model-value="lk.vision_description || ''"
                   type="textarea"
                   :rows="2"
-                  size="small"
+                  size="sm"
                   class="lv-cast-workshop__look-vision"
                   :placeholder="$tt('video.longVideoCastVisionDescriptionExamplePh')"
                   @update:model-value="onLookVisionDescription(selectedIndex, li, $event)"
@@ -231,7 +231,7 @@
                 <span class="lv-cast-workshop__field-label">{{ $tt('video.longVideoCastLoraLabel') }}</span>
                 <DqSelect
                   :model-value="lk.lora_id || ''"
-                  size="small"
+                  size="sm"
                   clearable
                   class="lv-cast-workshop__lora-select"
                   @update:model-value="onLookLora(selectedIndex, li, $event)"

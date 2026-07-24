@@ -189,11 +189,11 @@
                   {{ getModelInitials(model) }}
                 </div>
                 <div
-                  class="model-status-dot"
+                  class="dq-status-dot model-card-status"
                   :class="{
-                    'is-ready': modelsDetailedStatus[model.id]?.status === 'ready',
-                    'is-incomplete': modelsDetailedStatus[model.id]?.status === 'incomplete',
-                    'is-missing': !modelsDetailedStatus[model.id]?.status
+                    'dq-status-dot--success': modelsDetailedStatus[model.id]?.status === 'ready',
+                    'dq-status-dot--danger': modelsDetailedStatus[model.id]?.status === 'incomplete',
+                    'dq-status-dot--warning': !modelsDetailedStatus[model.id]?.status
                       || modelsDetailedStatus[model.id]?.status === 'missing',
                   }"
                   :title="modelStatusTitle(model.id)"
@@ -221,7 +221,7 @@
                     :recommended="model.recommended"
                     :commercial-use-allowed="model.commercial_use_allowed"
                     effect="plain"
-                    size="small"
+                    size="sm"
                   />
                   <ModelVersionSourceBadge
                     v-if="modelCardSource(model)"

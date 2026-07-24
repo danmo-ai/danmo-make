@@ -49,6 +49,9 @@ UI_STYLE_RULES: list[tuple[re.Pattern[str], str]] = [
 UI_VUE_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r'\bv-if="motion"\b'), 'use `v-if="divided"` on DqDropdownItem'),
     (re.compile(r"\bv-if='motion'\b"), "use `v-if='divided'` on DqDropdownItem"),
+    (re.compile(r'\bsize="small"\b'), 'use `size="sm"` (not `small`)'),
+    (re.compile(r"\bsize='small'\b"), "use `size='sm'` (not `small`)"),
+    (re.compile(r'\bsize="mini"\b'), 'use `size="sm"` (not `mini`)'),
 ]
 
 ALL_RULES = ("ep", "theme", "ui", "canvas")

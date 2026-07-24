@@ -4286,29 +4286,15 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  color: var(--dq-success);
 }
 
-.model-status-dot {
+.model-card-status.dq-status-dot {
  position: absolute;
  top: 12px;
  right: 12px;
  z-index: 1;
  width: 10px;
  height: 10px;
- border-radius: 999px;
  border: 2px solid var(--dq-fill-base);
  box-shadow: 0 0 0 1px var(--dq-border-subtle);
- background: var(--dq-warning);
-}
-
-.model-status-dot.is-ready {
- background: var(--dq-success);
-}
-
-.model-status-dot.is-incomplete {
- background: var(--dq-danger);
-}
-
-.model-status-dot.is-missing {
- background: var(--dq-warning);
 }
 
 /* 模型卡片内容 */
