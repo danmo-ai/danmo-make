@@ -1,0 +1,22 @@
+#!/usr/bin/env python3
+"""danqing-mcp — stdio MCP server proxying Danmo Make REST (port discovery via env / api.port)."""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+_CLI_FILE = Path(__file__).resolve()
+PROJECT_ROOT = _CLI_FILE.parent.parent
+if sys.platform != "win32":
+    _venv_root = PROJECT_ROOT / ".venv"
+    _venv_py = _venv_root / "bin" / "python3"
+    if _venv_py.is_file() and Path(sys.prefix).resolve() != _venv_root.resolve():
+        os.execv(str(_venv_py), [str(_venv_py), str(_CLI_FILE), *sys.argv[1:]])
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from backend.mcp.__main__ import main
+
+
+if __name__ == "__main__":
+    main()

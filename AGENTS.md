@@ -50,6 +50,8 @@ Danmo Make — plugin-style **image / video** generation on **MLX** (Apple Silic
 | Registry profiles (expand / shrink) | `backend/core/registry_profiles.py` |
 | Bundle manifest + family contracts | `backend/core/bundle_manifest.py` |
 | Desktop | `desktop/`, `make dev-desktop`, `make pack-macos-desktop` / `pack-linux-desktop` / `pack-windows-desktop` |
+| MCP (Agent) | `backend/mcp/` — streamable-http at `/mcp`; stdio `bin/danqing-mcp` / `python -m backend.mcp` (proxies REST; port via `DANQING_MCP_BASE_URL` / `api.port`) |
+| Remote auth | Loopback skips auth; non-loopback needs separate HTTP/MCP API keys (`backend/api/access_auth.py`). Stored as salted HMAC `v1:<salt>:<hmac>`; plaintext shown once at create. Env: `DANQING_HTTP_API_KEY` / `DANQING_MCP_API_KEY` |
 
 ### Hardcoded paths
 
@@ -65,6 +67,7 @@ Danmo Make — plugin-style **image / video** generation on **MLX** (Apple Silic
 - **Key packages**: `fastapi`, `uvicorn`, `mlx`, `Pillow`, `transformers`, `safetensors` (+ `torch` when using CUDA)
 - **Benchmark venv**: `tests/benchmark/venv/` via `make bench-setup` (isolated from app venv)
 - **Platform detect**: `backend/engine/platform.py` — `["mlx"]` on darwin arm64 with mlx; `["cuda"]` when `torch.cuda.is_available()`; **fail loud** if a model’s `backends` entry is not satisfied
+- **Remote API keys** (optional plaintext env): `DANQING_HTTP_API_KEY`, `DANQING_MCP_API_KEY` — see Quick reference → Remote auth; Settings UI preferred for durable salted hashes
 
 ---
 

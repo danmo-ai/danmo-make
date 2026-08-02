@@ -22,6 +22,13 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
+from backend.mcp.bridge import MakeAPIBridge
+from backend.mcp.base_url import resolve_api_base_url
+from backend.mcp.server import create_mcp, set_bridge
+
+_mcp = create_mcp()
+_mcp_http_app = _mcp.streamable_http_app()
+
 from backend.core.container import register_services, get_container
 from backend.core.i18n import set_locale, _load_translations
 from backend.utils.path_utils import PathResolver
@@ -77,22 +84,24 @@ def _resolve_frontend_static_dir(project_root: Path) -> Path | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    c = get_container()
-    sched = c.try_resolve(TaskScheduler)
-    if sched:
-        await sched.start()
+    set_bridge(MakeAPIBridge(base_url=resolve_api_base_url()))
+    async with _mcp.session_manager.run():
+        c = get_container()
+        sched = c.try_resolve(TaskScheduler)
+        if sched:
+            await sched.start()
 
-    cache = c.try_resolve_named("shared_model_cache")
-    if cache:
-        import asyncio
-        cache.start_cleanup(asyncio.get_event_loop())
+        cache = c.try_resolve_named("shared_model_cache")
+        if cache:
+            import asyncio
+            cache.start_cleanup(asyncio.get_event_loop())
 
-    yield
+        yield
 
-    if cache:
-        cache.stop_cleanup()
-    if sched:
-        await sched.shutdown()
+        if cache:
+            cache.stop_cleanup()
+        if sched:
+            await sched.shutdown()
 
 
 def create_app() -> FastAPI:
@@ -110,6 +119,11 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Remote (non-loopback) /api and /mcp require separate API keys; loopback skips.
+    from backend.api.access_auth import AccessAuthMiddleware
+
+    app.add_middleware(AccessAuthMiddleware)
 
     @app.middleware("http")
     async def no_cache_frontend(request, call_next):
@@ -152,6 +166,9 @@ def create_app() -> FastAPI:
     app.include_router(script_parse_routes.router)
     app.include_router(canvas_routes.router)
     app.include_router(long_video_routes.router)
+
+    # MCP streamable-http at /mcp (before StaticFiles catch-all)
+    app.mount("/mcp", _mcp_http_app)
 
     frontend_dir = _resolve_frontend_static_dir(project_root)
     if frontend_dir is not None:

@@ -175,8 +175,20 @@ client.interceptors.request.use((config) => {
   const lang = getItem(DQ_STORAGE.LANG) || 'zh';
   config.headers = config.headers ?? {};
   config.headers['Accept-Language'] = lang;
+  const apiKey = (getItem(DQ_STORAGE.HTTP_API_KEY) || '').trim();
+  if (apiKey && !config.headers.Authorization && !config.headers['X-API-Key']) {
+    config.headers.Authorization = `Bearer ${apiKey}`;
+  }
   return config;
 });
+
+/** Append ``api_key`` for EventSource (cannot set Authorization headers). */
+export function withAccessApiKey(url: string): string {
+  const apiKey = (getItem(DQ_STORAGE.HTTP_API_KEY) || '').trim();
+  if (!apiKey) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}api_key=${encodeURIComponent(apiKey)}`;
+}
 
 /** Task id from media submit 202 body `{ task: { id, ... } }` (legacy flat `{ id }` tolerated). */
 export function taskIdFromSubmitResponse(res: unknown): string {
@@ -468,7 +480,9 @@ export const api = {
     },
 
     installProgressStreamUrl(taskId: string): string {
-      return `${API_BASE}/api/download/progress/${encodeURIComponent(taskId)}/stream`;
+      return withAccessApiKey(
+        `${API_BASE}/api/download/progress/${encodeURIComponent(taskId)}/stream`,
+      );
     },
 
     async startConvert(body: Record<string, unknown>): Promise<unknown> {
@@ -477,7 +491,9 @@ export const api = {
     },
 
     convertProgressStreamUrl(taskId: string): string {
-      return `${API_BASE}/api/download/convert/${encodeURIComponent(taskId)}/stream`;
+      return withAccessApiKey(
+        `${API_BASE}/api/download/convert/${encodeURIComponent(taskId)}/stream`,
+      );
     },
 
     async cancelConversion(taskId: string): Promise<void> {
@@ -487,12 +503,16 @@ export const api = {
 
   tasks: {
     logStreamUrl(taskId: string): string {
-      return `${API_BASE}/api/tasks/${encodeURIComponent(taskId)}/stream`;
+      return withAccessApiKey(
+        `${API_BASE}/api/tasks/${encodeURIComponent(taskId)}/stream`,
+      );
     },
 
     /** Denoise step preview (work_dir PNG); polled by create view — not SSE. */
     previewUrl(taskId: string): string {
-      return `${API_BASE}/api/tasks/${encodeURIComponent(taskId)}/preview`;
+      return withAccessApiKey(
+        `${API_BASE}/api/tasks/${encodeURIComponent(taskId)}/preview`,
+      );
     },
 
     async fetchGraph(taskId: string): Promise<Record<string, unknown>> {
@@ -517,6 +537,22 @@ export const api = {
 
     async updateSettings(settings: SettingsData): Promise<{ success?: boolean; restart_required?: boolean }> {
       const response = await client.put('/api/settings', settings);
+      return response.data;
+    },
+
+    async createAccessKey(kind: 'http' | 'mcp'): Promise<{
+      success: boolean;
+      kind: string;
+      key: string;
+      hint: string;
+      message?: string;
+    }> {
+      const response = await client.post('/api/settings/access-keys', { kind });
+      return response.data;
+    },
+
+    async revokeAccessKey(kind: 'http' | 'mcp'): Promise<{ success: boolean; kind: string }> {
+      const response = await client.delete(`/api/settings/access-keys/${kind}`);
       return response.data;
     },
 

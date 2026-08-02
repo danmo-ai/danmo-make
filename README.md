@@ -158,6 +158,18 @@ bin/danqing-video-generate --model <id> --prompt "ocean waves at sunset"
 
 Full CLI ↔ REST mapping: [AGENTS.md](AGENTS.md#cli-vs-rest-api).
 
+### Agent / MCP
+
+When the API is running, MCP tools are served at `http://127.0.0.1:7800/mcp` (streamable HTTP). For stdio hosts:
+
+```bash
+bin/danqing-mcp   # discovers port via DANQING_MCP_BASE_URL / ~/.danmo-make/api.port / 7800
+```
+
+**Remote access auth:** requests from loopback (`127.0.0.1` / `::1`) skip auth. Non-loopback clients must send `Authorization: Bearer <key>`. HTTP (`/api`) and MCP (`/mcp`) use **separate** keys — create/rotate/revoke under **Settings → Integrations**. Plaintext is shown once at create; the server stores a salted HMAC. Env overrides: `DANQING_HTTP_API_KEY`, `DANQING_MCP_API_KEY`. Desktop sidecar binds `127.0.0.1` by default; `make start` / `make dev` often bind `0.0.0.0`.
+
+Danmo Work uses the **danmo-make** connector + builtin expert (bound-only; not ambient on primary agents).
+
 ### Models on disk
 
 | Path | Purpose |
@@ -287,6 +299,9 @@ HF_ENDPOINT=https://hf-mirror.com
 HF_HUB_ENABLE_HF_TRANSFER=1
 MLX_METAL_DEVICE_ONLY=1
 MLX_METAL_MEMORY_LIMIT=120
+# Optional plaintext overrides for non-loopback clients (prefer Settings → Integrations):
+# DANQING_HTTP_API_KEY=...
+# DANQING_MCP_API_KEY=...
 ```
 
 ---

@@ -164,6 +164,12 @@ const settings = reactive<Record<string, unknown>>({
   civitai_token: '',
   huggingface_token: '',
   nsfw_enabled: false,
+  http_api_key_configured: false,
+  http_api_key_hint: '',
+  http_api_key_from_env: false,
+  mcp_api_key_configured: false,
+  mcp_api_key_hint: '',
+  mcp_api_key_from_env: false,
   custom_workspace_dir: '',
 });
 

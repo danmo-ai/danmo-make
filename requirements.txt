@@ -9,6 +9,9 @@ uvicorn[standard]>=0.24.0
 python-multipart>=0.0.6
 aiohttp>=3.9.0
 
+# ── MCP (Agent / danmo-work connector) ──
+mcp>=1.9.0,<2
+
 # ── Image / Video I/O ──
 Pillow>=10.0.0
 pillow-heif>=0.16.0

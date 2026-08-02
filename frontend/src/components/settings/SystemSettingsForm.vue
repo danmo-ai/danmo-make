@@ -6,6 +6,10 @@ import { $mn } from '@/utils/i18n';
 import { canvasAutoAddEnabled, setCanvasAutoAdd } from '@/composables/useCanvasStore';
 import QuickSetupPanel from '@/components/settings/QuickSetupPanel.vue';
 import { useRegistryStore } from '@/stores/registry';
+import { api } from '@/utils/api';
+import { DQ_STORAGE, removeItem, setItem } from '@/utils/storage';
+import { toast, confirm } from '@/utils/feedback';
+import { useI18n } from 'vue-i18n';
 
 const quickSetupRef = ref<InstanceType<typeof QuickSetupPanel> | null>(null);
 
@@ -68,6 +72,104 @@ function applyQuickSetupDefaults() {
 }
 
 const registryStore = useRegistryStore();
+const { t } = useI18n();
+const accessKeyBusy = ref<'http' | 'mcp' | null>(null);
+const revealOpen = ref(false);
+const revealKind = ref<'http' | 'mcp'>('http');
+const revealKey = ref('');
+const saveHttpKeyInBrowser = ref(true);
+
+async function createAccessKey(kind: 'http' | 'mcp') {
+  if (accessKeyBusy.value) return;
+  const configured =
+    kind === 'http'
+      ? !!props.settings.http_api_key_configured
+      : !!props.settings.mcp_api_key_configured;
+  if (configured) {
+    try {
+      await confirm(t('settings.accessKeyRotateConfirm'), t('settings.accessKeyRotateConfirmTitle'), {
+        type: 'warning',
+        confirmButtonText: t('settings.accessKeyCreate'),
+        cancelButtonText: t('common.cancel'),
+      });
+    } catch {
+      return;
+    }
+  }
+  accessKeyBusy.value = kind;
+  try {
+    const res = await api.settings.createAccessKey(kind);
+    if (kind === 'http') {
+      props.settings.http_api_key_configured = true;
+      props.settings.http_api_key_hint = res.hint;
+      props.settings.http_api_key_from_env = false;
+    } else {
+      props.settings.mcp_api_key_configured = true;
+      props.settings.mcp_api_key_hint = res.hint;
+      props.settings.mcp_api_key_from_env = false;
+    }
+    revealKind.value = kind;
+    revealKey.value = res.key;
+    saveHttpKeyInBrowser.value = kind === 'http';
+    revealOpen.value = true;
+  } catch (e) {
+    console.error(e);
+    toast.error(t('settings.accessKeyCreateFailed'));
+  } finally {
+    accessKeyBusy.value = null;
+  }
+}
+
+async function revokeAccessKey(kind: 'http' | 'mcp') {
+  if (accessKeyBusy.value) return;
+  try {
+    await confirm(t('settings.accessKeyRevokeConfirm'), t('settings.accessKeyRevokeConfirmTitle'), {
+      type: 'warning',
+      confirmButtonText: t('settings.accessKeyRevoke'),
+      cancelButtonText: t('common.cancel'),
+    });
+  } catch {
+    return;
+  }
+  accessKeyBusy.value = kind;
+  try {
+    await api.settings.revokeAccessKey(kind);
+    if (kind === 'http') {
+      props.settings.http_api_key_configured = false;
+      props.settings.http_api_key_hint = '';
+      removeItem(DQ_STORAGE.HTTP_API_KEY);
+    } else {
+      props.settings.mcp_api_key_configured = false;
+      props.settings.mcp_api_key_hint = '';
+    }
+    toast.success(t('settings.accessKeyRevoked'));
+  } catch (e) {
+    console.error(e);
+    toast.error(t('settings.accessKeyRevokeFailed'));
+  } finally {
+    accessKeyBusy.value = null;
+  }
+}
+
+async function copyRevealedKey() {
+  const key = revealKey.value.trim();
+  if (!key) return;
+  try {
+    await navigator.clipboard.writeText(key);
+    toast.success(t('settings.accessKeyCopied'));
+  } catch {
+    toast.error(t('settings.accessKeyCopyFailed'));
+  }
+}
+
+function closeRevealDialog() {
+  const key = revealKey.value.trim();
+  if (key && revealKind.value === 'http' && saveHttpKeyInBrowser.value) {
+    setItem(DQ_STORAGE.HTTP_API_KEY, key);
+  }
+  revealKey.value = '';
+  revealOpen.value = false;
+}
 
 onMounted(() => {
   void registryStore.load();
@@ -410,8 +512,110 @@ const vlmModelOptions = computed(() => {
               </p>
             </div>
           </DqPrefRow>
+
+          <DqPrefRow :label="$t('settings.httpApiKey')" stacked>
+            <div class="settings-stacked-control">
+              <p class="settings-access-key-status">
+                <template v-if="settings.http_api_key_from_env">
+                  {{ $t('settings.accessKeyFromEnv') }}
+                </template>
+                <template v-else-if="settings.http_api_key_configured">
+                  {{ $t('settings.accessKeyHint', { hint: settings.http_api_key_hint || '••••' }) }}
+                </template>
+                <template v-else>
+                  {{ $t('settings.accessKeyNotConfigured') }}
+                </template>
+              </p>
+              <div class="settings-inline-actions">
+                <DqButton size="sm" :disabled="!!accessKeyBusy" @click="createAccessKey('http')">
+                  {{
+                    settings.http_api_key_configured
+                      ? $t('settings.accessKeyRotate')
+                      : $t('settings.accessKeyCreate')
+                  }}
+                </DqButton>
+                <DqButton
+                  v-if="settings.http_api_key_configured && !settings.http_api_key_from_env"
+                  size="sm"
+                  variant="ghost"
+                  :disabled="!!accessKeyBusy"
+                  @click="revokeAccessKey('http')"
+                >
+                  {{ $t('settings.accessKeyRevoke') }}
+                </DqButton>
+              </div>
+              <p class="settings-form-hint settings-form-hint--below-control">
+                {{ $t('settings.httpApiKeyDesc') }}
+              </p>
+            </div>
+          </DqPrefRow>
+
+          <DqPrefRow :label="$t('settings.mcpApiKey')" stacked>
+            <div class="settings-stacked-control">
+              <p class="settings-access-key-status">
+                <template v-if="settings.mcp_api_key_from_env">
+                  {{ $t('settings.accessKeyFromEnv') }}
+                </template>
+                <template v-else-if="settings.mcp_api_key_configured">
+                  {{ $t('settings.accessKeyHint', { hint: settings.mcp_api_key_hint || '••••' }) }}
+                </template>
+                <template v-else>
+                  {{ $t('settings.accessKeyNotConfigured') }}
+                </template>
+              </p>
+              <div class="settings-inline-actions">
+                <DqButton size="sm" :disabled="!!accessKeyBusy" @click="createAccessKey('mcp')">
+                  {{
+                    settings.mcp_api_key_configured
+                      ? $t('settings.accessKeyRotate')
+                      : $t('settings.accessKeyCreate')
+                  }}
+                </DqButton>
+                <DqButton
+                  v-if="settings.mcp_api_key_configured && !settings.mcp_api_key_from_env"
+                  size="sm"
+                  variant="ghost"
+                  :disabled="!!accessKeyBusy"
+                  @click="revokeAccessKey('mcp')"
+                >
+                  {{ $t('settings.accessKeyRevoke') }}
+                </DqButton>
+              </div>
+              <p class="settings-form-hint settings-form-hint--below-control">
+                {{ $t('settings.mcpApiKeyDesc') }}
+              </p>
+            </div>
+          </DqPrefRow>
         </DqPrefPane>
       </section>
+
+      <DqDialog
+        v-model:open="revealOpen"
+        :title="$t('settings.accessKeyRevealTitle')"
+        width="min(520px, 96vw)"
+        :close-on-click-overlay="false"
+        @update:open="(v: boolean) => { if (!v) closeRevealDialog(); }"
+      >
+        <p class="settings-form-hint">{{ $t('settings.accessKeyRevealOnce') }}</p>
+        <DqInput
+          :model-value="revealKey"
+          type="textarea"
+          :rows="3"
+          readonly
+          class="settings-access-key-reveal"
+        />
+        <DqCheckbox
+          v-if="revealKind === 'http'"
+          v-model="saveHttpKeyInBrowser"
+          class="settings-access-key-browser"
+        >
+          {{ $t('settings.accessKeySaveInBrowser') }}
+        </DqCheckbox>
+        <template #footer>
+          <DqButton @click="copyRevealedKey">{{ $t('settings.accessKeyCopy') }}</DqButton>
+          <DqButton type="primary" @click="closeRevealDialog">{{ $t('settings.accessKeyDone') }}</DqButton>
+        </template>
+      </DqDialog>
     </template>
 
     <!-- Maintenance -->

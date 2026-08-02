@@ -75,6 +75,13 @@ class AppSettings:
     civitai_token: str = ""
     nsfw_enabled: bool = False
     huggingface_token: str = ""
+    # Remote access (non-loopback): separate keys for REST vs MCP. Loopback skips auth.
+    # Stored as v1:<salt>:<hmac> (plaintext returned once at create). Env overrides:
+    # DANQING_HTTP_API_KEY / DANQING_MCP_API_KEY (plaintext).
+    http_api_key: str = ""
+    http_api_key_hint: str = ""
+    mcp_api_key: str = ""
+    mcp_api_key_hint: str = ""
     mlx_memory_limit: int = 120
     model_cache_ttl_minutes: int = 30
     queue_image_first: bool = False

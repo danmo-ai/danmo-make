@@ -225,6 +225,15 @@ async def delete_asset_group(
         raise HTTPException(404, "asset group not found")
 
 
+@router.get("/{asset_id}")
+async def get_asset(asset_id: str, store: SQLiteAssetStore = Depends(get_asset_store)):
+    """Single asset metadata (path, mime, lineage refs) — used by MCP / agents."""
+    row = store.get_asset_record(asset_id)
+    if not row:
+        raise HTTPException(404, "asset not found")
+    return row
+
+
 @router.get("/{asset_id}/lineage")
 async def get_asset_lineage(asset_id: str, store: SQLiteAssetStore = Depends(get_asset_store)):
     """查询资产生成谱系：当前节点 + 祖先链 + 后代树。"""

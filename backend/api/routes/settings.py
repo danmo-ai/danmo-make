@@ -39,6 +39,13 @@ class SettingsResponse(BaseModel):
     civitai_token: str = ""
     huggingface_token: str = ""
     nsfw_enabled: bool = False
+    # Access keys: never return plaintext — only configured flag + hint.
+    http_api_key_configured: bool = False
+    http_api_key_hint: str = ""
+    http_api_key_from_env: bool = False
+    mcp_api_key_configured: bool = False
+    mcp_api_key_hint: str = ""
+    mcp_api_key_from_env: bool = False
     custom_workspace_dir: str = ""
 
 
@@ -104,15 +111,95 @@ def get_settings_service():
     return get_container().resolve(ISettingsService)
 
 
+class AccessKeyKindRequest(BaseModel):
+    """Which remote-access key: http (REST /api) or mcp (/mcp)."""
+
+    kind: str  # http | mcp
+
+
+def _settings_response(settings: AppSettings) -> SettingsResponse:
+    from backend.api.access_auth import access_key_public_view
+
+    data = {
+        k: v
+        for k, v in settings.__dict__.items()
+        if k in SettingsResponse.model_fields
+        and k
+        not in (
+            "http_api_key_configured",
+            "http_api_key_hint",
+            "http_api_key_from_env",
+            "mcp_api_key_configured",
+            "mcp_api_key_hint",
+            "mcp_api_key_from_env",
+        )
+    }
+    data.update(access_key_public_view(settings))
+    return SettingsResponse(**data)
+
+
 @router.get("", response_model=SettingsResponse)
 def get_settings():
-    """Get settings"""
+    """Get settings (access key plaintext never included)."""
     service = get_settings_service()
     settings = service.get_settings()
     registry = get_typed_model_registry()
     if normalize_app_llm_settings(settings, registry):
         service.update_settings(settings)
-    return SettingsResponse(**settings.__dict__)
+    return _settings_response(settings)
+
+
+@router.post("/access-keys")
+def create_or_rotate_access_key(body: AccessKeyKindRequest):
+    """Create/rotate an access key. Plaintext ``key`` is returned once only."""
+    kind = (body.kind or "").strip().lower()
+    if kind not in ("http", "mcp"):
+        raise HTTPException(
+            400,
+            detail={"code": "invalid", "message": "kind must be 'http' or 'mcp'"},
+        )
+    from backend.api.access_auth import generate_api_key, hash_api_key, key_hint
+
+    service = get_settings_service()
+    settings = service.get_settings()
+    plaintext = generate_api_key(kind)  # type: ignore[arg-type]
+    digest = hash_api_key(plaintext)
+    hint = key_hint(plaintext)
+    if kind == "http":
+        settings.http_api_key = digest
+        settings.http_api_key_hint = hint
+    else:
+        settings.mcp_api_key = digest
+        settings.mcp_api_key_hint = hint
+    service.update_settings(settings)
+    return {
+        "success": True,
+        "kind": kind,
+        "key": plaintext,
+        "hint": hint,
+        "message": "Copy this key now. It will not be shown again.",
+    }
+
+
+@router.delete("/access-keys/{kind}")
+def revoke_access_key(kind: str):
+    """Revoke (delete) a stored access key hash."""
+    kind = (kind or "").strip().lower()
+    if kind not in ("http", "mcp"):
+        raise HTTPException(
+            400,
+            detail={"code": "invalid", "message": "kind must be 'http' or 'mcp'"},
+        )
+    service = get_settings_service()
+    settings = service.get_settings()
+    if kind == "http":
+        settings.http_api_key = ""
+        settings.http_api_key_hint = ""
+    else:
+        settings.mcp_api_key = ""
+        settings.mcp_api_key_hint = ""
+    service.update_settings(settings)
+    return {"success": True, "kind": kind}
 
 
 @router.put("")
