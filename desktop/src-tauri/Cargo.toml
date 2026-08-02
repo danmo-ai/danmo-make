@@ -1,6 +1,6 @@
 [package]
 name = "danqing-desktop"
-version = "0.1.15"
+version = "0.1.16"
 description = "Danmo Make — Tauri shell for local REST API"
 authors = ["Danmo AI"]
 edition = "2021"
