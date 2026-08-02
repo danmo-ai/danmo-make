@@ -108,6 +108,11 @@ _SHARED_HIDDEN_IMPORTS: tuple[str, ...] = (
     "safetensors",
     "tqdm",
     "requests",
+    # Audio WAV persist (ACE-Step / AudioSession) — required at import of audio_persist
+    "soundfile",
+    "_soundfile",
+    "_soundfile_data",
+    "cffi",
 )
 
 _MLX_ONLY_HIDDEN_IMPORTS: tuple[str, ...] = (
@@ -199,7 +204,6 @@ _MLX_EXCLUDED_MODULES: tuple[str, ...] = (
     "tensorboard_data_server",
     "torch.utils.tensorboard",
     "hf_xet",
-    "soundfile",
 )
 
 _CUDA_EXCLUDED_MODULES: tuple[str, ...] = (
@@ -283,6 +287,13 @@ def get_exclude_modules(profile: str | None = None) -> list[str]:
     return list(_CUDA_EXCLUDED_MODULES)
 
 
+def _site_packages_dirs(project_root: Path) -> list[Path]:
+    venv_lib = project_root / ".venv" / "lib"
+    if not venv_lib.exists():
+        return []
+    return sorted(venv_lib.glob("python3.*/site-packages"))
+
+
 def get_data_files(project_root: Path | None = None, *, profile: str | None = None) -> list[str]:
     _ = profile or packaging_profile()
     root = project_root or PROJECT_ROOT
@@ -301,26 +312,42 @@ def get_data_files(project_root: Path | None = None, *, profile: str | None = No
     if default_cfg.is_dir():
         data.append(f"{default_cfg}{separator}default_config")
 
+    # soundfile loads libsndfile from the ``_soundfile_data`` package (COPYING + __init__).
+    for site in _site_packages_dirs(root):
+        snd_data = site / "_soundfile_data"
+        if snd_data.is_dir():
+            for path in snd_data.iterdir():
+                if path.is_file() and path.suffix.lower() not in (".dylib", ".so", ".dll"):
+                    data.append(f"{path}{separator}_soundfile_data")
+            break
+
     return data
 
 
 def get_binary_files(project_root: Path, *, profile: str | None = None) -> list[str]:
     profile = profile or packaging_profile()
     binaries: list[str] = []
+    separator = ";" if sys.platform == "win32" else ":"
+
+    for site in _site_packages_dirs(project_root):
+        snd_data = site / "_soundfile_data"
+        if snd_data.is_dir():
+            for pattern in ("*.dylib", "*.so", "*.dll"):
+                for lib_file in snd_data.glob(pattern):
+                    binaries.append(f"{lib_file}{separator}_soundfile_data")
+            break
+
     if profile != "mlx":
         return binaries
 
-    separator = ";" if sys.platform == "win32" else ":"
     if sys.platform == "darwin":
-        venv_lib = project_root / ".venv" / "lib"
-        if venv_lib.exists():
-            for site in venv_lib.glob("python3.*/site-packages"):
-                mlx_lib = site / "mlx" / "lib"
-                if mlx_lib.exists():
-                    for pattern in ("*.dylib", "*.metallib"):
-                        for lib_file in mlx_lib.glob(pattern):
-                            binaries.append(f"{lib_file}{separator}mlx/lib")
-                    break
+        for site in _site_packages_dirs(project_root):
+            mlx_lib = site / "mlx" / "lib"
+            if mlx_lib.exists():
+                for pattern in ("*.dylib", "*.metallib"):
+                    for lib_file in mlx_lib.glob(pattern):
+                        binaries.append(f"{lib_file}{separator}mlx/lib")
+                break
 
     return binaries
 

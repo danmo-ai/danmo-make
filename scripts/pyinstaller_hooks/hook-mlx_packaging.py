@@ -33,8 +33,6 @@ if os.environ.get("DANQING_PYINSTALLER_PROFILE", "").lower() == "mlx" or (
         "backend.engine.families.ace_step.quality.resource_policy_cuda",
         "backend.engine.families.ace_step.transformer_cuda",
         "backend.engine.families.ace_step.vae.vae_cuda",
+        "backend.engine.families.ace_step.generation_cuda",
         "hf_xet",
-        "soundfile",
-        "backend.engine.pipelines.music_pipeline",
-        "backend.engine.families.ace_step",
     ]
