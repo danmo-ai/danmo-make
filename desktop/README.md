@@ -1,9 +1,29 @@
+# Danmo Make — Tauri 2 desktop shell
+
+Language: 中文 below · English summary first.
+
+Native **Tauri 2** window; business logic stays on the local **FastAPI** API.
+
+| Platform | Runtime | Artifact |
+|----------|---------|----------|
+| **macOS** (Apple Silicon) | PyInstaller `danqing-api` (MLX) | `.app` / `.dmg` |
+| **Windows x64** | CUDA **thin** `runtime/` (no torch in zip) | **`*-portable.zip`** — unzip & run |
+| **Linux x64 desktop** | CUDA thin | AppImage / `.deb` (local pack; CI may omit) |
+| **Linux/Windows server** | CUDA thin + `run.sh` / `run.bat` | `out/dist/danmo-make-*-cuda-*` |
+
+Product name: Danmo Make. Technical ids remain `danqing-*` ([AGENTS.md](../AGENTS.md)).
+
+Makefile / script names align with **Danmo Work** / **Danmo Inbox**.
+
+---
+
 # Danmo Make — Tauri 2 桌面壳
 
 本目录提供 **Tauri 2** 原生窗口；业务由本地 **FastAPI REST** 提供。
 
 - **macOS**：PyInstaller `danqing-api` sidecar（MLX）
 - **Windows / Linux CUDA**：轻量 `runtime/`（便携 CPython + 应用码，**不含 torch**）；首次启动引导安装依赖（桌面 UI / server 控制台进度）
+- **Windows 用户请用便携 zip**，不要找 NSIS「安装版」
 
 产品名为 Danmo Make；技术 id 仍为 `danqing-*`（见仓库根 [AGENTS.md](../AGENTS.md) → Naming boundary）。
 
