@@ -1,11 +1,6 @@
 <template>
   <div class="main-container dq-app-shell dq-app-shell--sidebar">
     <aside class="app-sidebar dq-app-sidebar dq-glass--sidebar">
-      <div
-        class="dq-tauri-titlebar-inset"
-        data-tauri-drag-region
-        aria-hidden="true"
-      />
       <TopNav
         :active-page="activePage"
         :queue-count="globalQueueCount"
@@ -426,11 +421,6 @@ provide('systemInfo', systemInfo);
   min-width: 0;
   box-sizing: border-box;
 }
-.dq-tauri-titlebar-inset {
-  height: env(titlebar-area-height, 0px);
-  flex-shrink: 0;
-}
-
 .dq-task-queue-logs-btn {
   margin-top: 8px;
   align-self: flex-start;

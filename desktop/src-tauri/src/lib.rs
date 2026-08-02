@@ -207,6 +207,10 @@ fn apply_macos_shell(app: &AppHandle) {
     if let Err(err) = apply_vibrancy(&win, NSVisualEffectMaterial::UnderWindowBackground, None, None) {
         eprintln!("macOS window vibrancy failed: {err}");
     }
+    // Match default product theme flash (`dq-mac` / dark) until the webview syncs.
+    if let Err(err) = win.set_theme(Some(tauri::Theme::Dark)) {
+        eprintln!("macOS window theme failed: {err}");
+    }
     let _ = win.eval(
         r#"document.documentElement.classList.add('dq-tauri-macos');"#,
     );

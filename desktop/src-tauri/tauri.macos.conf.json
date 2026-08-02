@@ -3,8 +3,8 @@
     "windows": [
       {
         "transparent": true,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "titleBarStyle": "Visible",
+        "hiddenTitle": false
       }
     ]
   },

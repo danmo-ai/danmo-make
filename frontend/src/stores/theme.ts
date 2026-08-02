@@ -3,10 +3,12 @@ import { ref, watch } from 'vue'
 import {
   THEME_OPTIONS as DQ_THEME_OPTIONS,
   applyDqTheme,
+  getDqThemeMeta,
   resolveDqThemeSlug,
   type DqThemeSlug,
 } from '@danqing/dq-tokens'
 import { getItem, setItem, DQ_STORAGE } from '@/utils/storage'
+import { syncTauriWindowTheme } from '@/utils/desktop'
 
 export type ThemeId = DqThemeSlug
 
@@ -45,6 +47,8 @@ export function migrateThemeId(raw: string | null | undefined): ThemeId | null {
 export function applyTheme(themeId?: ThemeId | string | null): void {
   const id = migrateThemeId(themeId ?? undefined) ?? 'mac'
   applyDqTheme(id)
+  const dark = getDqThemeMeta(id)?.dark ?? true
+  syncTauriWindowTheme(dark)
 }
 
 function getStoredTheme(): ThemeId {
@@ -57,17 +61,17 @@ export const useThemeStore = defineStore('theme', () => {
   function setTheme(id: ThemeId) {
     const next = migrateThemeId(id) ?? 'mac'
     currentTheme.value = next
-    applyDqTheme(next)
+    applyTheme(next)
     setItem(DQ_STORAGE.THEME, next)
   }
 
   function init() {
-    applyDqTheme(currentTheme.value)
+    applyTheme(currentTheme.value)
     setItem(DQ_STORAGE.THEME, currentTheme.value)
   }
 
   watch(currentTheme, (id) => {
-    applyDqTheme(id)
+    applyTheme(id)
     setItem(DQ_STORAGE.THEME, id)
   })
 
