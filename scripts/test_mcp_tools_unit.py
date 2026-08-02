@@ -14,6 +14,7 @@ from backend.mcp.server import create_mcp
 EXPECTED = {
     "health",
     "list_models",
+    "get_model",
     "upload_asset",
     "get_asset",
     "get_task",

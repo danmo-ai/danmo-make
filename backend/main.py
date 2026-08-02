@@ -167,7 +167,15 @@ def create_app() -> FastAPI:
     app.include_router(canvas_routes.router)
     app.include_router(long_video_routes.router)
 
-    # MCP streamable-http at /mcp (before StaticFiles catch-all)
+    # MCP streamable-http at /mcp (before StaticFiles catch-all).
+    # Starlette Mount: POST /mcp (no trailing slash) → 405; POST /mcp/ works.
+    # Normalize so clients that TrimRight("/", url) still connect.
+    @app.middleware("http")
+    async def mcp_trailing_slash(request, call_next):
+        if request.scope.get("path") == "/mcp":
+            request.scope["path"] = "/mcp/"
+        return await call_next(request)
+
     app.mount("/mcp", _mcp_http_app)
 
     frontend_dir = _resolve_frontend_static_dir(project_root)

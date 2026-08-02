@@ -40,6 +40,7 @@ _SHARED_HIDDEN_IMPORTS: tuple[str, ...] = (
     "backend.mcp.bridge",
     "backend.mcp.wait",
     "backend.mcp.base_url",
+    "backend.mcp.model_guide",
     "mcp",
     "mcp.server",
     "mcp.server.fastmcp",

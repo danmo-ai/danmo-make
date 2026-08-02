@@ -7,6 +7,12 @@ from typing import Any, Optional
 from mcp.server.fastmcp import FastMCP
 
 from backend.mcp.bridge import MakeAPIBridge, dumps
+from backend.mcp.model_guide import (
+    enrich_model_list,
+    frames_from_duration_sec,
+    normalize_list_action,
+    summarize_model,
+)
 from backend.mcp.wait import wait_task as poll_wait_task
 
 _bridge: MakeAPIBridge | None = None
@@ -44,20 +50,69 @@ def _register_tools(mcp: FastMCP) -> None:
     async def health() -> str:
         return dumps(await get_bridge().get("/api/system/health"))
 
-    @mcp.tool(description="List models; filter media/action/installed.")
+    @mcp.tool(
+        description=(
+            "List runnable models (not LoRA adapters) grouped image/video/audio, "
+            "sorted commercial→newer→distilled→smaller quant ([0]=suggestion). "
+            "Cards include actions: generate|edit|upscale|…. "
+            "For text-to-image/video pass action=generate (aliases: create). "
+            "For edits pass action=edit. Prefer installed=true."
+        )
+    )
     async def list_models(
         media: Optional[str] = None,
         action: Optional[str] = None,
         installed: Optional[bool] = None,
     ) -> str:
+        api_action = normalize_list_action(action, media=media)
         params: dict[str, Any] = {}
         if media:
             params["media"] = media
-        if action:
-            params["action"] = action
+        if api_action:
+            params["action"] = api_action
         if installed is not None:
             params["installed"] = installed
-        return dumps(await get_bridge().get("/api/models", params=params or None))
+        bridge = get_bridge()
+        index = await bridge.get("/api/models", params=params or None)
+        registry = await bridge.get("/api/registry")
+        reg_models = registry.get("models") if isinstance(registry, dict) else {}
+        if not isinstance(reg_models, dict):
+            reg_models = {}
+        return dumps(
+            enrich_model_list(
+                index if isinstance(index, dict) else {},
+                reg_models,
+                require_action=api_action,
+            )
+        )
+
+    @mcp.tool(
+        description=(
+            "Model card: actions + type + defaults + parameters "
+            "(size options; video duration_sec; audio duration; steps/guidance/fps). "
+            "Call after list_models. Reject type=lora for generate_*."
+        )
+    )
+    async def get_model(model_id: str) -> str:
+        detail = await get_bridge().get(f"/api/models/{model_id}")
+        if not isinstance(detail, dict):
+            raise RuntimeError(f"get_model: unexpected response for {model_id!r}")
+        cfg = detail.get("config") if isinstance(detail.get("config"), dict) else {}
+        index_row = {
+            "media": detail.get("media"),
+            "family": detail.get("family"),
+            "actions": detail.get("actions"),
+            "type": cfg.get("type"),
+            "installed": None,
+        }
+        return dumps(
+            summarize_model(
+                str(detail.get("id") or model_id),
+                index_row=index_row,
+                config=cfg,
+                full=True,
+            )
+        )
 
     @mcp.tool(description="Upload a local file path → asset id (ast_*).")
     async def upload_asset(path: str) -> str:
@@ -111,12 +166,76 @@ def _register_tools(mcp: FastMCP) -> None:
         )
         return dumps({"submit": submitted, "result": final})
 
-    @mcp.tool(description="Text-to-image; wait=true until done (default).")
+    async def _model_card(model_id: str) -> dict[str, Any]:
+        detail = await get_bridge().get(f"/api/models/{model_id}")
+        if not isinstance(detail, dict):
+            raise RuntimeError(f"model not found: {model_id!r}")
+        cfg = detail.get("config") if isinstance(detail.get("config"), dict) else {}
+        return summarize_model(
+            str(detail.get("id") or model_id),
+            index_row={
+                "media": detail.get("media"),
+                "family": detail.get("family"),
+                "actions": detail.get("actions"),
+                "type": cfg.get("type"),
+            },
+            config=cfg,
+            full=False,
+        )
+
+    async def _require_model_action(model_id: str, api_action: str) -> dict[str, Any]:
+        card = await _model_card(model_id)
+        mtype = str(card.get("type") or "")
+        if mtype == "lora":
+            raise RuntimeError(
+                f"{model_id!r} is a LoRA adapter (type=lora), not a generation model. "
+                f"list_models(action={api_action!r}) for base models; attach LoRA in the UI."
+            )
+        actions = card.get("actions") if isinstance(card.get("actions"), list) else []
+        if api_action not in actions:
+            raise RuntimeError(
+                f"model {model_id!r} does not support {api_action!r} "
+                f"(actions={actions or []}). "
+                f"Use list_models(installed=true, action={api_action!r})."
+            )
+        return card
+
+    async def _model_defaults(model_id: str) -> dict[str, Any]:
+        card = await _model_card(model_id)
+        defaults = card.get("defaults")
+        return defaults if isinstance(defaults, dict) else {}
+
+    async def _apply_generation_defaults(body: dict[str, Any], *, keys: tuple[str, ...]) -> None:
+        """Fill missing generation fields from registry model defaults (fail loud if no model)."""
+        mid = str(body.get("model") or "").strip()
+        if not mid:
+            raise RuntimeError("model id is required")
+        need = [k for k in keys if body.get(k) in (None, "", [])]
+        if not need:
+            return
+        defaults = await _model_defaults(mid)
+        for k in need:
+            if k in defaults and defaults[k] is not None:
+                body[k] = defaults[k]
+        # size still missing → explicit error (do not invent WxH)
+        if "size" in keys and not body.get("size"):
+            raise RuntimeError(
+                f"model {mid!r} has no default size; call get_model and pass size=WIDTHxHEIGHT "
+                f"from size_options / defaults.size"
+            )
+
+    @mcp.tool(
+        description=(
+            "Text-to-image. model from list_models(action=generate).image[0] "
+            "(must have actions containing generate; not LoRA/edit-only). "
+            "size from get_model. wait=true default."
+        )
+    )
     async def generate_image(
         model: str,
         prompt: str,
         negative_prompt: str = "",
-        size: str = "1024x1024",
+        size: str = "",
         steps: Optional[int] = None,
         guidance: Optional[float] = None,
         seed: Optional[int] = None,
@@ -125,20 +244,24 @@ def _register_tools(mcp: FastMCP) -> None:
         wait: bool = True,
         wait_timeout_seconds: float = 300.0,
     ) -> str:
+        await _require_model_action(model, "generate")
         body: dict[str, Any] = {
             "model": model,
             "prompt": prompt,
             "negative_prompt": negative_prompt,
-            "size": size,
             "n": n,
             "priority": priority,
         }
+        size_s = (size or "").strip()
+        if size_s:
+            body["size"] = size_s
         if steps is not None:
             body["steps"] = steps
         if guidance is not None:
             body["guidance"] = guidance
         if seed is not None:
             body["seed"] = seed
+        await _apply_generation_defaults(body, keys=("size", "steps", "guidance"))
         return await _submit_and_maybe_wait(
             "/api/images/generations",
             body,
@@ -146,7 +269,12 @@ def _register_tools(mcp: FastMCP) -> None:
             wait_timeout_seconds=wait_timeout_seconds,
         )
 
-    @mcp.tool(description="Edit image (rewrite/retouch/extend); needs source_asset_id.")
+    @mcp.tool(
+        description=(
+            "Edit image (rewrite/retouch/extend). "
+            "model from list_models(action=edit); needs source_asset_id."
+        )
+    )
     async def edit_image(
         model: str,
         operation: str,
@@ -163,6 +291,7 @@ def _register_tools(mcp: FastMCP) -> None:
         wait: bool = True,
         wait_timeout_seconds: float = 300.0,
     ) -> str:
+        await _require_model_action(model, "edit")
         body: dict[str, Any] = {
             "model": model,
             "operation": operation,
@@ -190,7 +319,7 @@ def _register_tools(mcp: FastMCP) -> None:
             wait_timeout_seconds=wait_timeout_seconds,
         )
 
-    @mcp.tool(description="Upscale image from source_asset_id.")
+    @mcp.tool(description="Upscale image from source_asset_id. model must support upscale.")
     async def upscale_image(
         model: str,
         source_asset_id: str,
@@ -200,6 +329,7 @@ def _register_tools(mcp: FastMCP) -> None:
         wait: bool = True,
         wait_timeout_seconds: float = 300.0,
     ) -> str:
+        await _require_model_action(model, "upscale")
         body = {
             "model": model,
             "source_asset_id": source_asset_id.removeprefix("asset:"),
@@ -214,14 +344,20 @@ def _register_tools(mcp: FastMCP) -> None:
             wait_timeout_seconds=wait_timeout_seconds,
         )
 
-    @mcp.tool(description="Text/image-to-video; wait default true (use longer timeout).")
+    @mcp.tool(
+        description=(
+            "Text/image-to-video. Prefer duration_sec from get_model "
+            "(converted to num_frames). size/fps from get_model. wait default true."
+        )
+    )
     async def generate_video(
         model: str,
         prompt: str,
         negative_prompt: str = "",
-        size: str = "832x480",
-        num_frames: int = 81,
-        fps: int = 16,
+        size: str = "",
+        duration_sec: Optional[float] = None,
+        num_frames: Optional[int] = None,
+        fps: Optional[int] = None,
         steps: Optional[int] = None,
         guidance: Optional[float] = None,
         seed: Optional[int] = None,
@@ -230,24 +366,44 @@ def _register_tools(mcp: FastMCP) -> None:
         wait: bool = True,
         wait_timeout_seconds: float = 900.0,
     ) -> str:
+        await _require_model_action(model, "generate")
         body: dict[str, Any] = {
             "model": model,
             "prompt": prompt,
             "negative_prompt": negative_prompt,
-            "size": size,
-            "num_frames": num_frames,
-            "fps": fps,
             "priority": priority,
             "reference_asset_ids": [
                 a.removeprefix("asset:") for a in (reference_asset_ids or [])
             ],
         }
+        size_s = (size or "").strip()
+        if size_s:
+            body["size"] = size_s
+        if fps is not None:
+            body["fps"] = fps
+        if num_frames is not None:
+            body["num_frames"] = num_frames
         if steps is not None:
             body["steps"] = steps
         if guidance is not None:
             body["guidance"] = guidance
         if seed is not None:
             body["seed"] = seed
+        await _apply_generation_defaults(
+            body, keys=("size", "steps", "guidance", "fps", "num_frames")
+        )
+        if duration_sec is not None and num_frames is None:
+            detail = await get_bridge().get(f"/api/models/{model}")
+            cfg = detail.get("config") if isinstance(detail, dict) else {}
+            params = cfg.get("parameters") if isinstance(cfg, dict) else {}
+            nf = params.get("num_frames") if isinstance(params, dict) else {}
+            rate = int(body.get("fps") or 16)
+            body["num_frames"] = frames_from_duration_sec(
+                float(duration_sec),
+                rate,
+                min_frames=int(nf["min"]) if isinstance(nf, dict) and "min" in nf else None,
+                max_frames=int(nf["max"]) if isinstance(nf, dict) and "max" in nf else None,
+            )
         return await _submit_and_maybe_wait(
             "/api/videos/generations",
             body,
@@ -271,6 +427,7 @@ def _register_tools(mcp: FastMCP) -> None:
         wait: bool = True,
         wait_timeout_seconds: float = 900.0,
     ) -> str:
+        await _require_model_action(model, "edit")
         body: dict[str, Any] = {
             "model": model,
             "operation": operation,
@@ -317,7 +474,12 @@ def _register_tools(mcp: FastMCP) -> None:
             wait_timeout_seconds=wait_timeout_seconds,
         )
 
-    @mcp.tool(description="Generate audio/music; wait default true.")
+    @mcp.tool(
+        description=(
+            "Generate audio/music. model=list_models.audio[0].id (or user-named); "
+            "wait default true."
+        )
+    )
     async def generate_audio(
         model: str,
         prompt: str,
@@ -330,6 +492,7 @@ def _register_tools(mcp: FastMCP) -> None:
         wait: bool = True,
         wait_timeout_seconds: float = 600.0,
     ) -> str:
+        await _require_model_action(model, "create_music")
         body: dict[str, Any] = {
             "model": model,
             "prompt": prompt,
@@ -362,6 +525,7 @@ def _register_tools(mcp: FastMCP) -> None:
         wait: bool = True,
         wait_timeout_seconds: float = 600.0,
     ) -> str:
+        await _require_model_action(model, "edit")
         body: dict[str, Any] = {
             "model": model,
             "operation": operation,
