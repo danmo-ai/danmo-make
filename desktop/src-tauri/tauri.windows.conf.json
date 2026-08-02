@@ -8,6 +8,6 @@
     ]
   },
   "bundle": {
-    "targets": ["nsis"]
+    "targets": []
   }
 }

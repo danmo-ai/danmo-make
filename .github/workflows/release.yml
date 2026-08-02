@@ -1,5 +1,6 @@
-# macOS MLX desktop + Linux CUDA server tar.gz + Windows CUDA desktop (NSIS).
+# macOS MLX desktop + Linux CUDA server tar.gz + Windows CUDA desktop (portable zip).
 # Linux desktop (AppImage/deb) temporarily omitted from CI (local: make pack-linux-desktop).
+# Windows uses zip (not NSIS): CUDA sidecar exceeds NSIS ~2GB mmap limit.
 name: Build Release Artifacts
 
 on:
@@ -276,7 +277,7 @@ jobs:
           npm install --no-audit --no-fund
           npm run build
 
-      - name: Build Windows desktop (CUDA sidecar + NSIS)
+      - name: Build Windows desktop (CUDA sidecar + portable zip)
         working-directory: danqing-studio
         env:
           DANQING_PYINSTALLER_PROFILE: cuda
@@ -287,22 +288,23 @@ jobs:
           python scripts/build_sidecar.py
           python scripts/tauri_build.py --platform windows
 
-      - name: Verify NSIS installer was produced
+      - name: Verify portable zip was produced
         working-directory: danqing-studio
         shell: pwsh
         run: |
-          Get-ChildItem out/desktop/bundle -ErrorAction SilentlyContinue | Format-Table Name
-          $exe = Get-ChildItem out/desktop/bundle -Recurse -Include '*-setup.exe','*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $exe) { throw 'No installer .exe under out/desktop/bundle' }
-          Write-Host "Found installer: $($exe.FullName)"
+          Get-ChildItem out/desktop/bundle/zip -ErrorAction SilentlyContinue | Format-Table Name,Length
+          $zip = Get-ChildItem out/desktop/bundle/zip -Filter '*-portable.zip' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $zip) { throw 'No *-portable.zip under out/desktop/bundle/zip' }
+          Write-Host "Found portable zip: $($zip.FullName) ($([math]::Round($zip.Length/1GB, 2)) GiB)"
 
       - name: Upload Windows desktop artifact
         uses: actions/upload-artifact@v6
         with:
           name: danqing-desktop-windows
           path: |
-            danqing-studio/out/desktop/bundle/nsis/*.exe
+            danqing-studio/out/desktop/bundle/zip/*-portable.zip
           if-no-files-found: error
+          compression-level: 0
 
   publish-release:
     name: Publish GitHub Release
@@ -334,5 +336,5 @@ jobs:
           files: |
             release-assets/macos/**/*.dmg
             release-assets/linux-server/**/*.tar.gz
-            release-assets/windows/**/*.exe
+            release-assets/windows/**/*-portable.zip
           fail_on_unmatched_files: true

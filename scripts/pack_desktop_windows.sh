@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Windows Tauri desktop (CUDA sidecar) — NSIS installer
+# Windows Tauri desktop (CUDA sidecar) — portable zip (NSIS cannot pack ~2GB CUDA trees)
 # Naming aligned with danmo-work / danmo-inbox.
 set -euo pipefail
 
@@ -47,8 +47,8 @@ echo "==> Frontend -> $DQ_FRONTEND_DIST"
 echo "==> PyInstaller sidecar (CUDA)"
 DANQING_PYINSTALLER_PROFILE=cuda "$PYTHON" "$SCRIPT_DIR/build_sidecar.py"
 
-echo "==> Tauri shell (Windows NSIS)"
+echo "==> Tauri shell + portable zip"
 "$PYTHON" "$SCRIPT_DIR/tauri_build.py" --platform windows
 
 echo "==> Desktop bundle -> $DQ_DESKTOP_BUNDLE"
-find "$DQ_DESKTOP_BUNDLE" -type f -name '*.exe' 2>/dev/null | head -20 || true
+find "$DQ_DESKTOP_BUNDLE" -type f -name '*-portable.zip' 2>/dev/null | head -20 || true

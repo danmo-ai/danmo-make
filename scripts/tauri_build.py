@@ -134,8 +134,8 @@ def build_windows() -> None:
     desktop = op.PROJECT_ROOT / "desktop"
     npm = _npm()
     _run([npm, "install"], cwd=desktop)
-    # Explicit -b nsis (same as DanQing-Teams): without a bundle type flag,
-    # tauri build may only compile the .exe and skip the NSIS installer tree.
+    # CUDA sidecar is ~2GB — NSIS makensis hits mmap Internal compiler error #12345.
+    # Build the shell only, then ship a portable zip (see package_windows_desktop_zip.py).
     _run(
         [
             npm,
@@ -146,12 +146,12 @@ def build_windows() -> None:
             "--target",
             "x86_64-pc-windows-msvc",
             "-b",
-            "nsis",
+            "none",
         ],
         cwd=desktop,
     )
 
-    _run([_python(), str(op.PROJECT_ROOT / "scripts" / "stage_desktop_bundle.py")])
+    _run([_python(), str(op.PROJECT_ROOT / "scripts" / "package_windows_desktop_zip.py")])
 
 
 def main() -> None:
