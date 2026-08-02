@@ -2,7 +2,9 @@
 
 Language: [English](README.md) | **中文**
 
-插件化图像/视频生成工作室，基于 **MLX**（Apple Silicon）与 **CUDA**（NVIDIA）双后端。前后端分离：FastAPI + Vue 3 SPA，REST 与 CLI 语义一致，SQLite 持久化任务与资产，界面与错误信息支持 **中英文**。
+插件化图像/视频生成产品，基于 **MLX**（Apple Silicon）与 **CUDA**（NVIDIA）双后端。前后端分离：FastAPI + Vue 3 SPA，REST 与 CLI 语义一致，SQLite 持久化任务与资产，界面与错误信息支持 **中英文**。
+
+产品名为 **Danmo Make**。引擎 / CLI / sidecar 等技术标识仍为 `danqing-*` / `DanQing*Engine`（见 [AGENTS.md](AGENTS.md) → Naming boundary）。
 
 | | |
 |---|---|

@@ -9,17 +9,38 @@ on:
 jobs:
   governance:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: danmo-make
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          path: danmo-make
+
+      # Sibling of danmo-make — scripts/check_frontend_governance.py resolves ../dq-ui/packages
+      - name: Checkout dq-ui
+        uses: actions/checkout@v4
+        with:
+          repository: danmo-ai/dq-ui
+          path: dq-ui
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Create venv for Makefile python
         run: python -m venv .venv
+
+      - name: Install frontend deps (canvas-unit)
+        working-directory: danmo-make/frontend
+        run: npm install --no-audit --no-fund
 
       - name: Run engine stack verification
         run: make verify-engine-stack

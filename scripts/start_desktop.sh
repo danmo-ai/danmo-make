@@ -9,7 +9,7 @@ source "$SCRIPT_DIR/out_paths.sh"
 # shellcheck source=dev_process.sh
 source "$SCRIPT_DIR/dev_process.sh"
 
-APP_NAME="${DQ_APP_NAME:-danqing-studio}"
+APP_NAME="${DQ_APP_NAME:-danmo-make}"
 BACKEND_PORT="${DQ_BACKEND_PORT}"
 FRONTEND_PORT="${DQ_FRONTEND_PORT}"
 

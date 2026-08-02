@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch DanQing task metadata + diagnostic bundle for AI/human troubleshooting."""
+"""Fetch Danmo Make task metadata + diagnostic bundle for AI/human troubleshooting."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def _parse_graph_steps(logs: list[dict]) -> list[dict]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Diagnose a DanQing generation task by ID")
+    parser = argparse.ArgumentParser(description="Diagnose a Danmo Make generation task by ID")
     parser.add_argument("task_id", help="Task ID, e.g. tsk_abcd…")
     parser.add_argument("--base", default=None, help="API base URL (default http://HOST:PORT)")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON only")

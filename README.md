@@ -2,7 +2,9 @@
 
 Language: **English** | [中文](README_zh.md)
 
-Plugin-style image and video generation studio with **MLX** (Apple Silicon) and **CUDA** (NVIDIA) backends. Split stack: FastAPI backend, Vue 3 SPA, shared REST API and CLI, SQLite persistence, and full **zh/en** i18n.
+Plugin-style image and video generation with **MLX** (Apple Silicon) and **CUDA** (NVIDIA) backends. Split stack: FastAPI backend, Vue 3 SPA, shared REST API and CLI, SQLite persistence, and full **zh/en** i18n.
+
+Product name is **Danmo Make**. Engine/CLI/sidecar technical ids remain `danqing-*` / `DanQing*Engine` (see [AGENTS.md](AGENTS.md) → Naming boundary).
 
 | | |
 |---|---|

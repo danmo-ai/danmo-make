@@ -1,8 +1,8 @@
 # Danmo Make — Tauri 2 桌面壳
 
-本目录提供 **Tauri 2** 原生窗口；业务仍由 **FastAPI REST**（PyInstaller 打包的 `danqing-api` sidecar）提供。
+本目录提供 **Tauri 2** 原生窗口；业务仍由 **FastAPI REST**（PyInstaller 打包的 `danqing-api` sidecar）提供。产品名为 Danmo Make；sidecar / 环境变量等技术 id 仍为 `danqing-*`（见仓库根 [AGENTS.md](../AGENTS.md) → Naming boundary）。
 
-Makefile / 脚本命名与 [danmo-work](../DanQing-Teams) / [danmo-inbox](../DanQing-Mail) 对齐。
+Makefile / 脚本命名与 **Danmo Work** / **Danmo Inbox** 对齐（本地 sibling 目录名可能仍是 `DanQing-Teams` / `DanQing-Mail`）。
 
 ## 构建产物目录
 
@@ -12,7 +12,7 @@ Makefile / 脚本命名与 [danmo-work](../DanQing-Teams) / [danmo-inbox](../Dan
 |------|------|
 | `out/frontend/dist/` | Vite 生产构建 |
 | `out/sidecar/danqing-api/` | PyInstaller sidecar |
-| `out/desktop/bundle/` | 平台安装包（`.dmg` / AppImage / `.deb` / NSIS） |
+| `out/desktop/bundle/` | 平台安装包（`.dmg` / AppImage / `.deb` / Windows portable zip） |
 | `out/desktop/cargo/` | Cargo 中间产物（可清理） |
 
 清理：`make clean` 或 `python scripts/clean_build.py`
@@ -22,11 +22,11 @@ Makefile / 脚本命名与 [danmo-work](../DanQing-Teams) / [danmo-inbox](../Dan
 - **Rust**（`cargo` 在 PATH）
 - 仓库根 **Python 3.11 + `.venv`**，已安装 **PyInstaller**
 - **Node.js**（`npm`）
-- Linux 桌面另需 WebKitGTK 等（见 CI `build-linux-desktop`）
+- Linux 桌面另需 WebKitGTK 等（本地 `make pack-linux-desktop`；CI 暂未构建 Linux 桌面）
 
 ## 开发（`make dev-desktop`）
 
-与 danmo-work / danmo-inbox 相同：
+与 Danmo Work / Danmo Inbox 相同：
 
 ```bash
 make dev-desktop
@@ -41,8 +41,8 @@ make dev-desktop
 
 ```bash
 make pack-macos-desktop      # Darwin arm64 · MLX · .app/.dmg
-make pack-linux-desktop      # Linux x86_64 · CUDA · AppImage/.deb
-make pack-windows-desktop    # Windows x86_64 · CUDA · NSIS（须在 Windows 上跑）
+make pack-linux-desktop      # Linux x86_64 · CUDA · AppImage/.deb（本地）
+make pack-windows-desktop    # Windows x86_64 · CUDA · portable zip（须在 Windows 上跑）
 ```
 
 等价脚本（与 work/inbox 同名）：
@@ -59,13 +59,13 @@ make pack-windows-desktop    # Windows x86_64 · CUDA · NSIS（须在 Windows �
 |------|-----------------|------|
 | macOS Apple Silicon | **MLX**（无 torch） | `.app` / `.dmg` |
 | Linux x86_64 desktop | **CUDA**（无 MLX） | AppImage / `.deb` |
-| Windows x64 desktop | **CUDA**（无 MLX） | NSIS `*-setup.exe` |
+| Windows x64 desktop | **CUDA**（无 MLX） | portable `*-portable.zip`（CUDA sidecar 过大，不用 NSIS） |
 
-另可选无界面服务端包：`make pack-linux-server` / `make pack-windows-server`。
+另可选无界面服务端包：`make pack-linux-server` / `make pack-windows-server` → `out/dist/danmo-make-*-cuda-*`。
 
 `DANQING_PYINSTALLER_PROFILE`：`mlx`（macOS）或 `cuda`（Linux/Windows）。禁止在同一发布包中混装 MLX + CUDA。
 
-CI（`.github/workflows/release.yml`）在打 `v*` tag 时并行构建：macOS `.dmg`、Linux 桌面 AppImage/deb、Linux CUDA `.tar.gz`、Windows NSIS。
+CI（`.github/workflows/release.yml`）在打 `v*` tag 时并行构建：macOS `.dmg`、Linux CUDA server `.tar.gz`、Windows portable zip（Linux 桌面暂从 CI 省略）。
 
 ## 运行时环境变量（sidecar）
 

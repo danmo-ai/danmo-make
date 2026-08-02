@@ -8,6 +8,8 @@ Operational guide for contributors and coding agents. User-facing overview: [REA
 
 Danmo Make — plugin-style **image / video** generation on **MLX** (Apple Silicon) and **CUDA** (NVIDIA). Split stack: FastAPI + Vue 3 SPA + CLI + SQLite. Models are declared in JSON and implemented under `backend/engine/families/`.
 
+**Naming boundary:** product / UI / release artifacts use **Danmo Make** / `danmo-make-*`. Runtime and code identifiers stay **`danqing-*`** for upgrade compatibility — e.g. Bundle ID `com.danqing.studio.desktop`, env `DANQING_*`, sidecar `danqing-api`, registry engines `danqing-image|video|audio`, CLI `bin/danqing-*`, classes `DanQing*Engine`, frontend storage `dq-studio.*.v4`, design packages `@danqing/dq-*`. Do not rename those without a migration plan.
+
 ---
 
 ## Quick reference
@@ -310,7 +312,7 @@ make frontend-build      # → out/frontend/dist/
 make dev-desktop         # Tauri + Vite HMR (SKIP_BACKEND=1 for external API)
 make pack-macos-desktop  # macOS MLX .app/.dmg
 make pack-linux-desktop  # Linux CUDA AppImage/.deb
-make pack-windows-desktop # Windows CUDA NSIS (on Windows)
+make pack-windows-desktop # Windows CUDA portable zip (on Windows)
 make pack-linux-server   # Linux CUDA server tar.gz (headless)
 ```
 
@@ -337,9 +339,9 @@ make pack-linux-server   # Linux CUDA server tar.gz (headless)
 | `dev-desktop` | Tauri desktop dev (FastAPI + Vite HMR; aligned with danmo-work/inbox) |
 | `pack-macos-desktop` | macOS Tauri `.app` / `.dmg` (MLX sidecar) |
 | `pack-linux-desktop` | Linux Tauri AppImage / `.deb` (CUDA sidecar) |
-| `pack-windows-desktop` | Windows CUDA NSIS installer (venv + Tauri; on Windows) |
-| `pack-linux-server` | Linux CUDA `.tar.gz` headless server |
-| `pack-windows-server` | Windows CUDA `.zip` headless server (optional) |
+| `pack-windows-desktop` | Windows CUDA portable zip (venv + Tauri; on Windows) |
+| `pack-linux-server` | Linux CUDA `danmo-make-linux-cuda-*.tar.gz` headless server |
+| `pack-windows-server` | Windows CUDA `danmo-make-windows-cuda-*.zip` headless server |
 | `clean` | `scripts/clean_build.py` |
 
 Makefile pattern: `pack-<platform>-desktop` (Tauri) or `pack-<platform>-server` (archives). Steps: `venv` \| `sidecar` \| `shell` \| `archive`. Legacy aliases (`pack-windows-desktop-release`, `desktop-bundle`, …) remain.
@@ -403,8 +405,8 @@ Workflow: import → select node → Composer fills params → generate lands in
 - Artifacts: `out/frontend/dist/`, `out/sidecar/danqing-api/`, `out/desktop/bundle/`, `out/dist/*.tar.gz` (Linux server)
 - macOS: `DANQING_PYINSTALLER_PROFILE=mlx` (no torch / `*_cuda`)
 - Linux/Windows desktop: `DANQING_PYINSTALLER_PROFILE=cuda` (no MLX / `*_mlx`)
-- Headless server archives: `make pack-linux-server` / `pack-windows-server`
-- CI: `.github/workflows/release.yml` (macOS dmg + Linux AppImage/deb + Linux tar.gz + Windows NSIS)
+- Headless server archives: `make pack-linux-server` / `pack-windows-server` → `out/dist/danmo-make-*-cuda-*`
+- CI: `.github/workflows/release.yml` (macOS dmg + Linux CUDA tar.gz + Windows portable zip; Linux desktop omitted for now)
 - Sidecar env: `DANQING_HTTP_HOST`, `DANQING_HTTP_PORT`, `DANQING_USER_DATA_DIR`
 - New engine modules must be reachable from `scripts/build_sidecar.py` / PyInstaller hooks
 

@@ -394,7 +394,7 @@ class EvalRunner:
         skipped_models = list_skipped_eval_cases(profile=profile)
         cases = iter_runnable_eval_cases(profile=profile)
         print(f"\n{'=' * 60}")
-        print(f"DanQing Image Eval — profile={profile} runnable={len(cases)}")
+        print(f"Danmo Make Image Eval — profile={profile} runnable={len(cases)}")
         print(f"Data root: {resolve_benchmark_data_root()}")
         print(f"Judge: {JUDGE_MODEL_ID}")
         print(f"Gen subprocess MLX limit: {_bench_mlx_memory_gb()} GB")

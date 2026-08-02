@@ -158,7 +158,7 @@ fn spawn_production_bootstrap(app: &AppHandle) {
     let handle = app.clone();
     thread::spawn(move || {
         if let Err(err) = bootstrap_production(&handle) {
-            eprintln!("DanQing desktop bootstrap failed: {err}");
+            eprintln!("Danmo Make desktop bootstrap failed: {err}");
             let app = handle.clone();
             let _ = handle.run_on_main_thread(move || {
                 if let Some(win) = app.get_webview_window("main") {

@@ -321,11 +321,11 @@ pack-linux-server-sidecar: frontend-build
 
 pack-linux-server-archive: pack-linux-server-sidecar
 	RELEASE_VERSION=$(RELEASE_VERSION) $(PYTHON) scripts/package_linux_cuda_release.py --version $(RELEASE_VERSION)
-	@echo "pack-linux-server-archive -> $(OUT_DIR)/dist/danqing-studio-linux-cuda-x86_64-$(RELEASE_VERSION).tar.gz"
+	@echo "pack-linux-server-archive -> $(OUT_DIR)/dist/danmo-make-linux-cuda-x86_64-$(RELEASE_VERSION).tar.gz"
 
 pack-linux-server: pack-linux-server-venv pack-linux-server-archive
 
-# --- Windows desktop (CUDA sidecar + NSIS) — Windows x86_64 ---
+# --- Windows desktop (CUDA sidecar + portable zip) — Windows x86_64 ---
 
 pack-windows-venv:
 	@test -d .venv || py -3.11 -m venv .venv || python -m venv .venv
@@ -338,14 +338,14 @@ pack-windows-sidecar: frontend-build
 
 pack-windows-server-archive: pack-windows-sidecar
 	RELEASE_VERSION=$(RELEASE_VERSION) $(PYTHON) scripts/package_windows_cuda_release.py --version $(RELEASE_VERSION)
-	@echo "pack-windows-server-archive -> $(OUT_DIR)/dist/danqing-studio-windows-cuda-x86_64-$(RELEASE_VERSION).zip"
+	@echo "pack-windows-server-archive -> $(OUT_DIR)/dist/danmo-make-windows-cuda-x86_64-$(RELEASE_VERSION).zip"
 
 pack-windows-server: pack-windows-venv pack-windows-server-archive
 
 pack-windows-desktop-shell: pack-prereqs
 	$(PYTHON) scripts/tauri_build.py --platform windows
 
-# Full Windows desktop (venv + CUDA sidecar + NSIS) — primary release target
+# Full Windows desktop (venv + CUDA sidecar + portable zip) — primary release target
 pack-windows-desktop: pack-prereqs
 	@chmod +x scripts/*.sh
 	@RELEASE_VERSION=$(RELEASE_VERSION) TORCH_INDEX_URL=$(TORCH_INDEX_URL) ./scripts/pack_desktop_windows.sh
@@ -396,7 +396,7 @@ help:
 	@echo "Release desktop (aligned with danmo-work / danmo-inbox):"
 	@echo "  pack-macos-desktop     macOS arm64 · MLX · .app/.dmg"
 	@echo "  pack-linux-desktop     Linux x86_64 · CUDA · AppImage/.deb"
-	@echo "  pack-windows-desktop   Windows x86_64 · CUDA · NSIS (run on Windows)"
+	@echo "  pack-windows-desktop   Windows x86_64 · CUDA · portable zip (run on Windows)"
 	@echo ""
 	@echo "Release server (headless API archives):"
 	@echo "  pack-linux-server      Linux CUDA .tar.gz"

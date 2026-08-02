@@ -71,7 +71,7 @@ def build_macos() -> None:
     import platform
 
     if platform.machine().lower() != "arm64":
-        raise SystemExit("DanQing macOS desktop requires Apple Silicon (arm64).")
+        raise SystemExit("Danmo Make macOS desktop requires Apple Silicon (arm64).")
 
     bash = op.PROJECT_ROOT / "scripts" / "tauri_build_macos.sh"
     _run(["bash", str(bash)])
@@ -83,7 +83,7 @@ def build_linux() -> None:
     import platform
 
     if platform.machine().lower() not in ("x86_64", "amd64"):
-        raise SystemExit("DanQing Linux desktop currently supports x86_64 only.")
+        raise SystemExit("Danmo Make Linux desktop currently supports x86_64 only.")
 
     cargo_target = os.environ.get("CARGO_TARGET_DIR", str(op.DESKTOP_CARGO_TARGET))
     os.environ["CARGO_TARGET_DIR"] = cargo_target
@@ -135,7 +135,7 @@ def build_windows() -> None:
     npm = _npm()
     _run([npm, "install"], cwd=desktop)
     # CUDA sidecar is ~2GB — NSIS makensis hits mmap Internal compiler error #12345.
-    # Build the shell only, then ship a portable zip (see package_windows_desktop_zip.py).
+    # Build the shell only (--no-bundle; Windows CLI does not accept -b none), then zip.
     _run(
         [
             npm,
@@ -145,8 +145,7 @@ def build_windows() -> None:
             "--",
             "--target",
             "x86_64-pc-windows-msvc",
-            "-b",
-            "none",
+            "--no-bundle",
         ],
         cwd=desktop,
     )

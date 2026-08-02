@@ -23,10 +23,10 @@ jobs:
     name: macOS desktop (MLX)
     runs-on: macos-latest
     steps:
-      - name: Checkout Studio
+      - name: Checkout
         uses: actions/checkout@v6
         with:
-          path: danqing-studio
+          path: danmo-make
 
       - name: Checkout dq-ui
         uses: actions/checkout@v6
@@ -54,7 +54,7 @@ jobs:
         run: rustup target add aarch64-apple-darwin
 
       - name: Create venv and install dependencies
-        working-directory: danqing-studio
+        working-directory: danmo-make
         run: |
           python3 -m venv .venv
           source .venv/bin/activate
@@ -63,7 +63,7 @@ jobs:
           pip install pyinstaller
 
       - name: Set release version
-        working-directory: danqing-studio
+        working-directory: danmo-make
         run: |
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
@@ -75,16 +75,16 @@ jobs:
 
       - name: Set desktop version from tag
         if: startsWith(github.ref, 'refs/tags/')
-        working-directory: danqing-studio
+        working-directory: danmo-make
         run: python3 scripts/set_desktop_version.py "${GITHUB_REF_NAME#v}"
 
       - name: Set desktop version (manual dispatch)
         if: github.event_name == 'workflow_dispatch' && inputs.version != ''
-        working-directory: danqing-studio
+        working-directory: danmo-make
         run: python3 scripts/set_desktop_version.py "${{ inputs.version }}"
 
       - name: Build desktop bundle (MLX sidecar)
-        working-directory: danqing-studio
+        working-directory: danmo-make
         env:
           DANQING_PYINSTALLER_PROFILE: mlx
         run: |
@@ -92,7 +92,7 @@ jobs:
           make pack-macos-desktop
 
       - name: Verify DMG was produced
-        working-directory: danqing-studio
+        working-directory: danmo-make
         run: |
           ls -la out/desktop/bundle/
           ls -la out/desktop/bundle/dmg/
@@ -103,18 +103,18 @@ jobs:
         with:
           name: danqing-desktop-macos
           path: |
-            danqing-studio/out/desktop/bundle/dmg/*.dmg
-            danqing-studio/out/desktop/bundle/macos/*.app
+            danmo-make/out/desktop/bundle/dmg/*.dmg
+            danmo-make/out/desktop/bundle/macos/*.app
           if-no-files-found: error
 
   build-linux-cuda:
     name: Linux CUDA server (tar.gz)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Studio
+      - name: Checkout
         uses: actions/checkout@v6
         with:
-          path: danqing-studio
+          path: danmo-make
 
       - name: Checkout dq-ui
         uses: actions/checkout@v6
@@ -139,7 +139,7 @@ jobs:
         working-directory: ${{ github.workspace }}/dq-ui
 
       - name: Set release version
-        working-directory: danqing-studio
+        working-directory: danmo-make
         run: |
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
@@ -150,7 +150,7 @@ jobs:
           fi
 
       - name: Create venv and install CUDA dependencies
-        working-directory: danqing-studio
+        working-directory: danmo-make
         env:
           TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
         run: |
@@ -159,7 +159,7 @@ jobs:
           make pack-linux-server-venv TORCH_INDEX_URL="$TORCH_INDEX_URL"
 
       - name: Build Linux CUDA tar.gz
-        working-directory: danqing-studio
+        working-directory: danmo-make
         env:
           RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
           DANQING_PYINSTALLER_PROFILE: cuda
@@ -168,16 +168,16 @@ jobs:
           make pack-linux-server-archive RELEASE_VERSION="$RELEASE_VERSION"
 
       - name: Verify tar.gz was produced
-        working-directory: danqing-studio
+        working-directory: danmo-make
         run: |
           ls -la out/dist/
-          test -f "out/dist/danqing-studio-linux-cuda-x86_64-${RELEASE_VERSION}.tar.gz"
+          test -f "out/dist/danmo-make-linux-cuda-x86_64-${RELEASE_VERSION}.tar.gz"
 
       - name: Upload Linux CUDA artifact
         uses: actions/upload-artifact@v6
         with:
           name: danqing-linux-cuda
-          path: danqing-studio/out/dist/danqing-studio-linux-cuda-x86_64-*.tar.gz
+          path: danmo-make/out/dist/danmo-make-linux-cuda-x86_64-*.tar.gz
           if-no-files-found: error
 
   build-windows-desktop:
@@ -187,10 +187,10 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Checkout Studio
+      - name: Checkout
         uses: actions/checkout@v6
         with:
-          path: danqing-studio
+          path: danmo-make
 
       - name: Checkout dq-ui
         uses: actions/checkout@v6
@@ -224,7 +224,7 @@ jobs:
         run: test -f dq-ui/packages/ui/package.json
 
       - name: Set release version
-        working-directory: danqing-studio
+        working-directory: danmo-make
         run: |
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
@@ -236,14 +236,14 @@ jobs:
 
       # Git Bash breaks bare `pip install --upgrade pip`; use python -m pip (pwsh).
       - name: Create Python venv
-        working-directory: danqing-studio
+        working-directory: danmo-make
         shell: pwsh
         run: |
           & "${{ steps.setup-python.outputs.python-path }}" -m venv .venv
           .\.venv\Scripts\python.exe -V
 
       - name: Install CUDA Python dependencies
-        working-directory: danqing-studio
+        working-directory: danmo-make
         timeout-minutes: 45
         shell: pwsh
         env:
@@ -256,7 +256,7 @@ jobs:
 
       - name: Set desktop version from tag
         if: startsWith(github.ref, 'refs/tags/')
-        working-directory: danqing-studio
+        working-directory: danmo-make
         shell: pwsh
         run: |
           .\.venv\Scripts\Activate.ps1
@@ -264,21 +264,21 @@ jobs:
 
       - name: Set desktop version (manual dispatch)
         if: github.event_name == 'workflow_dispatch' && inputs.version != ''
-        working-directory: danqing-studio
+        working-directory: danmo-make
         shell: pwsh
         run: |
           .\.venv\Scripts\Activate.ps1
           python scripts/set_desktop_version.py "${{ inputs.version }}"
 
       - name: Build frontend
-        working-directory: danqing-studio/frontend
+        working-directory: danmo-make/frontend
         shell: pwsh
         run: |
           npm install --no-audit --no-fund
           npm run build
 
       - name: Build Windows desktop (CUDA sidecar + portable zip)
-        working-directory: danqing-studio
+        working-directory: danmo-make
         env:
           DANQING_PYINSTALLER_PROFILE: cuda
           RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
@@ -289,7 +289,7 @@ jobs:
           python scripts/tauri_build.py --platform windows
 
       - name: Verify portable zip was produced
-        working-directory: danqing-studio
+        working-directory: danmo-make
         shell: pwsh
         run: |
           Get-ChildItem out/desktop/bundle/zip -ErrorAction SilentlyContinue | Format-Table Name,Length
@@ -302,7 +302,7 @@ jobs:
         with:
           name: danqing-desktop-windows
           path: |
-            danqing-studio/out/desktop/bundle/zip/*-portable.zip
+            danmo-make/out/desktop/bundle/zip/*-portable.zip
           if-no-files-found: error
           compression-level: 0
 

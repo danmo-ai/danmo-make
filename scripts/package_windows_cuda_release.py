@@ -94,7 +94,7 @@ def package(*, version: str | None = None) -> Path:
     dist_root = op.OUT_ROOT / "dist"
     dist_root.mkdir(parents=True, exist_ok=True)
 
-    bundle_name = f"danqing-studio-windows-cuda-x86_64-{ver}"
+    bundle_name = f"danmo-make-windows-cuda-x86_64-{ver}"
     staging = dist_root / bundle_name
     sidecar = op.SIDECAR_DIR
 

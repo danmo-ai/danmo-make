@@ -16,7 +16,7 @@ export DQ_DESKTOP_BUNDLE="$DQ_OUT/desktop/bundle"
 export DQ_DESKTOP_CARGO="$DQ_OUT/desktop/cargo"
 export DQ_RELEASE_DIST="$DQ_OUT/dist"
 export DQ_RUN_DIR="$DQ_OUT/run"
-export DQ_PROJECT="${DQ_PROJECT:-danqing-studio}"
+export DQ_PROJECT="${DQ_PROJECT:-danmo-make}"
 # Port convention: backend 78xx / frontend 58xx (same suffix per project)
 export DQ_BACKEND_PORT="${DQ_BACKEND_PORT:-7800}"
 export DQ_FRONTEND_PORT="${DQ_FRONTEND_PORT:-5800}"

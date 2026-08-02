@@ -10,7 +10,7 @@ from tests.benchmark.runner import list_eval_case_ids, run_eval
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="DanQing image eval (L1 integrity + L2 PickScore)")
+    parser = argparse.ArgumentParser(description="Danmo Make image eval (L1 integrity + L2 PickScore)")
     sub = parser.add_subparsers(dest="suite", required=True)
 
     dl = sub.add_parser("download-judge", help="Download PickScore judge via ModelScope (魔塔)")

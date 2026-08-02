@@ -178,7 +178,7 @@ def _setup_dependencies():
         raise RuntimeError("No GPU backend available (need MLX on Apple Silicon or CUDA on NVIDIA)")
     apply_memory_settings(app_settings, runtimes, shared_cache)
 
-    # v4 丹青引擎
+    # v4 Danmo Make engines
     from backend.engine.registry import bootstrap_family_plugins
 
     bootstrap_family_plugins()
@@ -219,7 +219,7 @@ def _setup_dependencies():
     engine_registry.register(danqing_audio)
     engine_registry.register_lora_train(danqing_lora_train)
     engine_registry.register_tools(danqing_tools)
-    _logger.info("DanQing engines registered: image=%s video=%s audio=%s",
+    _logger.info("Danmo Make engines registered: image=%s video=%s audio=%s",
                  danqing_image.is_available(), danqing_video.is_available(), danqing_audio.is_available())
 
     # 持久化层

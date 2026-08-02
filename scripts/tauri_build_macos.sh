@@ -103,7 +103,7 @@ if APP=$(find "$ROOT/out/desktop/bundle" -name "*.app" -print -quit); then
   1. 将 Danmo Make.app 拖入「应用程序」文件夹
   2. 双击本 DMG 中的「修复并打开.command」脚本
   3. 如脚本无法执行，请先打开终端运行：
-     xattr -cr /Volumes/DanQing\ Studio
+     xattr -cr "/Volumes/Danmo Make"
      然后重新双击脚本
 
 方法二（右键打开）：
@@ -113,8 +113,8 @@ if APP=$(find "$ROOT/out/desktop/bundle" -name "*.app" -print -quit); then
 
 方法三（终端命令）：
   打开终端，执行：
-  xattr -cr /Applications/DanQing\ Studio.app
-  open /Applications/DanQing\ Studio.app
+  xattr -cr "/Applications/Danmo Make.app"
+  open "/Applications/Danmo Make.app"
 README_EOF
 
   # One-click fix script
