@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +23,19 @@ def _python() -> str:
     if venv_py.is_file():
         return str(venv_py)
     return sys.executable
+
+
+def _npm() -> str:
+    """Resolve npm for subprocess (Windows needs npm.cmd; bare 'npm' is not CreateProcess-able)."""
+    if sys.platform == "win32":
+        found = shutil.which("npm.cmd") or shutil.which("npm")
+        if not found:
+            raise RuntimeError("npm not found on PATH (install Node.js / run actions/setup-node)")
+        return found
+    found = shutil.which("npm")
+    if not found:
+        raise RuntimeError("npm not found on PATH")
+    return found
 
 
 def _run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
@@ -81,11 +95,12 @@ def build_linux() -> None:
     _run(["rustup", "target", "add", "x86_64-unknown-linux-gnu"])
 
     desktop = op.PROJECT_ROOT / "desktop"
-    _run(["npm", "install"], cwd=desktop)
+    npm = _npm()
+    _run([npm, "install"], cwd=desktop)
     # AppImage + deb (matches tauri.linux.conf.json / danmo-work)
     _run(
         [
-            "npm",
+            npm,
             "exec",
             "tauri",
             "build",
@@ -117,12 +132,13 @@ def build_windows() -> None:
     _run(["rustup", "target", "add", "x86_64-pc-windows-msvc"])
 
     desktop = op.PROJECT_ROOT / "desktop"
-    _run(["npm", "install"], cwd=desktop)
+    npm = _npm()
+    _run([npm, "install"], cwd=desktop)
     # Explicit -b nsis (same as DanQing-Teams): without a bundle type flag,
     # tauri build may only compile the .exe and skip the NSIS installer tree.
     _run(
         [
-            "npm",
+            npm,
             "exec",
             "tauri",
             "build",
