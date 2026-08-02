@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""danqing-runtime-setup — CUDA thin runtime status / repair / reinstall."""
+
+from __future__ import annotations
+
+import os
+import runpy
+import sys
+from pathlib import Path
+
+_HERE = Path(__file__).resolve()
+
+
+def _find_bootstrap() -> Path:
+    env_app = os.environ.get("DANQING_APP_ROOT", "").strip()
+    candidates = []
+    if env_app:
+        candidates.append(Path(env_app) / "scripts" / "runtime_bootstrap.py")
+    # Release tree: ./danqing-runtime-setup next to runtime/
+    root = _HERE.parent
+    candidates.append(root / "runtime" / "app" / "scripts" / "runtime_bootstrap.py")
+    # Repo: bin/danqing-runtime-setup
+    candidates.append(root.parent / "scripts" / "runtime_bootstrap.py")
+    for path in candidates:
+        if path.is_file():
+            return path
+    raise SystemExit(
+        "Cannot find scripts/runtime_bootstrap.py. Set DANQING_APP_ROOT or run from a thin release tree."
+    )
+
+
+def main() -> None:
+    bootstrap = _find_bootstrap()
+    # Default data / python paths for release layout
+    release_root = bootstrap.parents[2] if bootstrap.name == "runtime_bootstrap.py" else None
+    # bootstrap at runtime/app/scripts/runtime_bootstrap.py → parents[2]=runtime, parents[3]=bundle root
+    if (bootstrap.parent.parent.name == "app") and (bootstrap.parent.parent.parent.name == "runtime"):
+        bundle = bootstrap.parents[3]
+        os.environ.setdefault("DANQING_APP_ROOT", str(bootstrap.parents[1]))
+        os.environ.setdefault("DANQING_PORTABLE_PYTHON", str(bundle / "runtime" / "python"))
+        if sys.platform == "win32":
+            os.environ.setdefault(
+                "DANQING_USER_DATA_DIR",
+                str(Path(os.environ.get("USERPROFILE", str(Path.home()))) / "danqing-data"),
+            )
+        else:
+            os.environ.setdefault("DANQING_USER_DATA_DIR", str(Path.home() / "danqing-data"))
+    elif (_HERE.parent.parent / "scripts" / "runtime_bootstrap.py").is_file():
+        repo = _HERE.parent.parent
+        os.environ.setdefault("DANQING_APP_ROOT", str(repo))
+        # Dev: use system/venv python as "portable" only if explicit; otherwise require portable tree
+        portable = repo / "out" / "runtime" / "python"
+        if portable.is_dir():
+            os.environ.setdefault("DANQING_PORTABLE_PYTHON", str(portable))
+    sys.argv[0] = str(bootstrap)
+    runpy.run_path(str(bootstrap), run_name="__main__")
+
+
+if __name__ == "__main__":
+    main()

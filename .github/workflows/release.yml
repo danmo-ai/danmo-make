@@ -1,6 +1,6 @@
-# macOS MLX desktop + Linux CUDA server tar.gz + Windows CUDA desktop (portable zip).
+# macOS MLX desktop + Linux CUDA thin server tar.gz + Windows CUDA thin desktop zip.
 # Linux desktop (AppImage/deb) temporarily omitted from CI (local: make pack-linux-desktop).
-# Windows uses zip (not NSIS): CUDA sidecar exceeds NSIS ~2GB mmap limit.
+# Win/Linux CUDA thin packs omit torch; first run downloads wheels (console/UI progress).
 name: Build Release Artifacts
 
 on:
@@ -149,20 +149,17 @@ jobs:
             echo "RELEASE_VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
           fi
 
-      - name: Create venv and install CUDA dependencies
+      - name: Create build venv
         working-directory: danmo-make
-        env:
-          TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
         run: |
           python3 -m venv .venv
           source .venv/bin/activate
-          make pack-linux-server-venv TORCH_INDEX_URL="$TORCH_INDEX_URL"
+          python -m pip install --upgrade pip
 
-      - name: Build Linux CUDA tar.gz
+      - name: Build Linux CUDA thin tar.gz
         working-directory: danmo-make
         env:
           RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
-          DANQING_PYINSTALLER_PROFILE: cuda
         run: |
           source .venv/bin/activate
           make pack-linux-server-archive RELEASE_VERSION="$RELEASE_VERSION"
@@ -242,17 +239,12 @@ jobs:
           & "${{ steps.setup-python.outputs.python-path }}" -m venv .venv
           .\.venv\Scripts\python.exe -V
 
-      - name: Install CUDA Python dependencies
+      - name: Install build tooling (thin pack — no torch)
         working-directory: danmo-make
-        timeout-minutes: 45
         shell: pwsh
-        env:
-          TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
         run: |
           .\.venv\Scripts\Activate.ps1
           python -m pip install --upgrade pip
-          python -m pip install torch torchvision --index-url $env:TORCH_INDEX_URL
-          python -m pip install -r requirements-cuda.txt pyinstaller
 
       - name: Set desktop version from tag
         if: startsWith(github.ref, 'refs/tags/')
@@ -277,15 +269,13 @@ jobs:
           npm install --no-audit --no-fund
           npm run build
 
-      - name: Build Windows desktop (CUDA sidecar + portable zip)
+      - name: Build Windows desktop (thin CUDA runtime + portable zip)
         working-directory: danmo-make
         env:
-          DANQING_PYINSTALLER_PROFILE: cuda
           RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
         shell: pwsh
         run: |
           .\.venv\Scripts\Activate.ps1
-          python scripts/build_sidecar.py
           python scripts/tauri_build.py --platform windows
 
       - name: Verify portable zip was produced

@@ -9,8 +9,9 @@
 	pack-prereqs \
 	pack-macos-desktop-sidecar pack-macos-desktop-shell pack-macos-desktop \
 	pack-linux-desktop-venv pack-linux-desktop-sidecar pack-linux-desktop-shell pack-linux-desktop \
-	pack-linux-server-venv pack-linux-server-sidecar pack-linux-server-archive pack-linux-server \
-	pack-windows-venv pack-windows-sidecar \
+	pack-linux-server-venv pack-linux-server-runtime pack-linux-server-sidecar pack-linux-server-archive pack-linux-server \
+	pack-linux-server-legacy pack-linux-server-venv-full \
+	pack-windows-venv pack-windows-venv-full pack-windows-runtime pack-windows-sidecar \
 	pack-windows-server-archive pack-windows-server \
 	pack-windows-desktop-shell pack-windows-desktop pack-windows-desktop-release \
 	desktop-prereqs desktop-sidecar desktop-tauri desktop-bundle \
@@ -308,26 +309,44 @@ pack-linux-desktop: pack-prereqs
 	@chmod +x scripts/*.sh
 	@RELEASE_VERSION=$(RELEASE_VERSION) TORCH_INDEX_URL=$(TORCH_INDEX_URL) ./scripts/pack_desktop_linux.sh
 
-# --- Linux server (CUDA sidecar only, headless tar.gz) — Linux x86_64 ---
+# --- Linux server (thin CUDA runtime + first-run bootstrap) — Linux x86_64 ---
 
 pack-linux-server-venv:
+	@test -d .venv || python3.11 -m venv .venv || python3 -m venv .venv
+	$(PYTHON) -m pip install --upgrade pip
+	@echo "Thin server packs do not need torch in the build venv."
+
+pack-linux-server-runtime: frontend-build
+	$(PYTHON) scripts/stage_cuda_runtime.py --platform linux-x86_64
+
+pack-linux-server-sidecar: frontend-build
+	DANQING_PYINSTALLER_PROFILE=cuda $(PYTHON) scripts/build_sidecar.py
+
+pack-linux-server-archive: pack-linux-server-runtime
+	RELEASE_VERSION=$(RELEASE_VERSION) $(PYTHON) scripts/package_linux_cuda_release.py --version $(RELEASE_VERSION)
+	@echo "pack-linux-server-archive -> $(OUT_DIR)/dist/danmo-make-linux-cuda-x86_64-$(RELEASE_VERSION).tar.gz"
+
+pack-linux-server: pack-linux-server-archive
+
+# Legacy offline PyInstaller server (optional; large)
+pack-linux-server-legacy: pack-linux-server-venv-full pack-linux-server-sidecar
+	RELEASE_VERSION=$(RELEASE_VERSION) $(PYTHON) scripts/package_linux_cuda_release.py --version $(RELEASE_VERSION) --legacy-sidecar
+
+pack-linux-server-venv-full:
 	@test -d .venv || python3.11 -m venv .venv || python3 -m venv .venv
 	$(PYTHON) -m pip install --upgrade pip
 	$(PYTHON) -m pip install torch torchvision --index-url $(TORCH_INDEX_URL)
 	$(PYTHON) -m pip install -r requirements-cuda.txt pyinstaller
 
-pack-linux-server-sidecar: frontend-build
-	DANQING_PYINSTALLER_PROFILE=cuda $(PYTHON) scripts/build_sidecar.py
-
-pack-linux-server-archive: pack-linux-server-sidecar
-	RELEASE_VERSION=$(RELEASE_VERSION) $(PYTHON) scripts/package_linux_cuda_release.py --version $(RELEASE_VERSION)
-	@echo "pack-linux-server-archive -> $(OUT_DIR)/dist/danmo-make-linux-cuda-x86_64-$(RELEASE_VERSION).tar.gz"
-
-pack-linux-server: pack-linux-server-venv pack-linux-server-archive
-
-# --- Windows desktop (CUDA sidecar + portable zip) — Windows x86_64 ---
+# --- Windows desktop (thin CUDA runtime + portable zip) — Windows x86_64 ---
 
 pack-windows-venv:
+	@test -d .venv || py -3.11 -m venv .venv || python -m venv .venv
+	$(PYTHON) -m pip install --upgrade pip
+	@echo "Thin desktop packs do not need torch in the build venv (only tooling)."
+	$(PYTHON) -m pip install --upgrade pip
+
+pack-windows-venv-full:
 	@test -d .venv || py -3.11 -m venv .venv || python -m venv .venv
 	$(PYTHON) -m pip install --upgrade pip
 	$(PYTHON) -m pip install torch torchvision --index-url $(TORCH_INDEX_URL)
@@ -336,19 +355,22 @@ pack-windows-venv:
 pack-windows-sidecar: frontend-build
 	DANQING_PYINSTALLER_PROFILE=cuda $(PYTHON) scripts/build_sidecar.py
 
-pack-windows-server-archive: pack-windows-sidecar
+pack-windows-server-archive: pack-windows-runtime
 	RELEASE_VERSION=$(RELEASE_VERSION) $(PYTHON) scripts/package_windows_cuda_release.py --version $(RELEASE_VERSION)
 	@echo "pack-windows-server-archive -> $(OUT_DIR)/dist/danmo-make-windows-cuda-x86_64-$(RELEASE_VERSION).zip"
 
-pack-windows-server: pack-windows-venv pack-windows-server-archive
+pack-windows-runtime: frontend-build
+	$(PYTHON) scripts/stage_cuda_runtime.py --platform windows-x86_64
+
+pack-windows-server: pack-windows-server-archive
 
 pack-windows-desktop-shell: pack-prereqs
 	$(PYTHON) scripts/tauri_build.py --platform windows
 
-# Full Windows desktop (venv + CUDA sidecar + portable zip) — primary release target
+# Full Windows desktop (thin runtime + portable zip) — primary release target
 pack-windows-desktop: pack-prereqs
 	@chmod +x scripts/*.sh
-	@RELEASE_VERSION=$(RELEASE_VERSION) TORCH_INDEX_URL=$(TORCH_INDEX_URL) ./scripts/pack_desktop_windows.sh
+	@RELEASE_VERSION=$(RELEASE_VERSION) ./scripts/pack_desktop_windows.sh
 
 # Alias kept for CI / older docs
 pack-windows-desktop-release: pack-windows-desktop
@@ -396,10 +418,10 @@ help:
 	@echo "Release desktop (aligned with danmo-work / danmo-inbox):"
 	@echo "  pack-macos-desktop     macOS arm64 · MLX · .app/.dmg"
 	@echo "  pack-linux-desktop     Linux x86_64 · CUDA · AppImage/.deb"
-	@echo "  pack-windows-desktop   Windows x86_64 · CUDA · portable zip (run on Windows)"
+	@echo "  pack-windows-desktop   Windows x86_64 · CUDA thin · portable zip (run on Windows)"
 	@echo ""
-	@echo "Release server (headless API archives):"
-	@echo "  pack-linux-server      Linux CUDA .tar.gz"
+	@echo "Release server (headless thin archives; first run downloads torch):"
+	@echo "  pack-linux-server      Linux CUDA thin .tar.gz"
 	@echo "  pack-windows-server    Windows CUDA .zip (optional)"
 	@echo ""
 	@echo "Benchmark: bench-setup | bench-eval | bench-eval-smoke | calibrate-teacache-* | chapter-parse-bench"

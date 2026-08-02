@@ -338,10 +338,10 @@ make pack-linux-server   # Linux CUDA server tar.gz (headless)
 | `frontend-install` / `frontend-dev` / `frontend-build` / `frontend-typecheck` / `frontend-canvas-unit` | frontend |
 | `dev-desktop` | Tauri desktop dev (FastAPI + Vite HMR; aligned with danmo-work/inbox) |
 | `pack-macos-desktop` | macOS Tauri `.app` / `.dmg` (MLX sidecar) |
-| `pack-linux-desktop` | Linux Tauri AppImage / `.deb` (CUDA sidecar) |
-| `pack-windows-desktop` | Windows CUDA portable zip (venv + Tauri; on Windows) |
-| `pack-linux-server` | Linux CUDA `danmo-make-linux-cuda-*.tar.gz` headless server |
-| `pack-windows-server` | Windows CUDA `danmo-make-windows-cuda-*.zip` headless server |
+| `pack-linux-desktop` | Linux Tauri AppImage / `.deb` (CUDA; thin runtime preferred) |
+| `pack-windows-desktop` | Windows CUDA thin portable zip (no torch in zip; first-run install) |
+| `pack-linux-server` | Linux CUDA thin `danmo-make-linux-cuda-*.tar.gz` (console bootstrap on first `run.sh`) |
+| `pack-windows-server` | Windows CUDA thin server zip (`run.bat` auto-bootstrap) |
 | `clean` | `scripts/clean_build.py` |
 
 Makefile pattern: `pack-<platform>-desktop` (Tauri) or `pack-<platform>-server` (archives). Steps: `venv` \| `sidecar` \| `shell` \| `archive`. Legacy aliases (`pack-windows-desktop-release`, `desktop-bundle`, …) remain.
@@ -405,8 +405,9 @@ Workflow: import → select node → Composer fills params → generate lands in
 - Artifacts: `out/frontend/dist/`, `out/sidecar/danqing-api/`, `out/desktop/bundle/`, `out/dist/*.tar.gz` (Linux server)
 - macOS: `DANQING_PYINSTALLER_PROFILE=mlx` (no torch / `*_cuda`)
 - Linux/Windows desktop: `DANQING_PYINSTALLER_PROFILE=cuda` (no MLX / `*_mlx`)
-- Headless server archives: `make pack-linux-server` / `pack-windows-server` → `out/dist/danmo-make-*-cuda-*`
-- CI: `.github/workflows/release.yml` (macOS dmg + Linux CUDA tar.gz + Windows portable zip; Linux desktop omitted for now)
+- Headless CUDA thin archives: `make pack-linux-server` / `pack-windows-server` → `out/dist/danmo-make-*-cuda-*` (no torch; first start installs via `scripts/runtime_bootstrap.py`)
+- Repair/reinstall: desktop Settings → Runtime; server `./run.sh --repair-runtime` / `bin/danqing-runtime-setup`
+- CI: `.github/workflows/release.yml` (macOS dmg + Linux/Windows CUDA thin packs; Linux desktop omitted for now)
 - Sidecar env: `DANQING_HTTP_HOST`, `DANQING_HTTP_PORT`, `DANQING_USER_DATA_DIR`
 - New engine modules must be reachable from `scripts/build_sidecar.py` / PyInstaller hooks
 

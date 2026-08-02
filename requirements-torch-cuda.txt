@@ -1,0 +1,11 @@
+# PyTorch CUDA wheels — install BEFORE requirements-cuda.txt.
+# Default index: cu124 (override with DANQING_TORCH_INDEX_URL / --torch-index).
+#
+#   pip install -r requirements-torch-cuda.txt --index-url https://download.pytorch.org/whl/cu124
+#
+# China mirrors (examples):
+#   tuna:   https://mirrors.tuna.tsinghua.edu.cn/pytorch-wheels/cu124
+#   aliyun: https://mirrors.aliyun.com/pytorch-wheels/cu124
+
+torch
+torchvision

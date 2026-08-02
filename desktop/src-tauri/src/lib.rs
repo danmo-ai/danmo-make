@@ -1,8 +1,11 @@
+mod runtime;
+
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+#[cfg(not(debug_assertions))]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::thread;
@@ -12,6 +15,7 @@ use tauri::{AppHandle, Manager, RunEvent, Url};
 
 pub struct ApiProcess(pub Mutex<Option<Child>>);
 
+#[cfg(not(debug_assertions))]
 static BOOTSTRAP_STARTED: AtomicBool = AtomicBool::new(false);
 
 fn sidecar_exe(app: &AppHandle) -> Result<PathBuf, String> {
@@ -32,6 +36,7 @@ fn sidecar_exe(app: &AppHandle) -> Result<PathBuf, String> {
     ))
 }
 
+#[cfg(not(debug_assertions))]
 fn wait_for_main_window(app: &AppHandle) -> Result<(), String> {
     for _ in 0..100 {
         if app.get_webview_window("main").is_some() {
@@ -47,7 +52,15 @@ fn wait_for_health(port: u16, child: &mut Child, log_path: &Path) -> Result<(), 
     for _ in 0..120 {
         if let Ok(Some(status)) = child.try_wait() {
             let log_tail = std::fs::read_to_string(log_path).unwrap_or_default();
-            let tail: String = log_tail.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+            let tail: String = log_tail
+                .lines()
+                .rev()
+                .take(12)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
             return Err(format!(
                 "API process exited with status {status} before health check passed.\nLog: {}\n---\n{tail}",
                 log_path.display()
@@ -62,8 +75,85 @@ fn wait_for_health(port: u16, child: &mut Child, log_path: &Path) -> Result<(), 
     Err(format!(
         "Timed out waiting for API at {url}\nLog: {}\n---\n{}",
         log_path.display(),
-        log_tail.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")
+        log_tail
+            .lines()
+            .rev()
+            .take(12)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n")
     ))
+}
+
+fn stop_api_process(app: &AppHandle) -> Result<(), String> {
+    let api = app.state::<ApiProcess>();
+    let mut g = api.0.lock().map_err(|_| "api process lock poisoned".to_string())?;
+    if let Some(mut c) = g.take() {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+    Ok(())
+}
+
+fn start_thin_api(app: &AppHandle) -> Result<u16, String> {
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    drop(listener);
+
+    let user_dir = runtime::server_data_dir(app)?;
+    let log_dir = user_dir.join("logs");
+    std::fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
+    let log_path = log_dir.join("sidecar.log");
+    let mut log_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&log_path)
+        .map_err(|e| format!("open {}: {e}", log_path.display()))?;
+    let _ = writeln!(log_file, "Starting thin runtime API on port {port}…");
+
+    let py = runtime::venv_python(app)?;
+    let app_root = runtime::app_root(app)?;
+    let mut cmd = Command::new(&py);
+    cmd.current_dir(&app_root)
+        .arg("-m")
+        .arg("uvicorn")
+        .arg("backend.main:app")
+        .arg("--host")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg(port.to_string())
+        .env("DANQING_HTTP_HOST", "127.0.0.1")
+        .env("DANQING_HTTP_PORT", port.to_string())
+        .env("DANQING_USER_DATA_DIR", user_dir.as_os_str())
+        .env("PYTHONPATH", app_root.as_os_str());
+
+    let mut child = cmd
+        .stdout(Stdio::from(
+            File::options()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .map_err(|e| e.to_string())?,
+        ))
+        .stderr(Stdio::from(
+            File::options()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .map_err(|e| e.to_string())?,
+        ))
+        .spawn()
+        .map_err(|e| format!("spawn {}: {e}", py.display()))?;
+
+    wait_for_health(port, &mut child, &log_path)?;
+
+    let api = app.state::<ApiProcess>();
+    *api.0.lock().map_err(|_| "api process lock poisoned".to_string())? = Some(child);
+
+    Ok(port)
 }
 
 fn start_sidecar(app: &AppHandle) -> Result<u16, String> {
@@ -142,12 +232,31 @@ fn navigate_main(app: &AppHandle, port: u16) -> Result<(), String> {
     Ok(())
 }
 
+fn navigate_runtime_setup(app: &AppHandle) -> Result<(), String> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "missing webview window 'main'".to_string())?;
+    // loader/frontendDist ships runtime-setup.html next to index.html
+    win.eval("window.location.replace('runtime-setup.html');")
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
 fn bootstrap_production(app: &AppHandle) -> Result<(), String> {
     wait_for_main_window(app)?;
+    if runtime::is_thin_runtime(app) {
+        if !runtime::env_ready(app) {
+            return navigate_runtime_setup(app);
+        }
+        let port = start_thin_api(app)?;
+        return navigate_main(app, port);
+    }
     let port = start_sidecar(app)?;
     navigate_main(app, port)
 }
 
+#[cfg(not(debug_assertions))]
 fn spawn_production_bootstrap(app: &AppHandle) {
     if BOOTSTRAP_STARTED
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -166,10 +275,7 @@ fn spawn_production_bootstrap(app: &AppHandle) {
                         "<html><body style=\"font-family:system-ui;background:#1a1a2e;color:#eaeaea;padding:2rem\"><h2>Failed to start API</h2><pre style=\"white-space:pre-wrap;opacity:0.9\">{}</pre></body></html>",
                         html_escape(&err)
                     );
-                    let data_url = format!(
-                        "data:text/html;charset=utf-8,{}",
-                        pct_encode(&html)
-                    );
+                    let data_url = format!("data:text/html;charset=utf-8,{}", pct_encode(&html));
                     if let Ok(url) = Url::parse(&data_url) {
                         let _ = win.navigate(url);
                     }
@@ -179,12 +285,14 @@ fn spawn_production_bootstrap(app: &AppHandle) {
     });
 }
 
+#[cfg(not(debug_assertions))]
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
 
+#[cfg(not(debug_assertions))]
 fn pct_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -204,21 +312,80 @@ fn apply_macos_shell(app: &AppHandle) {
         return;
     };
     use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
-    if let Err(err) = apply_vibrancy(&win, NSVisualEffectMaterial::UnderWindowBackground, None, None) {
+    if let Err(err) = apply_vibrancy(&win, NSVisualEffectMaterial::UnderWindowBackground, None, None)
+    {
         eprintln!("macOS window vibrancy failed: {err}");
     }
-    // Match default product theme flash (`dq-mac` / dark) until the webview syncs.
     if let Err(err) = win.set_theme(Some(tauri::Theme::Dark)) {
         eprintln!("macOS window theme failed: {err}");
     }
-    let _ = win.eval(
-        r#"document.documentElement.classList.add('dq-tauri-macos');"#,
-    );
+    let _ = win.eval(r#"document.documentElement.classList.add('dq-tauri-macos');"#);
+}
+
+#[tauri::command]
+fn runtime_status(app: AppHandle) -> runtime::RuntimeStatusDto {
+    runtime::runtime_status(&app)
+}
+
+#[tauri::command]
+fn runtime_set_mirror(app: AppHandle, mirror: String) -> Result<(), String> {
+    runtime::set_mirror(&app, &mirror)
+}
+
+#[tauri::command]
+fn runtime_install_start(app: AppHandle, mode: String, mirror: Option<String>) -> Result<(), String> {
+    // Stop API before repair/reinstall so files are not locked
+    if mode == "repair" || mode == "reinstall" {
+        let _ = stop_api_process(&app);
+    }
+    runtime::start_install(app, mode, mirror)
+}
+
+#[tauri::command]
+fn runtime_install_cancel() -> Result<(), String> {
+    runtime::cancel_install();
+    Ok(())
+}
+
+#[tauri::command]
+fn runtime_stop_api(app: AppHandle) -> Result<(), String> {
+    stop_api_process(&app)
+}
+
+#[tauri::command]
+fn runtime_start_api(app: AppHandle) -> Result<u16, String> {
+    if runtime::is_thin_runtime(&app) {
+        if !runtime::env_ready(&app) {
+            return Err("Runtime not ready".into());
+        }
+        let port = start_thin_api(&app)?;
+        navigate_main(&app, port)?;
+        Ok(port)
+    } else {
+        let port = start_sidecar(&app)?;
+        navigate_main(&app, port)?;
+        Ok(port)
+    }
+}
+
+#[tauri::command]
+fn runtime_open_setup(app: AppHandle) -> Result<(), String> {
+    let _ = stop_api_process(&app);
+    navigate_runtime_setup(&app)
 }
 
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(ApiProcess(Mutex::new(None)))
+        .invoke_handler(tauri::generate_handler![
+            runtime_status,
+            runtime_set_mirror,
+            runtime_install_start,
+            runtime_install_cancel,
+            runtime_stop_api,
+            runtime_start_api,
+            runtime_open_setup,
+        ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
             apply_macos_shell(app.handle());

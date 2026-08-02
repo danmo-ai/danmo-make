@@ -1,6 +1,7 @@
 # Common dependencies (platform-agnostic).
 # MLX builds:  pip install -r requirements-mlx.txt
-# CUDA builds: pip install -r requirements-cuda.txt
+# CUDA builds: install torch first (see requirements-torch-cuda.txt), then:
+#   pip install -r requirements-cuda.txt
 
 # ── Web framework ──
 fastapi>=0.104.0
@@ -32,42 +33,3 @@ modelscope>=1.20.0
 # ── Audio ──
 soundfile>=0.12.0
 phonemizer
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-python-multipart>=0.0.6
-aiohttp>=3.9.0
-Pillow>=10.0.0
-pillow-heif>=0.16.0
-opencv-python-headless>=4.8.0
-pydantic>=2.5.0
-psutil>=5.9.0
-
-# MLX 核心（macOS Apple Silicon 专用）
-mlx>=0.21.0
-mlx-lm
-mlx-vlm
-
-# 文本编码（tokenizer）
-transformers>=4.40.0
-sentencepiece
-tiktoken
-
-# HuggingFace 模型下载
-huggingface-hub>=0.25.0
-safetensors>=0.4.0
-
-# ModelScope（魔搭社区）模型下载
-modelscope>=1.20.0
-
-# 音频生成/处理
-soundfile>=0.12.0
-
-# ACE-Step 5Hz LM 约束解码 FSM（MLX 推理路径亦用 CPU PyTorch 做 logits；无需 CUDA）
-torch>=2.2.0
-
-# DiffRhythm 2 — espeak G2P（系统需安装 espeak-ng；MuQ MLX 权重无需 muq/torch）
-phonemizer
-
-# 视频 benchmark / 健全性读帧
-imageio>=2.34.0
-imageio-ffmpeg>=0.5.0

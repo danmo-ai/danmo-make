@@ -1,0 +1,34 @@
+[[permission]]
+identifier = "allow-runtime-status"
+description = "Allow reading CUDA thin runtime status"
+commands.allow = ["runtime_status"]
+
+[[permission]]
+identifier = "allow-runtime-set-mirror"
+description = "Allow setting pip/torch mirror preference"
+commands.allow = ["runtime_set_mirror"]
+
+[[permission]]
+identifier = "allow-runtime-install-start"
+description = "Allow starting runtime bootstrap/repair/reinstall"
+commands.allow = ["runtime_install_start"]
+
+[[permission]]
+identifier = "allow-runtime-install-cancel"
+description = "Allow cancelling an in-progress runtime install"
+commands.allow = ["runtime_install_cancel"]
+
+[[permission]]
+identifier = "allow-runtime-stop-api"
+description = "Allow stopping the local API process"
+commands.allow = ["runtime_stop_api"]
+
+[[permission]]
+identifier = "allow-runtime-start-api"
+description = "Allow starting the local API after runtime is ready"
+commands.allow = ["runtime_start_api"]
+
+[[permission]]
+identifier = "allow-runtime-open-setup"
+description = "Allow navigating to the runtime setup page"
+commands.allow = ["runtime_open_setup"]

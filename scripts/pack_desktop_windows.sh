@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Windows Tauri desktop (CUDA sidecar) — portable zip (NSIS cannot pack ~2GB CUDA trees)
+# Windows Tauri desktop (thin CUDA runtime) — portable zip
 # Naming aligned with danmo-work / danmo-inbox.
 set -euo pipefail
 
@@ -26,11 +26,9 @@ else
   PYTHON="${PYTHON:-python}"
 fi
 
-export DANQING_PYINSTALLER_PROFILE="${DANQING_PYINSTALLER_PROFILE:-cuda}"
 export RELEASE_VERSION="${RELEASE_VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
-export TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
 
-echo "==> Ensure CUDA venv"
+echo "==> Ensure build tooling venv (no torch required for thin pack)"
 if [[ ! -d "$DQ_ROOT/.venv" ]]; then
   py -3.11 -m venv "$DQ_ROOT/.venv" 2>/dev/null || python -m venv "$DQ_ROOT/.venv"
 fi
@@ -38,17 +36,18 @@ if [[ -x "$DQ_ROOT/.venv/Scripts/python.exe" ]]; then
   PYTHON="$DQ_ROOT/.venv/Scripts/python.exe"
 fi
 "$PYTHON" -m pip install --upgrade pip
-"$PYTHON" -m pip install torch torchvision --index-url "$TORCH_INDEX_URL"
-"$PYTHON" -m pip install -r "$DQ_ROOT/requirements-cuda.txt" pyinstaller
 
 echo "==> Frontend -> $DQ_FRONTEND_DIST"
 (cd "$DQ_ROOT/frontend" && npm install && npm run build)
 
-echo "==> PyInstaller sidecar (CUDA)"
-DANQING_PYINSTALLER_PROFILE=cuda "$PYTHON" "$SCRIPT_DIR/build_sidecar.py"
+echo "==> Stage thin CUDA runtime (portable CPython + app)"
+"$PYTHON" "$SCRIPT_DIR/stage_cuda_runtime.py" --platform windows-x86_64 --prepare-tauri
 
-echo "==> Tauri shell + portable zip"
-"$PYTHON" "$SCRIPT_DIR/tauri_build.py" --platform windows
+echo "==> Ensure danqing-api stub (Tauri resources still list it)"
+bash "$SCRIPT_DIR/ensure_tauri_resource_stub.sh"
+
+echo "==> Tauri shell + thin portable zip"
+"$PYTHON" "$SCRIPT_DIR/tauri_build.py" --platform windows --thin-runtime
 
 echo "==> Desktop bundle -> $DQ_DESKTOP_BUNDLE"
 find "$DQ_DESKTOP_BUNDLE" -type f -name '*-portable.zip' 2>/dev/null | head -20 || true

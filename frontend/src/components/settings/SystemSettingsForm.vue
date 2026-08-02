@@ -35,6 +35,7 @@ type SectionId =
   | 'quicksetup'
   | 'workspace'
   | 'integrations'
+  | 'runtime'
   | 'maintenance'
   | 'systeminfo';
 

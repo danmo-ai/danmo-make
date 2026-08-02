@@ -118,7 +118,7 @@ def build_linux() -> None:
     _run([_python(), str(op.PROJECT_ROOT / "scripts" / "stage_desktop_bundle.py")])
 
 
-def build_windows() -> None:
+def build_windows(*, thin_runtime: bool = True) -> None:
     if sys.platform != "win32":
         raise SystemExit("Windows desktop build must run on Windows.")
 
@@ -127,15 +127,26 @@ def build_windows() -> None:
     op.DESKTOP_CARGO_TARGET.mkdir(parents=True, exist_ok=True)
 
     _maybe_set_desktop_version()
-    prep.prepare()
+    if thin_runtime:
+        import stage_cuda_runtime as stage  # noqa: WPS433
+
+        stage.stage_runtime(platform="windows-x86_64")
+        stage.prepare_tauri_resource()
+        # Keep danqing-api resource path present for tauri.conf
+        stub = op.PROJECT_ROOT / "desktop" / "src-tauri" / "danqing-api"
+        stub.mkdir(parents=True, exist_ok=True)
+        marker = stub / ".thin-runtime-stub"
+        if not (stub / "danqing-api.exe").is_file() and not (stub / "danqing-api").is_file():
+            marker.write_text("thin runtime build — no PyInstaller sidecar\n", encoding="utf-8")
+    else:
+        prep.prepare()
 
     _run(["rustup", "target", "add", "x86_64-pc-windows-msvc"])
 
     desktop = op.PROJECT_ROOT / "desktop"
     npm = _npm()
     _run([npm, "install"], cwd=desktop)
-    # CUDA sidecar is ~2GB — NSIS makensis hits mmap Internal compiler error #12345.
-    # Build the shell only (--no-bundle; Windows CLI does not accept -b none), then zip.
+    # Thin zip (or legacy large sidecar): NSIS cannot pack ~2GB trees.
     _run(
         [
             npm,
@@ -161,13 +172,24 @@ def main() -> None:
         required=True,
         help="Target desktop platform",
     )
+    parser.add_argument(
+        "--thin-runtime",
+        action="store_true",
+        default=True,
+        help="Windows/Linux: stage thin CUDA runtime (default)",
+    )
+    parser.add_argument(
+        "--legacy-sidecar",
+        action="store_true",
+        help="Windows: use PyInstaller sidecar instead of thin runtime",
+    )
     args = parser.parse_args()
     if args.platform == "macos":
         build_macos()
     elif args.platform == "linux":
         build_linux()
     else:
-        build_windows()
+        build_windows(thin_runtime=not args.legacy_sidecar)
 
 
 if __name__ == "__main__":

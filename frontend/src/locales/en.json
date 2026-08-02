@@ -2150,6 +2150,8 @@
     "workspaceDesc": "Storage paths for models, outputs and config",
     "integrations": "Integrations",
     "integrationsDesc": "Third-party platform access tokens",
+    "runtime": "Runtime",
+    "runtimeDesc": "CUDA dependency install, mirrors, repair / reinstall",
     "maintenance": "Maintenance",
     "maintenanceDesc": "Restore factory defaults and data reset",
     "systeminfo": "System Info",
@@ -2398,5 +2400,27 @@
     "action": "Action",
     "default": "Default",
     "setDefault": "Set Default"
+  },
+  "runtimeSetup": {
+    "title": "Runtime environment",
+    "desc": "Install, repair, or reinstall CUDA Python dependencies (including PyTorch) for thin desktop builds.",
+    "status": "Status",
+    "mirror": "Package mirror",
+    "actions": "Actions",
+    "install": "Install",
+    "repair": "Repair",
+    "reinstall": "Reinstall",
+    "reinstallHint": "Reinstall deletes runtime-venv and re-downloads ~1.5GB+ of wheels.",
+    "cancel": "Cancel",
+    "ready": "Runtime ready",
+    "notReady": "Not installed or outdated",
+    "failed": "Install failed",
+    "notDesktop": "Not running inside the desktop shell",
+    "notApplicable": "This build does not use runtime bootstrap (e.g. macOS MLX sidecar).",
+    "mirrors": {
+      "official": "Official (PyPI / pytorch.org)",
+      "tuna": "Tuna (Tsinghua)",
+      "aliyun": "Aliyun"
+    }
   }
 }

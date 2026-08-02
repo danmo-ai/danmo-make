@@ -1,7 +1,10 @@
 {
-  "identifier": "default",
-  "description": "Main window (splash / runtime setup then in-app UI from local API)",
+  "identifier": "remote-api",
+  "description": "Allow Tauri IPC when webview is navigated to local API",
   "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://localhost:*"]
+  },
   "permissions": [
     "core:default",
     "core:window:allow-set-theme",

@@ -40,6 +40,7 @@
           :monitor-data="monitorData"
           @refresh-cache="refreshCacheStatus"
         />
+        <RuntimeSetupView v-else-if="activeSection === 'runtime'" />
         <SystemSettingsForm
           v-else
           :active-section="activeSection"
@@ -70,6 +71,7 @@ import { useRegistryStore } from '@/stores/registry';
 import type { SystemInfo } from '@/types';
 import SystemSettingsForm from '@/components/settings/SystemSettingsForm.vue';
 import SystemSettingsSidebar from '@/components/settings/SystemSettingsSidebar.vue';
+import RuntimeSetupView from '@/views/RuntimeSetupView.vue';
 import {
   Monitor,
   FolderChecked,
@@ -78,6 +80,7 @@ import {
   Setting,
   Box,
   Picture,
+  Cpu,
 } from '@danqing/dq-shell';
 
 /* ------------------------------------------------------------------ */
@@ -91,6 +94,7 @@ type SectionId =
   | 'quicksetup'
   | 'workspace'
   | 'integrations'
+  | 'runtime'
   | 'maintenance'
   | 'systeminfo';
 
@@ -125,6 +129,7 @@ const navItems: NavItem[] = [
   { id: 'quicksetup', labelKey: 'settings.quickSetupTitle', icon: Setting },
   { id: 'workspace', labelKey: 'settings.workspace', icon: FolderChecked },
   { id: 'integrations', labelKey: 'settings.integrations', icon: Document },
+  { id: 'runtime', labelKey: 'settings.runtime', icon: Cpu },
   { id: 'maintenance', labelKey: 'settings.maintenance', icon: Tools },
   { id: 'systeminfo', labelKey: 'settings.systeminfo', icon: Box },
 ];

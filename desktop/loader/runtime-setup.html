@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Danmo Make — Runtime Setup</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #12141a;
+        --fg: #e8eaed;
+        --muted: #9aa0a6;
+        --accent: #5b8def;
+        --danger: #e57373;
+        --ok: #81c784;
+        --card: #1c1f28;
+        --border: #2a2f3a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background: radial-gradient(1200px 600px at 20% -10%, #1a2740 0%, var(--bg) 55%);
+        color: var(--fg);
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2rem;
+      }
+      .panel {
+        width: min(560px, 100%);
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1.75rem 1.5rem;
+        box-shadow: 0 16px 40px rgba(0,0,0,0.35);
+      }
+      h1 { font-size: 1.35rem; margin: 0 0 0.35rem; font-weight: 650; }
+      .sub { color: var(--muted); margin: 0 0 1.25rem; line-height: 1.45; font-size: 0.95rem; }
+      label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.35rem; }
+      select, button {
+        font: inherit;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: #151821;
+        color: var(--fg);
+        padding: 0.55rem 0.75rem;
+      }
+      select { width: 100%; margin-bottom: 1rem; }
+      .row { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+      button.primary {
+        background: var(--accent);
+        border-color: transparent;
+        color: #fff;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .bar {
+        height: 8px;
+        background: #0e1118;
+        border-radius: 999px;
+        overflow: hidden;
+        margin: 1rem 0 0.5rem;
+      }
+      .bar > i {
+        display: block;
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #3d6fd8, #7eb6ff);
+        transition: width 0.25s ease;
+      }
+      .log {
+        margin-top: 0.75rem;
+        max-height: 220px;
+        overflow: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.75rem;
+        background: #0e1118;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.65rem;
+        white-space: pre-wrap;
+        color: #c5cad3;
+      }
+      .err { color: var(--danger); margin-top: 0.75rem; white-space: pre-wrap; }
+      .ok { color: var(--ok); }
+      .zh { display: none; }
+      html[lang="zh"] .en { display: none; }
+      html[lang="zh"] .zh { display: inline; }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <h1>
+        <span class="en">CUDA runtime setup</span>
+        <span class="zh">CUDA 运行时安装</span>
+      </h1>
+      <p class="sub">
+        <span class="en">This build does not bundle PyTorch. Download CUDA wheels once (progress below), then the app will start.</span>
+        <span class="zh">本安装包不含 PyTorch。请先下载 CUDA 依赖（下方显示进度），完成后自动启动。</span>
+      </p>
+      <label for="mirror">
+        <span class="en">Package mirror</span>
+        <span class="zh">软件源镜像</span>
+      </label>
+      <select id="mirror">
+        <option value="official">Official (PyPI / pytorch.org)</option>
+        <option value="tuna">Tuna (清华)</option>
+        <option value="aliyun">Aliyun (阿里云)</option>
+      </select>
+      <div class="row">
+        <button class="primary" id="startBtn" type="button">
+          <span class="en">Install &amp; continue</span>
+          <span class="zh">安装并继续</span>
+        </button>
+        <button id="cancelBtn" type="button" disabled>
+          <span class="en">Cancel</span>
+          <span class="zh">取消</span>
+        </button>
+      </div>
+      <div class="bar" aria-hidden="true"><i id="barFill"></i></div>
+      <div id="status" class="sub" style="margin:0"></div>
+      <div id="err" class="err" hidden></div>
+      <div id="log" class="log" hidden></div>
+    </div>
+    <script>
+      (function () {
+        const lang = (navigator.language || "en").toLowerCase().startsWith("zh") ? "zh" : "en";
+        document.documentElement.lang = lang;
+
+        const statusEl = document.getElementById("status");
+        const errEl = document.getElementById("err");
+        const logEl = document.getElementById("log");
+        const barFill = document.getElementById("barFill");
+        const startBtn = document.getElementById("startBtn");
+        const cancelBtn = document.getElementById("cancelBtn");
+        const mirrorEl = document.getElementById("mirror");
+
+        let lines = 0;
+        let phaseStep = 0;
+
+        function setBusy(busy) {
+          startBtn.disabled = busy;
+          cancelBtn.disabled = !busy;
+          mirrorEl.disabled = busy;
+        }
+
+        function appendLog(msg) {
+          logEl.hidden = false;
+          logEl.textContent += msg + "\n";
+          logEl.scrollTop = logEl.scrollHeight;
+          lines += 1;
+          phaseStep = Math.min(95, 8 + lines * 2);
+          barFill.style.width = phaseStep + "%";
+        }
+
+        async function invoke(cmd, args) {
+          const { invoke } = window.__TAURI__.core;
+          return invoke(cmd, args || {});
+        }
+
+        async function listen(event, handler) {
+          const { listen } = window.__TAURI__.event;
+          return listen(event, handler);
+        }
+
+        async function maybeStartApi() {
+          statusEl.textContent = lang === "zh" ? "正在启动服务…" : "Starting API…";
+          barFill.style.width = "100%";
+          await invoke("runtime_start_api");
+        }
+
+        async function init() {
+          try {
+            const st = await invoke("runtime_status");
+            if (st.mirror) mirrorEl.value = st.mirror;
+            if (st.ready) {
+              statusEl.innerHTML = '<span class="ok">' + (lang === "zh" ? "环境已就绪" : "Runtime ready") + "</span>";
+              await maybeStartApi();
+              return;
+            }
+            statusEl.textContent = st.message || (lang === "zh" ? "尚未安装运行时" : "Runtime not installed yet");
+          } catch (e) {
+            errEl.hidden = false;
+            errEl.textContent = String(e);
+          }
+        }
+
+        startBtn.addEventListener("click", async () => {
+          errEl.hidden = true;
+          errEl.textContent = "";
+          logEl.textContent = "";
+          lines = 0;
+          setBusy(true);
+          statusEl.textContent = lang === "zh" ? "安装中…" : "Installing…";
+          try {
+            await invoke("runtime_set_mirror", { mirror: mirrorEl.value });
+            await invoke("runtime_install_start", {
+              mode: "bootstrap",
+              mirror: mirrorEl.value,
+            });
+          } catch (e) {
+            setBusy(false);
+            errEl.hidden = false;
+            errEl.textContent = String(e);
+          }
+        });
+
+        cancelBtn.addEventListener("click", async () => {
+          try {
+            await invoke("runtime_install_cancel");
+          } catch (_) {}
+        });
+
+        listen("runtime-setup://progress", (ev) => {
+          const p = ev.payload || {};
+          if (p.message) appendLog(String(p.message));
+          if (p.phase === "done" || p.ok === true) {
+            setBusy(false);
+            statusEl.innerHTML = '<span class="ok">' + (lang === "zh" ? "安装完成" : "Install complete") + "</span>";
+            barFill.style.width = "100%";
+            maybeStartApi().catch((e) => {
+              errEl.hidden = false;
+              errEl.textContent = String(e);
+            });
+          } else if (p.phase === "error" || p.ok === false) {
+            setBusy(false);
+            errEl.hidden = false;
+            errEl.textContent = p.message || (lang === "zh" ? "安装失败" : "Install failed");
+          }
+        }).then(() => init());
+      })();
+    </script>
+  </body>
+</html>

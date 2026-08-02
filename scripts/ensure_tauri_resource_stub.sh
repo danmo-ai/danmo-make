@@ -20,3 +20,15 @@ Release builds replace this directory via:
   python scripts/prepare_tauri_resources.py
 EOF
 echo "==> Ensured Tauri resource stub: desktop/src-tauri/danqing-api/"
+
+RUNTIME_DIR="$ROOT/desktop/src-tauri/runtime"
+if [[ ! -d "$RUNTIME_DIR/app" ]]; then
+  mkdir -p "$RUNTIME_DIR"
+  cat > "$RUNTIME_DIR/.dev-stub" <<'EOF'
+Dev placeholder for CUDA thin runtime (desktop/src-tauri/runtime).
+
+Windows/Linux release packs replace this via:
+  python scripts/stage_cuda_runtime.py --prepare-tauri
+EOF
+  echo "==> Ensured Tauri runtime stub: desktop/src-tauri/runtime/"
+fi

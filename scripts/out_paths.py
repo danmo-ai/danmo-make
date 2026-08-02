@@ -44,17 +44,22 @@ def ensure_out_layout() -> None:
         path.mkdir(parents=True, exist_ok=True)
 
 
+TAURI_STAGED_RUNTIME = PROJECT_ROOT / "desktop" / "src-tauri" / "runtime"
+
+
 def clean_build_artifacts(*, include_frontend: bool = True) -> list[Path]:
     """Delete ``out/`` and staged Tauri resources. Returns paths that were removed."""
     removed: list[Path] = []
     if include_frontend:
-        targets: list[Path] = [OUT_ROOT, TAURI_STAGED_SIDECAR]
+        targets: list[Path] = [OUT_ROOT, TAURI_STAGED_SIDECAR, TAURI_STAGED_RUNTIME]
     else:
         targets = [
             OUT_ROOT / "sidecar",
+            OUT_ROOT / "runtime",
             OUT_ROOT / "pyinstaller",
             OUT_ROOT / "desktop",
             TAURI_STAGED_SIDECAR,
+            TAURI_STAGED_RUNTIME,
         ]
 
     seen: set[Path] = set()
