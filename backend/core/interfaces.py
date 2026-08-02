@@ -1,5 +1,5 @@
 """
-DanQing Studio v3.0 - Interface definition layer
+Danmo Make - Interface definition layer
 Interface-oriented programming; all layers depend only on the interfaces defined in this module.
 """
 

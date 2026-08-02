@@ -1,19 +1,20 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "DanQing Studio",
+  "productName": "Danmo Make",
   "version": "0.1.0",
   "identifier": "com.danqing.studio.desktop",
   "build": {
-    "beforeDevCommand": "",
+    "beforeDevCommand": "bash ../scripts/ensure_tauri_resource_stub.sh && cd ../frontend && npm run dev",
     "beforeBuildCommand": "",
-    "devUrl": "http://127.0.0.1:7800",
+    "devUrl": "http://127.0.0.1:5800/",
     "frontendDist": "../loader"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
-        "title": "DanQing Studio",
+        "title": "Danmo Make",
         "width": 1280,
         "height": 800,
         "resizable": true,
@@ -28,9 +29,15 @@
   "bundle": {
     "active": true,
     "category": "DeveloperTool",
-    "shortDescription": "DanQing Studio desktop",
-    "longDescription": "Native shell for the DanQing Studio FastAPI server (REST).",
-    "icon": ["icons/icon.png"],
+    "shortDescription": "Danmo Make desktop",
+    "longDescription": "Native shell for the Danmo Make FastAPI server (REST).",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "resources": ["danqing-api"]
   }
 }

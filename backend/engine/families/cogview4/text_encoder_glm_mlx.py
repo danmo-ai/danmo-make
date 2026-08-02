@@ -10,7 +10,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from mlx_lm.models.activations import swiglu
-from mlx_lm.models.base import create_attention_mask, scaled_dot_product_attention
+from mlx_lm.models.base import create_attention_mask, scaled_dot_product_attention as mlx_lm_sdpa
 
 
 @dataclass
@@ -105,7 +105,7 @@ class _GlmAttention(nn.Module):
         else:
             queries = self.rope(queries)
             keys = self.rope(keys)
-        output = scaled_dot_product_attention(
+        output = mlx_lm_sdpa(
             queries, keys, values, cache=cache, scale=self.scale, mask=mask,
         )
         output = output.transpose(0, 2, 1, 3).reshape(b, seq_len, -1)

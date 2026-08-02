@@ -2,7 +2,7 @@
   <div class="avatar-composer studio-composer-shell dq-glass--panel">
     <DqInput
       v-model="localTitle"
-      size="small"
+      size="sm"
       :placeholder="$tt('studio.workTitlePlaceholder')"
       class="avatar-composer__title"
     />
@@ -23,7 +23,7 @@
       <div class="avatar-composer__mode-switch studio-composer-mode-switch">
         <DqSegmented
           v-model="localMode"
-          size="small"
+          size="sm"
           :options="modeOptions"
         />
       </div>
@@ -75,7 +75,7 @@
       <label class="avatar-composer__field-label">{{ $tt('studio.model') }}</label>
       <DqSelect
         v-model="localModel"
-        size="small"
+        size="sm"
         :options="modelOptions"
         filterable
         class="avatar-composer__model"
@@ -87,7 +87,7 @@
       <label class="avatar-composer__field-label">{{ $tt('create.resolution') }}</label>
       <DqSelect
         v-model="localResolution"
-        size="small"
+        size="sm"
         :options="resolutionOptions"
         class="avatar-composer__resolution"
       />
@@ -98,7 +98,7 @@
         <label class="avatar-composer__field-label">{{ $tt('create.steps') }}</label>
         <DqInputNumber
           :model-value="params.steps as number"
-          size="small"
+          size="sm"
           :min="paramSchema.steps.min ?? 1"
           :max="paramSchema.steps.max ?? 50"
           @update:model-value="patchParams({ steps: $event })"
@@ -108,7 +108,7 @@
         <label class="avatar-composer__field-label">{{ $tt('create.frames') }}</label>
         <DqInputNumber
           :model-value="params.num_frames as number"
-          size="small"
+          size="sm"
           :min="paramSchema.num_frames.min ?? 25"
           :max="paramSchema.num_frames.max ?? 121"
           :step="paramSchema.num_frames.step ?? 1"
@@ -119,7 +119,7 @@
         <label class="avatar-composer__field-label">{{ $tt('create.fps') }}</label>
         <DqInputNumber
           :model-value="params.fps as number"
-          size="small"
+          size="sm"
           :min="paramSchema.fps.min ?? 15"
           :max="paramSchema.fps.max ?? 30"
           @update:model-value="patchParams({ fps: $event })"
@@ -129,7 +129,7 @@
         <label class="avatar-composer__field-label">{{ $tt('create.seed') }}</label>
         <DqInput
           :model-value="String(params.seed ?? '')"
-          size="small"
+          size="sm"
           :placeholder="$tt('studio.seedPlaceholder')"
           @update:model-value="patchParams({ seed: $event ? Number($event) : null })"
         />
@@ -400,8 +400,7 @@ function onPromptKeydown(e: KeyboardEvent) {
   line-height: 1.3;
 }
 
-.avatar-composer__row :deep(.dq-input),
-.avatar-composer__row :deep(.dq-select) {
+.avatar-composer__row :deep(.dq-input) {
   font-size: var(--dq-font-size-caption);
 }
 

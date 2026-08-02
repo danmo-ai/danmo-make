@@ -497,7 +497,7 @@ onBeforeUnmount(() => {
 .gallery-preview-detail__label {
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.03em;
+  letter-spacing: var(--dq-tracking-wide);
   text-transform: uppercase;
   color: var(--dq-label-tertiary);
 }

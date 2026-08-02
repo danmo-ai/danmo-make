@@ -124,7 +124,7 @@ const countLabel = computed(() => $t('gallery.groupAssetCount', { count: assetCo
   border-radius: 999px;
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  color: #fff;
+  color: var(--dq-color-white);
   background: rgba(0, 0, 0, 0.55);
   pointer-events: none;
 }
@@ -158,7 +158,7 @@ const countLabel = computed(() => $t('gallery.groupAssetCount', { count: assetCo
 .studio-card__overlay-res {
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  color: #fff;
+  color: var(--dq-color-white);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
 }
 

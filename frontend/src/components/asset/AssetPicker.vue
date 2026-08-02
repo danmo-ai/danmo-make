@@ -401,7 +401,7 @@ function selectLibraryRow(row: { id: string; previewUrl: string }) {
 .asset-picker__thumb-fallback {
   width: 100%;
   height: 100%;
-  background: var(--bg-secondary, var(--dq-bg-base));
+  background: var(--dq-bg-base);
 }
 
 .asset-picker__library {
@@ -419,11 +419,11 @@ function selectLibraryRow(row: { id: string; previewUrl: string }) {
   width: 72px;
   height: 72px;
   padding: 0;
-  border: 1px solid var(--border-color, var(--dq-border));
+  border: 1px solid var(--dq-border);
   border-radius: 8px;
   overflow: hidden;
   cursor: pointer;
-  background: var(--bg-secondary, var(--dq-bg-base));
+  background: var(--dq-bg-base);
 }
 
 

@@ -10,7 +10,7 @@ from backend.api.deps import get_model_registry as get_typed_model_registry
 from backend.core.container import get_container
 from backend.core.interfaces import ISettingsService, AppSettings, ModelConfig, IPresetStore, IPathResolver
 from backend.core.i18n import t, resolve_locale
-from backend.engine.llm.service import normalize_app_llm_settings
+from backend.engine.llm.service_mlx import normalize_app_llm_settings
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 

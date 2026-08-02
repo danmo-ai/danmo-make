@@ -97,7 +97,7 @@ const entries = computed<NavEntry[]>(() => [
         <span class="dq-download-menu__label">{{ entry.label }}</span>
         <DqTag
           v-if="entry.count !== undefined"
-          size="small"
+          size="sm"
           :type="entry.badgeType ?? 'info'"
           class="dq-menu-end-tag"
         >
@@ -105,7 +105,7 @@ const entries = computed<NavEntry[]>(() => [
         </DqTag>
         <DqTag
           v-else-if="entry.badge && entry.badge > 0"
-          size="small"
+          size="sm"
           :type="entry.badgeType ?? 'primary'"
           class="dq-menu-end-tag"
         >

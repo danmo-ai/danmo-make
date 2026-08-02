@@ -8,7 +8,7 @@ import mlx.core as mx
 from mlx import nn
 
 from backend.engine.common.ops.attention import scaled_dot_product_attention_bhsd_mx
-from backend.engine.common.ops.vae_stream_cache import VAEStreamCacheSession
+from backend.engine.common.ops.vae_stream_cache_mlx import VAEStreamCacheSession
 from .weights_mlx import ModelConfig
 
 
@@ -82,7 +82,7 @@ class CausalConv3d(nn.Module):
         else:
             temporal_padding = pt
 
-        from backend.engine.common.integrations.mfa_seedvr2 import causal_conv3d_forward
+        from backend.engine.common.ops.mfa_seedvr2_mlx import causal_conv3d_forward
 
         out = causal_conv3d_forward(
             x,

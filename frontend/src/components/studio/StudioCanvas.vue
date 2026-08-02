@@ -389,7 +389,7 @@ function handleCardClick(item: GalleryItem, event: MouseEvent) {
   gap: 8px;
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--dq-tracking-wider);
   text-transform: uppercase;
   color: var(--dq-label-tertiary);
   margin-bottom: 14px;
@@ -436,7 +436,7 @@ function handleCardClick(item: GalleryItem, event: MouseEvent) {
   min-width: 0;
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--dq-tracking-wider);
   text-transform: uppercase;
   color: var(--dq-label-tertiary);
 }

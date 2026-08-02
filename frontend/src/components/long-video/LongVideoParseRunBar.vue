@@ -210,28 +210,28 @@ watch(
 }
 
 .lv-parse-run-bar--blocked {
-  border-color: color-mix(in srgb, var(--dq-danger, #c33) 35%, var(--dq-border-subtle));
-  background: color-mix(in srgb, var(--dq-danger, #c33) 6%, var(--dq-fill-control));
+  border-color: color-mix(in srgb, var(--dq-danger) 35%, var(--dq-border-subtle));
+  background: color-mix(in srgb, var(--dq-danger) 6%, var(--dq-fill-control));
 }
 
 .lv-parse-run-bar__blocked {
-  color: var(--dq-danger, #c33);
+  color: var(--dq-danger);
   font-weight: 700;
 }
 
 .lv-parse-run-bar__blocked-reason {
   margin: 0 0 8px;
   font-size: var(--dq-font-size-caption);
-  color: var(--dq-danger, #c33);
+  color: var(--dq-danger);
 }
 
 .lv-parse-run-bar__issues li.is-critical {
-  color: var(--dq-danger, #c33);
+  color: var(--dq-danger);
   font-weight: 600;
 }
 
 .lv-parse-run-bar__ok {
-  color: var(--dq-success, #3a9);
+  color: var(--dq-success);
   font-weight: 700;
 }
 
@@ -252,7 +252,7 @@ watch(
 }
 
 .lv-parse-run-bar__warn {
-  color: var(--dq-warning, #c90);
+  color: var(--dq-warning);
 }
 
 .lv-parse-run-bar__actions {
@@ -287,7 +287,7 @@ watch(
   margin: 0 0 8px;
   padding-left: 18px;
   font-size: var(--dq-font-size-caption);
-  color: var(--dq-warning, #a80);
+  color: var(--dq-warning);
 }
 
 .lv-parse-run-bar__project {

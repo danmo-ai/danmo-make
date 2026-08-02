@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from backend.api.deps import get_llm_service, get_long_video_activity_store
 from backend.api.routes.llm import _http_error_from_task, _resolve_locale
 from backend.core.contracts import ScriptParseDecomposeRequest, ScriptParseExpandBeatRequest, ScriptParseExpandRequest
-from backend.engine.common.long_video.activity import LongVideoActivityRecorder
+from backend.long_video.activity import LongVideoActivityRecorder
 from backend.engine.llm import LLMService
 from backend.persistence.long_video_activity_store import LongVideoActivityStore
 

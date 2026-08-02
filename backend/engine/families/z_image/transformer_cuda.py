@@ -521,7 +521,7 @@ class ZImageDiTCuda(TransformerBase, nn.Module):
         return noise_cond + guidance * (noise_cond - noise_uncond)
 
     def before_denoise(self, latents, timesteps, sigmas, **cond):
-        from backend.engine.common.mlx_only import require_mlx_if_option_active
+        from backend.engine.runtime.mlx_guards import require_mlx_if_option_active
 
         lemica = cond.get("lemica_mode")
         if lemica is None:

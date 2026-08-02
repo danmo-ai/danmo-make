@@ -67,7 +67,7 @@
       role="status"
     >
       <div class="gen-task-log-panel__progress-head">
-        <span class="gen-task-log-panel__progress-dot" aria-hidden="true" />
+        <span class="dq-status-dot dq-status-dot--running" aria-hidden="true" />
         <span class="gen-task-log-panel__progress-text">{{ activeProgress.title }}</span>
         <time class="gen-task-log-panel__progress-time">{{ activeProgress.time }}</time>
       </div>
@@ -309,7 +309,7 @@ watch(
 .gen-task-log-panel__title {
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--dq-tracking-wider);
   text-transform: uppercase;
   color: var(--dq-label-tertiary);
   flex-shrink: 0;
@@ -359,15 +359,6 @@ watch(
   align-items: center;
   gap: 8px;
   min-width: 0;
-}
-
-.gen-task-log-panel__progress-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--dq-accent);
-  flex-shrink: 0;
-  animation: gen-log-pulse 1.6s ease-in-out infinite;
 }
 
 .gen-task-log-panel__progress-text {
@@ -468,7 +459,7 @@ watch(
   padding: 8px 12px 0;
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--dq-tracking-wider);
   text-transform: uppercase;
   color: var(--dq-label-tertiary);
 }
@@ -542,11 +533,11 @@ watch(
 }
 
 .gen-task-log-panel__entry--error .gen-task-log-panel__dot {
-  background: var(--dq-status-danger, #ff3b30);
+  background: var(--dq-danger);
 }
 
 .gen-task-log-panel__entry--warning .gen-task-log-panel__dot {
-  background: var(--dq-status-warning, #ff9f0a);
+  background: var(--dq-warning);
 }
 
 .gen-task-log-panel__entry--technical .gen-task-log-panel__dot {
@@ -593,11 +584,11 @@ watch(
 }
 
 .gen-task-log-panel__entry--error .gen-task-log-panel__label {
-  color: var(--dq-status-danger, #ff3b30);
+  color: var(--dq-danger);
 }
 
 .gen-task-log-panel__entry--warning .gen-task-log-panel__label {
-  color: var(--dq-status-warning, #ff9f0a);
+  color: var(--dq-warning);
 }
 
 .gen-task-log-panel__time {
@@ -641,12 +632,8 @@ watch(
   font-size: var(--dq-font-size-caption);
   line-height: 1.45;
   color: var(--dq-label-tertiary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--dq-font-mono);
   word-break: break-word;
 }
 
-@keyframes gen-log-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.55; transform: scale(0.92); }
-}
 </style>

@@ -412,7 +412,7 @@ def infer_look_id_for_context(
     """Pick a look when narrative/location/scene tokens overlap look labels (names-only; no inline tags)."""
     if len(character.looks) <= 1:
         return None
-    from backend.engine.common.long_video.prompt_overlap import prompt_token_coverage
+    from backend.long_video.prompt_overlap import prompt_token_coverage
 
     hint_blob = " ".join(h.strip() for h in (scene_hints or []) if h and h.strip())
     ctxt = "\n".join(p for p in ((context or "").strip(), hint_blob) if p).strip()

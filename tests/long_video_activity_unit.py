@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.engine.common.long_video.activity import (
+from backend.long_video.activity import (
     category_for_context,
     extract_long_video_context,
     record_task_activity,

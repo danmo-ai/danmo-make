@@ -7,7 +7,7 @@
             <DqInput
               :id="ids.title"
               :model-value="title"
-              size="small"
+              size="sm"
               class="lv-settings-bar__control"
               :placeholder="$tt('video.longVideoProjectTitlePh')"
               @update:model-value="$emit('update:title', $event)"
@@ -19,7 +19,8 @@
             <DqSelect
               :id="ids.keyframe"
               :model-value="keyframeModel"
-              size="small"
+              size="sm"
+              variant="ghost"
               class="lv-settings-bar__control"
               :title="$tt('video.longVideoKeyframeModelHint')"
               @update:model-value="$emit('update:keyframeModel', $event)"
@@ -33,7 +34,8 @@
             <DqSelect
               :id="ids.segment"
               :model-value="segmentModel"
-              size="small"
+              size="sm"
+              variant="ghost"
               class="lv-settings-bar__control"
               :title="$tt('video.longVideoSegmentModelHint')"
               @update:model-value="$emit('update:segmentModel', $event)"
@@ -47,7 +49,8 @@
             <DqSelect
               :id="ids.size"
               :model-value="outputSize"
-              size="small"
+              size="sm"
+              variant="ghost"
               class="lv-settings-bar__control"
               :title="$tt('video.longVideoOutputSizeHint')"
               @update:model-value="$emit('update:outputSize', $event)"
@@ -66,7 +69,8 @@
             <DqSelect
               :id="ids.overlap"
               :model-value="overlapFrames"
-              size="small"
+              size="sm"
+              variant="ghost"
               class="lv-settings-bar__control"
               :title="$tt('video.longVideoOverlapFramesHint')"
               @update:model-value="$emit('update:overlapFrames', Number($event))"

@@ -10,7 +10,7 @@ import numpy as np
 from backend.engine.families.ltx.generation_mlx import LTX23MlxGenerator, _resolve_distilled_stage1_steps
 from backend.engine.families.ltx.ingest import append_video_with_crossfade, extract_video_tail, trim_video_leading
 from backend.engine.families.ltx.long_video_plan import num_frames_for_duration_sec
-from backend.engine.families.ltx.pipeline_math import (
+from backend.engine.families.ltx.pipeline_math_mlx import (
     LatentState,
     VideoConditionByLatentIndex,
     VideoLatentPatchifier,

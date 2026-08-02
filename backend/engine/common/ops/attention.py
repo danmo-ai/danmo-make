@@ -350,13 +350,13 @@ def scaled_dot_product_attention_bhsd_mx(
         v = v.astype(compute_dtype)
 
     if str(attention_backend or "auto").strip().lower() != "mlx":
-        from backend.engine.common.ops.mfa_bridge import flash_attention
+        from backend.engine.common.ops.mfa_bridge_mlx import flash_attention
 
         out = flash_attention(q, k, v, backend=attention_backend, scale=scale, mask=mask)
     elif hasattr(ops, "fast") and hasattr(ops.fast, "scaled_dot_product_attention"):
         out = ops.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
     else:
-        from backend.engine.common.ops.mfa_bridge import flash_attention
+        from backend.engine.common.ops.mfa_bridge_mlx import flash_attention
 
         out = flash_attention(q, k, v, backend=attention_backend, scale=scale, mask=mask)
     if out_dtype is not None:
@@ -371,15 +371,22 @@ def scaled_dot_product_attention_bhsd_torch(
     k: Any,
     v: Any,
     *,
-    scale: float,
+    scale: float | None = None,
     mask: Any | None = None,
     out_dtype: Any | None = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
 ) -> Any:
     """Torch SDPA for ``[B, H, S, D]`` tensors with optional output dtype."""
     torch = importlib.import_module("torch")
-    out = torch.nn.functional.scaled_dot_product_attention(
-        q, k, v, attn_mask=mask, scale=scale
-    )
+    kwargs: dict[str, Any] = {
+        "attn_mask": mask,
+        "dropout_p": float(dropout_p),
+        "is_causal": bool(is_causal),
+    }
+    if scale is not None:
+        kwargs["scale"] = scale
+    out = torch.nn.functional.scaled_dot_product_attention(q, k, v, **kwargs)
     if out_dtype is not None:
         return out.to(out_dtype)
     return out

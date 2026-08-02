@@ -500,7 +500,7 @@ class TaskScheduler:
     ) -> None:
         if self._activity_store is None:
             return
-        from backend.engine.common.long_video.activity import record_task_activity
+        from backend.long_video.activity import record_task_activity
 
         record_task_activity(
             self._activity_store,

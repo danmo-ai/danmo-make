@@ -6,8 +6,8 @@ from typing import Any, Union
 
 from backend.engine.common.ops.compile_policy import resolve_use_mlx_compile
 from backend.engine.common.ops.lemica import lemica_enabled, normalize_lemica_mode
-from backend.engine.common.ops.mfa_bridge import resolve_attention_backend
-from backend.engine.common.ops.teacache import resolve_teacache_settings
+from backend.engine.common.ops.mfa_bridge_mlx import resolve_attention_backend
+from backend.engine.common.ops.teacache_mlx import resolve_teacache_settings
 from backend.engine.contracts import registry_scalar_default as _registry_scalar_default_fn
 
 INFERENCE_PLAN_KEY = "_inference_plan"
@@ -200,7 +200,7 @@ def resolve_video_inference_plan(
         requested=getattr(config, "attention_backend", "auto"),
         head_dim=head_dim if head_dim > 0 else 128,
     )
-    from backend.engine.common.integrations.mfa_seedvr2 import resolve_conv3d_backend
+    from backend.engine.common.ops.mfa_seedvr2_mlx import resolve_conv3d_backend
 
     conv3d_backend = resolve_conv3d_backend(getattr(config, "conv3d_backend", "auto"))
 

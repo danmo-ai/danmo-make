@@ -3,19 +3,19 @@
   "engines": {
     "danqing-image": {
       "media": "image",
-      "description": "DanQing image engine (MLX/CUDA)"
+      "description": "Danmo Make image engine (MLX/CUDA)"
     },
     "danqing-video": {
       "media": "video",
-      "description": "DanQing video engine (MLX/CUDA)"
+      "description": "Danmo Make video engine (MLX/CUDA)"
     },
     "danqing-audio": {
       "media": "audio",
-      "description": "DanQing audio engine (MLX/CUDA)"
+      "description": "Danmo Make audio engine (MLX/CUDA)"
     },
     "danqing-llm": {
       "media": "llm",
-      "description": "DanQing LLM engine (MLX)"
+      "description": "Danmo Make LLM engine (MLX)"
     }
   },
   "categories": {
@@ -157,6 +157,34 @@
     }
   },
   "families": {
+    "qwen3": {
+      "paradigm": "llm",
+      "media": [
+        "llm"
+      ],
+      "backends": [
+        "mlx"
+      ],
+      "latent_layout": "none",
+      "cfg_mode": "none",
+      "latent_channels": 0,
+      "vae_scale": 1,
+      "hooks": []
+    },
+    "qwen3_vl": {
+      "paradigm": "llm",
+      "media": [
+        "llm"
+      ],
+      "backends": [
+        "mlx"
+      ],
+      "latent_layout": "none",
+      "cfg_mode": "none",
+      "latent_channels": 0,
+      "vae_scale": 1,
+      "hooks": []
+    },
     "ace_step": {
       "paradigm": "flow_matching",
       "media": [
@@ -9857,7 +9885,7 @@
           "zh": "Super Eurobeat LoRA",
           "en": "Super Eurobeat LoRA"
         },
-        "recommended": true,
+        "recommended": false,
         "base_model": "ace-step-xl-sft",
         "engine": "danqing-audio"
       },
@@ -9909,7 +9937,7 @@
           "zh": "ACE-Step 伴奏 LoRA",
           "en": "ACE-Step Accompaniment LoRA"
         },
-        "recommended": true,
+        "recommended": false,
         "base_model": "ace-step-xl-sft",
         "engine": "danqing-audio"
       },
@@ -10151,7 +10179,7 @@
           "zh": "Realism LoRA",
           "en": "Realism LoRA"
         },
-        "recommended": true,
+        "recommended": false,
         "base_model": "flux1-dev",
         "engine": "danqing-image"
       },
@@ -10203,7 +10231,7 @@
           "zh": "AWPortrait CN",
           "en": "AWPortrait CN"
         },
-        "recommended": true,
+        "recommended": false,
         "base_model": "flux1-dev",
         "engine": "danqing-image"
       },
@@ -10255,7 +10283,7 @@
           "zh": "AWPortrait CN2",
           "en": "AWPortrait CN2"
         },
-        "recommended": true,
+        "recommended": false,
         "base_model": "flux1-dev",
         "engine": "danqing-image"
       },
@@ -10363,7 +10391,7 @@
           "zh": "AWPortrait FL",
           "en": "AWPortrait FL"
         },
-        "recommended": true,
+        "recommended": false,
         "base_model": "flux1-dev",
         "engine": "danqing-image"
       },
@@ -10419,7 +10447,7 @@
           "zh": "FLUX.1-dev Add Details",
           "en": "FLUX.1-dev Add Details"
         },
-        "recommended": true,
+        "recommended": false,
         "base_model": "flux1-dev",
         "engine": "danqing-image"
       },

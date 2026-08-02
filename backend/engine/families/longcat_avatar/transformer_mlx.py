@@ -20,10 +20,10 @@ import math
 import mlx.core as mx
 import mlx.nn as nn
 
-from backend.engine.families.longcat_avatar.dit_attention import MultiHeadCrossAttention
-from backend.engine.families.longcat_avatar.avatar_attention import Attention, SingleStreamAttention
-from backend.engine.families.longcat_avatar.avatar_blocks import AudioProjModel
-from backend.engine.families.longcat_avatar.dit_blocks import (
+from backend.engine.families.longcat_avatar.dit_attention_mlx import MultiHeadCrossAttention
+from backend.engine.families.longcat_avatar.avatar_attention_mlx import Attention, SingleStreamAttention
+from backend.engine.families.longcat_avatar.avatar_blocks_mlx import AudioProjModel
+from backend.engine.families.longcat_avatar.dit_blocks_mlx import (
     CaptionEmbedder,
     FeedForwardSwiGLU,
     FinalLayer_FP32,

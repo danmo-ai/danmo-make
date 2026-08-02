@@ -95,7 +95,7 @@ class AceStepTransformer(TransformerBase):
             and getattr(inference_mode, "kind", "dense") == "quantized"
             and getattr(inference_mode, "bits", None) in (4, 8)
         ):
-            from backend.engine.common.model.quantized_load import load_weights_quantized_inference
+            from backend.engine.common.model.quantized_load_mlx import load_weights_quantized_inference
 
             return load_weights_quantized_inference(
                 self,

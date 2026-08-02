@@ -91,7 +91,7 @@ SCHEDULER_REGISTRY: dict[str, type] = {
 
 def try_import_external_scheduler(scheduler_object_path: str) -> None:
     raise RuntimeError(
-        f"External scheduler {scheduler_object_path!r} is not supported for SeedVR2 in DanQing."
+        f"External scheduler {scheduler_object_path!r} is not supported for SeedVR2 in Danmo Make."
     )
 
 
@@ -251,11 +251,11 @@ class SeedVR2UpscalePipeline:
         conv3d_backend: str = "auto",
         on_log: Callable[[str, str], None] | None = None,
     ) -> None:
-        from backend.engine.common.integrations.mfa_seedvr2 import (
+        from backend.engine.common.ops.mfa_seedvr2_mlx import (
             log_conv3d_backend,
             resolve_conv3d_backend,
         )
-        from backend.engine.common.ops.vae_stream_cache import VAEStreamCacheSession
+        from backend.engine.common.ops.vae_stream_cache_mlx import VAEStreamCacheSession
 
         backend = resolve_conv3d_backend(conv3d_backend)
         log_conv3d_backend(backend, on_log=on_log)

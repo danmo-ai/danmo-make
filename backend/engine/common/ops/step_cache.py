@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from backend.engine.common.ops.teacache import (
+from backend.engine.common.ops.teacache_mlx import (
     TeaCacheGateDecision,
     TeaCacheState,
     gate_step,
@@ -126,7 +126,7 @@ class StepCacheSession:
         lane_key = str(branch or "default")
         idx = int(self.state.step_counter if step_idx is None else step_idx)
         if self.calibration_probe:
-            from backend.engine.common.ops.teacache import mean_abs_rel_l1
+            from backend.engine.common.ops.teacache_mlx import mean_abs_rel_l1
 
             lane = self.state.lane(lane_key)
             decision = TeaCacheGateDecision(
@@ -211,9 +211,15 @@ class StepCacheSession:
 def find_step_cache_session(model: Any) -> StepCacheSession | None:
     """Walk DiT stem / inner impl for the active ``StepCacheSession``."""
     seen: set[int] = set()
-    stack: list[Any] = [model]
+    stack: list[tuple[Any, int]] = [(model, 0)]
+    max_depth = 8
     while stack:
-        obj = stack.pop()
+        obj, depth = stack.pop()
+        if obj is None or depth > max_depth:
+            continue
+        # unittest.mock synthesizes unbounded child graphs via getattr.
+        if (type(obj).__module__ or "").startswith("unittest.mock"):
+            continue
         oid = id(obj)
         if oid in seen:
             continue
@@ -223,8 +229,11 @@ def find_step_cache_session(model: Any) -> StepCacheSession | None:
             return cache
         for attr in ("_inner", "impl", "_impl", "model"):
             child = getattr(obj, attr, None)
-            if child is not None and not isinstance(child, (str, int, float, bool, bytes)):
-                stack.append(child)
+            if child is None or isinstance(child, (str, int, float, bool, bytes)):
+                continue
+            if (type(child).__module__ or "").startswith("unittest.mock"):
+                continue
+            stack.append((child, depth + 1))
     return None
 
 

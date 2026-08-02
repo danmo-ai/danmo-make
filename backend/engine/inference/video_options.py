@@ -23,7 +23,7 @@ def apply_video_inference_options(
         if norm in ("", "none", "off"):
             extra[attr] = "none"
             continue
-        from backend.engine.common.mlx_only import require_mlx_if_option_active
+        from backend.engine.runtime.mlx_guards import require_mlx_if_option_active
 
         require_mlx_if_option_active(ctx, feature=attr, option=val)
         extra[attr] = norm

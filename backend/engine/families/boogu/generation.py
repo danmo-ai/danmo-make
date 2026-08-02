@@ -84,3 +84,11 @@ def validate_image_generation_params(
         raise RuntimeError(
             "Boogu-Image-Edit requires a source image (rewrite/edit action)."
         )
+
+
+def resolve_boogu_output_path(work: Path, model_key: str, seed: int) -> str:
+    from backend.engine.families.boogu.generation_mlx import (
+        resolve_boogu_output_path as _resolve,
+    )
+
+    return _resolve(work, model_key, seed)

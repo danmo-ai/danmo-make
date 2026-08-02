@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from backend.engine.llm.vision import analyze_image_file
+from backend.engine.llm.vision_mlx import analyze_image_file
 
 Severity = Literal["info", "warning", "error"]
 AuditKind = Literal["concept", "style"]

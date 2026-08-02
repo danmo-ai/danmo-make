@@ -362,6 +362,7 @@ class EngineSessionsTests(unittest.TestCase):
             preview_mode="none",
             preview_interval=2,
             preview_max_edge=512,
+            preview_decoder="none",
             preview_state={},
             latent_noise_dtype=None,
             noise_sample_dtype=None,
@@ -645,6 +646,7 @@ class EngineSessionsTests(unittest.TestCase):
             steps=28,
             guidance=30.0,
             flux_unpack=MagicMock(),
+            flux_pack=MagicMock(),
             preview_mode="none",
             preview_interval=2,
             preview_max_edge=512,
@@ -773,12 +775,14 @@ class EngineSessionsTests(unittest.TestCase):
             preview_mode="none",
             preview_interval=2,
             preview_max_edge=512,
+            preview_decoder="none",
             preview_state={},
             packed_edit=False,
             flux_unpack_edit=None,
             lh_edit=0,
             lw_edit=0,
             edit_conditioning_concat=False,
+            structural_output_meta=None,
         )
         sentinel = object()
         schedule = ScheduleState(MagicMock(), [1.0], None, "image_edit")

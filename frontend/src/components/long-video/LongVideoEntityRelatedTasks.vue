@@ -6,7 +6,7 @@
     </template>
     <template v-else-if="row">
       <code class="lv-entity-task__tid" :title="row.taskId">{{ shortId(row.taskId) }}</code>
-      <DqTag size="small" effect="plain" :type="statusTagType(row.status)">
+      <DqTag size="sm" effect="plain" :type="statusTagType(row.status)">
         {{ statusLabel(row.status) }}
       </DqTag>
       <DqButton size="sm" type="text" @click="openLog(row.taskId)">

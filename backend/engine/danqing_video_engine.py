@@ -21,7 +21,7 @@ from backend.engine.group_utils import resolve_asset_group_id
 from .cache import ModelCache
 from .lineage import resolve_lineage, video_edit_relation_type
 from .progress_bridge import make_pipeline_progress_callback
-from backend.engine.common.long_video.validate import (
+from backend.long_video.validate import (
     LongVideoValidationError,
     validate_long_video_request,
 )

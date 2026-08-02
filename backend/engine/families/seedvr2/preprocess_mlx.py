@@ -36,7 +36,7 @@ def resolve_pos_emb_path(bundle_path: str | Path | None) -> Path:
         "SeedVR2 requires pos_emb.safetensors (fixed positive text embeddings). "
         f"None of the following paths exist: {tried}. "
         "Place a copy next to the weight bundle or under bundle/data/, "
-        "or reinstall DanQing Studio so `backend/engine/families/seedvr2/data/` is present."
+        "or reinstall Danmo Make so `backend/engine/families/seedvr2/data/` is present."
     )
 
 

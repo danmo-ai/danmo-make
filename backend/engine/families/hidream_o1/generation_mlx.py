@@ -11,11 +11,11 @@ from typing import Any, Callable
 import numpy as np
 from PIL import Image
 
-from backend.engine.families.hidream_o1.flow_match import (
+from backend.engine.families.hidream_o1.flow_match_mlx import (
     DEFAULT_TIMESTEPS,
     FlashFlowMatchScheduler,
 )
-from backend.engine.families.hidream_o1.hidream_model import (
+from backend.engine.families.hidream_o1.hidream_model_mlx import (
     HiDreamConfig,
     build_model,
     forward_generation,

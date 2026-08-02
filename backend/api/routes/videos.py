@@ -13,7 +13,7 @@ from backend.core.contracts import (
     VideoLongGenerationRequest,
     VideoUpscaleRequest,
 )
-from backend.engine.common.long_video.validate import (
+from backend.long_video.validate import (
     LongVideoValidationError,
     validate_long_video_request,
 )

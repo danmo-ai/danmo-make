@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from backend.engine.common.long_video.keyframe_prompt_policy import (
+from backend.long_video.keyframe_prompt_policy import (
     cast_reference_scope,
     should_merge_scene_prompt_into_t2i,
     validate_visibility_role_contract,
@@ -62,7 +62,7 @@ class KeyframePromptPolicyTests(unittest.TestCase):
             )
 
     def test_sanitize_strips_anchor_visual_on_keyframe(self) -> None:
-        from backend.engine.common.long_video.keyframe_prompt_policy import sanitize_shot_spec_prompts
+        from backend.long_video.keyframe_prompt_policy import sanitize_shot_spec_prompts
 
         sv, av = sanitize_shot_spec_prompts(
             role="keyframe",
@@ -73,7 +73,7 @@ class KeyframePromptPolicyTests(unittest.TestCase):
         self.assertEqual(av, "")
 
     def test_coalesce_face_anchor_from_start_visual(self) -> None:
-        from backend.engine.common.long_video.keyframe_prompt_policy import coalesce_face_anchor_visual
+        from backend.long_video.keyframe_prompt_policy import coalesce_face_anchor_visual
 
         sv, av = coalesce_face_anchor_visual(
             anchor_visual="赵今麦",
@@ -85,7 +85,7 @@ class KeyframePromptPolicyTests(unittest.TestCase):
         self.assertIn("眼神惊恐", av)
 
     def test_normalize_face_anchor_single_character(self) -> None:
-        from backend.engine.common.long_video.keyframe_prompt_policy import (
+        from backend.long_video.keyframe_prompt_policy import (
             normalize_face_anchor_characters_on_screen,
         )
 
@@ -99,7 +99,7 @@ class KeyframePromptPolicyTests(unittest.TestCase):
         )
 
     def test_beat_plan_rejects_multi_face_anchor_characters(self) -> None:
-        from backend.engine.common.long_video.keyframe_prompt_policy import validate_beat_plan_row_contract
+        from backend.long_video.keyframe_prompt_policy import validate_beat_plan_row_contract
 
         class Seg:
             def __init__(self, **kw):
@@ -143,7 +143,7 @@ class KeyframePromptPolicyTests(unittest.TestCase):
 
 class CameraZonePartialVisibilityTests(unittest.TestCase):
     def test_face_hidden_zones_do_not_conflict(self) -> None:
-        from backend.engine.common.long_video.keyframe_prompt_policy import (
+        from backend.long_video.keyframe_prompt_policy import (
             camera_zone_conflicts_with_partial_visibility,
         )
 
@@ -161,7 +161,7 @@ class CameraZonePartialVisibilityTests(unittest.TestCase):
                 self.assertFalse(camera_zone_conflicts_with_partial_visibility(area))
 
     def test_face_demand_zones_conflict(self) -> None:
-        from backend.engine.common.long_video.keyframe_prompt_policy import (
+        from backend.long_video.keyframe_prompt_policy import (
             camera_zone_conflicts_with_partial_visibility,
         )
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 
 import mlx.core as mx
+from backend.engine.common.ops.attention import scaled_dot_product_attention_bhsd_mx
 import mlx.nn as nn
 
 
@@ -50,7 +51,7 @@ class WhisperAttention(nn.Module):
         k = self.k_proj(x).reshape(b, n, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
         v = self.v_proj(x).reshape(b, n, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
         scale = self.head_dim**-0.5
-        out = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
+        out = scaled_dot_product_attention_bhsd_mx(mx, q, k, v, scale=scale)
         out = out.transpose(0, 2, 1, 3).reshape(b, n, self.d_model)
         return self.out_proj(out)
 

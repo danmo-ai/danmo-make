@@ -140,7 +140,7 @@ async def scene_grounding_depth_from_asset(
 ):
     """Lazy G1: depth map from scene reference / panorama asset (depth-pro)."""
     from backend.api.deps import get_asset_store, get_model_registry
-    from backend.engine.common.long_video.scene_grounding_assets import depth_asset_from_source_image
+    from backend.long_video.scene_grounding_assets import depth_asset_from_source_image
     from backend.engine.families.flux1.structural import resolve_depth_pro_bundle_root
 
     asset_store = get_asset_store()

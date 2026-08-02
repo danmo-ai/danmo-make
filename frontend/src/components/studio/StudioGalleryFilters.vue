@@ -1,7 +1,8 @@
 <template>
   <DqSelect
     :model-value="filterTime"
-    size="small"
+    size="sm"
+    variant="ghost"
     class="studio-gallery-filters__time"
     @update:model-value="$emit('update:filterTime', $event)"
   >
@@ -16,7 +17,8 @@
   <DqSelect
     v-if="showModelFilter !== false"
     :model-value="filterModels"
-    size="small"
+    size="sm"
+    variant="ghost"
     multiple
     collapse-tags
     class="studio-gallery-filters__models"
@@ -29,7 +31,7 @@
   <DqInput
     v-if="showSearch"
     :model-value="searchText"
-    size="small"
+    size="sm"
     class="studio-gallery-filters__search"
     :placeholder="searchPlaceholder || $t('gallery.searchPlaceholder')"
     clearable

@@ -6,7 +6,7 @@ from typing import Any, Callable
 from backend.engine.llm.prompts.locale import chapter_json_user_locale_block
 from backend.engine.llm.script_parse.prompts import BEAT_PLAN_SYSTEM
 from backend.engine.llm.script_parse.review import invoke_pass_with_review, validate_pydantic_json
-from backend.engine.common.long_video.keyframe_prompt_policy import validate_beat_plan_row_contract
+from backend.long_video.keyframe_prompt_policy import validate_beat_plan_row_contract
 from backend.engine.llm.script_parse.rules import expand_beat_plan_rows
 from backend.engine.llm.script_parse.schemas import (
     BeatPlanArtifact,

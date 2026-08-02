@@ -541,6 +541,18 @@ _IMAGE_GENERATION_FACTORY = {
     "boogu_image": ("backend.engine.families.boogu.generation", "create_boogu_image_generator"),
 }
 
+# family → (module, resolve_output_path_fn) for Shape-C image generators
+_IMAGE_OUTPUT_PATH_RESOLVER = {
+    "hidream_o1": ("backend.engine.families.hidream_o1.generation", "resolve_hidream_output_path"),
+    "boogu_image": ("backend.engine.families.boogu.generation", "resolve_boogu_output_path"),
+    "step1x_edit": ("backend.engine.families.step1x_edit.generation", "resolve_step1x_output_path"),
+}
+
+_STRUCTURAL_GUIDE_ATTACH = {
+    "flux1": ("backend.engine.families.flux1.structural", "attach_structural_conditioning"),
+    "z_image": ("backend.engine.families.z_image.structural", "attach_structural_conditioning"),
+}
+
 _IMAGE_GENERATION_VALIDATE = {
     "hidream_o1": ("backend.engine.families.hidream_o1.generation", "validate_image_generation_params"),
     "step1x_edit": ("backend.engine.families.step1x_edit.generation", "validate_image_generation_params"),
@@ -568,7 +580,7 @@ _VIDEO_AVATAR_VALIDATE = {
 }
 
 _VIDEO_TRANSFORMER_WEIGHT_PREPARE = {
-    "ltx": ("backend.engine.families.ltx.weights", "prepare_ltx_video_transformer_weights"),
+    "ltx": ("backend.engine.families.ltx.weights_mlx", "prepare_ltx_video_transformer_weights"),
 }
 
 
@@ -727,6 +739,27 @@ def get_image_generation_factory(family: str):
         raise RuntimeError(
             f"ImagePipeline: no generation factory for family {family!r}; supported: {supported}"
         )
+    return getattr(importlib.import_module(entry[0]), entry[1])
+
+
+def get_image_output_path_resolver(family: str):
+    import importlib
+
+    entry = _IMAGE_OUTPUT_PATH_RESOLVER.get(family)
+    if entry is None:
+        supported = ", ".join(sorted(_IMAGE_OUTPUT_PATH_RESOLVER.keys()))
+        raise RuntimeError(
+            f"ImagePipeline: no output path resolver for family {family!r}; supported: {supported}"
+        )
+    return getattr(importlib.import_module(entry[0]), entry[1])
+
+
+def get_structural_guide_attach(family: str):
+    import importlib
+
+    entry = _STRUCTURAL_GUIDE_ATTACH.get(family)
+    if entry is None:
+        return None
     return getattr(importlib.import_module(entry[0]), entry[1])
 
 

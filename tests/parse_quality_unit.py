@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import unittest
 
-from backend.engine.common.long_video.parse_quality import (
+from backend.long_video.parse_quality import (
     _motion_core,
     protagonist_names_from_anchor,
     validate_parse_quality,
 )
-from backend.engine.common.long_video.shot_contract_validator import validate_shot_contracts
+from backend.long_video.shot_contract_validator import validate_shot_contracts
 
 
 ANCHOR = (
@@ -127,7 +127,7 @@ class ParseQualityTests(unittest.TestCase):
         self.assertIn("motion_duplicate_in_group", {i.code for i in result.issues})
 
     def test_strip_style_from_motion_prompt(self):
-        from backend.engine.common.long_video.parse_quality import (
+        from backend.long_video.parse_quality import (
             strip_style_from_motion_prompt,
             validate_parse_quality,
         )

@@ -59,7 +59,7 @@ async def dispatch_task(
         raise RuntimeError(f"unknown task kind {kind!r}")
     req = spec.request_cls.model_validate(params)
     if kind == TK.VIDEO_LONG_GENERATION:
-        from backend.engine.common.long_video.validate import (
+        from backend.long_video.validate import (
             LongVideoValidationError,
             resolve_long_video_image_engine,
         )

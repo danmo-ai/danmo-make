@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from backend.engine.common.long_video.segment_video_quality import (
+from backend.long_video.segment_video_quality import (
     validate_segment_video_batch_payload,
     validate_segment_video_prompts,
 )

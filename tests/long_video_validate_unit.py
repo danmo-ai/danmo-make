@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from backend.core.contracts import LongVideoShotSpec, VideoLongGenerationRequest, VideoLongVideoSpec
-from backend.engine.common.long_video.validate import (
+from backend.long_video.validate import (
     LongVideoValidationError,
     validate_long_video_request,
 )

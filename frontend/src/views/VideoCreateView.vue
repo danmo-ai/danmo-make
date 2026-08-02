@@ -2393,7 +2393,7 @@ function onCreatePageKeydown(e: KeyboardEvent) {
   width: 100%;
   max-height: 220px;
   object-fit: contain;
-  background: var(--dq-media-backdrop, #000);
+  background: var(--dq-color-black);
 }
 
 .studio-drawer-submit {

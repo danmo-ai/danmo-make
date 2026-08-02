@@ -1,5 +1,5 @@
 """
-DanQing Studio — FastAPI 主入口 (v4 引擎)
+Danmo Make — FastAPI 主入口 (v4 引擎)
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ from backend.services.download_service import DownloadService
 from backend.scheduler.task_scheduler import TaskScheduler
 
 from backend.engine.llm import LLMService
-from backend.engine.llm.service import normalize_app_llm_settings, resolve_llm_model_id, resolve_vlm_model_id
+from backend.engine.llm.service_mlx import normalize_app_llm_settings, resolve_llm_model_id, resolve_vlm_model_id
 
 from backend.api.routes import (
     adapters, assets, audios, download, gallery, images, loras,
@@ -97,8 +97,8 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="DanQing Studio API",
-        description="DanQing Studio — MLX/CUDA 双后端图像/视频生成引擎",
+        title="Danmo Make API",
+        description="Danmo Make — MLX/CUDA 双后端图像/视频生成引擎",
         version="4.0.0",
         lifespan=lifespan,
     )

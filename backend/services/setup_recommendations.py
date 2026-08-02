@@ -334,6 +334,9 @@ def topological_install_order(
             continue
         raw = entry.raw if isinstance(entry.raw, dict) else {}
         deps = dependency_model_ids(raw.get("dependencies"))
+        base = raw.get("base_model")
+        if isinstance(base, str) and base.strip():
+            deps = list(dict.fromkeys([*deps, base.strip()]))
         deps_map[model_id] = deps
 
     ordered_ids: list[str] = []

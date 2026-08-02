@@ -108,7 +108,7 @@ function handleClick(entry: NavEntry) {
         <span class="dq-download-menu__label">{{ entry.label }}</span>
         <DqTag
           v-if="entry.count !== undefined"
-          size="small"
+          size="sm"
           type="info"
           class="dq-menu-end-tag"
         >

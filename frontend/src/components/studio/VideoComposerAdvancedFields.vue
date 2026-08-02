@@ -77,7 +77,7 @@
       <div class="video-advanced-fields__seed">
         <DqInput
           v-model="seedModel"
-          size="small"
+          size="sm"
           :placeholder="$t('studio.seedPlaceholder')"
         />
         <DqIconButton
@@ -107,7 +107,7 @@
         <label class="video-advanced-fields__label">{{ $t('studio.loraLabel') }}</label>
         <DqSelect
           v-model="loraModel"
-          size="small"
+          size="sm"
           clearable
           :placeholder="$t('studio.noLora')"
           class="video-advanced-fields__select"
@@ -146,7 +146,7 @@
       <label class="video-advanced-fields__label">{{ paramFieldLabel(paramKey) }}</label>
       <DqSelect
         v-model="params[paramKey]"
-        size="small"
+        size="sm"
         class="video-advanced-fields__select"
       >
         <DqOption

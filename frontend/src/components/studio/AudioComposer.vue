@@ -3,7 +3,7 @@
     <!-- Title -->
     <DqInput
       v-model="localTitle"
-      size="small"
+      size="sm"
       :placeholder="$tt('studio.workTitlePlaceholder')"
       class="audio-composer__title"
     />
@@ -28,7 +28,7 @@
           >
             <DqIconButton
               type="text"
-              size="xs"
+              size="sm"
               class="audio-composer__ref-play"
               :aria-label="audioPlaying ? $tt('audio.pause') : $tt('audio.play')"
               @click.stop="toggleAudioPlayback"
@@ -40,7 +40,7 @@
           <ComposerIconTip :content="$t('create.composerTip.removeRef')">
             <DqIconButton
               type="text"
-              size="xs"
+              size="sm"
               :aria-label="$tt('common.delete')"
               @click="$emit('remove-reference')"
             >
@@ -51,7 +51,7 @@
         <ComposerIconTip v-else-if="workMode === 'cover'" :content="$t('create.composerTip.pickCoverSource')">
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             class="audio-composer__ref-add"
             :aria-label="$tt('audio.pickCoverSource')"
             @click="$emit('pick-reference')"
@@ -68,7 +68,7 @@
         >
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             :disabled="briefEnhancing || !localPrompt.trim()"
             :aria-label="$t('create.enhanceMusicBrief')"
             @click="onEnhanceBriefClick"
@@ -79,12 +79,12 @@
         <DqDropdown
           v-if="styles && Object.keys(styles).length > 0"
           trigger="click"
-          size="small"
+          size="sm"
           @command="onStyleCommand"
         >
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             class="audio-composer__preset-btn"
             :label="$t('create.composerTip.preset')"
           >
@@ -126,7 +126,7 @@
         >
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             :disabled="lyricsLoading || !localPrompt.trim()"
             :aria-label="$t('audio.generateLyrics')"
             @click="$emit('generate-lyrics')"
@@ -138,7 +138,7 @@
           <span>{{ $tt('audio.instrumental') }}</span>
           <DqSwitch
             v-model="localInstrumental"
-            size="small"
+            size="sm"
             :disabled="!supportsInstrumental"
           />
         </div>
@@ -173,7 +173,7 @@
       <template #mode>
         <DqSegmented
           :model-value="localWorkMode"
-          size="small"
+          size="sm"
           :options="workModeOptions"
           @update:model-value="localWorkMode = $event"
         />
@@ -181,8 +181,11 @@
       <template #controls>
         <DqSelect
           v-model="localModel"
-          size="small"
+          size="sm"
+          variant="ghost"
+          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--model"
+          
           @change="(val: string) => emit('model-change', val)"
         >
           <DqOption
@@ -194,7 +197,7 @@
           >
             <DqTag
               v-if="item.commercialUseAllowed"
-              size="mini"
+              size="sm"
               type="success"
               class="audio-composer__model-badge"
             >
@@ -205,8 +208,11 @@
 
         <DqSelect
           v-model="localDuration"
-          size="small"
+          size="sm"
+          variant="ghost"
+          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--duration"
+        
         >
           <DqOption
             v-for="opt in durationOptions"
@@ -219,8 +225,11 @@
       <template #actions>
         <DqSelect
           v-model="localBatchCount"
-          size="small"
+          size="sm"
+          variant="ghost"
+          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--batch"
+        
         >
           <DqOption
             v-for="n in 4"
@@ -304,13 +313,13 @@
                   <div class="audio-composer__seed-wrap">
                     <DqInput
                       v-model="seedInput"
-                      size="small"
+                      size="sm"
                       :placeholder="$tt('studio.seedPlaceholder')"
                       style="width: 100px"
                     />
                     <DqIconButton
                       type="text"
-                      size="xs"
+                      size="sm"
                       :label="$tt('create.randomSeed')"
                       @click="randomizeSeed"
                     >
@@ -353,7 +362,7 @@
                     <label>{{ $tt('studio.loraLabel') }}</label>
                     <DqSelect
                       v-model="localParams.lora"
-                      size="small"
+                      size="sm"
                       clearable
                       :placeholder="$tt('studio.noLora')"
                       style="flex: 1; max-width: 300px;"
@@ -394,7 +403,7 @@
                   <label>{{ $tt('audio.bpm') }}</label>
                   <DqInput
                     v-model="bpmInput"
-                    size="small"
+                    size="sm"
                     inputmode="numeric"
                     :placeholder="$tt('audio.bpmAuto')"
                     class="audio-composer__optional-input"
@@ -402,13 +411,13 @@
                 </div>
                 <div v-if="supportsKeyScale" class="audio-composer__field">
                   <label>{{ $tt('audio.keyScale') }}</label>
-                  <DqSelect v-model="localParams.key_scale" size="small" clearable :placeholder="$tt('audio.keyScaleAuto')">
+                  <DqSelect v-model="localParams.key_scale" size="sm" clearable :placeholder="$tt('audio.keyScaleAuto')">
                     <DqOption v-for="k in musicalKeys" :key="k" :label="k" :value="k" />
                   </DqSelect>
                 </div>
                 <div v-if="supportsTimeSignature" class="audio-composer__field">
                   <label>{{ $tt('audio.timeSignature') }}</label>
-                  <DqSelect v-model="localParams.time_signature" size="small" clearable :placeholder="$tt('audio.timeSignatureAuto')">
+                  <DqSelect v-model="localParams.time_signature" size="sm" clearable :placeholder="$tt('audio.timeSignatureAuto')">
                     <DqOption
                       v-for="ts in timeSignatures"
                       :key="ts.value"
@@ -423,13 +432,13 @@
               <div v-if="(workMode === 'create' || supportsCoverVocals) && (supportsVocalType || supportsVocalLanguage)" class="audio-composer__advanced-row">
                 <div v-if="supportsVocalLanguage" class="audio-composer__field">
                   <label>{{ $tt('audio.vocalLanguage') }}</label>
-                  <DqSelect v-model="localParams.vocal_language" size="small" clearable :placeholder="$tt('audio.vocalLanguageAuto')">
+                  <DqSelect v-model="localParams.vocal_language" size="sm" clearable :placeholder="$tt('audio.vocalLanguageAuto')">
                     <DqOption v-for="l in vocalLanguages" :key="l.value" :label="l.label" :value="l.value" />
                   </DqSelect>
                 </div>
                 <div v-if="supportsVocalType" class="audio-composer__field">
                   <label>{{ $tt('audio.vocalType') }}</label>
-                  <DqSelect v-model="localParams.vocal_type" size="small" clearable :placeholder="$tt('audio.vocalTypeAuto')">
+                  <DqSelect v-model="localParams.vocal_type" size="sm" clearable :placeholder="$tt('audio.vocalTypeAuto')">
                     <DqOption v-for="vt in vocalTypes" :key="vt.value" :label="vt.label" :value="vt.value" />
                   </DqSelect>
                 </div>

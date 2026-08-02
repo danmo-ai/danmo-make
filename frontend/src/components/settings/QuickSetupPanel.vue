@@ -200,13 +200,13 @@ defineExpose({
               <span v-if="slot.size_human" class="quick-setup-panel__muted">
                 ({{ slot.size_human }})
               </span>
-              <DqTag v-if="slot.installed" type="success" size="small" effect="plain">
+              <DqTag v-if="slot.installed" type="success" size="sm" effect="plain">
                 {{ $t('settings.quickSetupInstalled') }}
               </DqTag>
               <DqTag
                 v-else-if="slot.status === 'unavailable'"
                 type="info"
-                size="small"
+                size="sm"
                 effect="plain"
               >
                 {{ $t('settings.quickSetupUnavailable') }}
@@ -214,7 +214,7 @@ defineExpose({
               <DqTag
                 v-else-if="slot.warning === 'insufficient_memory'"
                 type="warning"
-                size="small"
+                size="sm"
                 effect="plain"
               >
                 {{ $t('settings.quickSetupWarningMemory') }}

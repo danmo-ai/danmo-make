@@ -4,7 +4,8 @@
       <DqSegmented
         v-model="activeTab"
         block
-        class="lv-inspector-segmented dq-segmented--sm"
+        size="sm"
+        class="lv-inspector-segmented"
         :options="inspectorTabOptions"
       />
     </div>
@@ -58,7 +59,7 @@
           <DqButton
             v-if="isPostAnchorLinkedStart && faceAnchorIndex != null"
             type="text"
-            size="xs"
+            size="sm"
             @click="$emit('select-segment', faceAnchorIndex!)"
           >
             {{ $tt('video.longVideoJumpToAnchor') }}
@@ -681,7 +682,7 @@ const framePreviewUrl = computed(() => {
   top: 0;
   z-index: 2;
   padding-bottom: 8px;
-  background: var(--dq-surface-base, var(--dq-bg));
+  background: var(--dq-bg-base, var(--dq-bg-base));
 }
 
 .lv-inspector__media-head {
@@ -696,7 +697,7 @@ const framePreviewUrl = computed(() => {
   aspect-ratio: 16 / 9;
   border-radius: 10px;
   overflow: hidden;
-  background: #000;
+  background: var(--dq-color-black);
   border: 0.5px solid var(--dq-glass-border, var(--dq-border-subtle));
   box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
 }
@@ -775,7 +776,7 @@ const framePreviewUrl = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: color-mix(in srgb, var(--dq-surface-base) 62%, transparent);
+  background: color-mix(in srgb, var(--dq-bg-base) 62%, transparent);
   color: var(--dq-accent);
 }
 

@@ -148,7 +148,7 @@ function shortId(id: string) {
 }
 
 .lv-t2i-prov__val.is-on {
-  color: var(--dq-accent, #06c);
+  color: var(--dq-accent);
 }
 
 .lv-t2i-prov__parts {

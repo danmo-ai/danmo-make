@@ -26,7 +26,7 @@ export DANQING_HTTP_PORT="${DANQING_HTTP_PORT:-7800}"
 exec "$ROOT/danqing-api/danqing-api"
 """
 
-_README = """DanQing Studio — Linux CUDA server bundle
+_README = """Danmo Make — Linux CUDA server bundle
 =====================================
 
 Contents:

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Tauri build requires bundle.resources paths to exist (even for `tauri dev`).
+# Production packs overwrite this with prepare_tauri_resources.py.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+STUB_DIR="$ROOT/desktop/src-tauri/danqing-api"
+
+if [[ -d "$STUB_DIR" ]] && [[ -f "$STUB_DIR/danqing-api" || -f "$STUB_DIR/danqing-api.exe" ]]; then
+  # Real sidecar already staged — leave it alone.
+  exit 0
+fi
+
+mkdir -p "$STUB_DIR"
+cat > "$STUB_DIR/.dev-stub" <<'EOF'
+Dev placeholder for Tauri bundle.resources.
+
+Release builds replace this directory via:
+  python scripts/prepare_tauri_resources.py
+EOF
+echo "==> Ensured Tauri resource stub: desktop/src-tauri/danqing-api/"

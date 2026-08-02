@@ -6,7 +6,17 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from backend.engine.config.model_configs import HiDreamO1Config
-from backend.engine.families.hidream_o1.generation_mlx import HiDreamO1MlxGenerator
+from backend.engine.families.hidream_o1.generation_mlx import (
+    HiDreamO1MlxGenerator,
+    resolve_hidream_output_path,
+)
+
+__all__ = [
+    "HiDreamO1GeneratorProto",
+    "create_hidream_o1_generator",
+    "resolve_hidream_output_path",
+    "validate_image_generation_params",
+]
 
 
 class HiDreamO1GeneratorProto(Protocol):

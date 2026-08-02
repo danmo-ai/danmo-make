@@ -8,6 +8,7 @@
         :id="rowSelectId(row.characterId)"
         :model-value="row.lookId"
         size="sm"
+        variant="ghost"
         class="lv-cast-looks__select"
         @update:model-value="(v: string) => onLookChange(row.characterId, v)"
       >
@@ -20,7 +21,7 @@
       </DqSelect>
       <DqIconButton
         type="text"
-        size="xs"
+        size="sm"
         class="lv-cast-looks__remove"
         :label="$tt('common.delete')"
         @click="removeCharacter(row.characterId)"
@@ -33,6 +34,7 @@
       v-if="addableCharacters.length"
       :model-value="''"
       size="sm"
+      variant="ghost"
       class="lv-cast-looks__add"
       :placeholder="$tt('video.longVideoCastLooksAdd')"
       @update:model-value="onAddCharacter"

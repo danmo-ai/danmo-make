@@ -17,7 +17,7 @@ from backend.engine.common.model.base import TransformerBase
 from backend.engine.common.ops.attention import scaled_dot_product_attention_bhsd_mx
 from backend.engine.common.ops.embeddings import sinusoidal_timestep_proj
 from backend.engine.config.model_configs import LTXConfig
-from backend.engine.families.ltx.perturbations import BatchedPerturbationConfig, PerturbationType
+from backend.engine.families.ltx.perturbations_mlx import BatchedPerturbationConfig, PerturbationType
 from backend.engine.runtime._base import RuntimeContext
 
 # Watchdog guard: flush lazy graph every N blocks (Metal ~10 s deadline).
@@ -824,7 +824,7 @@ class LTX23Transformer(TransformerBase):
         Routes LTX 2.3 (48-layer A/V) and legacy 28-layer diffusers checkpoints
         through the appropriate key normalization.
         """
-        from backend.engine.families.ltx.weights import remap_ltx_weights
+        from backend.engine.families.ltx.weights_mlx import remap_ltx_weights
 
         return remap_ltx_weights(weights)
 
@@ -843,7 +843,7 @@ class LTX23Transformer(TransformerBase):
             and getattr(inference_mode, "kind", "dense") == "quantized"
             and getattr(inference_mode, "bits", None) in (4, 8)
         ):
-            from backend.engine.common.model.quantized_load import load_weights_quantized_inference
+            from backend.engine.common.model.quantized_load_mlx import load_weights_quantized_inference
 
             return load_weights_quantized_inference(
                 self,
@@ -872,7 +872,7 @@ class LTX23Transformer(TransformerBase):
         """Inject LTX RoPE interpolation scale when ``_pipeline_fps`` is present."""
         fps = cond.pop("_pipeline_fps", None)
         if fps is not None:
-            from backend.engine.families.ltx.pipeline_math import ltx_rope_interpolation_scale
+            from backend.engine.families.ltx.pipeline_math_mlx import ltx_rope_interpolation_scale
 
             temporal = int(getattr(self.config, "temporal_vae_scale", 8) or 8)
             vae_sf = int(getattr(self.config, "vae_scale", 32) or 32)
@@ -1016,7 +1016,7 @@ def load_ltx23_x0_model(
 
     from backend.engine.common.bundle.quant_inference import resolve_dit_inference_weight_mode
     from backend.engine.common.bundle.safetensors_affine_quant import read_bundle_affine_bits_if_quantized
-    from backend.engine.families.ltx.weights import load_split_safetensors, remap_ltx23_weights
+    from backend.engine.families.ltx.weights_mlx import load_split_safetensors, remap_ltx23_weights
     from backend.engine.runtime.mlx_runtime import load_weights_dict
 
     path = _resolve_bundle_safetensors(_Path(bundle_root), weight_stem)

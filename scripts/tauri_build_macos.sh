@@ -5,11 +5,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/desktop"
 
 if [[ "$(uname -s)" != Darwin ]]; then
-  echo "DanQing macOS desktop build must run on Darwin." >&2
+  echo "Danmo Make macOS desktop build must run on Darwin." >&2
   exit 1
 fi
 if [[ "$(uname -m)" != arm64 ]]; then
-  echo "DanQing macOS desktop requires Apple Silicon (arm64). MLX is not supported on Intel Mac." >&2
+  echo "Danmo Make macOS desktop requires Apple Silicon (arm64). MLX is not supported on Intel Mac." >&2
   exit 1
 fi
 
@@ -94,20 +94,20 @@ if APP=$(find "$ROOT/out/desktop/bundle" -name "*.app" -print -quit); then
 
   # README
   cat > "$DMG_STAGING/阅读说明.txt" << 'README_EOF'
-📦 DanQing Studio 安装说明 (macOS)
+📦 Danmo Make 安装说明 (macOS)
 
 由于本应用未使用 Apple 开发者签名，macOS 可能会阻止打开。
 请按以下步骤操作：
 
 方法一（推荐 — 一键修复）：
-  1. 将 DanQing Studio.app 拖入「应用程序」文件夹
+  1. 将 Danmo Make.app 拖入「应用程序」文件夹
   2. 双击本 DMG 中的「修复并打开.command」脚本
   3. 如脚本无法执行，请先打开终端运行：
      xattr -cr /Volumes/DanQing\ Studio
      然后重新双击脚本
 
 方法二（右键打开）：
-  1. 将 DanQing Studio.app 拖入「应用程序」文件夹
+  1. 将 Danmo Make.app 拖入「应用程序」文件夹
   2. 在 Finder 中右键点击 app → 选择「打开」
   3. 弹窗中点击「打开」确认
 
@@ -120,12 +120,12 @@ README_EOF
   # One-click fix script
   cat > "$DMG_STAGING/修复并打开.command" << 'FIX_EOF'
 #!/bin/bash
-# 一键移除 macOS 隔离属性并打开 DanQing Studio
+# 一键移除 macOS 隔离属性并打开 Danmo Make
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_PATH="$SCRIPT_DIR/DanQing Studio.app"
+APP_PATH="$SCRIPT_DIR/Danmo Make.app"
 
 # Step 1: clear quarantine on the DMG volume itself (needed when downloaded from internet)
-DMG_VOL="/Volumes/DanQing Studio"
+DMG_VOL="/Volumes/Danmo Make"
 if [ -d "$DMG_VOL" ]; then
   echo "==> 正在移除 DMG 卷隔离属性..."
   xattr -cr "$DMG_VOL" 2>/dev/null
@@ -133,11 +133,11 @@ fi
 
 # Step 2: locate app
 if [ ! -d "$APP_PATH" ]; then
-  APP_PATH="/Applications/DanQing Studio.app"
+  APP_PATH="/Applications/Danmo Make.app"
 fi
 
 if [ ! -d "$APP_PATH" ]; then
-  echo "❌ 未找到 DanQing Studio.app"
+  echo "❌ 未找到 Danmo Make.app"
   echo "请先将 app 拖入应用程序文件夹"
   read -p "按回车退出..."
   exit 1
@@ -146,7 +146,7 @@ fi
 # Step 3: clear quarantine on app and open
 echo "==> 正在移除应用隔离属性..."
 xattr -cr "$APP_PATH" 2>/dev/null
-echo "==> 正在打开 DanQing Studio..."
+echo "==> 正在打开 Danmo Make..."
 open "$APP_PATH"
 FIX_EOF
   chmod +x "$DMG_STAGING/修复并打开.command"
@@ -159,7 +159,7 @@ FIX_EOF
   mkdir -p "$DMG_DIR"
   APP_VERSION=$(plutil -extract CFBundleShortVersionString raw "$DMG_STAGING/$APP_NAME/Contents/Info.plist" 2>/dev/null || echo "0.0.0")
   ARCH=$(uname -m)
-  DMG_NAME="DanQing Studio_${APP_VERSION}_${ARCH}.dmg"
+  DMG_NAME="Danmo Make_${APP_VERSION}_${ARCH}.dmg"
   DMG_PATH="$DMG_DIR/$DMG_NAME"
   echo "==> Creating DMG: $DMG_NAME"
 
@@ -167,10 +167,10 @@ FIX_EOF
   while IFS= read -r old_dmg; do
     [[ -n "$old_dmg" ]] && hdiutil detach "$old_dmg" -force 2>/dev/null || true
   done < <(
-    hdiutil info 2>/dev/null | awk '/DanQing Studio/ { found=1 } found && /^image-path/ { sub(/^image-path[[:space:]]*:[[:space:]]*/, ""); print; found=0 }'
+    hdiutil info 2>/dev/null | awk '/Danmo Make/ { found=1 } found && /^image-path/ { sub(/^image-path[[:space:]]*:[[:space:]]*/, ""); print; found=0 }'
   )
 
-  hdiutil create -volname "DanQing Studio" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH" \
+  hdiutil create -volname "Danmo Make" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH" \
     && echo "==> DMG created: $DMG_PATH" \
     || echo "WARNING: DMG creation failed"
 

@@ -302,7 +302,7 @@ def resolve_video_edit_source_image(
     kind = str((record or {}).get("kind") or "").lower()
     is_video = mime.startswith("video/") or kind == "video"
     if is_video and str(mode or "image_only") == "first_frame":
-        from backend.engine.common.video.stitch import extract_first_frame_image
+        from backend.engine.common.codecs.vae.video_stitch import extract_first_frame_image
 
         if work_dir is None:
             raise RuntimeError("video_edit_source_mode=first_frame requires a work_dir for frame extraction.")
@@ -554,7 +554,7 @@ def video_apply_ltx_distilled_scheduler_timesteps(
     """Apply LTX distilled sigma shift; returns denoise step indices."""
     import numpy as np
 
-    from backend.engine.families.ltx.pipeline_math import (
+    from backend.engine.families.ltx.pipeline_math_mlx import (
         ltx_calculate_shift,
         ltx_scheduler_shift_kwargs,
         ltx_stretch_shift_to_terminal,

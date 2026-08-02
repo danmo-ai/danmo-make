@@ -501,7 +501,7 @@ def execute_create_denoise(
 
 def decode_create_latents(ctx: ImageCreateRunContext, latents: Any) -> Any:
     """VAE decode only (no filesystem write)."""
-    from backend.engine.families.z_image.latent_refine import apply_latent_refine_if_requested
+    from backend.engine.families.z_image.latent_refine_mlx import apply_latent_refine_if_requested
 
     latents = apply_latent_refine_if_requested(
         ctx.pipeline,

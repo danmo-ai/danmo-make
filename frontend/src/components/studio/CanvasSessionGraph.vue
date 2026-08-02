@@ -26,7 +26,7 @@
     <div v-if="allNodes.length > 0" class="canvas-session-graph__search">
       <DqInput
         v-model="filterQuery"
-        size="xs"
+        size="sm"
         clearable
         :placeholder="$t('canvas.sessionGraphSearch')"
         @keydown.esc.stop="onSearchEsc"

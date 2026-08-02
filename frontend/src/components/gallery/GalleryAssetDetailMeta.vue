@@ -159,7 +159,7 @@ function onViewTaskLog() {
 .gallery-asset-detail-meta__label {
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.03em;
+  letter-spacing: var(--dq-tracking-wide);
   text-transform: uppercase;
   color: var(--dq-label-tertiary);
 }
@@ -213,7 +213,7 @@ function onViewTaskLog() {
 }
 
 .gallery-asset-detail-meta__mono code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--dq-font-mono);
   font-size: inherit;
   max-width: min(220px, 42vw);
   overflow: hidden;

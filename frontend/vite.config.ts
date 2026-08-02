@@ -16,6 +16,7 @@ export default defineConfig({
     exclude: ['@danqing/dq-ui', '@danqing/dq-shell'],
   },
   server: {
+    host: '127.0.0.1',
     port: Number(process.env.DQ_FRONTEND_PORT || 5800),
     strictPort: true,
     proxy: {

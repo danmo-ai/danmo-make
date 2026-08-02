@@ -22,12 +22,12 @@ from backend.engine.pipelines.image_model_load import load_image_transformer
 from backend.engine.training.crop import prepare_training_rgb_image, resolve_training_resolution
 from backend.engine.training.dataset_store import _dataset_meta, load_training_pairs_unified
 from backend.engine.training.flux_dreambooth_mlx import _load_vae_encoder, _log, _progress, _save_adapter
-from backend.engine.training.lora_layers import (
+from backend.engine.training.lora_layers_mlx import (
     apply_lora_to_zimage_dit,
     list_zimage_lora_blocks,
     prepare_dit_for_lora_training,
 )
-from backend.engine.training.dit_training_loss import (
+from backend.engine.training.dit_training_loss_mlx import (
     CLASS_PRIOR_LATENT_COUNT,
     _sample_turbo_band_indices,
     apply_static_sigma_shift,
@@ -39,9 +39,9 @@ from backend.engine.training.dit_training_loss import (
     sample_prior_latent,
     turbo_training_sigmas,
 )
-from backend.engine.training.latent_cache import LatentCache
-from backend.engine.training.lora_train_loop import run_dit_lora_train_loop
-from backend.engine.training.lora_train_runtime import (
+from backend.engine.training.latent_cache_mlx import LatentCache
+from backend.engine.training.lora_train_loop_mlx import run_dit_lora_train_loop
+from backend.engine.training.lora_train_runtime_mlx import (
     assert_training_memory,
     parse_lora_train_runtime_config,
     split_train_val_indices,
@@ -53,7 +53,7 @@ from backend.engine.training.presets import (
 )
 from backend.engine.training.user_lora_registry import register_user_lora
 
-from backend.engine.training.z_image_turbo_adapter import (
+from backend.engine.training.z_image_turbo_adapter_mlx import (
     install_zimage_turbo_training_assistant,
     resolve_zimage_turbo_training_adapter_path,
     TurboTrainingAssistantHandle,
@@ -232,7 +232,7 @@ def _validate_saved_lora(path: Path) -> None:
     from backend.engine.config.model_configs import ZImageConfig
     from backend.engine.families.z_image.transformer import ZImageTransformer
     from backend.engine.runtime.mlx import MLXContext
-    from backend.engine.training.lora_layers import (
+    from backend.engine.training.lora_layers_mlx import (
         enumerate_zimage_lora_module_paths,
         repair_indexed_lora_weights,
     )
@@ -1002,7 +1002,7 @@ def run_z_image_dreambooth_training(
         }
         _save_adapter(final_path, train_module, train_runtime.lora_rank, meta)
     if train_runtime.fuse_adapters:
-        from backend.engine.training.lora_layers import collect_fused_adapter_deltas
+        from backend.engine.training.lora_layers_mlx import collect_fused_adapter_deltas
 
         fused_path = adapter_dir / "fused_adapters.safetensors"
         fused = collect_fused_adapter_deltas(train_module)

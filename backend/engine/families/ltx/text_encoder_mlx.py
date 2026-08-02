@@ -465,7 +465,7 @@ class LTX23GemmaEncoder:
         on_log: Callable[[str, str], None] | None = None,
     ) -> tuple[tuple[mx.array, mx.array], tuple[mx.array, mx.array]]:
         """Return ``((pos_video, pos_audio), (neg_video, neg_audio))`` for CFG."""
-        from backend.engine.families.ltx.pipeline_math import DEFAULT_NEGATIVE_PROMPT
+        from backend.engine.families.ltx.pipeline_math_mlx import DEFAULT_NEGATIVE_PROMPT
 
         neg = negative_prompt if negative_prompt is not None else DEFAULT_NEGATIVE_PROMPT
         pos = self.encode(prompt, on_log=on_log)

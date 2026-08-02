@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from backend.core.contracts import LongVideoShotSpec, VideoLongGenerationRequest
-from backend.engine.common.long_video.plan import build_shot_plan
-from backend.engine.common.video.stitch import stitch_segment_paths
+from backend.long_video.plan import build_shot_plan
+from backend.engine.common.codecs.vae.video_stitch import stitch_segment_paths
 
 
 def _resolve_shots(request: VideoLongGenerationRequest) -> list[LongVideoShotSpec]:

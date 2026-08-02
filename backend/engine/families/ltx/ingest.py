@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from backend.engine.families.ltx.long_video_plan import num_frames_for_duration_sec
-from backend.engine.families.ltx.pipeline_math import AUDIO_SAMPLE_RATE, VIDEO_SPATIAL_SCALE
+from backend.engine.families.ltx.pipeline_math_mlx import AUDIO_SAMPLE_RATE, VIDEO_SPATIAL_SCALE
 from backend.utils.video_sr_ffmpeg import require_ffmpeg, require_ffprobe
 
 
@@ -199,7 +199,7 @@ def _extract_video_rgb(video: Path, *, fps: float) -> np.ndarray:
     return np.frombuffer(proc.stdout[: n * fb], dtype=np.uint8).reshape(n, h, w, 3).astype(np.float32) / 127.5 - 1.0
 
 
-from backend.engine.common.video.stitch import append_video_with_crossfade
+from backend.engine.common.codecs.vae.video_stitch import append_video_with_crossfade
 
 
 def trim_video_leading(

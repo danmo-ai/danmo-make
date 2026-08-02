@@ -14,7 +14,7 @@ from PIL import Image
 
 from backend.engine.runtime.mlx_runtime import run_eval
 from backend.engine.config.model_configs import LTXConfig
-from backend.engine.families.ltx.pipeline_math import (
+from backend.engine.families.ltx.pipeline_math_mlx import (
     DEFAULT_LTX_IMAGE_CRF,
     DISTILLED_SIGMAS,
     STAGE_2_SIGMAS,
@@ -304,7 +304,7 @@ def _multimodal_guided_denoise_loop(
             "LTX 2.3 dev guidance requires the in-repo LTX23X0Model DiT wrapper."
         )
 
-    from backend.engine.families.ltx.perturbations import (
+    from backend.engine.families.ltx.perturbations_mlx import (
         BatchedPerturbationConfig,
         Perturbation,
         PerturbationConfig,

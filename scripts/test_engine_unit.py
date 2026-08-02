@@ -16,7 +16,6 @@ _ENGINE_TEST_MODULES = (
     "tests.test_engine_sessions_unit",
     "tests.setup_unit",
     "tests.storyboard_unit",
-    "tests.long_video_chapter_analyze_integration",
     "tests.long_video_activity_unit",
     "tests.long_video_t2i_provenance_unit",
     "tests.llm_model_resolve_unit",

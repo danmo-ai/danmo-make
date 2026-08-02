@@ -4,7 +4,7 @@
     <div class="canvas-toolbar__group">
       <DqIconButton
         type="text"
-        size="xs"
+        size="sm"
         :label="$t('canvas.fitAll')"
         @click="$emit('fit-all')"
       >
@@ -12,7 +12,7 @@
       </DqIconButton>
       <DqIconButton
         type="text"
-        size="xs"
+        size="sm"
         :disabled="zoom <= 0.11"
         :label="'-'"
         @click="$emit('update:zoom', Math.max(0.1, zoom - 0.2))"
@@ -22,7 +22,7 @@
       <span class="canvas-toolbar__zoom-label">{{ Math.round(zoom * 100) }}%</span>
       <DqIconButton
         type="text"
-        size="xs"
+        size="sm"
         :disabled="zoom >= 4.9"
         :label="'+'"
         @click="$emit('update:zoom', Math.min(5, zoom + 0.2))"
@@ -31,7 +31,7 @@
       </DqIconButton>
       <DqIconButton
         type="text"
-        size="xs"
+        size="sm"
         :label="$t('canvas.resetView')"
         @click="$emit('reset-view')"
       >
@@ -41,7 +41,7 @@
     <div class="canvas-toolbar__group">
       <DqIconButton
         type="text"
-        size="xs"
+        size="sm"
         class="canvas-toolbar__btn--accent"
         :label="$t('studio.openComposer')"
         @click="$emit('open-composer')"
@@ -50,7 +50,7 @@
       </DqIconButton>
       <DqIconButton
         type="text"
-        size="xs"
+        size="sm"
         class="canvas-toolbar__btn--accent"
         :label="$t('canvas.importWorks')"
         @click="$emit('open-gallery-picker')"
@@ -59,7 +59,7 @@
       </DqIconButton>
       <DqIconButton
         type="text"
-        size="xs"
+        size="sm"
         :class="{ 'canvas-toolbar__btn--active': graphOpen }"
         :label="$t('canvas.sessionGraph')"
         @click="$emit('toggle-graph')"
@@ -68,7 +68,7 @@
       </DqIconButton>
       <DqIconButton
         type="text"
-        size="xs"
+        size="sm"
         :class="{ 'canvas-toolbar__btn--active': edgesOpen }"
         :label="$t('canvas.showEdges')"
         @click="$emit('toggle-edges')"
@@ -77,7 +77,7 @@
       </DqIconButton>
       <DqIconButton
         type="text"
-        size="xs"
+        size="sm"
         :class="{ 'canvas-toolbar__btn--active': guidesOpen }"
         :label="$t('canvas.regionGuides')"
         @click="$emit('toggle-guides')"
@@ -86,16 +86,16 @@
       </DqIconButton>
       <DqIconButton
         type="text"
-        size="xs"
+        size="sm"
         :label="$t('canvas.layers')"
         @click="$emit('toggle-layers')"
       >
         <DqIcon :size="14"><Menu /></DqIcon>
       </DqIconButton>
-      <DqDropdown trigger="click" size="small" @command="onMoreCommand">
+      <DqDropdown trigger="click" size="sm" @command="onMoreCommand">
         <DqIconButton
           type="text"
-          size="xs"
+          size="sm"
           :label="$t('canvas.moreMenu')"
         >
           <DqIcon :size="14"><Menu /></DqIcon>
@@ -212,7 +212,7 @@ function onMoreCommand(cmd: string) {
   color: var(--dq-label-tertiary);
   writing-mode: vertical-rl;
   text-orientation: mixed;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--dq-tracking-wider);
   user-select: none;
   padding: 2px 0;
 }

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import asdict
 
-from backend.engine.common.long_video.plan import ShotPlan, build_shot_plan
+from backend.long_video.plan import ShotPlan, build_shot_plan
 from backend.engine.families.ltx.long_video_plan import LongVideoPlan, build_long_video_plan
 
 EXPAND_BATCH_SIZE = 4

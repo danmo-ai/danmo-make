@@ -19,14 +19,14 @@ from backend.engine.pipelines.image_model_load import load_image_transformer
 from backend.engine.training.crop import prepare_training_rgb_image, resolve_training_resolution
 from backend.engine.training.dataset_store import _dataset_meta, load_training_pairs_unified
 from backend.engine.training.flux_dreambooth_mlx import _log, _progress, _save_adapter
-from backend.engine.training.lora_layers import (
+from backend.engine.training.lora_layers_mlx import (
     apply_lora_to_qwen_dit,
     enumerate_qwen_lora_module_paths,
     list_qwen_lora_blocks,
     prepare_dit_for_lora_training,
     repair_indexed_lora_weights,
 )
-from backend.engine.training.dit_training_loss import (
+from backend.engine.training.dit_training_loss_mlx import (
     CLASS_PRIOR_LATENT_COUNT,
     combine_instance_prior_loss,
     flow_match_mse,
@@ -34,9 +34,9 @@ from backend.engine.training.dit_training_loss import (
     sample_noisy_latent,
     sample_prior_latent,
 )
-from backend.engine.training.latent_cache import LatentCache
-from backend.engine.training.lora_train_loop import run_dit_lora_train_loop
-from backend.engine.training.lora_train_runtime import (
+from backend.engine.training.latent_cache_mlx import LatentCache
+from backend.engine.training.lora_train_loop_mlx import run_dit_lora_train_loop
+from backend.engine.training.lora_train_runtime_mlx import (
     assert_training_memory,
     parse_lora_train_runtime_config,
     split_train_val_indices,
@@ -648,7 +648,7 @@ def run_qwen_image_dreambooth_training(
         }
         _save_adapter(final_path, train_module, train_runtime.lora_rank, meta)
     if train_runtime.fuse_adapters:
-        from backend.engine.training.lora_layers import collect_fused_adapter_deltas
+        from backend.engine.training.lora_layers_mlx import collect_fused_adapter_deltas
 
         fused_path = adapter_dir / "fused_adapters.safetensors"
         mx.save_safetensors(str(fused_path), collect_fused_adapter_deltas(train_module))

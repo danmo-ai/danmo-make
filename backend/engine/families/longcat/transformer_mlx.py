@@ -23,8 +23,8 @@ import math
 import mlx.core as mx
 import mlx.nn as nn
 
-from backend.engine.families.longcat.dit_attention import Attention, MultiHeadCrossAttention
-from backend.engine.families.longcat.dit_blocks import (
+from backend.engine.families.longcat.dit_attention_mlx import Attention, MultiHeadCrossAttention
+from backend.engine.families.longcat.dit_blocks_mlx import (
     CaptionEmbedder,
     FeedForwardSwiGLU,
     FinalLayer_FP32,

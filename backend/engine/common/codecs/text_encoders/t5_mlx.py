@@ -119,7 +119,7 @@ class T5EncoderMlx:
             from backend.engine.common.bundle.safetensors_affine_quant import (
                 read_bundle_affine_bits_if_quantized,
             )
-            from backend.engine.common.model.quantized_load import load_weights_quantized_inference
+            from backend.engine.common.model.quantized_load_mlx import load_weights_quantized_inference
 
             config = T5Config.from_pretrained(self.model_path)
             self._model = T5Model(config)

@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from backend.engine.common.model.base import _mlx_affine_infer_bits_and_group_size
-from backend.engine.families.ltx.weights import remap_ltx_weights
+from backend.engine.families.ltx.weights_mlx import remap_ltx_weights
 
 
 def _load_default_registry_expanded() -> dict:
@@ -46,7 +46,7 @@ class StructuralGuideTests(unittest.TestCase):
 
 class InferenceOptimizationTests(unittest.TestCase):
     def test_teacache_resolve_auto_short_schedule_off(self) -> None:
-        from backend.engine.common.ops.teacache import resolve_teacache_settings
+        from backend.engine.common.ops.teacache_mlx import resolve_teacache_settings
 
         enabled, *_ = resolve_teacache_settings("flux1", "auto", num_steps=8)
         self.assertFalse(enabled)
@@ -54,7 +54,7 @@ class InferenceOptimizationTests(unittest.TestCase):
     def test_teacache_gate_skips_when_below_threshold(self) -> None:
         import mlx.core as mx
 
-        from backend.engine.common.ops.teacache import (
+        from backend.engine.common.ops.teacache_mlx import (
             FLUX1_TEACACHE_COEFFICIENTS,
             TeaCacheState,
             gate_step,
@@ -244,7 +244,7 @@ class InferenceOptimizationTests(unittest.TestCase):
         self.assertEqual(hit, ("a", "b"))
 
     def test_wan_teacache_auto_enabled(self) -> None:
-        from backend.engine.common.ops.teacache import resolve_teacache_settings
+        from backend.engine.common.ops.teacache_mlx import resolve_teacache_settings
 
         enabled, thresh, coeffs, *_ = resolve_teacache_settings("wan", "auto", num_steps=40)
         self.assertTrue(enabled)
@@ -252,7 +252,7 @@ class InferenceOptimizationTests(unittest.TestCase):
         self.assertEqual(len(coeffs), 5)
 
     def test_hunyuan_teacache_auto_enabled(self) -> None:
-        from backend.engine.common.ops.teacache import resolve_teacache_settings
+        from backend.engine.common.ops.teacache_mlx import resolve_teacache_settings
 
         enabled, thresh, *_ = resolve_teacache_settings("hunyuan", "auto", num_steps=50)
         self.assertTrue(enabled)
@@ -274,7 +274,7 @@ class InferenceOptimizationTests(unittest.TestCase):
     def test_vae_stream_prepend_tail(self) -> None:
         import mlx.core as mx
 
-        from backend.engine.common.ops.vae_stream_cache import VAEStreamCacheSession
+        from backend.engine.common.ops.vae_stream_cache_mlx import VAEStreamCacheSession
 
         session = VAEStreamCacheSession.from_plan(enabled=True)
         x = mx.ones((1, 3, 2, 4, 4))
@@ -299,7 +299,7 @@ class InferenceOptimizationTests(unittest.TestCase):
         self.assertGreater(trace[0], 0.0)
 
     def test_teacache_calibration_simulate_skip_rate(self) -> None:
-        from backend.engine.common.ops.teacache import FLUX1_TEACACHE_COEFFICIENTS
+        from backend.engine.common.ops.teacache_mlx import FLUX1_TEACACHE_COEFFICIENTS
         from backend.engine.common.ops.teacache_calibrate import (
             build_calibration_report,
             simulate_skip_rate,
@@ -542,7 +542,7 @@ class ZImageEnhancementTests(unittest.TestCase):
         from unittest.mock import patch
 
         from backend.core.contracts import LatentRefineSpec
-        from backend.engine.families.z_image.latent_refine import apply_latent_refine_if_requested
+        from backend.engine.families.z_image.latent_refine_mlx import apply_latent_refine_if_requested
 
         entry = SimpleNamespace(family="z_image")
         request = SimpleNamespace(
@@ -552,7 +552,7 @@ class ZImageEnhancementTests(unittest.TestCase):
         latents = SimpleNamespace(shape=(16, 1, 96, 60), ndim=4)
 
         with patch(
-            "backend.engine.common.mlx_only.require_mlx_backend",
+            "backend.engine.runtime.mlx_guards.require_mlx_backend",
             side_effect=RuntimeError("family_check_passed"),
         ):
             with self.assertRaises(RuntimeError) as ctx:
@@ -575,7 +575,7 @@ class ZImageEnhancementTests(unittest.TestCase):
     def test_latent_refine_resize_uses_mlx_nn_upsample(self) -> None:
         import mlx.core as mx
 
-        from backend.engine.families.z_image.latent_refine import _resize_latent_nchw
+        from backend.engine.families.z_image.latent_refine_mlx import _resize_latent_nchw
         from backend.engine.runtime.mlx import MLXContext
 
         ctx = MLXContext()
@@ -589,7 +589,7 @@ class ZImageEnhancementTests(unittest.TestCase):
         self.assertEqual(merged_model_id_from_output_name("MyBlend_v2"), "z-image-merged-myblend-v2")
 
     def test_mlx_only_guard_cuda_raises(self) -> None:
-        from backend.engine.common.mlx_only import require_mlx_backend, require_mlx_if_option_active
+        from backend.engine.runtime.mlx_guards import require_mlx_backend, require_mlx_if_option_active
 
         class _CudaCtx:
             backend = "cuda"
@@ -1304,7 +1304,7 @@ class VideoRuntimeContractTests(unittest.TestCase):
         self.assertTrue(bool(getattr(wan, "uses_wan_shift", False)))
         self.assertTrue(bool(getattr(wan, "release_t5_after_encode", False)))
         self.assertIsNotNone(get_video_decode_handler("wan"))
-        self.assertEqual(video_encoder_type(wan), "t5")
+        self.assertEqual(video_encoder_type(wan), "wan_umt5")
 
     def test_bernini_resolve_animate_video_uses_first_frame(self) -> None:
         import tempfile
@@ -1931,6 +1931,16 @@ class TransformerStemDispatchTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         families = list(reg._TRANSFORMER.keys()) + list(reg._VIDEO_TRANSFORMER.keys())
         for family in families:
+            from backend.engine.config.model_configs import get_config_class
+
+            cfg = get_config_class(family)()
+            # Shape C / avatar family_* stems are placeholders (no DiT backend dispatch).
+            shapes = (
+                str(getattr(cfg, "image_pipeline_shape", "") or ""),
+                str(getattr(cfg, "video_pipeline_shape", "") or ""),
+            )
+            if any(s.startswith("family_") for s in shapes):
+                continue
             pkg = self._FAMILY_PKG.get(family, family)
             stem = root / "backend" / "engine" / "families" / pkg / "transformer.py"
             self.assertTrue(stem.is_file(), f"missing stem: {stem}")
@@ -2050,7 +2060,7 @@ class DiTBackendDispatchTests(unittest.TestCase):
         self.assertEqual(_resolve_distilled_stage1_steps(10, on_log=_on_log), 10)
 
     def test_ltx_dev_guider_defaults_match_reference(self) -> None:
-        from backend.engine.families.ltx.pipeline_math import (
+        from backend.engine.families.ltx.pipeline_math_mlx import (
             ltx2_schedule,
             ltx_dev_audio_guider_params,
             ltx_dev_video_guider_params,
@@ -2076,7 +2086,7 @@ class DiTBackendDispatchTests(unittest.TestCase):
         import mlx.core as mx
 
         from backend.engine.families.ltx.generation_mlx import _denoise_loop
-        from backend.engine.families.ltx.pipeline_math import LatentState
+        from backend.engine.families.ltx.pipeline_math_mlx import LatentState
         from backend.engine.runtime.mlx import MLXContext
 
         ctx = MLXContext()
@@ -2111,7 +2121,7 @@ class DiTBackendDispatchTests(unittest.TestCase):
     def test_ltx_pin_latent_by_mask_preserves_conditioned_tokens(self) -> None:
         import mlx.core as mx
 
-        from backend.engine.families.ltx.pipeline_math import pin_latent_by_mask
+        from backend.engine.families.ltx.pipeline_math_mlx import pin_latent_by_mask
         from backend.engine.runtime.mlx import MLXContext
 
         ctx = MLXContext()
@@ -2951,7 +2961,7 @@ class DownloadStallTests(unittest.TestCase):
             root = Path(tmp)
             (root / "google" / "umt5-xxl").mkdir(parents=True)
             (root / "google" / "umt5-xxl" / "tokenizer.json").write_bytes(b"x" * 2048)
-            (root / "configuration.json").write_bytes(b"{}")
+            (root / "configuration.json").write_bytes(b"{" + (b" " * 64) + b"}")
             (root / "models_t5_umt5-xxl-enc-bf16.pth").write_bytes(b"x" * (1024 ** 3 + 1))
             (root / "Wan2.1_VAE.pth").write_bytes(b"x" * (484 * 1024 ** 2))
             patterns = [
@@ -3303,7 +3313,7 @@ class HunyuanWeightTests(unittest.TestCase):
         import mlx.core as mx
         from importlib import import_module
 
-        from backend.engine.common.model.quantized_load import (
+        from backend.engine.common.model.quantized_load_mlx import (
             _linear_for_flat_base,
             _resolve_module_attr,
         )
@@ -3331,7 +3341,7 @@ class HunyuanWeightTests(unittest.TestCase):
             parent, attr = _resolve_module_attr(stub, f"{base}.scales")
             self.assertIs(lin, parent)
             self.assertEqual(attr, "scales")
-            from backend.engine.common.model.quantized_load import _assign_quant_affine_field
+            from backend.engine.common.model.quantized_load_mlx import _assign_quant_affine_field
 
             scales = mx.zeros(lin.scales.shape, dtype=mx.bfloat16)
             _assign_quant_affine_field(stub, f"{base}.scales", scales)
@@ -4957,7 +4967,7 @@ class DiffRhythmDecodeTests(unittest.TestCase):
 class LLMServiceTests(unittest.TestCase):
     def _load_service(self):
         from backend.core.model_registry import ModelRegistry
-        from backend.engine.llm.service import LLMService
+        from backend.engine.llm.service_mlx import LLMService
         from backend.utils.path_utils import PathResolver
 
         root = Path(__file__).resolve().parents[1]
@@ -4981,7 +4991,7 @@ class LLMServiceTests(unittest.TestCase):
     def test_normalize_app_llm_settings_uses_saved_defaults(self) -> None:
         from backend.core.interfaces import AppSettings
         from backend.core.model_registry import ModelRegistry
-        from backend.engine.llm.service import normalize_app_llm_settings, resolve_llm_model_id, resolve_vlm_model_id
+        from backend.engine.llm.service_mlx import normalize_app_llm_settings, resolve_llm_model_id, resolve_vlm_model_id
         from backend.utils.path_utils import PathResolver
 
         root = Path(__file__).resolve().parents[1]
@@ -4999,7 +5009,7 @@ class LLMServiceTests(unittest.TestCase):
 
     def test_llm_think_mode_setting(self) -> None:
         from backend.core.model_registry import ModelRegistry
-        from backend.engine.llm.service import LLMService
+        from backend.engine.llm.service_mlx import LLMService
         from backend.utils.path_utils import PathResolver
 
         root = Path(__file__).resolve().parents[1]
@@ -5019,7 +5029,7 @@ class LLMServiceTests(unittest.TestCase):
         self.assertTrue(svc._llm_think_enabled)
 
     def test_enhance_system_prompt_by_target_action(self) -> None:
-        from backend.engine.llm.service import LLMService
+        from backend.engine.llm.service_mlx import LLMService
 
         self.assertIn("video", LLMService._enhance_system_prompt("video_create").lower())
         self.assertIn("music", LLMService._enhance_system_prompt("audio_create").lower())
@@ -5027,7 +5037,7 @@ class LLMServiceTests(unittest.TestCase):
 
     def test_sanitize_lyrics_strips_word_loops(self) -> None:
         from backend.engine.llm.lyrics_sanitize import sanitize_lyrics_output
-        from backend.engine.llm.service import LLMService
+        from backend.engine.llm.service_mlx import LLMService
         from backend.engine.llm.think_parse import extract_final_llm_content
 
         think_open = "<" + "think" + ">"
@@ -5091,7 +5101,7 @@ Should not appear
         self.assertTrue(LLMService._lyrics_quality_ok(cleaned))
 
     def test_build_lyrics_user_message_markdown(self) -> None:
-        from backend.engine.llm.service import LLMService
+        from backend.engine.llm.service_mlx import LLMService
 
         msg = LLMService._build_lyrics_user_message("武侠电子，苍劲男声", "epic orchestral")
         self.assertIn("## Music description", msg)
@@ -5212,7 +5222,7 @@ Should not appear
         )
 
     def test_generate_lyrics_forces_no_think_mode(self) -> None:
-        from backend.engine.llm.service import LLMService
+        from backend.engine.llm.service_mlx import LLMService
 
         svc = self._load_service()
         svc.apply_model_settings(llm_think_enabled=True)
@@ -5262,7 +5272,7 @@ Should not appear
         with patch.object(svc, "_load_model", side_effect=capture_load), \
              patch.object(svc, "_unload_model"), \
              patch.object(svc, "_build_chat_prompt", side_effect=capture_build), \
-             patch("backend.engine.llm.service.mlx_lm.generate", side_effect=capture_generate):
+             patch("backend.engine.llm.service_mlx.mlx_lm.generate", side_effect=capture_generate):
             result = svc.enhance_prompt(
                 EnhanceRequest(prompt="夕阳下的少女", style_positive="cinematic"),
             )
@@ -5276,7 +5286,7 @@ Should not appear
     def test_generation_kwargs_uses_sampler(self) -> None:
         from backend.core.contracts import ChatCompletionRequest, ChatMessage
         from backend.core.model_registry import ModelRegistry
-        from backend.engine.llm.service import LLMService
+        from backend.engine.llm.service_mlx import LLMService
         from backend.utils.path_utils import PathResolver
 
         root = Path(__file__).resolve().parents[1]
@@ -5301,7 +5311,7 @@ Should not appear
 
     def test_think_mode_suffix_respects_settings(self) -> None:
         from backend.core.model_registry import ModelRegistry
-        from backend.engine.llm.service import LLMService
+        from backend.engine.llm.service_mlx import LLMService
         from backend.utils.path_utils import PathResolver
 
         root = Path(__file__).resolve().parents[1]
@@ -5317,7 +5327,7 @@ Should not appear
         self.assertTrue(svc._apply_think_mode_to_text("hello").endswith("/no_think"))
 
     def test_coerce_vlm_output_text_handles_generation_result(self) -> None:
-        from backend.engine.llm.vision import _coerce_vlm_output_text
+        from backend.engine.llm.vision_mlx import _coerce_vlm_output_text
 
         class _FakeGen:
             text = "  a red apple  "
@@ -6946,7 +6956,7 @@ class LoraDatasetStoreTests(unittest.TestCase):
         from backend.engine.runtime.mlx import MLXContext
         from backend.engine.config.model_configs import ZImageConfig
         from backend.engine.families.z_image.transformer import ZImageTransformer
-        from backend.engine.training.lora_layers import (
+        from backend.engine.training.lora_layers_mlx import (
             apply_lora_to_zimage_dit,
             prepare_dit_for_lora_training,
         )
@@ -7314,7 +7324,7 @@ class LoraQualityTests(unittest.TestCase):
     def test_prepare_image_for_vlm_downscales(self) -> None:
         from PIL import Image
 
-        from backend.engine.llm.vision import prepare_image_for_vlm
+        from backend.engine.llm.vision_mlx import prepare_image_for_vlm
 
         with tempfile.TemporaryDirectory() as tmp:
             big = Path(tmp) / "big.jpg"
@@ -7418,14 +7428,14 @@ class LoraQualityTests(unittest.TestCase):
 
 class LoraTrainRuntimeTests(unittest.TestCase):
     def test_train_min_memory_gb_qlora_lowers_threshold(self) -> None:
-        from backend.engine.training.lora_train_runtime import train_min_memory_gb
+        from backend.engine.training.lora_train_runtime_mlx import train_min_memory_gb
 
         dense = train_min_memory_gb("flux1-dev")
         qlora4 = train_min_memory_gb("flux1-dev", qlora_bits=4)
         self.assertLess(qlora4, dense)
 
     def test_split_train_val_indices(self) -> None:
-        from backend.engine.training.lora_train_runtime import split_train_val_indices
+        from backend.engine.training.lora_train_runtime_mlx import split_train_val_indices
 
         train, val = split_train_val_indices(10, val_split=0.2)
         self.assertEqual(len(train) + len(val), 10)
@@ -7433,7 +7443,7 @@ class LoraTrainRuntimeTests(unittest.TestCase):
         self.assertGreaterEqual(len(train), 2)
 
     def test_parse_lora_train_runtime_config(self) -> None:
-        from backend.engine.training.lora_train_runtime import parse_lora_train_runtime_config
+        from backend.engine.training.lora_train_runtime_mlx import parse_lora_train_runtime_config
 
         cfg = parse_lora_train_runtime_config(
             {
@@ -7459,7 +7469,7 @@ class LoraTrainRuntimeTests(unittest.TestCase):
         self.assertTrue(cfg.fuse_adapters)
 
     def test_parse_lora_train_runtime_config_requires_class_prompt_for_prior(self) -> None:
-        from backend.engine.training.lora_train_runtime import parse_lora_train_runtime_config
+        from backend.engine.training.lora_train_runtime_mlx import parse_lora_train_runtime_config
 
         with self.assertRaisesRegex(RuntimeError, "class_prompt"):
             parse_lora_train_runtime_config(
@@ -7596,7 +7606,7 @@ class LoraTrainRuntimeTests(unittest.TestCase):
             self.assertEqual(extras["hint_key"], "studio.loraHint.zImageDistillPatch")
 
     def test_parse_lora_train_runtime_config_default_scale(self) -> None:
-        from backend.engine.training.lora_train_runtime import parse_lora_train_runtime_config
+        from backend.engine.training.lora_train_runtime_mlx import parse_lora_train_runtime_config
 
         cfg = parse_lora_train_runtime_config({}, defaults={"lora_rank": 16, "iterations": 100})
         self.assertEqual(cfg.lora_alpha, 16)
@@ -7607,7 +7617,7 @@ class LoraTrainRuntimeTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from backend.engine.training.lora_train_runtime import resume_checkpoint_incompatibility
+        from backend.engine.training.lora_train_runtime_mlx import resume_checkpoint_incompatibility
 
         with tempfile.TemporaryDirectory() as tmp:
             adapter = Path(tmp) / "best_adapters.safetensors"
@@ -7634,7 +7644,7 @@ class LoraTrainRuntimeTests(unittest.TestCase):
             self.assertIsNone(ok)
 
     def test_parse_lora_train_runtime_config_rejects_batch_size_gt_one(self) -> None:
-        from backend.engine.training.lora_train_runtime import parse_lora_train_runtime_config
+        from backend.engine.training.lora_train_runtime_mlx import parse_lora_train_runtime_config
 
         with self.assertRaisesRegex(RuntimeError, "batch_size=1"):
             parse_lora_train_runtime_config(
@@ -7643,7 +7653,7 @@ class LoraTrainRuntimeTests(unittest.TestCase):
             )
 
     def test_latent_cache_fingerprint(self) -> None:
-        from backend.engine.training.latent_cache import LatentCache
+        from backend.engine.training.latent_cache_mlx import LatentCache
 
         cache = LatentCache("/tmp/dq_lora_test")
         cache.begin(
@@ -7662,7 +7672,7 @@ class LoraTrainRuntimeTests(unittest.TestCase):
 
         import mlx.core as mx
 
-        from backend.engine.training.latent_cache import LatentCache
+        from backend.engine.training.latent_cache_mlx import LatentCache
 
         with tempfile.TemporaryDirectory() as td:
             cache = LatentCache(Path(td))
@@ -7685,7 +7695,7 @@ class LoraTrainRuntimeTests(unittest.TestCase):
 
     def test_min_snr_weight_disabled(self) -> None:
         import mlx.core as mx
-        from backend.engine.training.dit_training_loss import min_snr_weight
+        from backend.engine.training.dit_training_loss_mlx import min_snr_weight
 
         sigma = mx.array([0.5])
         w = min_snr_weight(sigma, 0.0)
@@ -7709,7 +7719,7 @@ class LoraTrainRuntimeTests(unittest.TestCase):
         from backend.engine.runtime.mlx import MLXContext
         from backend.engine.config.model_configs import ZImageConfig
         from backend.engine.families.z_image.transformer import ZImageTransformer
-        from backend.engine.training.lora_layers import (
+        from backend.engine.training.lora_layers_mlx import (
             apply_lora_to_zimage_dit,
             iter_lora_linears,
         )
@@ -7819,7 +7829,7 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         self.assertEqual(req.preset, "scheme4")
     def test_turbo_training_sigmas_band(self) -> None:
         from backend.engine.runtime.mlx import MLXContext
-        from backend.engine.training.dit_training_loss import sample_noisy_latent_turbo, turbo_training_sigmas
+        from backend.engine.training.dit_training_loss_mlx import sample_noisy_latent_turbo, turbo_training_sigmas
 
         ctx = MLXContext()
         sigmas = turbo_training_sigmas(ctx, infer_steps=9, width=768, height=1280)
@@ -7842,7 +7852,7 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         import mlx.core as mx
 
         from backend.engine.runtime.mlx import MLXContext
-        from backend.engine.training.dit_training_loss import sample_noisy_latent_turbo
+        from backend.engine.training.dit_training_loss_mlx import sample_noisy_latent_turbo
 
         ctx = MLXContext()
         x0 = ctx.zeros((256, 16, 96, 48), dtype=ctx.bfloat16())
@@ -7872,7 +7882,7 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         import mlx.core as mx
 
         from backend.engine.runtime.mlx import MLXContext
-        from backend.engine.training.dit_training_loss import sample_noisy_latent_shifted
+        from backend.engine.training.dit_training_loss_mlx import sample_noisy_latent_shifted
 
         ctx = MLXContext()
         x0 = ctx.zeros((256, 16, 64, 64), dtype=ctx.bfloat16())
@@ -7887,7 +7897,7 @@ class LoraTrainingPresetsTests(unittest.TestCase):
     def test_apply_lora_recursive_wraps_matching_linears(self) -> None:
         import mlx.nn as nn
 
-        from backend.engine.training.lora_layers import (
+        from backend.engine.training.lora_layers_mlx import (
             _apply_lora_recursive,
             iter_lora_linears_with_paths,
             LoRALinear,
@@ -7912,7 +7922,7 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         import mlx.core as mx
         import mlx.nn as nn
 
-        from backend.engine.training.lora_layers import LoRALinear
+        from backend.engine.training.lora_layers_mlx import LoRALinear
 
         in_d, out_d, rank = 256, 1024, 32
         down = mx.random.normal((rank, in_d))
@@ -7930,7 +7940,7 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         import mlx.core as mx
         import mlx.nn as nn
 
-        from backend.engine.training.lora_layers import LoRALinear
+        from backend.engine.training.lora_layers_mlx import LoRALinear
 
         base = nn.Linear(8, 4)
         base.weight = mx.ones((4, 8))
@@ -7951,7 +7961,7 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        from backend.engine.training.z_image_turbo_adapter import (
+        from backend.engine.training.z_image_turbo_adapter_mlx import (
             LOCAL_ADAPTER_REL,
             TRAINING_ADAPTER_FILE,
             resolve_zimage_turbo_training_adapter_path,
@@ -8117,7 +8127,7 @@ class LoraTrainingCropTests(unittest.TestCase):
         from backend.engine.config.model_configs import QwenImageConfig
         from backend.engine.families.qwen.transformer import QwenImageTransformer
         from backend.engine.families.qwen.weights import remap_qwen_lora_keys
-        from backend.engine.training.lora_layers import (
+        from backend.engine.training.lora_layers_mlx import (
             apply_lora_to_qwen_dit,
             collect_lora_safetensors,
             prepare_dit_for_lora_training,
@@ -8158,7 +8168,7 @@ class ZImageLoraExportTests(unittest.TestCase):
         from backend.engine.config.model_configs import ZImageConfig
         from backend.engine.families.z_image.transformer import ZImageTransformer
         from backend.engine.families.z_image.weights import remap_zimage_lora_keys
-        from backend.engine.training.lora_layers import (
+        from backend.engine.training.lora_layers_mlx import (
             apply_lora_to_zimage_dit,
             collect_lora_safetensors,
             prepare_dit_for_lora_training,
@@ -8225,7 +8235,7 @@ class LtxExtendMaskTests(unittest.TestCase):
         import mlx.core as mx
 
         from backend.engine.families.ltx.extend_mlx import validate_extend_window_frames
-        from backend.engine.families.ltx.pipeline_math import build_ltx_av_extend_masks
+        from backend.engine.families.ltx.pipeline_math_mlx import build_ltx_av_extend_masks
 
         class _Ctx:
             def ones(self, shape, dtype=None):

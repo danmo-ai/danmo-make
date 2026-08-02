@@ -20,16 +20,26 @@ def find_cargo_bundle_dir() -> Path:
     if not base.is_dir():
         raise SystemExit(f"Missing Cargo target dir: {base}\nRun: make desktop-tauri")
 
-    candidates = sorted(
-        (p for p in base.glob("*/release/bundle") if p.is_dir()),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
+    preferred = [
+        base / "x86_64-pc-windows-msvc" / "release" / "bundle",
+        base / "x86_64-unknown-linux-gnu" / "release" / "bundle",
+        base / "aarch64-apple-darwin" / "release" / "bundle",
+        base / "release" / "bundle",
+    ]
+    candidates = [p for p in preferred if p.is_dir()]
+    candidates.extend(
+        sorted(
+            (p for p in base.glob("*/release/bundle") if p.is_dir() and p not in candidates),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
     )
 
     if not candidates:
         raise SystemExit(
             f"No Tauri bundle under {base}\n"
-            "Expected */release/bundle (e.g. aarch64-apple-darwin/release/bundle)"
+            "Expected */release/bundle (e.g. aarch64-apple-darwin/release/bundle "
+            "or x86_64-pc-windows-msvc/release/bundle with NSIS)"
         )
     return candidates[0]
 

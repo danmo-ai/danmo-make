@@ -31,7 +31,7 @@ if not defined DANQING_HTTP_PORT set "DANQING_HTTP_PORT=7800"
 endlocal
 """
 
-_README = """DanQing Studio — Windows CUDA server bundle
+_README = """Danmo Make — Windows CUDA server bundle
 =======================================
 
 Contents:

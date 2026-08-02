@@ -206,7 +206,7 @@ def dispatch_video_edit(
         model=request.model,
         operation="video edit",
     )
-    from backend.engine.common.long_video.segment_source import resolve_long_video_edit_chain_source
+    from backend.long_video.segment_source import resolve_long_video_edit_chain_source
 
     request = resolve_long_video_edit_chain_source(
         request,

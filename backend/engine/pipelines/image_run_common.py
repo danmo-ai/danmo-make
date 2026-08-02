@@ -77,7 +77,7 @@ def apply_image_inference_options(
         if norm in ("", "none", "off"):
             extra[attr] = "none"
             continue
-        from backend.engine.common.mlx_only import require_mlx_if_option_active
+        from backend.engine.runtime.mlx_guards import require_mlx_if_option_active
 
         require_mlx_if_option_active(ctx, feature=attr, option=val)
         extra[attr] = norm
@@ -1358,18 +1358,9 @@ def execute_family_image_generator(
 
     work = Path(ctx_exec.work_dir)
     work.mkdir(parents=True, exist_ok=True)
-    if family == "hidream_o1":
-        from backend.engine.families.hidream_o1.generation_mlx import resolve_hidream_output_path
+    from backend.engine._transformer_registry import get_image_output_path_resolver
 
-        resolve_out = resolve_hidream_output_path
-    elif family == "boogu_image":
-        from backend.engine.families.boogu.generation_mlx import resolve_boogu_output_path
-
-        resolve_out = resolve_boogu_output_path
-    else:
-        from backend.engine.families.step1x_edit.generation_cuda import resolve_step1x_output_path
-
-        resolve_out = resolve_step1x_output_path
+    resolve_out = get_image_output_path_resolver(family)
     neg = getattr(request, "negative_prompt", None) or ""
 
     results: list[tuple[str, dict[str, Any]]] = []
@@ -1387,7 +1378,9 @@ def execute_family_image_generator(
 
         pipeline_graph_step("denoise", on_log)
         snap_resolution = bool(getattr(config, "hidream_snap_resolution", True))
-        if family == "hidream_o1" and os.environ.get("DANQING_BENCH_EVAL") == "1":
+        if os.environ.get("DANQING_BENCH_EVAL") == "1" and hasattr(
+            config, "hidream_snap_resolution"
+        ):
             snap_resolution = False
         saved = gen.generate_and_save(
             prompt=request.prompt,

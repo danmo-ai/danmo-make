@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from backend.engine.common.long_video.plan import (
+from backend.long_video.plan import (
     allocate_shot_durations,
     build_shot_plan,
     build_shot_plan_for_scenes,

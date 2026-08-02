@@ -3,7 +3,7 @@
     <div class="model-card-header">
       <div class="model-icon">{{ initials }}</div>
       <div
-        class="model-status-dot is-ready"
+        class="dq-status-dot dq-status-dot--success model-card-status"
         :title="$t('loraTrain.registeredBadge')"
       />
     </div>
@@ -24,11 +24,11 @@
       </div>
 
       <div class="model-card-meta">
-        <DqTag size="small" type="info" effect="plain">{{ displayBaseModel }}</DqTag>
-        <DqTag v-if="lora.lora_rank" size="small" type="success" effect="plain">
+        <DqTag size="sm" type="info" effect="plain">{{ displayBaseModel }}</DqTag>
+        <DqTag v-if="lora.lora_rank" size="sm" type="success" effect="plain">
           Rank {{ lora.lora_rank }}
         </DqTag>
-        <DqTag v-if="hubSourceLabel" size="small" type="warning" effect="plain">
+        <DqTag v-if="hubSourceLabel" size="sm" type="warning" effect="plain">
           {{ hubSourceLabel }}
         </DqTag>
       </div>

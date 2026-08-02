@@ -838,6 +838,9 @@ def check_parity() -> list[str]:
     for family in sorted(tr._TRANSFORMER.keys()):
         try:
             config = get_config_class(family)()
+            # Shape C family_generator stems are placeholders without DiT _param_map.
+            if str(getattr(config, "image_pipeline_shape", "") or "") == "family_generator":
+                continue
             ctx = MLXContext()
             model = get_transformer_class(family)(config, ctx)
             if hasattr(model, "_build_param_map"):

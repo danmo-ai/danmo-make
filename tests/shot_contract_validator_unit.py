@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from backend.engine.common.long_video.shot_contract_validator import (
+from backend.long_video.shot_contract_validator import (
     clamp_shot_durations,
     validate_shot_contracts,
 )

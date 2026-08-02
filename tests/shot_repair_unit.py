@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import unittest
 
-from backend.engine.common.long_video.shot_contract_validator import validate_shot_contracts
-from backend.engine.common.long_video.shot_repair import repair_shot_contracts
+from backend.long_video.shot_contract_validator import validate_shot_contracts
+from backend.long_video.shot_repair import repair_shot_contracts
 
 
 DOORBELL_SHOT_0 = {
@@ -45,15 +45,15 @@ class ShotRepairTests(unittest.TestCase):
             },
         ]
         fixed = repair_shot_contracts(shots, character_anchor="- 赵今麦：主角")
-        from backend.engine.common.long_video.shot_contract_validator import validate_shot_contracts
+        from backend.long_video.shot_contract_validator import validate_shot_contracts
 
         result = validate_shot_contracts(fixed, character_anchor="- 赵今麦：主角")
         self.assertTrue(result.ok)
         self.assertEqual(fixed[1]["first_frame_visibility"], "partial")
 
     def test_normalize_preserves_post_when_over_guide(self):
-        from backend.engine.common.long_video.shot_repair import normalize_subsegment_plans
-    from backend.engine.common.long_video.segment_plan_types import SubsegmentPlan
+        from backend.long_video.shot_repair import normalize_subsegment_plans
+        from backend.long_video.segment_plan_types import SubsegmentPlan
 
         subsegs = [
             SubsegmentPlan(

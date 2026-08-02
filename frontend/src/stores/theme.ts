@@ -3,7 +3,7 @@ import { ref, watch } from 'vue'
 import {
   THEME_OPTIONS as DQ_THEME_OPTIONS,
   applyDqTheme,
-  isDqThemeSlug,
+  resolveDqThemeSlug,
   type DqThemeSlug,
 } from '@danqing/dq-tokens'
 import { getItem, setItem, DQ_STORAGE } from '@/utils/storage'
@@ -34,12 +34,12 @@ export const VALID_THEME_IDS: ThemeId[] = THEME_OPTIONS.map((o) => o.id)
 /** Non-default themes (used by remount re-apply paths). */
 export const PRODUCTIVITY_THEME_IDS: ThemeId[] = VALID_THEME_IDS.filter((id) => id !== 'mac')
 
-/** Map legacy Studio ids → current dq-tokens slugs. */
+/** Map legacy Studio ids → current dq-tokens slugs (5 curated themes). */
 export function migrateThemeId(raw: string | null | undefined): ThemeId | null {
   if (!raw) return null
+  // Pre-tokens Studio id (not in REMOVED_THEME_FALLBACKS).
   if (raw === 'apple-dark') return 'mac'
-  if (isDqThemeSlug(raw)) return raw
-  return null
+  return resolveDqThemeSlug(raw)
 }
 
 export function applyTheme(themeId?: ThemeId | string | null): void {

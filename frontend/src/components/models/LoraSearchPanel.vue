@@ -271,6 +271,7 @@ watch(searchScopeModel, () => {
           <span class="lora-search-page__label">{{ $t('download.loraSearchScope') }}</span>
           <DqSelect
             v-model="searchScopeModel"
+            size="sm"
             :placeholder="$t('download.loraSearchScope')"
           >
             <DqOption
@@ -284,7 +285,7 @@ watch(searchScopeModel, () => {
 
         <div class="lora-search-page__field lora-search-page__field--source">
           <span class="lora-search-page__label">{{ $t('download.loraSearchSource') }}</span>
-          <DqSelect v-model="searchSource">
+          <DqSelect v-model="searchSource" size="sm">
             <DqOption
               v-for="opt in sourceOptions"
               :key="opt.value"
@@ -363,29 +364,29 @@ watch(searchScopeModel, () => {
             <div class="lora-search-row__tags">
               <DqTag
                 v-if="hubBaseLabel(item)"
-                size="small"
+                size="sm"
                 type="warning"
                 effect="plain"
               >
                 {{ $t('download.loraSearchHubBase', { name: hubBaseLabel(item) }) }}
               </DqTag>
-              <DqTag v-else size="small" type="info" effect="plain">
+              <DqTag v-else size="sm" type="info" effect="plain">
                 {{ $t('download.loraSearchHubBaseUnknown') }}
               </DqTag>
               <DqTag
                 v-for="tag in item.tags || []"
                 :key="`${item.id}-${tag}`"
-                size="small"
+                size="sm"
                 effect="plain"
               >
                 {{ tag }}
               </DqTag>
               <ModelVersionSourceBadge :source="item.source" />
-              <DqTag v-if="item.nsfw" type="danger" size="small">{{ $t('download.nsfwTag') }}</DqTag>
-              <DqTag v-if="item.likes" type="success" size="small">
+              <DqTag v-if="item.nsfw" type="danger" size="sm">{{ $t('download.nsfwTag') }}</DqTag>
+              <DqTag v-if="item.likes" type="success" size="sm">
                 {{ $t('download.loraSearchLikes', { count: formatNumber(item.likes) }) }}
               </DqTag>
-              <DqTag type="info" size="small">
+              <DqTag type="info" size="sm">
                 <DqIcon><Download /></DqIcon>
                 {{ formatNumber(item.downloads || 0) }}
               </DqTag>
@@ -396,6 +397,7 @@ watch(searchScopeModel, () => {
             <DqSelect
               v-if="item.source === 'civitai' && item.versions?.length"
               v-model="selectedVersions[item.id]"
+              size="sm"
               class="lora-search-row__version"
               :placeholder="$t('download.selectVersion')"
             >
@@ -410,6 +412,7 @@ watch(searchScopeModel, () => {
               <span class="lora-search-row__bind-label">{{ $t('download.loraSearchBindBase') }}</span>
               <DqSelect
                 :model-value="itemBindBase(item.id)"
+                size="sm"
                 class="lora-search-row__bind-select"
                 :placeholder="$t('download.loraSearchBindBase')"
                 @update:model-value="setItemBindBase(item.id, $event)"

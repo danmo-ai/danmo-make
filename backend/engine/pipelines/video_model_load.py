@@ -370,7 +370,7 @@ def load_video_transformer(
         bundle_root = local_bundle_root(project_root, entry, version_key)
     elif not bundle_root.is_dir():
         return None
-    if family == "wan" and bundle_root is not None and wan_is_moe_bundle(bundle_root):
+    if bundle_root is not None and wan_is_moe_bundle(bundle_root):
         return load_wan_moe_video_transformer(
             ctx=ctx,
             config=config,

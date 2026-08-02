@@ -7,7 +7,7 @@
     <DqInput
       v-if="!embedded"
       v-model="localTitle"
-      size="small"
+      size="sm"
       :placeholder="$t('studio.workTitlePlaceholder')"
       class="image-composer__title"
     />
@@ -36,7 +36,7 @@
           >
             <DqIconButton
               type="text"
-              size="xs"
+              size="sm"
               :disabled="reversing"
               :aria-label="$t('create.reversePrompt')"
               @click="$emit('reverse-prompt')"
@@ -47,7 +47,7 @@
           <ComposerIconTip :content="$t('create.composerTip.removeRef')">
             <DqIconButton
               type="text"
-              size="xs"
+              size="sm"
               :aria-label="$t('common.delete')"
               @click="$emit('remove-reference')"
             >
@@ -58,7 +58,7 @@
         <ComposerIconTip v-else :content="$t('create.composerTip.refImage')">
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             class="image-composer__ref-add"
             :aria-label="$t('create.refImage')"
             @click="$emit('pick-reference')"
@@ -77,7 +77,7 @@
             class="image-composer__preset-area__enhance-btn"
             :class="{ 'image-composer__enhance-btn--busy': enhancing }"
             type="text"
-            size="xs"
+            size="sm"
             :disabled="enhancing || !localPrompt.trim()"
             :aria-label="$t('create.enhance')"
             @click="onEnhanceClick"
@@ -88,12 +88,12 @@
         <DqDropdown
           v-if="styles && Object.keys(styles).length > 0"
           trigger="click"
-          size="small"
+          size="sm"
           @command="onStyleCommand"
         >
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             class="image-composer__preset-btn"
             :label="$t('create.composerTip.preset')"
           >
@@ -134,15 +134,18 @@
         <DqSegmented
           v-if="modeOptions && modeOptions.length > 0"
           v-model="localMode"
-          size="small"
+          size="sm"
           :options="modeOptions"
         />
       </template>
       <template #controls>
         <DqSelect
           v-model="localModel"
-          size="small"
+          size="sm"
+          variant="ghost"
+          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--model"
+          
           @change="(val: string) => emit('model-change', val)"
         >
           <DqOption
@@ -154,7 +157,7 @@
           >
             <DqTag
               v-if="item.commercialUseAllowed"
-              size="mini"
+              size="sm"
               type="success"
               class="image-composer__model-badge"
             >
@@ -166,8 +169,11 @@
         <DqSelect
           v-if="!isImg2imgMode && !lockSize"
           v-model="localSize"
-          size="small"
+          size="sm"
+          variant="ghost"
+          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--size"
+        
         >
           <DqOption
             v-for="opt in sizeOptions"
@@ -180,8 +186,11 @@
       <template #actions>
         <DqSelect
           v-model="localBatchCount"
-          size="small"
+          size="sm"
+          variant="ghost"
+          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--batch"
+        
         >
           <DqOption
             v-for="n in 4"

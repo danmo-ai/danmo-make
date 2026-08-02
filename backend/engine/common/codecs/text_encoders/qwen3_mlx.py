@@ -390,7 +390,7 @@ def build_zimage_mlx_encoder(
         resolve_inference_weight_mode_from_bundle,
     )
     from backend.engine.common.bundle.safetensors_affine_quant import read_bundle_affine_bits_if_quantized
-    from backend.engine.common.model.quantized_load import load_weights_quantized_inference
+    from backend.engine.common.model.quantized_load_mlx import load_weights_quantized_inference
 
     model_dir = Path(model_path)
     weights: dict = {}

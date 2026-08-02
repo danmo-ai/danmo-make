@@ -18,7 +18,7 @@ def _repair_indexed_zimage_weights(
     model: Any,
     lora_config: dict[str, Any],
 ) -> dict[str, Any]:
-    from backend.engine.training.lora_layers import (
+    from backend.engine.training.lora_layers_mlx import (
         enumerate_zimage_lora_module_paths,
         repair_indexed_lora_weights,
     )

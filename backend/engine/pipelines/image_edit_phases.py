@@ -486,7 +486,7 @@ def execute_image_edit_denoise(ctx: ImageEditRunContext) -> Any | None:
 def decode_image_edit_latents(ctx: ImageEditRunContext, latents: Any) -> Any:
     from PIL import Image
 
-    from backend.engine.families.z_image.latent_refine import apply_latent_refine_if_requested
+    from backend.engine.families.z_image.latent_refine_mlx import apply_latent_refine_if_requested
 
     latents = apply_latent_refine_if_requested(
         ctx.pipeline,

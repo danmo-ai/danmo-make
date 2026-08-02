@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.engine._transformer_registry import get_structural_guide_attach
+
 
 def augment_request_for_structural_guide(request: Any, ctx: Any) -> Any:
     guide = getattr(request, "structural_guide", None)
@@ -37,39 +39,22 @@ def attach_structural_conditioning(
     ctx_exec: Any,
     on_log: Any | None,
 ) -> tuple[dict[str, Any], Any | None]:
-    if family == "flux1":
-        from backend.engine.families.flux1.structural import attach_structural_conditioning as flux_attach
-
-        return flux_attach(
-            pipeline,
-            request=request,
-            family=family,
-            model=model,
-            entry=entry,
-            version_key=version_key,
-            extra_cond=extra_cond,
-            width=width,
-            height=height,
-            ctx_exec=ctx_exec,
-            on_log=on_log,
+    attach = get_structural_guide_attach(family)
+    if attach is None:
+        raise RuntimeError(
+            f"structural_guide is not supported for family={family!r} "
+            f"(ModelConfig.supports_structural_guide=false or unknown family)"
         )
-    if family == "z_image":
-        from backend.engine.families.z_image.structural import attach_structural_conditioning as z_attach
-
-        return z_attach(
-            pipeline,
-            request=request,
-            family=family,
-            model=model,
-            entry=entry,
-            version_key=version_key,
-            extra_cond=extra_cond,
-            width=width,
-            height=height,
-            ctx_exec=ctx_exec,
-            on_log=on_log,
-        )
-    raise RuntimeError(
-        f"structural_guide is not supported for family={family!r} "
-        f"(ModelConfig.supports_structural_guide=false or unknown family)"
+    return attach(
+        pipeline,
+        request=request,
+        family=family,
+        model=model,
+        entry=entry,
+        version_key=version_key,
+        extra_cond=extra_cond,
+        width=width,
+        height=height,
+        ctx_exec=ctx_exec,
+        on_log=on_log,
     )

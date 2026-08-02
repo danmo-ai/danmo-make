@@ -31,7 +31,7 @@
         </nav>
 
         <div v-if="modelInfo" class="copilot-page__status-panel">
-          <DqTag size="small" :type="llmReady ? 'success' : 'warning'" effect="plain">
+          <DqTag size="sm" :type="llmReady ? 'success' : 'warning'" effect="plain">
             {{ llmReady ? $t('assistant.llmReady') : $t('assistant.modelNotReady') }}
           </DqTag>
           <span v-if="llmReady" class="copilot-page__status-model">{{ chatModelLabel }}</span>
@@ -164,7 +164,7 @@
         <div v-if="lastResult" class="copilot-page__result">
           <div class="copilot-page__result-head">
             <span class="copilot-page__label">{{ $t('assistant.resultLabel') }}</span>
-            <DqTag v-if="lastResult.visionUsed" size="small" type="info" effect="plain">
+            <DqTag v-if="lastResult.visionUsed" size="sm" type="info" effect="plain">
               {{ $t('assistant.visionUsed') }}
             </DqTag>
           </div>
@@ -245,7 +245,7 @@
               </p>
             </div>
             <div class="copilot-page__card-tools" @click.stop>
-              <DqTag size="small" effect="plain" :type="taskStatusType(task.status)">
+              <DqTag size="sm" effect="plain" :type="taskStatusType(task.status)">
                 {{ taskStatusLabel(task.status) }}
               </DqTag>
               <DqIconButton
@@ -977,7 +977,7 @@ onMounted(async () => {
 .copilot-page__nav-label {
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--dq-tracking-wider);
   text-transform: uppercase;
   color: var(--dq-label-tertiary);
   padding: 0 8px 4px;
@@ -1077,8 +1077,8 @@ onMounted(async () => {
   gap: 12px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: var(--dq-warning-tint, rgba(255, 193, 7, 0.08));
-  border: 0.5px solid var(--dq-warning-border, rgba(255, 193, 7, 0.25));
+  background: var(--dq-warning-surface);
+  border: 0.5px solid var(--dq-warning-surface-border);
   flex-shrink: 0;
 }
 
@@ -1342,7 +1342,7 @@ onMounted(async () => {
 .copilot-page__card-error {
   margin: 4px 0 0;
   font-size: var(--dq-font-size-caption);
-  color: var(--dq-danger, #ff3b30);
+  color: var(--dq-danger);
 }
 
 .copilot-page__card-tools {

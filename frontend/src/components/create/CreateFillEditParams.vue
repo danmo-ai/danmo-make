@@ -12,7 +12,7 @@ defineProps<{
         :min="1"
         :max="50"
         :step="1"
-        size="small"
+        size="sm"
         style="width: 120px"
       />
     </DqPrefRow>
@@ -24,7 +24,7 @@ defineProps<{
           :min="1"
           :max="50"
           :step="1"
-          size="small"
+          size="sm"
           style="width: 72px"
         />
       </div>

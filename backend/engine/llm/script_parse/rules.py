@@ -5,9 +5,9 @@ import hashlib
 import re
 from typing import Any
 
-from backend.engine.common.long_video.beat_budget import split_duration_parts
-from backend.engine.common.long_video.constants import MAX_CLIP_SEC, MIN_CLIP_SEC
-from backend.engine.common.long_video.keyframe_prompt_policy import normalize_face_anchor_characters_on_screen
+from backend.long_video.beat_budget import split_duration_parts
+from backend.long_video.constants import MAX_CLIP_SEC, MIN_CLIP_SEC
+from backend.long_video.keyframe_prompt_policy import normalize_face_anchor_characters_on_screen
 from backend.engine.llm.script_parse.schemas import (
     BeatPlanArtifact,
     BeatPlanRowArtifact,

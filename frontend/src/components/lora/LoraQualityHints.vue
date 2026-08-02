@@ -9,7 +9,7 @@
         >
           <DqTag
             v-if="hint.source === 'vlm'"
-            size="small"
+            size="sm"
             type="info"
             effect="plain"
             class="lora-quality-hints__tag"
@@ -41,7 +41,7 @@
 
       <div v-if="showVlmAction" class="lora-quality-hints__actions">
         <DqButton
-          size="xs"
+          size="sm"
           type="secondary"
           :loading="vlmLoading"
           @click="$emit('run-vlm')"

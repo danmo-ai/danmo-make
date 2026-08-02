@@ -10,8 +10,8 @@ from backend.engine.llm.message_content import (
     extract_vision_instruction,
     resolve_message_images,
 )
-from backend.engine.llm.service import LLMService
-from backend.engine.llm.vision import analyze_image_file, analyze_images_multi
+from backend.engine.llm.service_mlx import LLMService
+from backend.engine.llm.vision_mlx import analyze_image_file, analyze_images_multi
 from backend.persistence.asset_store import SQLiteAssetStore
 
 logger = logging.getLogger(__name__)

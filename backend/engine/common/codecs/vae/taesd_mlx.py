@@ -127,9 +127,9 @@ def _load_decoder_weights(path: Path) -> dict[str, Any]:
             for key in f.keys():
                 out[key] = f.get_tensor(key)
         return out
-    import torch
+    from backend.engine.common.bundle.pytorch_bin_numpy import load_pytorch_bin_state_dict
 
-    state = torch.load(path, map_location="cpu", weights_only=True)
+    state = load_pytorch_bin_state_dict(path)
     if isinstance(state, dict) and "state_dict" in state:
         state = state["state_dict"]
     return {k: np.asarray(v) for k, v in state.items()}

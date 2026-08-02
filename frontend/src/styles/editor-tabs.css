@@ -63,7 +63,7 @@
 .long-video-page .lv-editor-tabs__badge {
  min-width: 20px;
  padding: 2px 6px;
- font-size: 11px;
+ font-size: var(--dq-font-size-caption);
 }
 
 .lv-editor-tabs {
@@ -110,7 +110,7 @@
 }
 
 .lv-editor-tabs__tab--active {
- background: color-mix(in srgb, var(--dq-accent) 14%, var(--dq-surface-base, var(--dq-bg)));
+ background: color-mix(in srgb, var(--dq-accent) 14%, var(--dq-bg-base, var(--dq-bg-base)));
  border-color: color-mix(in srgb, var(--dq-accent) 45%, var(--dq-border-subtle));
  box-shadow:
   0 0 0 1px color-mix(in srgb, var(--dq-accent) 18%, transparent),
@@ -137,7 +137,7 @@
 }
 
 .lv-editor-tabs__icon--done {
- color: #fff;
+ color: var(--dq-color-white);
  background: var(--dq-accent);
  border-color: var(--dq-accent);
 }
@@ -160,7 +160,7 @@
 .lv-editor-tabs__label {
  font-size: var(--dq-font-size-body);
  font-weight: 600;
- letter-spacing: -0.01em;
+ letter-spacing: var(--dq-tracking-tight);
  color: var(--dq-label-primary);
  line-height: 1.2;
  white-space: nowrap;

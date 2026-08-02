@@ -121,7 +121,7 @@ def build_ernie_mistral3_encoder(
 
     from backend.engine.common.bundle.quant_inference import resolve_inference_weight_mode_from_bundle
     from backend.engine.common.bundle.safetensors_affine_quant import read_bundle_affine_bits_if_quantized
-    from backend.engine.common.model.quantized_load import load_weights_quantized_inference
+    from backend.engine.common.model.quantized_load_mlx import load_weights_quantized_inference
 
     bundle_affine_bits = read_bundle_affine_bits_if_quantized(weights, model_dir)
     te_mode = resolve_inference_weight_mode_from_bundle(

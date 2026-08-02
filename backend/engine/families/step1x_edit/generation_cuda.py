@@ -17,10 +17,10 @@ from PIL import Image
 from safetensors.torch import load_file
 from torchvision.transforms import functional as F
 
-from backend.engine.families.step1x_edit import sampling
-from backend.engine.families.step1x_edit.modules.autoencoder import AutoEncoder
-from backend.engine.families.step1x_edit.modules.conditioner import Qwen25VL_7b_Embedder as Qwen2VLEmbedder
-from backend.engine.families.step1x_edit.modules.model_edit import Step1XEdit, Step1XParams
+from backend.engine.families.step1x_edit import sampling_cuda
+from backend.engine.families.step1x_edit.modules.autoencoder_cuda import AutoEncoder
+from backend.engine.families.step1x_edit.modules.conditioner_cuda import Qwen25VL_7b_Embedder as Qwen2VLEmbedder
+from backend.engine.families.step1x_edit.modules.model_edit_cuda import Step1XEdit, Step1XParams
 
 
 def _load_state_dict(model, ckpt_path: str, *, strict: bool = False) -> torch.nn.Module:

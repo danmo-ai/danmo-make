@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from backend.engine.common.long_video.parse_quality import validate_parse_quality
+from backend.long_video.parse_quality import validate_parse_quality
 from backend.engine.llm.script_parse.errors import ScriptParseQualityError
-from backend.engine.common.long_video.shot_contract_validator import (
+from backend.long_video.shot_contract_validator import (
     clamp_shot_durations,
     validate_shot_contracts,
 )
-from backend.engine.common.long_video.shot_repair import repair_shot_contracts
+from backend.long_video.shot_repair import repair_shot_contracts
 from backend.engine.llm.prompts.locale import chapter_json_user_locale_block
 from backend.engine.llm.script_parse.rules import merge_spatial_into_scenes
 from backend.engine.llm.script_parse.schemas import (

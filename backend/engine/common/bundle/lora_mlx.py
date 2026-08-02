@@ -231,7 +231,7 @@ def merge_lora_adapters_common(
             scaled_delta = scale * delta
             _delta_means.append(mx.mean(mx.abs(scaled_delta)))
             _ranks.append(int(rank))
-            from backend.engine.common.model.quantized_lora import (
+            from backend.engine.common.model.quantized_lora_mlx import (
                 apply_lora_delta_to_weight,
                 inference_mode_from_model,
             )
@@ -259,7 +259,7 @@ def merge_lora_adapters_common(
                 f"LoRA {lora_id!r}: remap produced {len(groups)} groups, but none matched this transformer."
             )
         if on_log:
-            from backend.engine.common.model.quantized_lora import inference_mode_from_model
+            from backend.engine.common.model.quantized_lora_mlx import inference_mode_from_model
 
             mode = inference_mode_from_model(model)
             quant_note = ""

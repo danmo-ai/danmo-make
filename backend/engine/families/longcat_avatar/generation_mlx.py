@@ -8,7 +8,7 @@ import mlx.core as mx
 
 from backend.engine.common.ops.schedulers import FlowMatchEulerScheduler
 from backend.engine.config.model_configs import LongCatAvatarConfig
-from backend.engine.families.longcat_avatar import bundle_load
+from backend.engine.families.longcat_avatar import bundle_load_mlx
 from backend.engine.families.longcat_avatar.audio_mlx import load_audio_mel
 from backend.engine.families.longcat_avatar.pipeline_mlx import LongCatAvatarPipeline, PipelineConfig
 from backend.engine.pipelines.pipeline_progress import emit_denoise_progress, emit_post_progress

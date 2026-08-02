@@ -287,23 +287,30 @@ def prepare_video_bundle_and_schedule(pipeline,
 
     adapters = getattr(request, "adapters", None) or []
     lightning_distill = False
-    if family == "wan" and adapters:
+
+    def _apply_wan_lightning_distill() -> bool:
         from backend.engine.families.wan.lora_mlx import adapters_include_wan_lightning
 
-        lightning_distill = adapters_include_wan_lightning(adapters, pipeline._registry)
-        if lightning_distill:
-            from backend.engine.families.wan.distill import WAN_DISTILL_DEFAULT_BOUNDARY_STEP_INDEX
+        if not adapters_include_wan_lightning(adapters, pipeline._registry):
+            return False
+        from backend.engine.families.wan.distill import WAN_DISTILL_DEFAULT_BOUNDARY_STEP_INDEX
 
-            config.step_distill = True
-            config.supports_guidance = False
-            config.moe_boundary_step_index = WAN_DISTILL_DEFAULT_BOUNDARY_STEP_INDEX
-            if getattr(config, "wan_distill_shift", None) is None:
-                config.wan_distill_shift = 5.0
-            if on_log is not None:
-                on_log(
-                    "info",
-                    "Wan Lightning LoRA: 4-step distill schedule (no CFG, shift=5, MoE boundary=2)",
-                )
+        config.step_distill = True
+        config.supports_guidance = False
+        config.moe_boundary_step_index = WAN_DISTILL_DEFAULT_BOUNDARY_STEP_INDEX
+        if getattr(config, "wan_distill_shift", None) is None:
+            config.wan_distill_shift = 5.0
+        if on_log is not None:
+            on_log(
+                "info",
+                "Wan Lightning LoRA: 4-step distill schedule (no CFG, shift=5, MoE boundary=2)",
+            )
+        return True
+
+    _adapter_distill_hooks = {"wan": _apply_wan_lightning_distill}
+    _distill_hook = _adapter_distill_hooks.get(family)
+    if _distill_hook is not None and adapters:
+        lightning_distill = _distill_hook()
 
     steps = int(request.steps) if request.steps is not None else int(steps_default)
     if lightning_distill:
@@ -692,13 +699,15 @@ def execute_family_video_generator(pipeline,
         "config": config,
         "entry": entry,
         "version_key": version_key,
+        "project_root": pipeline._project_root,
     }
-    if family == "wan":
-        factory_kwargs["project_root"] = pipeline._project_root
+    import inspect
+
+    accepted = set(inspect.signature(factory).parameters)
     generator = factory(
         pipeline.ctx,
         bundle_root,
-        **factory_kwargs,
+        **{k: v for k, v in factory_kwargs.items() if k in accepted},
     )
     generator.load()
 
@@ -708,8 +717,8 @@ def execute_family_video_generator(pipeline,
     out_path = str(work / f"{model_key}_{seed}_{timestamp}.mp4")
 
     pipeline_graph_step("denoise", on_log)
-    stage2_steps = int(getattr(config, "ltx_stage2_steps", 3) or 3) if family == "ltx" else 0
-    progress_total_steps = max(1, int(steps) + stage2_steps) if family == "ltx" else max(1, int(steps))
+    stage2_steps = int(getattr(config, "ltx_stage2_steps", 0) or 0)
+    progress_total_steps = max(1, int(steps) + stage2_steps)
     emit_phase(on_progress, phase="generate", progress=0.05, n_steps=progress_total_steps)
 
     if ctx_exec.cancel_token.is_cancelled():
@@ -721,7 +730,7 @@ def execute_family_video_generator(pipeline,
         and request.long_video is not None
         and (request.long_video.opening_prompt or "").strip()
     ):
-        if family == "ltx":
+        if stage2_steps > 0:
             raise RuntimeError("LTX 2.3 generation requires a non-empty prompt")
         if not bool(getattr(config, "bernini_renderer", False)):
             raise RuntimeError("Video generation requires a non-empty prompt")

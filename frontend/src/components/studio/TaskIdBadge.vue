@@ -65,14 +65,14 @@ async function onCopy() {
 .task-id-badge__label {
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.03em;
+  letter-spacing: var(--dq-tracking-wide);
   text-transform: uppercase;
   color: var(--dq-label-tertiary);
   flex-shrink: 0;
 }
 
 .task-id-badge__value {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--dq-font-mono);
   font-size: var(--dq-font-size-caption);
   line-height: 1.35;
   padding: 2px 6px;

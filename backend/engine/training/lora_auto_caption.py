@@ -236,7 +236,7 @@ def _default_batch_analyze(
     max_tokens: int = 128,
     temperature: float = 0.2,
 ) -> list[str]:
-    from backend.engine.llm.vision import analyze_image_files_batch_messages
+    from backend.engine.llm.vision_mlx import analyze_image_files_batch_messages
 
     return analyze_image_files_batch_messages(
         image_paths,

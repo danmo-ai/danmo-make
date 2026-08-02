@@ -1,54 +1,13 @@
 /*
- * DanQing Studio — 业务布局与页面结构（配色 / 组件外观由 `@danqing/dq-tokens` + `@danqing/dq-ui` 提供）。
+ * Danmo Make — 业务布局与页面结构（配色 / 组件外观由 `@danqing/dq-tokens` + `@danqing/dq-ui` 提供）。
  * 主题经 `applyDqTheme` / `stores/theme` 切换；默认 macOS 暗色。
  * 勿使用 Vue SFC 的 `:deep()`；用普通后代选择器（如 `.foo .dq-surface-card__body`）。
  */
 
-:root {
- --primary: var(--dq-accent);
- --primary-light: var(--dq-accent-muted);
- --primary-dark: var(--dq-accent-hover);
-
- --bg-primary: var(--dq-bg-page);
- --bg-secondary: var(--dq-bg-base);
- --bg-tertiary: var(--dq-fill-tertiary);
- --bg-card: var(--dq-bg-base);
- --bg-hover: var(--dq-fill-tertiary);
-
- --text-primary: var(--dq-label-primary);
- --text-secondary: var(--dq-label-secondary);
- --text-muted: var(--dq-label-tertiary);
- --text-inverse: var(--dq-color-white);
-
- --border-color: var(--dq-border);
- --divider: var(--dq-border-subtle);
-
- --success: var(--dq-success);
- --warning: var(--dq-warning);
- --error: var(--dq-danger);
- --info: var(--dq-info);
-
- /* 在 默认阴影上略加强层次（仍随主题色温变化） */
- --shadow-sm:
- 0 1px 2px color-mix(in srgb, var(--dq-label-primary) 4%, transparent),
- 0 1px 3px color-mix(in srgb, var(--dq-label-primary) 5%, transparent);
- --shadow-md:
- 0 2px 6px color-mix(in srgb, var(--dq-label-primary) 5%, transparent),
- 0 10px 28px color-mix(in srgb, var(--dq-label-primary) 6%, transparent);
- --shadow-lg:
- 0 4px 12px color-mix(in srgb, var(--dq-label-primary) 6%, transparent),
- 0 18px 44px color-mix(in srgb, var(--dq-label-primary) 8%, transparent);
-
- /* 圆角：映射到共享 radius tokens */
- --radius-sm: var(--dq-radius-control-sm);
- --radius-md: var(--dq-radius-group);
- --radius-lg: var(--dq-radius-menu);
-}
-
 /* 全局覆盖 */
 * {
  scrollbar-width: thin;
- scrollbar-color: var(--border-color) transparent;
+ scrollbar-color: var(--dq-border) transparent;
 }
 
 .dq-app-shell {
@@ -82,8 +41,8 @@
 body {
  margin: 0;
  padding: 0;
- background: var(--bg-primary);
- color: var(--text-primary);
+ background: var(--dq-bg-page);
+ color: var(--dq-label-primary);
  font-family: var(--dq-font-sans);
  -webkit-font-smoothing: antialiased;
  -moz-osx-font-smoothing: grayscale;
@@ -141,7 +100,7 @@ body {
  color: var(--dq-label-secondary);
  font-size: var(--dq-font-size-body);
  font-weight: 500;
- letter-spacing: -0.01em;
+ letter-spacing: var(--dq-tracking-tight);
  cursor: pointer;
  transition: color 0.15s ease, background 0.15s ease;
  font-family: inherit;
@@ -225,7 +184,7 @@ body {
  padding: 10px 12px 4px;
  font-size: var(--dq-font-size-caption);
  font-weight: 600;
- letter-spacing: 0.04em;
+ letter-spacing: var(--dq-tracking-wider);
  text-transform: uppercase;
  color: var(--dq-label-tertiary);
 }
@@ -260,7 +219,7 @@ body {
 
 .app-main {
  padding: 16px 20px 20px;
- background: var(--bg-primary);
+ background: var(--dq-bg-page);
 }
 
 /* 主内容区 */
@@ -271,7 +230,7 @@ body {
 .card-title {
  font-size: var(--dq-font-size-title);
  font-weight: 600;
- color: var(--text-primary);
+ color: var(--dq-label-primary);
  margin-bottom: var(--dq-space-md);
  display: flex;
  align-items: center;
@@ -302,12 +261,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
- background: var(--border-color);
+ background: var(--dq-border);
  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
- background: var(--text-muted);
+ background: var(--dq-label-tertiary);
 }
 
 /* 日志区域 */
@@ -364,7 +323,7 @@ body {
 .templates-page__menu-section-title {
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.03em;
+  letter-spacing: var(--dq-tracking-wide);
   text-transform: uppercase;
   color: var(--dq-label-tertiary);
   padding: 12px 12px 6px 12px;
@@ -396,10 +355,10 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: var(--dq-font-size-display);
+  font-size: var(--dq-font-size-body);
   font-weight: 600;
   color: var(--dq-label-primary);
-  letter-spacing: -0.02em;
+  letter-spacing: var(--dq-tracking-tighter);
   flex-shrink: 0;
 }
 
@@ -453,7 +412,7 @@ body {
 }
 
 .template-card:hover {
-  border-color: var(--dq-border-hover, var(--dq-border-subtle));
+  border-color: var(--dq-border-strong, var(--dq-border-subtle));
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
 }
 
@@ -479,7 +438,7 @@ body {
 .template-card__name {
   font-size: var(--dq-font-size-title);
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: var(--dq-tracking-tight);
   color: var(--dq-label-primary);
   flex-shrink: 0;
   line-height: 1.3;
@@ -649,7 +608,7 @@ body {
  width: 100%;
  height: 100%;
  object-fit: contain;
- background: #000;
+ background: var(--dq-color-black);
  z-index: 1;
 }
 
@@ -674,7 +633,7 @@ body {
  align-items: center;
  justify-content: center;
  cursor: pointer;
- color: #fff;
+ color: var(--dq-color-white);
  background: hsl(0 0% 0% / 0.45);
  backdrop-filter: var(--dq-glass-blur-light);
  -webkit-backdrop-filter: var(--dq-glass-blur-light);
@@ -871,7 +830,7 @@ body {
  font-size: var(--dq-font-size-body);
  font-weight: 650;
  line-height: 1.4;
- letter-spacing: -0.02em;
+ letter-spacing: var(--dq-tracking-tighter);
  -webkit-line-clamp: 3;
  line-clamp: 3;
  text-align: center;
@@ -916,7 +875,7 @@ body {
  margin-top: -5.5px;
  margin-right: -5.5px;
  border-radius: 50%;
- background: var(--dq-color-white, #fff);
+ background: var(--dq-color-white);
  box-shadow:
   0 0 0 0.5px hsl(0 0% 0% / 0.12),
   0 2px 6px hsl(0 0% 0% / 0.28);
@@ -1025,8 +984,8 @@ body {
  font-size: var(--dq-font-size-body);
  font-weight: 600;
  line-height: 1.35;
- letter-spacing: -0.01em;
- color: var(--text-primary);
+ letter-spacing: var(--dq-tracking-tight);
+ color: var(--dq-label-primary);
  display: -webkit-box;
  -webkit-box-orient: vertical;
  -webkit-line-clamp: 2;
@@ -1039,7 +998,7 @@ body {
  margin: 3px 0 0;
  font-size: var(--dq-font-size-caption);
  line-height: 1.35;
- color: var(--dq-label-tertiary, var(--text-muted));
+ color: var(--dq-label-tertiary);
 }
 
 .dq-music-player__hero-actions {
@@ -1082,7 +1041,7 @@ body {
  top: 0;
  bottom: 0;
  border-radius: inherit;
- background: var(--dq-accent, var(--primary));
+ background: var(--dq-accent);
  opacity: 0.88;
  pointer-events: none;
  transition: width 0.08s linear;
@@ -1106,7 +1065,7 @@ body {
  align-items: center;
  justify-content: center;
  cursor: pointer;
- color: var(--dq-accent, var(--primary));
+ color: var(--dq-accent);
  background: color-mix(in srgb, var(--dq-accent) 12%, transparent);
  transition: background 0.15s ease, transform 0.12s ease;
 }
@@ -1135,10 +1094,10 @@ body {
  height: 48px;
  min-width: 48px;
  min-height: 48px;
- color: var(--dq-color-white, #fff);
+ color: var(--dq-color-white);
  background: linear-gradient(
   180deg,
-  color-mix(in srgb, var(--dq-accent) 92%, #fff),
+  color-mix(in srgb, var(--dq-accent) 92%, var(--dq-color-white)),
   var(--dq-accent, hsl(var(--dq-music-hue) 55% 48%))
  );
  box-shadow:
@@ -1158,7 +1117,7 @@ body {
 .dq-music-player__extra {
  margin-top: 12px;
  padding-top: 10px;
- border-top: 0.5px solid var(--dq-border-subtle, var(--border-color));
+ border-top: 0.5px solid var(--dq-border-subtle, var(--dq-border));
 }
 
 .gallery-batch-bar {
@@ -1188,8 +1147,8 @@ body {
  align-items: center;
  gap: 12px;
  padding: 10px 12px 10px 18px;
- background: var(--bg-card);
- border: 1px solid var(--border-color);
+ background: var(--dq-bg-base);
+ border: 1px solid var(--dq-border);
  border-radius: 16px;
  box-shadow: 0 12px 40px var(--dq-shadow-popover);
  pointer-events: auto;
@@ -1207,9 +1166,9 @@ body {
 .gallery-batch-count {
  font-size: var(--dq-font-size-title);
  font-weight: 600;
- color: var(--text-primary);
+ color: var(--dq-label-primary);
  white-space: nowrap;
- letter-spacing: -0.02em;
+ letter-spacing: var(--dq-tracking-tighter);
 }
 
 .gallery-batch-bar__select-all {
@@ -1301,7 +1260,7 @@ body {
  gap: 6px;
 }
 
-.models-toolbar-btn--primary.dq-btn {
+.models-toolbar-btn--dq-accent.dq-btn {
  background: var(--dq-accent);
  border-color: var(--dq-accent);
  color: var(--dq-color-white);
@@ -1434,7 +1393,7 @@ body {
  border: 1px solid var(--dq-border-subtle);
  border-radius: 8px;
  overflow: hidden;
- background: var(--dq-fill-base);
+ background: var(--dq-bg-base);
 }
 
 .model-local-variant {
@@ -1539,7 +1498,7 @@ body {
 .models-installed-row__name {
  font-weight: 600;
  font-size: var(--dq-font-size-body);
- letter-spacing: -0.02em;
+ letter-spacing: var(--dq-tracking-tighter);
  white-space: nowrap;
  overflow: hidden;
  text-overflow: ellipsis;
@@ -1980,7 +1939,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  height: 56px;
  border-radius: 8px;
  overflow: hidden;
- background: var(--bg-tertiary);
+ background: var(--dq-fill-tertiary);
  flex-shrink: 0;
 }
 
@@ -1996,7 +1955,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  display: flex;
  align-items: center;
  justify-content: center;
- color: var(--text-muted);
+ color: var(--dq-label-tertiary);
 }
 
 .lora-search-row__title {
@@ -2176,7 +2135,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  margin-bottom: 12px;
 }
 
-.dq-task-queue-heading--primary {
+.dq-task-queue-heading--dq-accent {
  color: var(--dq-accent);
 }
 
@@ -2318,7 +2277,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  * 标题放 #header；无标题块仅默认插槽。padding / hover 对齐旧 .card。
  */
 .studio-surface-card.dq-surface-card {
- border-radius: var(--radius-md);
+ border-radius: var(--dq-radius-group);
  background: var(--dq-bg-base);
  box-shadow: none;
  transition:
@@ -2429,7 +2388,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 .studio-audio-effective-lyrics__label {
  font-size: var(--dq-font-size-caption);
  font-weight: 650;
- letter-spacing: 0.06em;
+ letter-spacing: var(--dq-tracking-widest);
  text-transform: uppercase;
  color: var(--dq-label-tertiary);
 }
@@ -2446,12 +2405,12 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  max-height: 140px;
  overflow: auto;
  padding: 10px 11px;
- font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+ font-family: var(--dq-font-mono);
  font-size: var(--dq-font-size-caption);
  line-height: 1.6;
  white-space: pre-wrap;
  word-break: break-word;
- color: var(--text-primary);
+ color: var(--dq-label-primary);
  border-radius: 8px;
  background: color-mix(in srgb, var(--dq-label-tertiary) 6%, transparent);
  scrollbar-width: thin;
@@ -2477,13 +2436,13 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 .gallery-audio-detail__lyrics-block {
  margin-top: 12px;
  padding-top: 12px;
- border-top: 0.5px solid var(--dq-border-subtle, var(--border-color));
+ border-top: 0.5px solid var(--dq-border-subtle, var(--dq-border));
 }
 
 .gallery-audio-detail--lightbox .gallery-audio-detail__lyrics-block {
  margin-top: 16px;
  padding: 12px 13px 10px;
- border: 0.5px solid var(--dq-border-subtle, var(--border-color));
+ border: 0.5px solid var(--dq-border-subtle, var(--dq-border));
  border-radius: 12px;
  background: color-mix(in srgb, var(--dq-bg-page) 50%, transparent);
 }
@@ -2509,7 +2468,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 .gallery-audio-detail__section {
  margin-top: 16px;
  padding-top: 14px;
- border-top: 0.5px solid var(--dq-border-subtle, var(--border-color));
+ border-top: 0.5px solid var(--dq-border-subtle, var(--dq-border));
 }
 
 .gallery-audio-detail__section-head {
@@ -2523,7 +2482,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 .gallery-audio-detail__section-label {
  font-size: var(--dq-font-size-caption);
  font-weight: 600;
- letter-spacing: 0.02em;
+ letter-spacing: var(--dq-tracking-wide);
  text-transform: uppercase;
  color: var(--dq-label-tertiary);
 }
@@ -2532,7 +2491,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  margin: 0;
  font-size: var(--dq-font-size-body);
  line-height: 1.55;
- color: var(--text-primary);
+ color: var(--dq-label-primary);
  word-break: break-word;
  max-height: 8rem;
  overflow-y: auto;
@@ -2561,7 +2520,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 .gallery-audio-detail__meta-row dd {
  margin: 0;
  text-align: right;
- color: var(--text-primary);
+ color: var(--dq-label-primary);
  word-break: break-word;
 }
 
@@ -2673,7 +2632,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 }
 
 .settings-overview__title {
- font-size: var(--dq-font-size-display);
+ font-size: var(--dq-font-size-body);
  font-weight: 600;
  color: var(--dq-label-primary);
 }
@@ -2761,7 +2720,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 
 .settings-section-title {
  margin: 0 0 6px;
- font-size: var(--dq-font-size-display);
+ font-size: var(--dq-font-size-body);
  font-weight: 600;
  color: var(--dq-label-primary);
 }
@@ -2786,7 +2745,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  padding: 0 4px;
  font-size: var(--dq-font-size-body);
  font-weight: 600;
- letter-spacing: -0.01em;
+ letter-spacing: var(--dq-tracking-tight);
  color: var(--dq-label-tertiary);
 }
 
@@ -4006,7 +3965,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  flex: 1;
  min-width: 0;
  color: var(--dq-label-secondary);
- font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+ font-family: var(--dq-font-mono);
 }
 
 .settings-header-actions {
@@ -4060,7 +4019,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  font-family: inherit;
  font-size: var(--dq-font-size-title);
  font-weight: 400;
- letter-spacing: -0.01em;
+ letter-spacing: var(--dq-tracking-tight);
  line-height: 1.25;
  color: var(--dq-accent);
  cursor: pointer;
@@ -4109,7 +4068,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 .settings-link-destructive.dq-btn.is-text {
  color: var(--dq-danger);
  font-weight: 400;
- letter-spacing: -0.01em;
+ letter-spacing: var(--dq-tracking-tight);
 }
 
 .settings-link-destructive.dq-btn.is-text:hover,
@@ -4134,7 +4093,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 }
 
 .settings-info-icon-lg {
- font-size: var(--dq-font-size-display);
+ font-size: var(--dq-font-size-body);
 }
 
 .settings-dependencies {
@@ -4156,7 +4115,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 }
 
 .settings-cache-title-icon {
- font-size: var(--dq-font-size-display);
+ font-size: var(--dq-font-size-body);
  color: var(--dq-accent);
 }
 
@@ -4230,10 +4189,10 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 /* 模型卡片：勿用 overflow:hidden，否则会裁切内部 data table 横向滚动区 / 固定右侧列，导致操作按钮「不显示」 */
 .model-card {
  transition: all 0.3s ease;
- border: 1px solid var(--border-color);
+ border: 1px solid var(--dq-border);
  overflow: visible;
- background: var(--bg-card);
- border-radius: var(--radius-md);
+ background: var(--dq-bg-base);
+ border-radius: var(--dq-radius-group);
 }
 
 .model-card .dq-surface-card__body {
@@ -4241,7 +4200,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 }
 
 .model-card:hover {
- box-shadow: var(--shadow-md);
+ box-shadow: var(--dq-shadow-md);
  border-color: var(--dq-accent);
 }
 
@@ -4256,7 +4215,9 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  display: flex;
  align-items: center;
  justify-content: center;
- border-bottom: 1px solid var(--border-color);
+ border-bottom: 1px solid var(--dq-border);
+ /* Card uses overflow:visible; round header top to match .model-card radius */
+ border-radius: var(--dq-radius-group) var(--dq-radius-group) 0 0;
 }
 
 .model-icon {
@@ -4284,29 +4245,15 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  color: var(--dq-success);
 }
 
-.model-status-dot {
+.model-card-status.dq-status-dot {
  position: absolute;
  top: 12px;
  right: 12px;
  z-index: 1;
  width: 10px;
  height: 10px;
- border-radius: 999px;
- border: 2px solid var(--dq-fill-base);
+ border: 2px solid var(--dq-bg-base);
  box-shadow: 0 0 0 1px var(--dq-border-subtle);
- background: var(--dq-warning);
-}
-
-.model-status-dot.is-ready {
- background: var(--dq-success);
-}
-
-.model-status-dot.is-incomplete {
- background: var(--dq-danger);
-}
-
-.model-status-dot.is-missing {
- background: var(--dq-warning);
 }
 
 /* 模型卡片内容 */
@@ -4317,7 +4264,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 .model-card-name {
  font-weight: 600;
  font-size: var(--dq-font-size-body);
- color: var(--text-primary);
+ color: var(--dq-label-primary);
  margin-bottom: 6px;
  line-height: 1.4;
  white-space: nowrap;
@@ -4328,7 +4275,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 
 .model-card-desc {
  font-size: var(--dq-font-size-caption);
- color: var(--text-muted);
+ color: var(--dq-label-tertiary);
  margin-bottom: 0;
  line-height: 1.5;
  white-space: nowrap;
@@ -4375,14 +4322,14 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 }
 
 .civitai-card:hover {
- box-shadow: var(--shadow-md);
+ box-shadow: var(--dq-shadow-md);
 }
 
 .civitai-preview {
  width: 100px;
  height: 100px;
  flex-shrink: 0;
- background: var(--bg-tertiary);
+ background: var(--dq-fill-tertiary);
  border-radius: 8px;
  overflow: hidden;
 }
@@ -4399,7 +4346,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  display: flex;
  align-items: center;
  justify-content: center;
- color: var(--text-muted);
+ color: var(--dq-label-tertiary);
 }
 
 .civitai-name {
@@ -4423,14 +4370,14 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  margin-top: 0;
  margin-bottom: var(--dq-space-lg);
  padding-bottom: var(--dq-space-md);
- border-bottom: 1px solid var(--border-color);
+ border-bottom: 1px solid var(--dq-border);
 }
 
 .page-title {
  margin: 0;
- font-size: var(--dq-font-size-display);
+ font-size: var(--dq-font-size-body);
  font-weight: 700;
- color: var(--text-primary);
+ color: var(--dq-label-primary);
  letter-spacing: -0.3px;
 }
 
@@ -4443,16 +4390,16 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 /* 磁盘空间面板 */
 .disk-space-panel {
  padding: 14px;
- background: var(--bg-secondary);
- border: 1px solid var(--border-color);
- border-radius: var(--radius-md);
+ background: var(--dq-bg-base);
+ border: 1px solid var(--dq-border);
+ border-radius: var(--dq-radius-group);
  margin-top: auto;
 }
 
 .disk-space-title {
  font-size: var(--dq-font-size-caption);
  font-weight: 600;
- color: var(--text-secondary);
+ color: var(--dq-label-secondary);
  margin-bottom: 12px;
  display: flex;
  align-items: center;
@@ -4468,17 +4415,17 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  justify-content: space-between;
  font-size: var(--dq-font-size-caption);
  margin-bottom: 4px;
- color: var(--text-muted);
+ color: var(--dq-label-tertiary);
 }
 
 .disk-space-value {
- color: var(--text-secondary);
+ color: var(--dq-label-secondary);
  font-weight: 500;
 }
 
 .disk-space-footer {
  font-size: var(--dq-font-size-caption);
- color: var(--text-muted);
+ color: var(--dq-label-tertiary);
  text-align: right;
  margin-top: 4px;
 }
@@ -4543,7 +4490,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 }
 
 .copilot-page .copilot-page__page-title.page-title {
- font-size: var(--dq-font-size-display);
+ font-size: var(--dq-font-size-body);
  font-weight: 700;
  letter-spacing: -0.045em;
  line-height: 1.15;
@@ -4618,7 +4565,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 }
 
 .models-page .page-title {
- font-size: var(--dq-font-size-display);
+ font-size: var(--dq-font-size-body);
  font-weight: 700;
  letter-spacing: -0.045em;
  line-height: 1.15;
@@ -4634,7 +4581,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 }
 
 .models-page__title-icon {
- font-size: var(--dq-font-size-display);
+ font-size: var(--dq-font-size-body);
  color: var(--dq-label-primary);
 }
 
@@ -4646,6 +4593,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 .models-page .model-card-header {
  height: 76px;
  border-bottom: none;
+ border-radius: var(--dq-radius-group) var(--dq-radius-group) 0 0;
 }
 
 /* 模型缩写徽标：pill + 轻高光 */
@@ -4655,7 +4603,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  padding: 0 12px;
  font-size: var(--dq-font-size-caption);
  font-weight: 600;
- letter-spacing: 0.03em;
+ letter-spacing: var(--dq-tracking-wide);
  border-radius: 999px;
  border: 1px solid color-mix(in srgb, var(--dq-accent) 30%, transparent);
  background: color-mix(in srgb, var(--dq-accent) 14%, transparent);
@@ -4674,7 +4622,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 .models-page .model-card-header .dq-tag {
  border: none;
  font-weight: 600;
- letter-spacing: 0.02em;
+ letter-spacing: var(--dq-tracking-wide);
  backdrop-filter: var(--dq-glass-blur-light);
  -webkit-backdrop-filter: var(--dq-glass-blur-light);
 }
@@ -4744,9 +4692,9 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  gap: 12px;
  padding: 12px 14px;
  min-width: 0;
- background: var(--bg-tertiary);
+ background: var(--dq-fill-tertiary);
  border-radius: 12px;
- border: 1px solid var(--border-color);
+ border: 1px solid var(--dq-border);
  transition: all 0.2s ease;
 }
 
@@ -4760,7 +4708,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  align-items: center;
  justify-content: center;
  color: var(--dq-accent);
- font-size: var(--dq-font-size-display);
+ font-size: var(--dq-font-size-body);
  flex-shrink: 0;
 }
 
@@ -4771,7 +4719,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 
 .info-label {
  font-size: var(--dq-font-size-caption);
- color: var(--text-muted);
+ color: var(--dq-label-tertiary);
  margin-bottom: 4px;
  letter-spacing: 0.5px;
 }
@@ -4779,7 +4727,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 .info-value {
  font-size: var(--dq-font-size-body);
  font-weight: 600;
- color: var(--text-primary);
+ color: var(--dq-label-primary);
  line-height: 1.35;
  overflow-wrap: anywhere;
  word-break: break-word;
@@ -4797,7 +4745,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  align-items: center;
  justify-content: center;
  color: var(--dq-accent);
- font-size: var(--dq-font-size-display);
+ font-size: var(--dq-font-size-body);
  flex-shrink: 0;
 }
 
@@ -4809,7 +4757,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 .cache-item-name {
  font-size: var(--dq-font-size-body);
  font-weight: 500;
- color: var(--text-primary);
+ color: var(--dq-label-primary);
  margin-bottom: 2px;
  white-space: nowrap;
  overflow: hidden;
@@ -4818,13 +4766,13 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 
 .cache-item-meta {
  font-size: var(--dq-font-size-caption);
- color: var(--text-muted);
+ color: var(--dq-label-tertiary);
 }
 
 .cache-item-size {
  font-size: var(--dq-font-size-body);
  font-weight: 600;
- color: var(--text-primary);
+ color: var(--dq-label-primary);
  white-space: nowrap;
 }
 
@@ -4894,10 +4842,10 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 .editor-canvas-wrapper {
  position: relative;
  min-height: 200px;
- border: 2px dashed var(--border-color);
+ border: 2px dashed var(--dq-border);
  border-radius: 8px;
  overflow: auto;
- background: var(--bg-secondary);
+ background: var(--dq-bg-base);
 }
 
 .editor-canvas-wrapper:has(.editor-empty) {
@@ -4905,7 +4853,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 }
 
 .editor-canvas-wrapper:hover {
- border-color: var(--primary);
+ border-color: var(--dq-accent);
 }
 
 .editor-canvas {
@@ -4925,7 +4873,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  padding: 0 8px;
  box-sizing: border-box;
  text-align: center;
- color: var(--text-muted);
+ color: var(--dq-label-tertiary);
  display: flex;
  flex-direction: column;
  align-items: stretch;
@@ -4941,7 +4889,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  margin: 0;
  font-size: var(--dq-font-size-caption);
  line-height: 1.5;
- color: var(--text-muted);
+ color: var(--dq-label-tertiary);
  opacity: 0.95;
 }
 
@@ -4951,9 +4899,9 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  gap: 8px;
  flex-wrap: wrap;
  padding: 8px 12px;
- background: var(--bg-card);
+ background: var(--dq-bg-base);
  border-radius: 8px;
- border: 1px solid var(--border-color);
+ border: 1px solid var(--dq-border);
 }
 
 .toolbar-group {
@@ -4964,13 +4912,13 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 
 .toolbar-label {
  font-size: var(--dq-font-size-caption);
- color: var(--text-muted);
+ color: var(--dq-label-tertiary);
  white-space: nowrap;
 }
 
 .toolbar-val {
  font-size: var(--dq-font-size-caption);
- color: var(--text-primary);
+ color: var(--dq-label-primary);
  min-width: 36px;
  text-align: right;
 }
@@ -4978,7 +4926,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 .toolbar-divider {
  width: 1px;
  height: 24px;
- background: var(--border-color);
+ background: var(--dq-border);
  margin: 0 4px;
 }
 
@@ -4989,13 +4937,13 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  height: 80px;
  border-radius: 8px;
  overflow: hidden;
- border: 2px solid var(--border-color);
+ border: 2px solid var(--dq-border);
  cursor: pointer;
  transition: border-color 0.2s;
 }
 
 .ref-image-thumb:hover {
- border-color: var(--primary);
+ border-color: var(--dq-accent);
 }
 
 .ref-image-thumb img {
@@ -5029,9 +4977,9 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  min-height: 0;
  flex: 0 0 auto;
  box-sizing: border-box;
- border: 2px dashed var(--border-color);
- border-radius: var(--radius-sm);
- color: var(--text-muted);
+ border: 2px dashed var(--dq-border);
+ border-radius: var(--dq-radius-control-sm);
+ color: var(--dq-label-tertiary);
  cursor: default;
  transition: border-color 0.2s, color 0.2s;
  gap: 10px;
@@ -5040,8 +4988,8 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 }
 
 .ref-image-placeholder:hover {
- border-color: var(--primary);
- color: var(--text-secondary);
+ border-color: var(--dq-accent);
+ color: var(--dq-label-secondary);
 }
 
 /* Plan C4：资产选择器 — 占满父宽、最近区换行不挤出卡片 */
@@ -5072,7 +5020,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 
 .asset-picker__recent-label {
  font-size: var(--dq-font-size-caption);
- color: var(--text-muted);
+ color: var(--dq-label-tertiary);
 }
 
 .asset-picker__recent-grid {
@@ -5089,7 +5037,7 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  border-radius: 6px;
  overflow: hidden;
  cursor: pointer;
- border: 1px solid var(--border-color);
+ border: 1px solid var(--dq-border);
  flex-shrink: 0;
  box-sizing: border-box;
 }
@@ -5199,15 +5147,6 @@ html.dark .dq-app-main:has(.studio-layout) {
  overflow: hidden;
  background-color: var(--dq-bg-page);
  background-image: none;
-}
-
-html.dq-linear-dark .studio-composer-shell.dq-glass--panel,
-.dq-linear-dark .studio-composer-shell.dq-glass--panel,
-html.dq-shadcn-dark .studio-composer-shell.dq-glass--panel,
-.dq-shadcn-dark .studio-composer-shell.dq-glass--panel {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  background: var(--dq-glass-floating-bar-bg);
 }
 
 @media (prefers-reduced-transparency: reduce) {

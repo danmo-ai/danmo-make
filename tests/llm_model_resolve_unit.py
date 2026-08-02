@@ -7,7 +7,7 @@ from pathlib import Path
 
 from backend.core.contracts import LongVideoChapterAnalyzeRequest
 from backend.core.model_registry import ModelRegistry
-from backend.engine.llm.service import LLMService
+from backend.engine.llm.service_mlx import LLMService
 from backend.utils.path_utils import PathResolver
 
 ROOT = Path(__file__).resolve().parents[1]

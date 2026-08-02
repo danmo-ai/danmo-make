@@ -24,7 +24,7 @@ from backend.core.interfaces import IPathResolver, ISettingsService
 from backend.engine.engine_registry import EngineRegistry
 from backend.engine.training import dataset_store
 from backend.engine.training.crop import presets_with_training_resolution, training_crop_policy
-from backend.engine.training.lora_train_runtime import (
+from backend.engine.training.lora_train_runtime_mlx import (
     resume_checkpoint_incompatibility,
     train_min_memory_gb,
 )

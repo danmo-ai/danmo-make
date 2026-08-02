@@ -123,7 +123,7 @@ def _bernini_user_task_label(
 
 
 def _load_video_rgb(path: Path, *, width: int, height: int, num_frames: int, fps: float) -> np.ndarray:
-    from backend.engine.common.video.stitch import _extract_video_rgb
+    from backend.engine.common.codecs.vae.video_stitch import _extract_video_rgb
 
     raw = _extract_video_rgb(path, fps=fps)
     if raw.shape[0] < 1:

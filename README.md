@@ -1,4 +1,4 @@
-# DanQing Studio v4 (丹青工作室)
+# Danmo Make v4
 
 Language: **English** | [中文](README_zh.md)
 
@@ -107,8 +107,8 @@ Audio routes accept tasks but **fail explicitly** in the task log until an infer
 ### Install
 
 ```bash
-git clone <repo-url> DanQing-Studio
-cd DanQing-Studio
+git clone <repo-url> danmo-make
+cd danmo-make
 
 python3.11 -m venv .venv
 source .venv/bin/activate
@@ -125,7 +125,7 @@ make dev
 
 Open **http://localhost:5800** (Vite, proxies `/api` → :7800) or **http://localhost:7800** — Swagger at **/docs**.
 
-### Dev ports (DanQing family)
+### Dev ports (Danmo product line)
 
 Backend **`78xx`**, frontend **`58xx`** — same last two digits = same project. All three repos can run `make dev` at once.
 
@@ -191,7 +191,7 @@ make verify-engine-stack   # governance gates + engine unit tests
 ## Project layout
 
 ```
-DanQing-Studio/
+danmo-make/
 ├── backend/
 │   ├── api/routes/          # REST (images, videos, tasks, assets, registry, …)
 │   ├── cli/                 # bin/danqing-* (mirrors REST)

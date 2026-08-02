@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tauri release builds — macOS (MLX) or Windows (CUDA sidecar)."""
+"""Tauri release builds — macOS (MLX), Linux (CUDA), Windows (CUDA)."""
 
 from __future__ import annotations
 
@@ -63,6 +63,46 @@ def build_macos() -> None:
     _run(["bash", str(bash)])
 
 
+def build_linux() -> None:
+    if sys.platform != "linux":
+        raise SystemExit("Linux desktop build must run on Linux.")
+    import platform
+
+    if platform.machine().lower() not in ("x86_64", "amd64"):
+        raise SystemExit("DanQing Linux desktop currently supports x86_64 only.")
+
+    cargo_target = os.environ.get("CARGO_TARGET_DIR", str(op.DESKTOP_CARGO_TARGET))
+    os.environ["CARGO_TARGET_DIR"] = cargo_target
+    op.DESKTOP_CARGO_TARGET.mkdir(parents=True, exist_ok=True)
+
+    _maybe_set_desktop_version()
+    prep.prepare()
+
+    _run(["rustup", "target", "add", "x86_64-unknown-linux-gnu"])
+
+    desktop = op.PROJECT_ROOT / "desktop"
+    _run(["npm", "install"], cwd=desktop)
+    # AppImage + deb (matches tauri.linux.conf.json / danmo-work)
+    _run(
+        [
+            "npm",
+            "exec",
+            "tauri",
+            "build",
+            "--",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "-b",
+            "appimage",
+            "-b",
+            "deb",
+        ],
+        cwd=desktop,
+    )
+
+    _run([_python(), str(op.PROJECT_ROOT / "scripts" / "stage_desktop_bundle.py")])
+
+
 def build_windows() -> None:
     if sys.platform != "win32":
         raise SystemExit("Windows desktop build must run on Windows.")
@@ -78,8 +118,20 @@ def build_windows() -> None:
 
     desktop = op.PROJECT_ROOT / "desktop"
     _run(["npm", "install"], cwd=desktop)
+    # Explicit -b nsis (same as DanQing-Teams): without a bundle type flag,
+    # tauri build may only compile the .exe and skip the NSIS installer tree.
     _run(
-        ["npm", "exec", "tauri", "build", "--", "--target", "x86_64-pc-windows-msvc"],
+        [
+            "npm",
+            "exec",
+            "tauri",
+            "build",
+            "--",
+            "--target",
+            "x86_64-pc-windows-msvc",
+            "-b",
+            "nsis",
+        ],
         cwd=desktop,
     )
 
@@ -90,13 +142,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Tauri desktop release build")
     parser.add_argument(
         "--platform",
-        choices=("macos", "windows"),
+        choices=("macos", "linux", "windows"),
         required=True,
         help="Target desktop platform",
     )
     args = parser.parse_args()
     if args.platform == "macos":
         build_macos()
+    elif args.platform == "linux":
+        build_linux()
     else:
         build_windows()
 

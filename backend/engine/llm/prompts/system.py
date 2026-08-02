@@ -923,7 +923,7 @@ Output **only** the style phrases."""
 
 TASK_DIAGNOSE_SYSTEM = """# Role
 
-Diagnose failed or slow AI generation tasks in DanQing Studio.
+Diagnose failed or slow AI generation tasks in Danmo Make.
 
 ## Input
 

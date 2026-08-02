@@ -29,7 +29,7 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
         )
         return {"captions": captions}
 
-    from backend.engine.llm.vision import analyze_image_files_batch
+    from backend.engine.llm.vision_mlx import analyze_image_files_batch
 
     instruction = str(job.get("instruction") or "").strip()
     if not instruction:

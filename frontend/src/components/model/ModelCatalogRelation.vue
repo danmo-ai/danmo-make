@@ -21,7 +21,7 @@ const navTitle = computed(() => `${props.navLabel} ${props.targetName}`.trim());
 <template>
   <div class="model-catalog-relation">
     <DqTag
-      size="small"
+      size="sm"
       effect="plain"
       :type="roleTagType || 'info'"
       class="model-catalog-relation__role"

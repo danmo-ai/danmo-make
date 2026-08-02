@@ -20,12 +20,12 @@ from backend.engine.families.flux1.weights import remap_flux1_lora_keys
 from backend.engine.pipelines.image_model_load import load_image_transformer
 from backend.engine.training.crop import prepare_training_rgb_image, resolve_training_resolution
 from backend.engine.training.dataset_store import _dataset_meta, load_training_pairs_unified
-from backend.engine.training.lora_layers import (
+from backend.engine.training.lora_layers_mlx import (
     apply_lora_to_flux1_dit,
     list_flux1_lora_blocks,
     prepare_dit_for_lora_training,
 )
-from backend.engine.training.dit_training_loss import (
+from backend.engine.training.dit_training_loss_mlx import (
     CLASS_PRIOR_LATENT_COUNT,
     combine_instance_prior_loss,
     flow_match_mse,
@@ -33,9 +33,9 @@ from backend.engine.training.dit_training_loss import (
     sample_noisy_latent,
     sample_prior_latent,
 )
-from backend.engine.training.latent_cache import LatentCache
-from backend.engine.training.lora_train_loop import run_dit_lora_train_loop
-from backend.engine.training.lora_train_runtime import (
+from backend.engine.training.latent_cache_mlx import LatentCache
+from backend.engine.training.lora_train_loop_mlx import run_dit_lora_train_loop
+from backend.engine.training.lora_train_runtime_mlx import (
     assert_training_memory,
     parse_lora_train_runtime_config,
     save_training_checkpoint,
@@ -195,7 +195,7 @@ def _save_adapter(path: Path, model: Any, rank: int, meta: dict[str, Any], optim
     if optimizer is not None:
         save_training_checkpoint(path, model, optimizer, rank=rank, meta=meta)
         return
-    from backend.engine.training.lora_layers import collect_lora_safetensors
+    from backend.engine.training.lora_layers_mlx import collect_lora_safetensors
 
     weights = collect_lora_safetensors(model, rank=rank)
     weights.pop("lora_rank", None)
@@ -208,7 +208,7 @@ def _validate_saved_lora(path: Path, *, lora_blocks: int = -1) -> None:
     from backend.engine.config.model_configs import Flux1Config
     from backend.engine.families.flux1.transformer import Flux1Transformer
     from backend.engine.runtime.mlx import MLXContext
-    from backend.engine.training.lora_layers import (
+    from backend.engine.training.lora_layers_mlx import (
         enumerate_flux1_lora_module_paths,
         repair_indexed_lora_weights,
     )
@@ -607,7 +607,7 @@ def run_flux_dreambooth_training(
         }
         _save_adapter(final_path, train_module, train_runtime.lora_rank, meta)
     if train_runtime.fuse_adapters:
-        from backend.engine.training.lora_layers import collect_fused_adapter_deltas
+        from backend.engine.training.lora_layers_mlx import collect_fused_adapter_deltas
 
         fused_path = adapter_dir / "fused_adapters.safetensors"
         mx.save_safetensors(str(fused_path), collect_fused_adapter_deltas(train_module))

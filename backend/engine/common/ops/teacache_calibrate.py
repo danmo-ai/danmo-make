@@ -8,7 +8,7 @@ from typing import Any
 
 import numpy as np
 
-from backend.engine.common.ops.teacache import TEACACHE_FAMILY_DEFAULTS, poly_eval
+from backend.engine.common.ops.teacache_mlx import TEACACHE_FAMILY_DEFAULTS, poly_eval
 
 
 @dataclass(frozen=True)

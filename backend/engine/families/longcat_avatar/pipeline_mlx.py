@@ -31,7 +31,7 @@ from backend.engine.families.longcat_avatar.audio_mlx import (
     build_avatar_audio_embeddings,
     whisper_encode_audio_to_groups,
 )
-from backend.engine.families.longcat_avatar.conditioning import (
+from backend.engine.families.longcat_avatar.conditioning_mlx import (
     cfg_split_outputs,
     disentangled_cfg_combine,
     flip_velocity_for_scheduler,

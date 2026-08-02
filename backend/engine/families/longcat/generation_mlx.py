@@ -9,8 +9,8 @@ import mlx.core as mx
 
 from backend.engine.common.ops.schedulers import FlowMatchEulerScheduler
 from backend.engine.config.model_configs import LongCatConfig
-from backend.engine.families.longcat import bundle_load
-from backend.engine.families.longcat.conditioning import (
+from backend.engine.families.longcat import bundle_load_mlx
+from backend.engine.families.longcat.conditioning_mlx import (
     cfg_combine,
     cfg_split_outputs,
     flip_velocity_for_scheduler,

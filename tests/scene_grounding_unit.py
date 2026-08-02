@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import unittest
 
-from backend.engine.common.long_video.scene_grounding import (
+from backend.long_video.scene_grounding import (
     build_camera_candidates,
     build_grounding_bundle,
     keyframe_grounding_metadata,

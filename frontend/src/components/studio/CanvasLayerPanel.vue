@@ -30,7 +30,7 @@
           <DqIconButton
             v-if="selectedPath"
             type="text"
-            size="xs"
+            size="sm"
             :label="$t('canvas.snapStagingToNode')"
             @click.stop="$emit('snap-staging')"
           >
@@ -38,7 +38,7 @@
           </DqIconButton>
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             :label="$t('canvas.focusStaging')"
             @click.stop="$emit('focus-staging')"
           >
@@ -81,7 +81,7 @@
           </div>
           <DqButton
             type="text"
-            size="xs"
+            size="sm"
             class="canvas-layer__overlay-clear"
             @click="$emit('overlay-clear', row.kind)"
           >
@@ -124,7 +124,7 @@
               v-if="renamingPath === entry.path"
               ref="renameInputRef"
               v-model="renameDraft"
-              size="small"
+              size="sm"
               class="canvas-layer__rename-input"
               :placeholder="$t('canvas.renameNodePlaceholder')"
               @keydown.enter.stop="commitRename(entry.path)"
@@ -141,7 +141,7 @@
           <div class="canvas-layer__controls">
             <DqIconButton
               type="text"
-              size="xs"
+              size="sm"
               :label="$t('canvas.renameNode')"
               @click.stop="startRename(entry)"
             >
@@ -155,7 +155,7 @@
             />
             <DqIconButton
               type="text"
-              size="xs"
+              size="sm"
               :label="$t('canvas.removeFromCanvas')"
               @click.stop="$emit('remove', entry.path)"
             >
@@ -375,7 +375,7 @@ const layerList = computed(() => {
   padding: 12px 16px 6px;
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--dq-tracking-wider);
   text-transform: uppercase;
   color: var(--dq-label-secondary);
 }
@@ -548,7 +548,7 @@ const layerList = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: var(--dq-font-size-display);
+  font-size: var(--dq-font-size-body);
   color: var(--dq-accent);
   background: color-mix(in srgb, var(--dq-accent) 10%, transparent);
   flex-shrink: 0;

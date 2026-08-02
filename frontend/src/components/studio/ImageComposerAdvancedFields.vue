@@ -30,7 +30,7 @@
         <div class="composer-advanced-fields__seed">
           <DqInput
             v-model="params.seed"
-            size="small"
+            size="sm"
             :placeholder="$t('studio.seedPlaceholder')"
           />
           <DqIconButton
@@ -59,7 +59,7 @@
     <div v-if="schedulerOptions.length" class="composer-advanced-fields__row">
       <div class="composer-advanced-fields__field composer-advanced-fields__field--full">
         <label>{{ schedulerLabel }}</label>
-        <DqSelect v-model="params.scheduler" size="small" class="composer-advanced-fields__select">
+        <DqSelect v-model="params.scheduler" size="sm" class="composer-advanced-fields__select">
           <DqOption
             v-for="opt in schedulerOptions"
             :key="String(opt)"
@@ -76,7 +76,7 @@
           <label>{{ $t('studio.loraLabel') }}</label>
           <DqSelect
             v-model="params.lora"
-            size="small"
+            size="sm"
             clearable
             :placeholder="$t('studio.noLora')"
             class="composer-advanced-fields__select composer-advanced-fields__select--grow"
@@ -106,7 +106,7 @@
           <label>{{ $t('studio.controlNet') }}</label>
           <DqSelect
             v-model="params.controlnet"
-            size="small"
+            size="sm"
             clearable
             :disabled="!controlNetRuntimeAvailable"
             :placeholder="$t('studio.noControlNet')"
@@ -187,7 +187,7 @@
           <label>{{ paramFieldLabel(paramKey) }}</label>
           <DqSelect
             v-model="params[paramKey]"
-            size="small"
+            size="sm"
             class="composer-advanced-fields__select composer-advanced-fields__select--grow"
           >
             <DqOption

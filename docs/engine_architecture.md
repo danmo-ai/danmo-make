@@ -1,4 +1,4 @@
-# DanQing Engine Architecture
+# Danmo Make Engine Architecture
 
 **Single source of truth** for engine layout, plugin model, new-family integration, and CI gates.
 
@@ -419,8 +419,8 @@ Scaffold emits `transformer.py`, `transformer_mlx.py`, `weights.py`, **`plugin.p
 Registry versions with `quantization.bits` (4/8, `mlx_affine`) load DiT weights into
 `QuantizedLinear` for low-VRAM inference — shared path for **local derived** and
 **pre-downloaded** bundles. Resolution: `backend/engine/common/bundle/quant_inference.py`;
-loader: `backend/engine/common/model/quantized_load.py`;
-LoRA on quantized DiT: `backend/engine/common/model/quantized_lora.py` (merge → re-quantize touched layers).
+loader: `backend/engine/common/model/quantized_load_mlx.py`;
+LoRA on quantized DiT: `backend/engine/common/model/quantized_lora_mlx.py` (merge → re-quantize touched layers).
 TE/VAE (optional): `resolve_component_inference_weight_mode()`; local `convert_model` may also
 quantize `text_encoder/` / `vae/` when registry sets `quantization.<component>.bits` (reference:
 `flux2-klein-4b` derived `int4`/`int8`); Qwen3/Flux2 TE loads affine weights via registry +

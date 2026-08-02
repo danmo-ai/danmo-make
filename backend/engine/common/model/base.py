@@ -305,7 +305,7 @@ class TransformerBase:
             and inference_mode.kind == "quantized"
             and inference_mode.bits in (4, 8)
         ):
-            from backend.engine.common.model.quantized_load import load_weights_quantized_inference
+            from backend.engine.common.model.quantized_load_mlx import load_weights_quantized_inference
 
             return load_weights_quantized_inference(
                 self,

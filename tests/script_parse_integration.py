@@ -95,7 +95,7 @@ def _assert_wukong_entities(test: unittest.TestCase, decomposed, expanded) -> No
 def _load_llm_service():
     from backend.core.interfaces import AppSettings
     from backend.core.model_registry import ModelRegistry
-    from backend.engine.llm.service import (
+    from backend.engine.llm.service_mlx import (
         LLMService,
         normalize_app_llm_settings,
         resolve_llm_model_id,

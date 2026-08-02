@@ -262,7 +262,7 @@ function onMouseDown(e: MouseEvent) {
   font-size: var(--dq-font-size-caption);
   line-height: 1.2;
   background: rgba(0, 0, 0, 0.62);
-  color: #fff;
+  color: var(--dq-color-white);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -277,7 +277,7 @@ function onMouseDown(e: MouseEvent) {
   border-radius: 4px;
   font-size: var(--dq-font-size-caption);
   background: rgba(0, 0, 0, 0.55);
-  color: #fff;
+  color: var(--dq-color-white);
 }
 
 .canvas-item__prompt,

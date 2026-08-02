@@ -130,7 +130,7 @@
                     v-if="(task.priority ?? 100) <= 50"
                     type="warning"
                     effect="plain"
-                    size="small"
+                    size="sm"
                     class="dq-task-queue-priority-tag"
                   >
                     {{ $tt('studio.queuePriorityHigh') }}

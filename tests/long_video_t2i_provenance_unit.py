@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from backend.engine.common.long_video.activity import LongVideoActivityRecorder
-from backend.engine.common.long_video.t2i_provenance import (
+from backend.long_video.activity import LongVideoActivityRecorder
+from backend.long_video.t2i_provenance import (
     build_shot_t2i_provenance_summary,
     build_shots_summary_with_provenance,
     is_close_up_shot_size,

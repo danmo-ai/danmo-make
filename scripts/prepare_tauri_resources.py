@@ -22,7 +22,7 @@ def _sidecar_executable(sidecar: Path) -> Path:
             return exe
     raise SystemExit(
         f"Missing sidecar executable under {sidecar} (expected danqing-api or danqing-api.exe).\n"
-        "Run: make pack-macos-desktop-sidecar  (macOS) or make pack-windows-sidecar  (Windows)"
+        "Run: make pack-macos-desktop-sidecar | pack-linux-desktop-sidecar | pack-windows-sidecar"
     )
 
 

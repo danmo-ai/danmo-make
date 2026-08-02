@@ -325,7 +325,7 @@ class ShotSpecArtifact(BaseModel):
                 raise ValueError(
                     f"segment {self.segment_index}: face_anchor requires {primary!r} in anchor_visual"
                 )
-        from backend.engine.common.long_video.keyframe_prompt_policy import validate_visibility_role_contract
+        from backend.long_video.keyframe_prompt_policy import validate_visibility_role_contract
 
         for msg in validate_visibility_role_contract(
             segment_role=self.role,

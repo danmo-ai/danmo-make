@@ -20,7 +20,7 @@ from backend.engine.llm.script_parse.schemas import (
 )
 from backend.engine.llm.storyboard import normalize_storyboard_locale
 from backend.engine.llm.storyboard_cast import strip_name_look_tags
-from backend.engine.common.long_video.keyframe_prompt_policy import (
+from backend.long_video.keyframe_prompt_policy import (
     coalesce_face_anchor_visual,
     sanitize_shot_spec_prompts,
     validate_shot_spec_partial_framing,
