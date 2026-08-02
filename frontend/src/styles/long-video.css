@@ -125,7 +125,6 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
 .lv-editor-pane--settings .dq-pref-row .dq-input,
 .lv-editor-pane--settings .dq-pref-row .dq-select__trigger {
  min-height: 36px;
- font-size: var(--dq-font-size-body);
 }
 
 .lv-editor-pane--settings .dq-pref-row {
@@ -581,10 +580,10 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
 .lv-brief__anchor-badge {
   font-size: var(--dq-font-size-caption);
   font-weight: 500;
-  color: var(--dq-accent, #0a84ff);
+  color: var(--dq-accent);
   padding: 1px 6px;
   border-radius: 4px;
-  background: color-mix(in srgb, var(--dq-accent, #0a84ff) 12%, transparent);
+  background: color-mix(in srgb, var(--dq-accent) 12%, transparent);
 }
 
 .lv-brief__anchor-body {
@@ -615,7 +614,6 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
 
 .lv-brief .dq-select__trigger {
   min-height: 28px;
-  font-size: var(--dq-font-size-caption);
 }
 
 /* Inspector: per-shot cast looks (below prompt) */
@@ -662,7 +660,6 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
 
 .lv-cast-looks .dq-select__trigger {
   min-height: 28px;
-  font-size: var(--dq-font-size-caption);
 }
 
 /* ── Section panels (项目 / 分镜轨) ── */
@@ -731,7 +728,7 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
   margin: 0;
   font-size: var(--dq-font-size-body);
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: var(--dq-tracking-tighter);
   color: var(--dq-label-primary);
 }
 
@@ -863,7 +860,6 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
 .lv-settings-bar .dq-select__trigger,
 .lv-settings-bar .dq-input {
   min-height: 32px;
-  font-size: var(--dq-font-size-body);
 }
 
 .lv-settings-bar__style-row {
@@ -1166,11 +1162,11 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
   width: 100%;
   aspect-ratio: var(--lv-rail-thumb-aspect, 1280 / 704);
   overflow: hidden;
-  background: color-mix(in srgb, var(--dq-surface-base) 90%, var(--dq-surface-elevated));
+  background: color-mix(in srgb, var(--dq-bg-base) 90%, var(--dq-surface-elevated));
 }
 
 .lv-rail__node--ready .lv-rail__node-thumb {
-  background: color-mix(in srgb, var(--dq-surface-base) 82%, var(--dq-surface-elevated));
+  background: color-mix(in srgb, var(--dq-bg-base) 82%, var(--dq-surface-elevated));
 }
 
 .lv-rail__node--failed .lv-rail__node-thumb {
@@ -1212,7 +1208,7 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
 .lv-rail__generating {
   position: absolute;
   inset: 0;
-  background: color-mix(in srgb, var(--dq-surface-base) 55%, transparent);
+  background: color-mix(in srgb, var(--dq-bg-base) 55%, transparent);
   backdrop-filter: var(--dq-glass-blur-light);
   -webkit-backdrop-filter: var(--dq-glass-blur-light);
 }
@@ -1231,7 +1227,7 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
   gap: 4px;
   padding: 8px 10px;
   border-top: 0.5px solid var(--dq-border-subtle);
-  background: color-mix(in srgb, var(--dq-surface-base) 55%, var(--dq-surface-elevated));
+  background: color-mix(in srgb, var(--dq-bg-base) 55%, var(--dq-surface-elevated));
   text-align: left;
 }
 
@@ -1239,7 +1235,7 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
   font-size: var(--dq-font-size-caption);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  letter-spacing: 0.02em;
+  letter-spacing: var(--dq-tracking-wide);
   color: var(--dq-accent);
   line-height: 1.2;
 }
@@ -1296,12 +1292,12 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
 
 .lv-rail__node-edge--empty {
   border-style: dashed;
-  border-color: color-mix(in srgb, var(--dq-warning, #e6a23c) 45%, var(--dq-border-subtle));
-  background: color-mix(in srgb, var(--dq-warning, #e6a23c) 6%, transparent);
+  border-color: color-mix(in srgb, var(--dq-warning) 45%, var(--dq-border-subtle));
+  background: color-mix(in srgb, var(--dq-warning) 6%, transparent);
 }
 
 .lv-rail__node-edge--empty .lv-rail__node-edge-meta {
-  color: color-mix(in srgb, var(--dq-warning, #e6a23c) 80%, var(--dq-label-tertiary));
+  color: color-mix(in srgb, var(--dq-warning) 80%, var(--dq-label-tertiary));
 }
 
 .lv-rail__node-edge--pending {
@@ -1363,7 +1359,7 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
 .lv-output__title {
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.03em;
+  letter-spacing: var(--dq-tracking-wide);
   text-transform: uppercase;
   color: var(--dq-label-secondary);
 }
@@ -1373,7 +1369,7 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
   max-height: 220px;
   border-radius: 10px;
   border: 0.5px solid var(--dq-glass-border, var(--dq-border-subtle));
-  background: #000;
+  background: var(--dq-color-black);
   object-fit: contain;
 }
 
@@ -1405,7 +1401,7 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
   padding: 7px 10px 7px 34px;
   font-size: var(--dq-font-size-body);
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: var(--dq-tracking-tight);
   position: relative;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -1443,7 +1439,7 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
 
 .lv-inspector__tabs .lv-inspector-segmented .dq-segmented__item.is-active {
   color: var(--dq-label-primary);
-  background: color-mix(in srgb, var(--dq-accent) 16%, var(--dq-surface-base, var(--dq-bg)));
+  background: color-mix(in srgb, var(--dq-accent) 16%, var(--dq-bg-base, var(--dq-bg-base)));
   border-color: color-mix(in srgb, var(--dq-accent) 48%, var(--dq-border-subtle));
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--dq-accent) 20%, transparent),
@@ -1540,7 +1536,7 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
   border-radius: 8px;
   overflow: hidden;
   border: 0.5px solid var(--dq-glass-border, var(--dq-border-subtle));
-  background: #000;
+  background: var(--dq-color-black);
 }
 
 .lv-beat-node__thumb.is-anchor {
@@ -1559,26 +1555,26 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
   position: absolute;
   right: 4px;
   bottom: 4px;
-  font-size: 10px;
+  font-size: var(--dq-font-size-caption);
 }
 
 .lv-beat-node__vis-badge {
   position: absolute;
   left: 4px;
   top: 4px;
-  font-size: 9px;
+  font-size: var(--dq-font-size-caption);
   font-weight: 700;
   padding: 1px 4px;
   border-radius: 3px;
   background: color-mix(in srgb, var(--dq-accent) 22%, transparent);
   color: var(--dq-accent);
-  letter-spacing: 0.03em;
+  letter-spacing: var(--dq-tracking-wide);
 }
 
 .lv-inspector__requirement {
   margin: 0 0 var(--dq-space-sm);
   padding: var(--dq-space-xs) var(--dq-space-sm);
-  font-size: 12px;
+  font-size: var(--dq-font-size-caption);
   line-height: 1.45;
   color: var(--dq-label-secondary);
   background: color-mix(in srgb, var(--dq-accent) 8%, transparent);
@@ -1593,16 +1589,16 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
 
 .lv-inspector__vis-meta {
   margin: 0 0 var(--dq-space-sm);
-  font-size: 11px;
+  font-size: var(--dq-font-size-caption);
   color: var(--dq-label-tertiary);
 }
 
 .lv-beat-node__role {
-  font-size: 10px;
+  font-size: var(--dq-font-size-caption);
   font-weight: 600;
   color: var(--dq-accent);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--dq-tracking-wider);
 }
 
 .lv-beat-node__index {
@@ -1615,7 +1611,7 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
 }
 
 .lv-beat-node--anchor .lv-beat-node__role {
-  color: var(--dq-warning, #c27803);
+  color: var(--dq-warning);
 }
 
 .lv-group-progress {
@@ -1636,7 +1632,7 @@ html.dark .dq-app-main:has(.long-video-page) > .long-video-page {
 }
 
 .lv-group-progress__pill.is-ready {
-  border-color: color-mix(in srgb, var(--dq-success, #2a9d4b) 50%, transparent);
+  border-color: color-mix(in srgb, var(--dq-success) 50%, transparent);
 }
 
 .lv-group-progress__pill.is-anchor {

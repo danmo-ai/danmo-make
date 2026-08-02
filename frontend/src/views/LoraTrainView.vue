@@ -1577,9 +1577,9 @@ onMounted(async () => {
   width: 56px;
   height: 56px;
   border-radius: 14px;
-  font-size: 16px;
+  font-size: var(--dq-font-size-title);
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: var(--dq-tracking-tighter);
   color: var(--dq-label-primary);
   background: var(--dq-fill-secondary);
   border: 1px solid var(--dq-border-subtle);
@@ -1619,9 +1619,9 @@ onMounted(async () => {
 }
 
 .lora-train-page__base-tile-name {
-  font-size: var(--dq-font-size-body-lg);
+  font-size: var(--dq-font-size-body);
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: var(--dq-tracking-tight);
   color: var(--dq-label-primary);
   line-height: 1.3;
 }
@@ -1654,7 +1654,7 @@ onMounted(async () => {
   top: 3px;
   width: 6px;
   height: 10px;
-  border: solid var(--dq-accent-contrast, #fff);
+  border: solid var(--dq-on-accent);
   border-width: 0 2px 2px 0;
   transform: rotate(45deg);
 }
@@ -1689,15 +1689,15 @@ onMounted(async () => {
 }
 
 .lora-train-page__preset-card.is-recommended {
-  border-color: var(--dq-color-primary-border, rgba(64, 158, 255, 0.45));
+  border-color: var(--dq-accent-border-hover);
 }
 
 .lora-train-page__preset-badge {
   margin-left: 0.35rem;
-  font-size: 0.72rem;
+  font-size: var(--dq-font-size-caption);
   font-style: normal;
   font-weight: 600;
-  color: var(--dq-color-primary, #409eff);
+  color: var(--dq-accent);
 }
 
 .lora-train-page__scheme4-hint {
@@ -1824,7 +1824,7 @@ onMounted(async () => {
 .lora-train-page__label {
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: var(--dq-tracking-wide);
   color: var(--dq-label-secondary);
 }
 

@@ -1493,7 +1493,7 @@ onUnmounted(() => {
   margin-bottom: 20px;
   padding: 12px 16px;
   border: 1px solid var(--dq-border-subtle);
-  border-radius: var(--dq-radius-md, 8px);
+  border-radius: var(--dq-radius-group, 8px);
   background: var(--dq-surface-inset);
 }
 .models-page__merged-title {
@@ -1519,7 +1519,7 @@ onUnmounted(() => {
 }
 .models-page__merged-id {
   color: var(--dq-label-secondary);
-  font-family: var(--dq-font-mono, monospace);
+  font-family: var(--dq-font-mono);
   font-size: var(--dq-font-size-caption);
 }
 .trained-loras-page__empty {

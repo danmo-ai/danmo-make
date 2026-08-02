@@ -139,6 +139,6 @@ async function confirm() {
 }
 .dq-workspace-setup-from-path {
   word-break: break-all;
-  font-family: ui-monospace, monospace;
+  font-family: var(--dq-font-mono);
 }
 </style>

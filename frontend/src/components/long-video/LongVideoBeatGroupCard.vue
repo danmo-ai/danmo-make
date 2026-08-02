@@ -5,7 +5,7 @@
       <div class="lv-beat-group__actions">
         <DqIconButton
           type="text"
-          size="xs"
+          size="sm"
           :label="$tt('video.longVideoBeatGroupMenu')"
           @click.stop="menuOpen = !menuOpen"
         >

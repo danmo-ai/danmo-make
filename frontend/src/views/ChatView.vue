@@ -977,7 +977,7 @@ onMounted(async () => {
 .copilot-page__nav-label {
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--dq-tracking-wider);
   text-transform: uppercase;
   color: var(--dq-label-tertiary);
   padding: 0 8px 4px;
@@ -1077,8 +1077,8 @@ onMounted(async () => {
   gap: 12px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: var(--dq-warning-tint, rgba(255, 193, 7, 0.08));
-  border: 0.5px solid var(--dq-warning-border, rgba(255, 193, 7, 0.25));
+  background: var(--dq-warning-surface);
+  border: 0.5px solid var(--dq-warning-surface-border);
   flex-shrink: 0;
 }
 
@@ -1342,7 +1342,7 @@ onMounted(async () => {
 .copilot-page__card-error {
   margin: 4px 0 0;
   font-size: var(--dq-font-size-caption);
-  color: var(--dq-danger, #ff3b30);
+  color: var(--dq-danger);
 }
 
 .copilot-page__card-tools {

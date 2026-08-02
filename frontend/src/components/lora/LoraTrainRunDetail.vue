@@ -85,7 +85,7 @@
     >
       <h4 class="lora-run-detail__section-title">{{ $t('loraTrain.checkpoints') }}</h4>
       <div class="lora-run-checkpoint-row">
-        <DqSelect v-model="selectedCheckpoint" class="lora-run-checkpoint-select">
+        <DqSelect v-model="selectedCheckpoint" size="sm" class="lora-run-checkpoint-select">
           <DqOption
             v-for="ck in artifacts.checkpoints"
             :key="ck"
@@ -478,7 +478,7 @@ onUnmounted(() => {
 .lora-run-detail__error {
   margin: 0;
   padding: 10px 12px;
-  border-radius: var(--radius-md);
+  border-radius: var(--dq-radius-group);
   background: color-mix(in srgb, var(--dq-danger) 10%, var(--dq-fill-secondary));
   border: 0.5px solid color-mix(in srgb, var(--dq-danger) 30%, transparent);
   font-size: var(--dq-font-size-caption);
@@ -493,7 +493,7 @@ onUnmounted(() => {
   align-items: flex-start;
   gap: 8px;
   padding: 10px 12px;
-  border-radius: var(--radius-md);
+  border-radius: var(--dq-radius-group);
   background: var(--dq-fill-secondary);
   border: 0.5px solid var(--dq-border-subtle);
 }
@@ -531,7 +531,7 @@ onUnmounted(() => {
 
 .lora-run-gallery-grid img {
   width: 100%;
-  border-radius: var(--radius-md);
+  border-radius: var(--dq-radius-group);
   border: 0.5px solid var(--dq-border);
 }
 
@@ -541,7 +541,7 @@ onUnmounted(() => {
   gap: 2px;
   height: 80px;
   padding: 8px;
-  border-radius: var(--radius-md);
+  border-radius: var(--dq-radius-group);
   background: var(--dq-fill-secondary);
   border: 0.5px solid var(--dq-border-subtle);
 }

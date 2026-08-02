@@ -11,7 +11,7 @@
       <DqButton
         v-if="canSnap"
         type="text"
-        size="xs"
+        size="sm"
         class="canvas-staging__snap-btn"
         @click.stop="$emit('snap-staging')"
       >

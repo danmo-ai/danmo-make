@@ -271,6 +271,7 @@ watch(searchScopeModel, () => {
           <span class="lora-search-page__label">{{ $t('download.loraSearchScope') }}</span>
           <DqSelect
             v-model="searchScopeModel"
+            size="sm"
             :placeholder="$t('download.loraSearchScope')"
           >
             <DqOption
@@ -284,7 +285,7 @@ watch(searchScopeModel, () => {
 
         <div class="lora-search-page__field lora-search-page__field--source">
           <span class="lora-search-page__label">{{ $t('download.loraSearchSource') }}</span>
-          <DqSelect v-model="searchSource">
+          <DqSelect v-model="searchSource" size="sm">
             <DqOption
               v-for="opt in sourceOptions"
               :key="opt.value"
@@ -396,6 +397,7 @@ watch(searchScopeModel, () => {
             <DqSelect
               v-if="item.source === 'civitai' && item.versions?.length"
               v-model="selectedVersions[item.id]"
+              size="sm"
               class="lora-search-row__version"
               :placeholder="$t('download.selectVersion')"
             >
@@ -410,6 +412,7 @@ watch(searchScopeModel, () => {
               <span class="lora-search-row__bind-label">{{ $t('download.loraSearchBindBase') }}</span>
               <DqSelect
                 :model-value="itemBindBase(item.id)"
+                size="sm"
                 class="lora-search-row__bind-select"
                 :placeholder="$t('download.loraSearchBindBase')"
                 @update:model-value="setItemBindBase(item.id, $event)"

@@ -217,14 +217,14 @@ function formatMs(ms: number): string {
 }
 
 .task-pipeline-graph__indicator--ok {
-  border-color: color-mix(in srgb, var(--dq-success, #34c759) 55%, var(--dq-glass-border));
-  background: color-mix(in srgb, var(--dq-success, #34c759) 85%, transparent);
+  border-color: color-mix(in srgb, var(--dq-success) 55%, var(--dq-glass-border));
+  background: color-mix(in srgb, var(--dq-success) 85%, transparent);
 }
 
 .task-pipeline-graph__indicator--failed,
 .task-pipeline-graph__indicator--cancelled {
-  border-color: var(--dq-status-danger, #ff3b30);
-  background: var(--dq-status-danger, #ff3b30);
+  border-color: var(--dq-danger);
+  background: var(--dq-danger);
 }
 
 .task-pipeline-graph__indicator--pending {
@@ -250,7 +250,7 @@ function formatMs(ms: number): string {
 }
 
 .task-pipeline-graph__connector--done {
-  background: color-mix(in srgb, var(--dq-success, #34c759) 45%, var(--dq-glass-border));
+  background: color-mix(in srgb, var(--dq-success) 45%, var(--dq-glass-border));
 }
 
 .task-pipeline-graph__content {

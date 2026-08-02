@@ -161,7 +161,7 @@ defineExpose({
 .lora-train-history__title {
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--dq-tracking-wider);
   text-transform: uppercase;
   color: var(--dq-label-tertiary);
   white-space: nowrap;
@@ -206,7 +206,7 @@ defineExpose({
 
 .lora-train-history__skeleton-row {
   height: 52px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--dq-radius-control-sm);
   background: linear-gradient(
     90deg,
     var(--dq-fill-tertiary) 0%,
@@ -247,7 +247,7 @@ defineExpose({
   width: 100%;
   padding: 10px 12px;
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border-radius: var(--dq-radius-control-sm);
   background: transparent;
   cursor: pointer;
   text-align: left;

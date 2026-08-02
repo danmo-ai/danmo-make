@@ -45,6 +45,11 @@ UI_STYLE_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\.dq-input-number__increase\b"), "use `.dq-input-number__btn`"),
     (re.compile(r"\.dq-input-number__decrease\b"), "use `.dq-input-number__btn`"),
     (re.compile(r"\.dq-tag[^{]*\.is-plain\b"), "use `.dq-tag--plain` (DqTag effect=plain)"),
+    # Typography — 4 steps only; no sub-caption px / product font stacks
+    (re.compile(r"font-size:\s*(?:9|10|11)px\b"), "use var(--dq-font-size-caption|body|title)"),
+    (re.compile(r"font-size:\s*0\.(?:6|7)\d*rem\b"), "sub-caption rem sizes forbidden; use --dq-font-size-*"),
+    (re.compile(r"font-family:\s*ui-monospace\b"), "use var(--dq-font-mono)"),
+    (re.compile(r"var\(--dq-font-size-[^,)]+,\s*\d+px\)"), "remove px fallbacks on --dq-font-size-*"),
 ]
 UI_VUE_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r'\bv-if="motion"\b'), 'use `v-if="divided"` on DqDropdownItem'),
@@ -52,6 +57,8 @@ UI_VUE_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r'\bsize="small"\b'), 'use `size="sm"` (not `small`)'),
     (re.compile(r"\bsize='small'\b"), "use `size='sm'` (not `small`)"),
     (re.compile(r'\bsize="mini"\b'), 'use `size="sm"` (not `mini`)'),
+    (re.compile(r'\bsize="xs"\b'), 'use `size="sm"` (not `xs`)'),
+    (re.compile(r"\bsize='xs'\b"), "use `size='sm'` (not `xs`)"),
 ]
 
 ALL_RULES = ("ep", "theme", "ui", "canvas")

@@ -28,7 +28,7 @@
           >
             <DqIconButton
               type="text"
-              size="xs"
+              size="sm"
               class="audio-composer__ref-play"
               :aria-label="audioPlaying ? $tt('audio.pause') : $tt('audio.play')"
               @click.stop="toggleAudioPlayback"
@@ -40,7 +40,7 @@
           <ComposerIconTip :content="$t('create.composerTip.removeRef')">
             <DqIconButton
               type="text"
-              size="xs"
+              size="sm"
               :aria-label="$tt('common.delete')"
               @click="$emit('remove-reference')"
             >
@@ -51,7 +51,7 @@
         <ComposerIconTip v-else-if="workMode === 'cover'" :content="$t('create.composerTip.pickCoverSource')">
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             class="audio-composer__ref-add"
             :aria-label="$tt('audio.pickCoverSource')"
             @click="$emit('pick-reference')"
@@ -68,7 +68,7 @@
         >
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             :disabled="briefEnhancing || !localPrompt.trim()"
             :aria-label="$t('create.enhanceMusicBrief')"
             @click="onEnhanceBriefClick"
@@ -84,7 +84,7 @@
         >
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             class="audio-composer__preset-btn"
             :label="$t('create.composerTip.preset')"
           >
@@ -126,7 +126,7 @@
         >
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             :disabled="lyricsLoading || !localPrompt.trim()"
             :aria-label="$t('audio.generateLyrics')"
             @click="$emit('generate-lyrics')"
@@ -319,7 +319,7 @@
                     />
                     <DqIconButton
                       type="text"
-                      size="xs"
+                      size="sm"
                       :label="$tt('create.randomSeed')"
                       @click="randomizeSeed"
                     >

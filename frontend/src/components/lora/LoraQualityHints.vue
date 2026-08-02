@@ -41,7 +41,7 @@
 
       <div v-if="showVlmAction" class="lora-quality-hints__actions">
         <DqButton
-          size="xs"
+          size="sm"
           type="secondary"
           :loading="vlmLoading"
           @click="$emit('run-vlm')"

@@ -68,7 +68,7 @@ const zones = computed(() =>
 .canvas-extend-zone__label {
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.03em;
+  letter-spacing: var(--dq-tracking-wide);
   color: var(--dq-accent);
   text-transform: uppercase;
   padding: 2px 6px;

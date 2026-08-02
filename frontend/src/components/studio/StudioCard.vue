@@ -505,7 +505,7 @@ function truncate(text: string, length: number): string {
 .studio-card__audio-label {
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: var(--dq-tracking-wide);
   z-index: 1;
 }
 

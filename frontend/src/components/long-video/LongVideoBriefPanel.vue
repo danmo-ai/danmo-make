@@ -37,6 +37,7 @@
               <DqSelect
                 :model-value="scriptParseLlmModel"
                 size="sm"
+                variant="ghost"
                 class="lv-script-studio__parse-duration-select lv-script-studio__parse-llm-select"
                 :title="$tt('video.longVideoScriptParseLlmHint')"
                 @update:model-value="onScriptParseLlmChange"
@@ -54,6 +55,7 @@
               <DqSelect
                 :model-value="targetDurationSec"
                 size="sm"
+                variant="ghost"
                 class="lv-script-studio__parse-duration-select"
                 :title="$tt('video.longVideoTargetDurationHint')"
                 @update:model-value="onDurationChange"
@@ -74,6 +76,7 @@
               <DqSelect
                 :model-value="segmentDurationSec"
                 size="sm"
+                variant="ghost"
                 class="lv-script-studio__parse-duration-select"
                 :title="$tt('video.longVideoSegmentDurationHint')"
                 @update:model-value="onSegmentDurationChange"
@@ -302,6 +305,7 @@
                           <DqSelect
                             :model-value="parsedSceneBeat(scene.beat).shotSize"
                             size="sm"
+                            variant="ghost"
                             class="lv-script-studio__scene-shot-select"
                             @update:model-value="onSceneFieldInput(idx, 'shotSize', $event)"
                           >
@@ -914,7 +918,7 @@ async function onFileSelected(event: Event) {
 .lv-script-studio__parse-params-label {
   font-size: var(--dq-font-size-caption);
   font-weight: 650;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--dq-tracking-wider);
   text-transform: uppercase;
   color: var(--dq-label-tertiary);
   white-space: nowrap;
@@ -963,11 +967,11 @@ async function onFileSelected(event: Event) {
 }
 
 .lv-script-studio__parse-step--retry-parent {
-  color: var(--dq-color-text-secondary);
+  color: var(--dq-label-secondary);
 }
 
 .lv-script-studio__parse-step--retry-parent .lv-script-studio__parse-step-dot {
-  box-shadow: 0 0 0 2px var(--dq-color-warning, #e6a23c);
+  box-shadow: 0 0 0 2px var(--dq-warning);
 }
 
 .lv-script-studio__scene-title-row {
@@ -1182,7 +1186,7 @@ async function onFileSelected(event: Event) {
 .lv-script-studio__card {
   padding: 12px 14px;
   border-radius: 12px;
-  background: color-mix(in srgb, var(--dq-surface-base, var(--dq-bg)) 70%, transparent);
+  background: color-mix(in srgb, var(--dq-bg-base, var(--dq-bg-base)) 70%, transparent);
   border: 0.5px solid var(--dq-border-subtle);
 }
 
@@ -1224,7 +1228,7 @@ async function onFileSelected(event: Event) {
   margin: 0;
   font-size: var(--dq-font-size-caption);
   font-weight: 650;
-  letter-spacing: 0.02em;
+  letter-spacing: var(--dq-tracking-wide);
   text-transform: uppercase;
   color: var(--dq-label-secondary);
 }
@@ -1254,7 +1258,7 @@ async function onFileSelected(event: Event) {
 .lv-script-studio__parse-quality-list {
   margin: 0;
   padding-left: 1.1rem;
-  font-size: var(--dq-font-size-sm);
+  font-size: var(--dq-font-size-body);
   line-height: 1.45;
 }
 
@@ -1463,7 +1467,7 @@ async function onFileSelected(event: Event) {
   display: block;
   font-size: var(--dq-font-size-caption);
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--dq-tracking-widest);
   text-transform: uppercase;
   color: var(--dq-accent);
   margin-bottom: 4px;

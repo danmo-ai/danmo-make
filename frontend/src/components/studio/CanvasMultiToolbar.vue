@@ -11,7 +11,7 @@
       v-for="btn in alignButtons"
       :key="btn.action"
       type="text"
-      size="xs"
+      size="sm"
       :label="btn.label"
       @click="$emit('align', btn.action)"
     >
@@ -20,7 +20,7 @@
     <span class="canvas-multi-toolbar__sep" />
     <DqIconButton
       type="text"
-      size="xs"
+      size="sm"
       :label="$t('canvas.distributeH')"
       @click="$emit('distribute', 'horizontal')"
     >
@@ -28,7 +28,7 @@
     </DqIconButton>
     <DqIconButton
       type="text"
-      size="xs"
+      size="sm"
       :label="$t('canvas.distributeV')"
       @click="$emit('distribute', 'vertical')"
     >
@@ -37,7 +37,7 @@
     <span class="canvas-multi-toolbar__sep" />
     <DqIconButton
       type="text"
-      size="xs"
+      size="sm"
       :label="$t('canvas.snapStagingToSelection')"
       @click="$emit('snap-staging')"
     >
@@ -46,7 +46,7 @@
     <span class="canvas-multi-toolbar__sep" />
     <DqIconButton
       type="text"
-      size="xs"
+      size="sm"
       :label="$t('loraTrain.saveToDataset')"
       @click="$emit('train-lora')"
     >
@@ -55,7 +55,7 @@
     <span class="canvas-multi-toolbar__sep" />
     <DqIconButton
       type="text"
-      size="xs"
+      size="sm"
       :label="$t('canvas.removeFromCanvas')"
       @click="$emit('remove')"
     >

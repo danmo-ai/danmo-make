@@ -278,7 +278,7 @@
               <DqIconButton
                 v-if="selectedCharacter.looks.length > 1"
                 type="text"
-                size="xs"
+                size="sm"
                 class="lv-cast-workshop__look-remove"
                 :label="$tt('common.delete')"
                 @click="removeLook(selectedIndex, li)"
@@ -732,7 +732,7 @@ function removeLook(ci: number, li: number) {
   flex-shrink: 0;
   border-radius: 9px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--dq-surface-base) 80%, #000);
+  background: color-mix(in srgb, var(--dq-bg-base) 80%, #000);
   border: 0.5px solid color-mix(in srgb, white 8%, var(--dq-border-subtle));
   box-shadow: 0 2px 8px color-mix(in srgb, black 25%, transparent);
 }
@@ -791,8 +791,8 @@ function removeLook(ci: number, li: number) {
   height: 8px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: var(--dq-warning, #e6a817);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dq-warning, #e6a817) 28%, transparent);
+  background: var(--dq-warning);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dq-warning) 28%, transparent);
 }
 
 .lv-cast-workshop__char-add-icon {
@@ -850,7 +850,7 @@ function removeLook(ci: number, li: number) {
   justify-content: center;
   border-radius: 11px;
   overflow: hidden;
-  font-size: var(--dq-font-size-display);
+  font-size: var(--dq-font-size-body);
   font-weight: 700;
   color: var(--dq-accent);
   background: color-mix(in srgb, var(--dq-accent) 14%, transparent);
@@ -862,7 +862,7 @@ function removeLook(ci: number, li: number) {
 
 .lv-cast-workshop__detail-avatar--photo {
   padding: 0;
-  background: #000;
+  background: var(--dq-color-black);
   border-color: color-mix(in srgb, white 10%, var(--dq-border-subtle));
 }
 
@@ -889,9 +889,9 @@ function removeLook(ci: number, li: number) {
 .lv-cast-workshop__detail-name :deep(.dq-input) {
   width: 100%;
   padding: 0;
-  font-size: var(--dq-font-size-display);
+  font-size: var(--dq-font-size-body);
   font-weight: 650;
-  letter-spacing: -0.02em;
+  letter-spacing: var(--dq-tracking-tighter);
   line-height: 1.25;
   color: var(--dq-label-primary);
   background: transparent;
@@ -1050,7 +1050,7 @@ function removeLook(ci: number, li: number) {
 
 .lv-cast-workshop__look-badge.is-pending {
   color: #ffd89a;
-  background: color-mix(in srgb, var(--dq-warning, #e6a817) 55%, rgba(0, 0, 0, 0.5));
+  background: color-mix(in srgb, var(--dq-warning) 55%, rgba(0, 0, 0, 0.5));
 }
 
 .lv-cast-workshop__look-badge.is-ready {
@@ -1151,7 +1151,7 @@ function removeLook(ci: number, li: number) {
 .lv-cast-workshop__field-label {
   font-size: var(--dq-font-size-caption);
   font-weight: 650;
-  letter-spacing: 0.03em;
+  letter-spacing: var(--dq-tracking-wide);
   text-transform: uppercase;
   color: var(--dq-label-tertiary);
 }
@@ -1173,7 +1173,7 @@ function removeLook(ci: number, li: number) {
   padding: 12px 14px 14px;
   margin-top: auto;
   border-top: 0.5px solid var(--dq-border-subtle);
-  background: color-mix(in srgb, var(--dq-surface-base) 35%, transparent);
+  background: color-mix(in srgb, var(--dq-bg-base) 35%, transparent);
 }
 
 .lv-cast-workshop__look-remove {
@@ -1202,7 +1202,7 @@ function removeLook(ci: number, li: number) {
   display: block;
   font-size: var(--dq-font-size-caption);
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--dq-tracking-widest);
   text-transform: uppercase;
   color: var(--dq-accent);
   margin-bottom: 4px;

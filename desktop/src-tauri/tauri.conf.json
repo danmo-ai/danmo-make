@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.danqing.studio.desktop",
   "build": {
-    "beforeDevCommand": "",
+    "beforeDevCommand": "bash ../scripts/ensure_tauri_resource_stub.sh && cd ../frontend && npm run dev",
     "beforeBuildCommand": "",
-    "devUrl": "http://127.0.0.1:7800",
+    "devUrl": "http://127.0.0.1:5800/",
     "frontendDist": "../loader"
   },
   "app": {

@@ -68,8 +68,8 @@ const boxStyle = computed(() => {
   border-radius: 4px;
   font-size: var(--dq-font-size-caption);
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--dq-tracking-wider);
   background: rgba(233, 69, 96, 0.85);
-  color: #fff;
+  color: var(--dq-color-white);
 }
 </style>

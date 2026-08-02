@@ -71,7 +71,7 @@
             >
               <DqIconButton
                 type="text"
-                size="xs"
+                size="sm"
                 :disabled="reversing"
                 :aria-label="$t('create.reversePromptVideo')"
                 @click="$emit('reverse-prompt')"
@@ -82,7 +82,7 @@
             <ComposerIconTip :content="$t('create.composerTip.removeRef')">
               <DqIconButton
                 type="text"
-                size="xs"
+                size="sm"
                 :aria-label="$tt('common.delete')"
                 @click="$emit('remove-reference')"
               >
@@ -93,7 +93,7 @@
           <ComposerIconTip v-else :content="primaryRefHoverTip">
             <DqIconButton
               type="text"
-              size="xs"
+              size="sm"
               class="video-composer__ref-add"
               :aria-label="referenceMediaLabel"
               @click="$emit('pick-reference')"
@@ -110,7 +110,7 @@
             <ComposerIconTip :content="$t('create.composerTip.removeRef')">
               <DqIconButton
                 type="text"
-                size="xs"
+                size="sm"
                 :aria-label="$tt('common.delete')"
                 @click="$emit('remove-tail-reference')"
               >
@@ -121,7 +121,7 @@
           <ComposerIconTip v-else :content="$t('create.composerTip.addTailFrame')">
             <DqIconButton
               type="text"
-              size="xs"
+              size="sm"
               class="video-composer__ref-add"
               :aria-label="$tt('video.addTailFrame')"
               @click="$emit('pick-tail-reference')"
@@ -143,7 +143,7 @@
               <ComposerIconTip :content="$t('create.composerTip.removeRef')">
                 <DqIconButton
                   type="text"
-                  size="xs"
+                  size="sm"
                   :aria-label="$tt('common.delete')"
                   @click="$emit('remove-extra-reference', idx)"
                 >
@@ -158,7 +158,7 @@
           >
             <DqIconButton
               type="text"
-              size="xs"
+              size="sm"
               class="video-composer__ref-add"
               :aria-label="$t('create.refImage')"
               @click="$emit('pick-extra-reference')"
@@ -176,7 +176,7 @@
         >
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             :class="{ 'video-composer__enhance-btn--busy': enhancing }"
             :disabled="enhancing || !localPrompt.trim()"
             :aria-label="$t('create.enhance')"
@@ -193,7 +193,7 @@
         >
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             class="video-composer__preset-btn"
             :label="$t('create.composerTip.preset')"
           >
@@ -272,7 +272,6 @@
           size="sm"
           variant="ghost"
           class="studio-composer-toolbar__select studio-composer-toolbar__select--size"
-        variant="ghost"
         >
           <DqOption
             v-for="opt in sizeOptions"
@@ -286,9 +285,7 @@
           v-model="localDuration"
           size="sm"
           variant="ghost"
-          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--duration"
-        
         >
           <DqOption v-for="opt in durationOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
         </DqSelect>
@@ -397,7 +394,7 @@
                 <DqInput v-model="localParams.seed" size="sm" style="width: 100px" :placeholder="$tt('studio.seedPlaceholder')" />
                 <DqIconButton
                   type="text"
-                  size="xs"
+                  size="sm"
                   :label="$tt('create.randomSeed')"
                   @click="randomizeSeed"
                 >
@@ -413,7 +410,7 @@
                 <DqInput v-model="localParams.seed" size="sm" style="width: 100px" :placeholder="$tt('studio.seedPlaceholder')" />
                 <DqIconButton
                   type="text"
-                  size="xs"
+                  size="sm"
                   :label="$tt('create.randomSeed')"
                   @click="randomizeSeed"
                 >
@@ -873,9 +870,9 @@ function onKeydown(e: KeyboardEvent) {
   margin-top: 6px;
   padding: 6px 10px;
   border-radius: var(--dq-radius-control-sm);
-  background: var(--dq-color-fill-secondary, rgba(128, 128, 128, 0.08));
-  font-size: var(--dq-font-size-caption, 12px);
-  color: var(--dq-color-text-secondary);
+  background: var(--dq-fill-secondary);
+  font-size: var(--dq-font-size-caption);
+  color: var(--dq-label-secondary);
 }
 
 .video-composer__long-video-handoff-btn {

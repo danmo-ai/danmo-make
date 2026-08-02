@@ -1,5 +1,5 @@
-# macOS MLX desktop + Linux CUDA server tar.gz + Windows CUDA desktop (NSIS).
-# Layout mirrors DanQing-Teams multi-platform release; CUDA jobs use Studio pack-* targets.
+# macOS MLX desktop + Linux CUDA desktop (AppImage/deb) + Linux CUDA server tar.gz
+# + Windows CUDA desktop (NSIS). Naming aligned with danmo-work / danmo-inbox.
 name: Build Release Artifacts
 
 on:
@@ -104,6 +104,104 @@ jobs:
           path: |
             danqing-studio/out/desktop/bundle/dmg/*.dmg
             danqing-studio/out/desktop/bundle/macos/*.app
+          if-no-files-found: error
+
+  build-linux-desktop:
+    name: Linux desktop (CUDA)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Studio
+        uses: actions/checkout@v6
+        with:
+          path: danqing-studio
+
+      - name: Checkout dq-ui
+        uses: actions/checkout@v6
+        with:
+          repository: danmo-ai/dq-ui
+          path: dq-ui
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libfuse2
+
+      - name: Install and build dq-ui
+        run: |
+          npm install
+          npm run build
+        working-directory: ${{ github.workspace }}/dq-ui
+
+      - name: Set release version
+        working-directory: danqing-studio
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          elif [[ -n "${{ inputs.version }}" ]]; then
+            echo "RELEASE_VERSION=${{ inputs.version }}" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
+          fi
+
+      - name: Set desktop version from tag
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: danqing-studio
+        run: python3 scripts/set_desktop_version.py "${GITHUB_REF_NAME#v}"
+
+      - name: Set desktop version (manual dispatch)
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        working-directory: danqing-studio
+        run: python3 scripts/set_desktop_version.py "${{ inputs.version }}"
+
+      - name: Build Linux desktop (CUDA sidecar + AppImage/deb)
+        working-directory: danqing-studio
+        env:
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+          DANQING_PYINSTALLER_PROFILE: cuda
+          TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
+        run: |
+          chmod +x scripts/*.sh
+          make pack-linux-desktop RELEASE_VERSION="$RELEASE_VERSION" TORCH_INDEX_URL="$TORCH_INDEX_URL"
+
+      - name: Verify Linux desktop artifacts
+        working-directory: danqing-studio
+        run: |
+          ls -laR out/desktop/bundle/
+          test -n "$(find out/desktop/bundle -type f -name '*.AppImage' -print -quit)"
+          test -n "$(find out/desktop/bundle -type f -name '*.deb' -print -quit)"
+
+      - name: Upload Linux desktop artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: danqing-desktop-linux
+          path: |
+            danqing-studio/out/desktop/bundle/**/*.AppImage
+            danqing-studio/out/desktop/bundle/**/*.deb
           if-no-files-found: error
 
   build-linux-cuda:
@@ -307,7 +405,7 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build-desktop, build-linux-cuda, build-windows-desktop]
+    needs: [build-desktop, build-linux-desktop, build-linux-cuda, build-windows-desktop]
     runs-on: ubuntu-latest
     steps:
       - name: Download macOS artifact
@@ -316,11 +414,17 @@ jobs:
           name: danqing-desktop-macos
           path: release-assets/macos
 
-      - name: Download Linux CUDA artifact
+      - name: Download Linux desktop artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: danqing-desktop-linux
+          path: release-assets/linux-desktop
+
+      - name: Download Linux CUDA server artifact
         uses: actions/download-artifact@v6
         with:
           name: danqing-linux-cuda
-          path: release-assets/linux
+          path: release-assets/linux-server
 
       - name: Download Windows desktop artifact
         uses: actions/download-artifact@v6
@@ -333,6 +437,8 @@ jobs:
         with:
           files: |
             release-assets/macos/**/*.dmg
-            release-assets/linux/**/*.tar.gz
+            release-assets/linux-desktop/**/*.AppImage
+            release-assets/linux-desktop/**/*.deb
+            release-assets/linux-server/**/*.tar.gz
             release-assets/windows/**/*.exe
           fail_on_unmatched_files: true

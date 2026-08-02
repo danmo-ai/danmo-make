@@ -87,7 +87,7 @@ function onOpenChange(value: boolean) {
 .lv-parse-strategy-dialog__option-kicker {
   font-size: var(--dq-font-size-caption);
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--dq-tracking-widest);
   text-transform: uppercase;
   color: var(--dq-accent);
 }

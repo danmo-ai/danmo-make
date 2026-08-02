@@ -46,7 +46,7 @@ Danmo Make — plugin-style **image / video** generation on **MLX** (Apple Silic
 | Pipeline progress + graph step logs | `backend/engine/pipelines/pipeline_progress.py` |
 | Registry profiles (expand / shrink) | `backend/core/registry_profiles.py` |
 | Bundle manifest + family contracts | `backend/core/bundle_manifest.py` |
-| Desktop | `desktop/`, `make pack-macos-desktop` |
+| Desktop | `desktop/`, `make dev-desktop`, `make pack-macos-desktop` / `pack-linux-desktop` / `pack-windows-desktop` |
 
 ### Hardcoded paths
 
@@ -307,8 +307,11 @@ make start / make stop   # same as dev / stop scripts
 make frontend-dev        # :5800 → proxy /api to :7800 (if running backend separately)
 make frontend-build      # → out/frontend/dist/
 
-make pack-macos-desktop  # release desktop
-make pack-linux-server   # release Linux server tar.gz
+make dev-desktop         # Tauri + Vite HMR (SKIP_BACKEND=1 for external API)
+make pack-macos-desktop  # macOS MLX .app/.dmg
+make pack-linux-desktop  # Linux CUDA AppImage/.deb
+make pack-windows-desktop # Windows CUDA NSIS (on Windows)
+make pack-linux-server   # Linux CUDA server tar.gz (headless)
 ```
 
 ---
@@ -331,13 +334,15 @@ make pack-linux-server   # release Linux server tar.gz
 | `check-engine-family-layout` | alias: `--rule layout` |
 | `lint` | Python syntax |
 | `frontend-install` / `frontend-dev` / `frontend-build` / `frontend-typecheck` / `frontend-canvas-unit` | frontend |
+| `dev-desktop` | Tauri desktop dev (FastAPI + Vite HMR; aligned with danmo-work/inbox) |
 | `pack-macos-desktop` | macOS Tauri `.app` / `.dmg` (MLX sidecar) |
-| `pack-linux-server` | Linux CUDA `.tar.gz` server bundle (venv + sidecar + archive) |
-| `pack-windows-desktop-release` | Windows CUDA NSIS installer (venv + Tauri; on Windows) |
+| `pack-linux-desktop` | Linux Tauri AppImage / `.deb` (CUDA sidecar) |
+| `pack-windows-desktop` | Windows CUDA NSIS installer (venv + Tauri; on Windows) |
+| `pack-linux-server` | Linux CUDA `.tar.gz` headless server |
 | `pack-windows-server` | Windows CUDA `.zip` headless server (optional) |
-
-Makefile pattern: `pack-<platform>-<product>-<step>` (`desktop` \| `server`; `venv` \| `sidecar` \| `shell` \| `archive`). Legacy names (`desktop-bundle`, `release-linux-cuda`, …) remain as aliases.
 | `clean` | `scripts/clean_build.py` |
+
+Makefile pattern: `pack-<platform>-desktop` (Tauri) or `pack-<platform>-server` (archives). Steps: `venv` \| `sidecar` \| `shell` \| `archive`. Legacy aliases (`pack-windows-desktop-release`, `desktop-bundle`, …) remain.
 
 ---
 
@@ -392,13 +397,16 @@ Workflow: import → select node → Composer fills params → generate lands in
 
 ## Desktop packaging
 
-- Build: `make pack-macos-desktop` or `scripts/build_desktop.sh`
-- Artifacts: `out/frontend/dist/`, `out/sidecar/danqing-api/`, `out/desktop/bundle/`, `out/dist/*.tar.gz` (Linux CUDA server)
-- macOS default: `DANQING_PYINSTALLER_PROFILE=mlx` (no torch / `*_cuda`)
-- Linux/Windows: `DANQING_PYINSTALLER_PROFILE=cuda` (no MLX / `*_mlx`; `full` is alias)
-- CUDA server/desktop: `make pack-linux-server` / `make pack-windows-desktop-release`; CI in `.github/workflows/release.yml`
+- Dev: `make dev-desktop` (`scripts/start_desktop.sh`; Vite via Tauri `beforeDevCommand`)
+- Release: `make pack-macos-desktop` \| `pack-linux-desktop` \| `pack-windows-desktop`  
+  (scripts: `pack_desktop_macos.sh` / `pack_desktop_linux.sh` / `pack_desktop_windows.sh` — same names as danmo-work/inbox)
+- Artifacts: `out/frontend/dist/`, `out/sidecar/danqing-api/`, `out/desktop/bundle/`, `out/dist/*.tar.gz` (Linux server)
+- macOS: `DANQING_PYINSTALLER_PROFILE=mlx` (no torch / `*_cuda`)
+- Linux/Windows desktop: `DANQING_PYINSTALLER_PROFILE=cuda` (no MLX / `*_mlx`)
+- Headless server archives: `make pack-linux-server` / `pack-windows-server`
+- CI: `.github/workflows/release.yml` (macOS dmg + Linux AppImage/deb + Linux tar.gz + Windows NSIS)
 - Sidecar env: `DANQING_HTTP_HOST`, `DANQING_HTTP_PORT`, `DANQING_USER_DATA_DIR`
-- New engine modules must be reachable from `scripts/build_desktop.py` / PyInstaller hooks
+- New engine modules must be reachable from `scripts/build_sidecar.py` / PyInstaller hooks
 
 ---
 
@@ -406,7 +414,7 @@ Workflow: import → select node → Composer fills params → generate lands in
 
 - **First run is slow** — model load into GPU memory
 - **DB schema** — no migrations; delete `db/studio.db` (+ outputs) to reset
-- **`scripts/start.sh`** — dev: venv + uvicorn --reload + Vite; release UI path is `out/frontend/dist/` (see `backend/main.py::_resolve_frontend_static_dir`)
+- **`scripts/start.sh`** — browser dev: venv + uvicorn --reload + Vite; **`scripts/start_desktop.sh`** — Tauri + Vite HMR; release UI path is `out/frontend/dist/` (see `backend/main.py::_resolve_frontend_static_dir`)
 - **Add model** — full 5-step checklist above, not registry-only
 - **OpenAI-compatible API** (if added later) — separate `/v1/...` adapter; must delegate to same contracts/engines; do not replace resource-style `/api/images/*` routes
 - **Contributors** — run `make verify-engine-stack` before PR

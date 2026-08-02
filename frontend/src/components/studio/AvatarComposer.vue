@@ -400,8 +400,7 @@ function onPromptKeydown(e: KeyboardEvent) {
   line-height: 1.3;
 }
 
-.avatar-composer__row :deep(.dq-input),
-.avatar-composer__row :deep(.dq-select) {
+.avatar-composer__row :deep(.dq-input) {
   font-size: var(--dq-font-size-caption);
 }
 

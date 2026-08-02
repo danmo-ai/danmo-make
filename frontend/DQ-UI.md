@@ -31,10 +31,12 @@ Hosts mount via `installDanQingFeedback` in `plugins/dq-ui.ts`.
 
 ## Conventions
 
-- **主题切换**：`stores/theme.ts` → `applyDqTheme` / `THEME_OPTIONS`（`@danqing/dq-tokens`）。默认 **`mac`**（macOS 暗色）。旧值 `apple-dark` 自动迁移为 `mac`。
-- **间距 / 半径**：优先 `--dq-space-*`、`--dq-radius-*`；产品兼容别名 `--primary` / `--bg-*` / `--radius-*` 仅作过渡。
-- **Size**：紧凑控件只用 `size="sm"`（禁止 `small` / `mini`）。
-- **Select**：工具栏紧凑选择器用 `size="sm" variant="ghost"`。
+- **主题切换**：`stores/theme.ts` → `applyDqTheme` / `THEME_OPTIONS`（`@danqing/dq-tokens`）。设置页只展示 tokens 现有 **5** 套：`mac` · `mac-light` · `tokyo-night` · `nord-dark` · `minimal-light`。默认 **`mac`**。已移除主题经 `resolveDqThemeSlug` / `REMOVED_THEME_FALLBACKS` 迁移；旧值 `apple-dark` → `mac`。
+- **间距 / 半径 / 配色**：只用 `--dq-*` tokens（禁止产品层 `--primary` / `--bg-*` / `--text-*` 兼容别名）。
+- **字号（4 档，主题无关）**：`caption` 12 / `body`·`prose` 14 / `title` 16。禁止硬编码 9–11px 或自造字号阶梯；分区标题用 `body`（或 legacy `--dq-font-size-heading`），页面标题才用 `title`。字重/颜色做层级，勿堆叠字号。
+- **字体**：`var(--dq-font-sans)` / `var(--dq-font-mono)`（或 `inherit`）；禁止产品层再写 `ui-monospace, SF Mono…` 栈。
+- **Size**：紧凑控件只用 `size="sm"`（禁止 `small` / `mini` / `xs`）。
+- **Select**：工具栏 / gallery 滤镜 / 画布会话 / 长视频条带用 `size="sm" variant="ghost"`；设置表单保持 default。空选项可用 `value=""`（DqOption 映射为内部 sentinel）。有选项时 v-model 应落到合法值（含默认首项），勿长期空白 placeholder。
 - **Agent tokens**：`main.ts` 引入 `@danqing/dq-tokens/dq-agent.css`（`.dq-prose` / `.dq-status-dot` / `.dq-kbd`）。状态点用 `.dq-status-dot`，勿自造平行实现。
 - **焦点 / 悬停**：`--dq-focus-ring`、`.dq-hoverable`；禁止自造 focus ring。
 - **禁止**全局 `html * { transition: ... }`。

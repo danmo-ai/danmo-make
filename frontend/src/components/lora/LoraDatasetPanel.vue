@@ -56,7 +56,7 @@
           </span>
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             class="lora-dataset-panel__list-delete"
             :label="$t('loraTrain.deleteDataset')"
             :disabled="deletingDataset"
@@ -226,7 +226,7 @@
               </span>
               <DqIconButton
                 type="text"
-                size="xs"
+                size="sm"
                 class="lora-dataset-panel__cell-remove"
                 :label="$t('loraTrain.removeImage')"
                 @click.stop="removeImage(img.file)"
@@ -236,7 +236,7 @@
             </div>
             <DqInput
               :model-value="captionEdits[img.file]"
-              size="xs"
+              size="sm"
               :placeholder="$t('loraTrain.captionPlaceholder')"
               @update:model-value="(v: string) => setCaption(img.file, v)"
               @blur="saveCaptions"
@@ -302,7 +302,7 @@
           <span class="lora-dataset-panel__pending-tag-label">{{ a }}</span>
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             :label="$t('common.delete')"
             @click="removePendingAsset(a)"
           >
@@ -836,7 +836,7 @@ defineExpose({
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
   color: var(--dq-label-secondary);
-  letter-spacing: 0.02em;
+  letter-spacing: var(--dq-tracking-wide);
 }
 
 .lora-dataset-panel__persist-note {
@@ -871,7 +871,7 @@ defineExpose({
   width: 100%;
   padding: 8px 10px;
   border: 0.5px solid transparent;
-  border-radius: var(--radius-sm);
+  border-radius: var(--dq-radius-control-sm);
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -894,7 +894,7 @@ defineExpose({
   height: 36px;
   flex-shrink: 0;
   object-fit: cover;
-  border-radius: var(--radius-sm);
+  border-radius: var(--dq-radius-control-sm);
   border: 0.5px solid var(--dq-border-subtle);
   background: var(--dq-bg-base);
 }
@@ -1017,7 +1017,7 @@ defineExpose({
   justify-content: center;
   gap: 4px;
   padding: 20px 16px;
-  border-radius: var(--radius-md);
+  border-radius: var(--dq-radius-group);
   border: 1.5px dashed var(--dq-border);
   background: var(--dq-fill-secondary);
   cursor: pointer;
@@ -1084,7 +1084,7 @@ defineExpose({
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
-  border-radius: var(--radius-md);
+  border-radius: var(--dq-radius-group);
   border: 0.5px solid var(--dq-border);
   background: var(--dq-bg-base);
 }
@@ -1094,7 +1094,7 @@ defineExpose({
 }
 
 .lora-dataset-panel__cell-media.is-vlm-fair img {
-  border: 2px solid color-mix(in srgb, var(--dq-warning, #e6a23c) 75%, var(--dq-border));
+  border: 2px solid color-mix(in srgb, var(--dq-warning) 75%, var(--dq-border));
 }
 
 .lora-dataset-panel__cell-media.is-vlm-poor img {
@@ -1106,11 +1106,11 @@ defineExpose({
   left: 4px;
   bottom: 4px;
   padding: 2px 6px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--dq-radius-control-sm);
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
   line-height: 1.2;
-  color: #fff;
+  color: var(--dq-color-white);
   pointer-events: none;
   box-shadow: 0 1px 4px color-mix(in srgb, var(--dq-bg-base) 35%, transparent);
 }
@@ -1120,7 +1120,7 @@ defineExpose({
 }
 
 .lora-dataset-panel__vlm-mark.is-fair {
-  background: color-mix(in srgb, var(--dq-warning, #c9922c) 92%, #000);
+  background: color-mix(in srgb, var(--dq-warning) 92%, #000);
 }
 
 .lora-dataset-panel__vlm-mark.is-poor {
@@ -1143,7 +1143,7 @@ defineExpose({
 
 .lora-dataset-panel__vlm-legend-item {
   padding: 2px 8px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--dq-radius-control-sm);
   border: 1px solid var(--dq-border-subtle);
 }
 
@@ -1153,7 +1153,7 @@ defineExpose({
 }
 
 .lora-dataset-panel__vlm-legend-item.is-fair {
-  border-color: color-mix(in srgb, var(--dq-warning, #c9922c) 45%, transparent);
+  border-color: color-mix(in srgb, var(--dq-warning) 45%, transparent);
   color: var(--dq-warning, var(--dq-label-primary));
 }
 
@@ -1167,7 +1167,7 @@ defineExpose({
   top: 4px;
   right: 4px;
   background: color-mix(in srgb, var(--dq-bg-base) 85%, transparent) !important;
-  border-radius: var(--radius-sm);
+  border-radius: var(--dq-radius-control-sm);
 }
 
 .lora-dataset-panel__field {
@@ -1208,7 +1208,7 @@ defineExpose({
   gap: 2px;
   max-width: 100%;
   padding: 2px 4px 2px 8px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--dq-radius-control-sm);
   background: var(--dq-fill-secondary);
   border: 0.5px solid var(--dq-border-subtle);
   font-size: var(--dq-font-size-caption);

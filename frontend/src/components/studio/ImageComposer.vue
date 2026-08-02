@@ -36,7 +36,7 @@
           >
             <DqIconButton
               type="text"
-              size="xs"
+              size="sm"
               :disabled="reversing"
               :aria-label="$t('create.reversePrompt')"
               @click="$emit('reverse-prompt')"
@@ -47,7 +47,7 @@
           <ComposerIconTip :content="$t('create.composerTip.removeRef')">
             <DqIconButton
               type="text"
-              size="xs"
+              size="sm"
               :aria-label="$t('common.delete')"
               @click="$emit('remove-reference')"
             >
@@ -58,7 +58,7 @@
         <ComposerIconTip v-else :content="$t('create.composerTip.refImage')">
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             class="image-composer__ref-add"
             :aria-label="$t('create.refImage')"
             @click="$emit('pick-reference')"
@@ -77,7 +77,7 @@
             class="image-composer__preset-area__enhance-btn"
             :class="{ 'image-composer__enhance-btn--busy': enhancing }"
             type="text"
-            size="xs"
+            size="sm"
             :disabled="enhancing || !localPrompt.trim()"
             :aria-label="$t('create.enhance')"
             @click="onEnhanceClick"
@@ -93,7 +93,7 @@
         >
           <DqIconButton
             type="text"
-            size="xs"
+            size="sm"
             class="image-composer__preset-btn"
             :label="$t('create.composerTip.preset')"
           >

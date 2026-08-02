@@ -2,6 +2,7 @@
   <DqSelect
     :model-value="filterTime"
     size="sm"
+    variant="ghost"
     class="studio-gallery-filters__time"
     @update:model-value="$emit('update:filterTime', $event)"
   >
@@ -17,6 +18,7 @@
     v-if="showModelFilter !== false"
     :model-value="filterModels"
     size="sm"
+    variant="ghost"
     multiple
     collapse-tags
     class="studio-gallery-filters__models"

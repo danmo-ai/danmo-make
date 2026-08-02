@@ -8,7 +8,7 @@
       </button>
       <DqButton
         type="text"
-        size="xs"
+        size="sm"
         :disabled="!preview.trim()"
         @click="copyPreview"
       >
@@ -113,8 +113,8 @@ async function copyPreview() {
   overflow: auto;
   padding: 10px 12px;
   border-radius: 8px;
-  background: var(--dq-surface-base, rgba(0, 0, 0, 0.04));
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background: var(--dq-bg-base);
+  font-family: var(--dq-font-mono);
   font-size: var(--dq-font-size-caption);
   line-height: 1.55;
   white-space: pre-wrap;

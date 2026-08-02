@@ -465,7 +465,7 @@ defineExpose({ viewportRef });
   position: absolute;
   inset: 0;
   overflow: hidden;
-  background: var(--dq-fill-dim, #1a1a1e);
+  background: var(--dq-fill-dim);
   cursor: default;
 }
 
@@ -482,7 +482,7 @@ defineExpose({ viewportRef });
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background-color: var(--dq-fill-dim, #1a1a1e);
+  background-color: var(--dq-fill-dim);
   background-image: radial-gradient(circle, rgba(255, 255, 255, 0.16) 1px, transparent 1px);
   background-repeat: repeat;
 }

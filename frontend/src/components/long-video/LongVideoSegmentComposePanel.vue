@@ -5,6 +5,7 @@
       <DqSelect
         :model-value="durationSec"
         size="sm"
+        variant="ghost"
         class="lv-seg-compose__duration"
         @update:model-value="$emit('update:duration', Number($event))"
       >
@@ -22,6 +23,7 @@
       <DqSelect
         :model-value="chainMode"
         size="sm"
+        variant="ghost"
         class="lv-seg-compose__chain"
         :title="chainModeHint"
         @update:model-value="$emit('update:chainMode', $event)"
@@ -58,7 +60,7 @@
       <div class="lv-seg-compose__prompt-actions">
         <DqIconButton
           type="text"
-          size="xs"
+          size="sm"
           :disabled="polishing || !canPolish"
           :label="$tt('video.longVideoPolishSegment')"
           @click="$emit('polish')"
@@ -177,7 +179,7 @@ const chainModeHint = computed(() => {
 .lv-seg-compose__meta-label {
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: var(--dq-tracking-wide);
   color: var(--dq-label-secondary);
   white-space: nowrap;
 }
@@ -255,7 +257,7 @@ const chainModeHint = computed(() => {
   margin: 0;
   font-size: var(--dq-font-size-caption);
   line-height: 1.45;
-  color: color-mix(in srgb, var(--dq-warning, #e6a23c) 85%, var(--dq-label-secondary));
+  color: color-mix(in srgb, var(--dq-warning) 85%, var(--dq-label-secondary));
 }
 
 .lv-seg-compose__generate {

@@ -4,6 +4,7 @@
       <DqSelect
       :model-value="sessionId"
       size="sm"
+      variant="ghost"
       class="studio-canvas-session-controls__select"
       :placeholder="$t('canvas.sessionSelect')"
       @update:model-value="onSwitchSession"

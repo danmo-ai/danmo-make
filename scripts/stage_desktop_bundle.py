@@ -22,6 +22,7 @@ def find_cargo_bundle_dir() -> Path:
 
     preferred = [
         base / "x86_64-pc-windows-msvc" / "release" / "bundle",
+        base / "x86_64-unknown-linux-gnu" / "release" / "bundle",
         base / "aarch64-apple-darwin" / "release" / "bundle",
         base / "release" / "bundle",
     ]
