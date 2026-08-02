@@ -439,7 +439,7 @@ def console_progress(quiet: bool = False) -> ProgressCb:
 
 
 def default_paths_from_env() -> BootstrapPaths:
-    data = Path(os.environ.get("DANQING_USER_DATA_DIR") or Path.home() / "danqing-data")
+    data = Path(os.environ.get("DANQING_USER_DATA_DIR") or Path.home() / ".danmo-make")
     app_root = Path(os.environ.get("DANQING_APP_ROOT") or Path.cwd())
     portable = Path(os.environ.get("DANQING_PORTABLE_PYTHON") or (app_root / "runtime" / "python"))
     return BootstrapPaths.resolve(data_dir=data, app_root=app_root, portable_python=portable)

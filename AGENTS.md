@@ -25,7 +25,8 @@ Danmo Make — plugin-style **image / video** generation on **MLX** (Apple Silic
 | Launch / stop | `make dev` / `make start` / `make stop` → `scripts/start.sh`, `scripts/stop.sh` |
 | Dev ports | Backend **7800**, frontend **5800** (`78xx`/`58xx`, suffix `00` = Studio) |
 | Model registry (git / factory) | `default_config/models_registry.json` |
-| Workspace pointer (local, gitignored) | `default_config/workspace.pointer.json` |
+| Control plane (app home) | `~/.danmo-make/` (`DANQING_USER_DATA_DIR` override) — pointer, `.app_config.json`, logs, runtime-venv |
+| Workspace pointer | `~/.danmo-make/workspace.pointer.json` (legacy: `default_config/workspace.pointer.json`) |
 | Model registry (runtime) | `{workspace}/config/models_registry.json` — sync via `make sync-models-registry` |
 | Family configs | `backend/engine/config/model_configs.py` |
 | Transformer registry | `backend/engine/_transformer_registry.py` |
@@ -52,11 +53,11 @@ Danmo Make — plugin-style **image / video** generation on **MLX** (Apple Silic
 
 ### Hardcoded paths
 
-- Models: `./models/`
-- LoRAs: `./models/Lora/`
-- Outputs: `./outputs/`
-- Factory / pointer: `default_config/` (`models_registry.json`, `presets.json`, `workspace.pointer.json`); runtime settings/registry under `{workspace}/config/`
-- DB: `db/studio.db` (WAL; no runtime `ALTER` — reset DB + `outputs/` if schema drifts)
+- Control plane: `~/.danmo-make/` (pointer, `config/.app_config.json`, logs, `api.pid`, CUDA `runtime-venv`)
+- Media workspace (default = control plane; or user-chosen via Settings): `config/` (registry/presets/user_loras), `db/`, `models/`, `outputs/`
+- Dev (`make dev`, no pointer): media root stays the repo (`./models`, `./outputs`, …); control plane still `~/.danmo-make`
+- Factory templates: `default_config/` (`models_registry.json`, `presets.json`, locales) — read-only seed into workspace `config/`
+- DB: `{workspace}/db/studio.db` (WAL; no runtime `ALTER` — reset DB + `outputs/` if schema drifts)
 
 ### Environment
 

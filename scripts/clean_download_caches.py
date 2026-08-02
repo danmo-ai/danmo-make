@@ -42,20 +42,26 @@ def _format_bytes(num: int) -> str:
 
 
 def _read_workspace_root(project_root: Path) -> Path | None:
-    pointer = project_root / "default_config" / "workspace.pointer.json"
-    if not pointer.is_file():
-        return None
-    try:
-        data = json.loads(pointer.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    raw = (data.get("custom_workspace_dir") or "").strip()
-    if not raw:
-        return None
-    candidate = Path(raw).expanduser().resolve()
-    return candidate if candidate.is_dir() else None
+    pointers = [
+        Path.home() / ".danmo-make" / "workspace.pointer.json",
+        project_root / "default_config" / "workspace.pointer.json",
+    ]
+    for pointer in pointers:
+        if not pointer.is_file():
+            continue
+        try:
+            data = json.loads(pointer.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        raw = (data.get("custom_workspace_dir") or "").strip()
+        if not raw:
+            continue
+        candidate = Path(raw).expanduser().resolve()
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 def _user_hf_cache_root() -> Path:

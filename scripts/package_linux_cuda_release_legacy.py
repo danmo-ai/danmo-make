@@ -19,7 +19,7 @@ import out_paths as op  # noqa: E402
 _RUN_SH = """#!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-export DANQING_USER_DATA_DIR="${DANQING_USER_DATA_DIR:-$HOME/danqing-data}"
+export DANQING_USER_DATA_DIR="${DANQING_USER_DATA_DIR:-$HOME/.danmo-make}"
 mkdir -p "$DANQING_USER_DATA_DIR"/{models,outputs,db,config}
 export DANQING_HTTP_HOST="${DANQING_HTTP_HOST:-0.0.0.0}"
 export DANQING_HTTP_PORT="${DANQING_HTTP_PORT:-7800}"

@@ -28,15 +28,27 @@ pub struct RuntimeStatusDto {
     pub message: String,
 }
 
-fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())
-}
-
+/// Control plane root — ``~/.danmo-make`` (aligned with danmo-work ``~/.danmo-work``).
+/// Override with ``DANQING_USER_DATA_DIR``. Holds pointer, app settings, logs, runtime-venv.
 pub fn server_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app_data_dir(app)?.join("server-data");
+    if let Ok(raw) = std::env::var("DANQING_USER_DATA_DIR") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            let dir = PathBuf::from(trimmed);
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let _ = std::fs::create_dir_all(dir.join("logs"));
+            let _ = std::fs::create_dir_all(dir.join("config"));
+            return Ok(dir);
+        }
+    }
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|e| format!("failed to resolve home dir: {e}"))?;
+    let dir = home.join(".danmo-make");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let _ = std::fs::create_dir_all(dir.join("logs"));
+    let _ = std::fs::create_dir_all(dir.join("config"));
     Ok(dir)
 }
 

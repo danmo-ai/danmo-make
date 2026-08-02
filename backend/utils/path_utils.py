@@ -2,7 +2,6 @@
 路径解析器和系统工具
 """
 
-import os
 import platform
 import subprocess
 import sys
@@ -12,15 +11,24 @@ from typing import Optional
 from backend.core.interfaces import IPathResolver
 from backend.utils.config_paths import (
     RESTORABLE_CONFIG_FILES,
-    WORKSPACE_SETTINGS_FILE,
     resolve_default_config_root,
     restore_workspace_config_from_defaults,
+)
+from backend.utils.user_home import (
+    control_settings_path,
+    default_media_bootstrap,
+    ensure_control_plane,
+    resolve_control_plane_dir,
 )
 from backend.utils.workspace import prepare_data_directories
 
 
 class PathResolver(IPathResolver):
-    """路径解析器实现"""
+    """路径解析器实现
+
+    - Control plane (``~/.danmo-make``): pointer, ``.app_config.json``, logs, runtime-venv
+    - Media workspace: config/ (registry), db/, models/, outputs/
+    """
 
     def __init__(self, project_root: Optional[Path] = None):
         bundle_root: Path | None = None
@@ -28,41 +36,56 @@ class PathResolver(IPathResolver):
             bundle_root = Path(sys._MEIPASS).resolve()
             exe_dir = Path(sys.executable).parent.resolve()
             if project_root is not None:
-                bootstrap = Path(project_root).resolve()
+                install_root = Path(project_root).resolve()
+            elif (
+                sys.platform == "darwin"
+                and exe_dir.name == "MacOS"
+                and (exe_dir.parent / "Resources").exists()
+            ):
+                install_root = exe_dir.parent / "Resources"
             else:
-                raw_ws = os.environ.get("DANQING_USER_DATA_DIR", "").strip()
-                if raw_ws:
-                    bootstrap = Path(raw_ws).expanduser().resolve()
-                elif (
-                    sys.platform == "darwin"
-                    and exe_dir.name == "MacOS"
-                    and (exe_dir.parent / "Resources").exists()
-                ):
-                    bootstrap = exe_dir.parent / "Resources"
-                else:
-                    bootstrap = exe_dir
+                install_root = exe_dir
         elif project_root is None:
-            bootstrap = Path(__file__).parent.parent.parent.parent.resolve()
+            # backend/utils/path_utils.py → repo root
+            install_root = Path(__file__).resolve().parents[2]
         else:
-            bootstrap = Path(project_root).resolve()
+            install_root = Path(project_root).resolve()
+
+        control = ensure_control_plane(resolve_control_plane_dir())
+        media_bootstrap = default_media_bootstrap(
+            install_root=install_root, control_plane=control
+        )
+        # Factory defaults: prefer bundle, else install/repo default_config/
+        factory_bootstrap = install_root
+        if bundle_root is None and not (install_root / "default_config").is_dir():
+            factory_bootstrap = media_bootstrap
 
         self._bundle_root = bundle_root
-        self._bootstrap = bootstrap
+        self._install_root = install_root
+        self._control_plane = control
+        self._bootstrap = media_bootstrap
         self._default_config = resolve_default_config_root(
-            bootstrap_root=self._bootstrap,
+            bootstrap_root=factory_bootstrap,
             bundle_root=self._bundle_root,
         )
         self._root = prepare_data_directories(
             self._bootstrap,
+            control_plane=self._control_plane,
             default_config_root=self._default_config,
         )
+
+    def get_control_plane_dir(self) -> Path:
+        return self._control_plane
+
     def get_bootstrap_root(self) -> Path:
+        """Default media root when no custom workspace pointer is set."""
         return self._bootstrap
 
     def get_default_config_root(self) -> Path:
         return self._default_config
 
     def get_project_root(self) -> Path:
+        """Effective media workspace root."""
         return self._root
 
     def get_workspace_config_dir(self) -> Path:
@@ -90,7 +113,8 @@ class PathResolver(IPathResolver):
         return self._root / ".venv" / "bin" / "python"
 
     def get_config_path(self) -> Path:
-        return self.get_workspace_config_dir() / WORKSPACE_SETTINGS_FILE
+        """App settings live on the control plane (not media workspace)."""
+        return control_settings_path(self._control_plane)
 
     def restore_config_defaults(
         self, *, names: tuple[str, ...] | None = None

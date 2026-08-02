@@ -85,7 +85,7 @@ CI（`.github/workflows/release.yml`）在打 `v*` tag 时并行构建：macOS `
 |------|------|
 | `DANQING_HTTP_HOST` | 默认 `0.0.0.0`；Tauri 设为 `127.0.0.1` |
 | `DANQING_HTTP_PORT` | Tauri 选空闲端口并注入 |
-| `DANQING_USER_DATA_DIR` | 可写数据根（models / outputs / db / config / runtime-venv） |
+| `DANQING_USER_DATA_DIR` | 控制面根目录，默认 `~/.danmo-make`（pointer、`.app_config.json`、logs、runtime-venv；未自定义工作区时也是媒体根） |
 | `DANQING_PIP_MIRROR` | CUDA thin：`official` / `tuna` / `aliyun` |
 | `DANQING_RUNTIME_SKIP_AUTO_SETUP` | server：设为 `1` 时未就绪则拒绝启动 |
 

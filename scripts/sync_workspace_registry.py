@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 from backend.catalog.migrate_v2 import migrate_v2_to_v3
 from backend.catalog.schema_v3 import SCHEMA_VERSION_V3
 from backend.utils.config_paths import resolve_default_config_root
+from backend.utils.user_home import ensure_control_plane
 from backend.utils.workspace import resolve_workspace_root
 
 DEFAULT_REGISTRY = ROOT / "default_config" / "models_registry.json"
@@ -36,7 +37,10 @@ def main() -> int:
         print(f"Missing factory registry: {DEFAULT_REGISTRY}", file=sys.stderr)
         return 1
     default_cfg = resolve_default_config_root(bootstrap_root=ROOT, bundle_root=None)
-    workspace = resolve_workspace_root(ROOT, default_config_root=default_cfg)
+    control = ensure_control_plane()
+    workspace = resolve_workspace_root(
+        ROOT, control_plane=control, legacy_default_config=default_cfg
+    )
     dst_dir = workspace / "config"
     dst_dir.mkdir(parents=True, exist_ok=True)
     dst = dst_dir / "models_registry.json"

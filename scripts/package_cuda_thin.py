@@ -21,7 +21,7 @@ import stage_cuda_runtime as stage  # noqa: E402
 _RUN_SH = """#!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-export DANQING_USER_DATA_DIR="${DANQING_USER_DATA_DIR:-$HOME/danqing-data}"
+export DANQING_USER_DATA_DIR="${DANQING_USER_DATA_DIR:-$HOME/.danmo-make}"
 mkdir -p "$DANQING_USER_DATA_DIR"/{models,outputs,db,config,logs}
 export DANQING_HTTP_HOST="${DANQING_HTTP_HOST:-0.0.0.0}"
 export DANQING_HTTP_PORT="${DANQING_HTTP_PORT:-7800}"
@@ -89,7 +89,7 @@ exec "$VENV_PY" -m uvicorn backend.main:app --host "$DANQING_HTTP_HOST" --port "
 _RUN_BAT = r"""@echo off
 setlocal EnableExtensions
 set "ROOT=%~dp0"
-if not defined DANQING_USER_DATA_DIR set "DANQING_USER_DATA_DIR=%USERPROFILE%\danqing-data"
+if not defined DANQING_USER_DATA_DIR set "DANQING_USER_DATA_DIR=%USERPROFILE%\.danmo-make"
 if not exist "%DANQING_USER_DATA_DIR%\models" mkdir "%DANQING_USER_DATA_DIR%\models"
 if not exist "%DANQING_USER_DATA_DIR%\outputs" mkdir "%DANQING_USER_DATA_DIR%\outputs"
 if not exist "%DANQING_USER_DATA_DIR%\db" mkdir "%DANQING_USER_DATA_DIR%\db"
@@ -158,7 +158,7 @@ Requirements:
   - Network on first run (~1.5GB+ download)
 
 Quick start:
-  export DANQING_USER_DATA_DIR=$HOME/danqing-data   # optional
+  export DANQING_USER_DATA_DIR=$HOME/.danmo-make   # optional
   export DANQING_PIP_MIRROR=tuna                   # optional: official|tuna|aliyun
   ./run.sh
 
@@ -246,7 +246,7 @@ def package_linux_server(*, version: str | None = None) -> Path:
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         'ROOT="$(cd "$(dirname "$0")" && pwd)"\n'
-        'export DANQING_USER_DATA_DIR="${DANQING_USER_DATA_DIR:-$HOME/danqing-data}"\n'
+        'export DANQING_USER_DATA_DIR="${DANQING_USER_DATA_DIR:-$HOME/.danmo-make}"\n'
         'exec "$ROOT/runtime/python/bin/python3" "$ROOT/runtime/app/scripts/runtime_bootstrap.py" \\\n'
         '  --data-dir "$DANQING_USER_DATA_DIR" --app-root "$ROOT/runtime/app" \\\n'
         '  --portable-python "$ROOT/runtime/python" "$@"\n',

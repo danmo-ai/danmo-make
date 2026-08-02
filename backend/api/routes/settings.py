@@ -174,12 +174,16 @@ def get_workspace_status():
     """Whether a custom workspace was chosen and the effective data root."""
     path_resolver = get_container().resolve(IPathResolver)
     bootstrap = path_resolver.get_bootstrap_root()
+    control = path_resolver.get_control_plane_dir()
     from backend.utils.workspace import is_workspace_configured
 
     return {
-        "configured": is_workspace_configured(path_resolver.get_default_config_root()),
+        "configured": is_workspace_configured(
+            control, legacy_default_config=path_resolver.get_default_config_root()
+        ),
         "effective_root": str(path_resolver.get_project_root()),
         "bootstrap_root": str(bootstrap),
+        "control_plane": str(control),
     }
 
 
@@ -203,7 +207,8 @@ def apply_workspace(request: ApplyWorkspaceRequest, req: Request):
 
     try:
         new_root = apply_workspace_relocation(
-            bootstrap_root=bootstrap,
+            media_bootstrap=bootstrap,
+            control_plane=path_resolver.get_control_plane_dir(),
             default_config_root=path_resolver.get_default_config_root(),
             old_root=old_root,
             new_path_raw=raw,
@@ -254,7 +259,10 @@ def get_workspace_paths():
     path_resolver = get_container().resolve(IPathResolver)
     from backend.utils.workspace import workspace_layout_paths
 
-    return workspace_layout_paths(path_resolver.get_project_root())
+    return workspace_layout_paths(
+        path_resolver.get_project_root(),
+        control_plane=path_resolver.get_control_plane_dir(),
+    )
 
 
 @router.post("/pick-workspace-directory")

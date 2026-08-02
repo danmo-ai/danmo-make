@@ -9,7 +9,8 @@ from backend.core.version_keys import is_quantized_registry_version
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _REGISTRY_PATH = _REPO_ROOT / "default_config" / "models_registry.json"
-_WORKSPACE_POINTER = _REPO_ROOT / "default_config" / "workspace.pointer.json"
+_CONTROL_POINTER = Path.home() / ".danmo-make" / "workspace.pointer.json"
+_LEGACY_POINTER = _REPO_ROOT / "default_config" / "workspace.pointer.json"
 
 EDIT_ACTIONS = frozenset({"rewrite", "retouch", "extend"})
 
@@ -24,10 +25,12 @@ def repo_root() -> Path:
 
 
 def resolve_benchmark_data_root() -> Path:
-    """``default_config/workspace.pointer.json`` → workspace root, else repo root."""
-    if _WORKSPACE_POINTER.is_file():
+    """Control-plane / legacy pointer → workspace root, else repo root."""
+    for pointer in (_CONTROL_POINTER, _LEGACY_POINTER):
+        if not pointer.is_file():
+            continue
         try:
-            data = json.loads(_WORKSPACE_POINTER.read_text(encoding="utf-8"))
+            data = json.loads(pointer.read_text(encoding="utf-8"))
             custom = str(data.get("custom_workspace_dir") or "").strip()
             if custom:
                 root = Path(custom).expanduser().resolve()

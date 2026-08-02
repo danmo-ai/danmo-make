@@ -20,7 +20,7 @@ import out_paths as op  # noqa: E402
 _RUN_BAT = r"""@echo off
 setlocal EnableExtensions
 set "ROOT=%~dp0"
-if not defined DANQING_USER_DATA_DIR set "DANQING_USER_DATA_DIR=%USERPROFILE%\danqing-data"
+if not defined DANQING_USER_DATA_DIR set "DANQING_USER_DATA_DIR=%USERPROFILE%\.danmo-make"
 if not exist "%DANQING_USER_DATA_DIR%\models" mkdir "%DANQING_USER_DATA_DIR%\models"
 if not exist "%DANQING_USER_DATA_DIR%\outputs" mkdir "%DANQING_USER_DATA_DIR%\outputs"
 if not exist "%DANQING_USER_DATA_DIR%\db" mkdir "%DANQING_USER_DATA_DIR%\db"
@@ -43,7 +43,7 @@ Requirements on the host:
   - NVIDIA driver compatible with the bundled PyTorch CUDA runtime
 
 Quick start:
-  set DANQING_USER_DATA_DIR=%USERPROFILE%\\danqing-data
+  set DANQING_USER_DATA_DIR=%USERPROFILE%\\.danmo-make
   run.bat
 
 Open http://127.0.0.1:7800 in a browser. API docs: /docs

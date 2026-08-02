@@ -1,6 +1,7 @@
-"""Shipped defaults (``default_config/``) vs workspace ``config/``.
+"""Shipped defaults (``default_config/``) vs workspace ``config/`` vs control plane.
 
-- ``workspace.pointer.json`` lives under ``default_config/`` (install/dev root).
+- Factory templates: install/bundle ``default_config/`` (models_registry, presets, locales).
+- Workspace pointer: control plane ``~/.danmo-make/workspace.pointer.json`` (writable).
 - First workspace setup: ``seed_workspace_config_from_defaults`` copies registry/presets if missing.
 - Later updates: user edits workspace ``config/models_registry.json``; no startup merge.
 - Reset: settings ``restore_config_defaults`` overwrites from ``default_config/``.
@@ -19,7 +20,7 @@ RESTORABLE_CONFIG_FILES = ("models_registry.json", "presets.json")
 
 
 def resolve_default_config_root(*, bootstrap_root: Path, bundle_root: Path | None) -> Path:
-    """Read-only factory defaults: locales, models_registry, presets, workspace pointer."""
+    """Read-only factory defaults: locales, models_registry, presets."""
     if bundle_root is not None:
         bundled = bundle_root / DEFAULT_CONFIG_DIRNAME
         if bundled.is_dir():
@@ -32,13 +33,11 @@ def resolve_default_config_root(*, bootstrap_root: Path, bundle_root: Path | Non
     )
 
 
-def workspace_pointer_path(default_config_root: Path) -> Path:
-    return default_config_root.resolve() / BOOTSTRAP_POINTER_FILE
+def workspace_pointer_path(control_plane: Path) -> Path:
+    return control_plane.resolve() / BOOTSTRAP_POINTER_FILE
 
 
-def read_workspace_pointer(default_config_root: Path) -> str:
-    """Workspace path from ``default_config/workspace.pointer.json`` only."""
-    path = workspace_pointer_path(default_config_root)
+def _read_pointer_file(path: Path) -> str:
     if not path.is_file():
         return ""
     try:
@@ -51,10 +50,29 @@ def read_workspace_pointer(default_config_root: Path) -> str:
     return ""
 
 
-def write_workspace_pointer(default_config_root: Path, workspace_dir: str) -> None:
-    """Persist custom workspace path under ``default_config/``."""
-    default_config_root.mkdir(parents=True, exist_ok=True)
-    path = workspace_pointer_path(default_config_root)
+def read_workspace_pointer(
+    control_plane: Path,
+    *,
+    legacy_default_config: Path | None = None,
+) -> str:
+    """Workspace path from control-plane pointer; migrate legacy ``default_config/`` once."""
+    path = workspace_pointer_path(control_plane)
+    raw = _read_pointer_file(path)
+    if raw:
+        return raw
+    if legacy_default_config is not None:
+        legacy = legacy_default_config.resolve() / BOOTSTRAP_POINTER_FILE
+        legacy_raw = _read_pointer_file(legacy)
+        if legacy_raw:
+            write_workspace_pointer(control_plane, legacy_raw)
+            return legacy_raw
+    return ""
+
+
+def write_workspace_pointer(control_plane: Path, workspace_dir: str) -> None:
+    """Persist custom workspace path under the control plane."""
+    control_plane.mkdir(parents=True, exist_ok=True)
+    path = workspace_pointer_path(control_plane)
     payload = {"custom_workspace_dir": (workspace_dir or "").strip()}
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)

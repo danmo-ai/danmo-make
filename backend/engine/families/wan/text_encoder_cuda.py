@@ -361,11 +361,17 @@ def resolve_wan_umt5_pth(bundle_root: Path) -> tuple[Path, Path] | None:
     root = Path(bundle_root)
     if not root.is_absolute():
         from backend.utils.config_paths import resolve_default_config_root
+        from backend.utils.user_home import ensure_control_plane
         from backend.utils.workspace import resolve_workspace_root
 
         repo_root = Path(__file__).resolve().parents[4]
         default_cfg = resolve_default_config_root(bootstrap_root=repo_root, bundle_root=None)
-        workspace_root = resolve_workspace_root(repo_root, default_config_root=default_cfg)
+        control = ensure_control_plane()
+        workspace_root = resolve_workspace_root(
+            repo_root,
+            control_plane=control,
+            legacy_default_config=default_cfg,
+        )
         root = (workspace_root / root).resolve()
     if not root.is_dir():
         return None

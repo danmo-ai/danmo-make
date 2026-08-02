@@ -58,10 +58,13 @@ from pathlib import Path
 import sys
 sys.path.insert(0, '${DQ_ROOT}')
 from backend.utils.config_paths import resolve_default_config_root
+from backend.utils.user_home import ensure_control_plane
 from backend.utils.workspace import prepare_data_directories
 root = Path('${DQ_ROOT}').resolve()
 default_cfg = resolve_default_config_root(bootstrap_root=root, bundle_root=None)
-prepare_data_directories(root, default_config_root=default_cfg)
+prepare_data_directories(
+    root, control_plane=ensure_control_plane(), default_config_root=default_cfg
+)
 "
 }
 

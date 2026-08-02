@@ -385,6 +385,12 @@ class IPathResolver(ABC):
 
     @abstractmethod
     def get_project_root(self) -> Path:
+        """Effective media workspace root (models / outputs / db / registry)."""
+        pass
+
+    @abstractmethod
+    def get_control_plane_dir(self) -> Path:
+        """App home (``~/.danmo-make``): pointer, ``.app_config.json``, logs, runtime-venv."""
         pass
 
     @abstractmethod

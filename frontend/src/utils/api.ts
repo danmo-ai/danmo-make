@@ -529,6 +529,7 @@ export const api = {
       configured: boolean;
       effective_root: string;
       bootstrap_root: string;
+      control_plane?: string;
     }> {
       const response = await client.get('/api/settings/workspace-status');
       return response.data;

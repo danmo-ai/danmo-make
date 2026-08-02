@@ -1,4 +1,8 @@
-"""Custom workspace root resolution and layout (models / outputs / db / config)."""
+"""Media workspace root resolution and layout (models / outputs / db / registry config).
+
+Control plane (``~/.danmo-make``): pointer, app settings, logs, runtime-venv — see
+``backend.utils.user_home``.
+"""
 
 from __future__ import annotations
 
@@ -10,9 +14,14 @@ from pathlib import Path
 from backend.utils.config_paths import (
     read_workspace_pointer,
     resolve_default_config_root,
-    restore_workspace_config_from_defaults,
     seed_workspace_config_from_defaults,
     write_workspace_pointer,
+)
+from backend.utils.user_home import (
+    ensure_control_plane,
+    migrate_app_settings_to_control_plane,
+    migrate_legacy_data_into_control_plane_once,
+    resolve_control_plane_dir,
 )
 
 _WORKSPACE_SUBDIRS = (
@@ -24,7 +33,9 @@ _WORKSPACE_SUBDIRS = (
     "outputs/assets",
 )
 
-_WORKSPACE_TOP_LEVEL = ("config", "db", "models", "outputs")
+_WORKSPACE_TOP_LEVEL = ("config", "db", "models", "outputs", "datasets")
+
+_MEDIA_PRUNE_NAMES = ("db", "models", "outputs", "datasets")
 
 _IGNORE_EMPTY_NAMES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 
@@ -39,26 +50,37 @@ def _resolve_default_config(
 
 
 def sanitize_workspace_pointer(
-    default_config_root: Path,
+    control_plane: Path,
     *,
-    bootstrap_root: Path,
+    media_bootstrap: Path,
+    legacy_default_config: Path | None = None,
 ) -> None:
-    """Drop invalid pointers (missing dir, dev paths shipped in desktop bundles)."""
-    raw = read_workspace_pointer(default_config_root)
+    """Drop invalid pointers (missing dir)."""
+    raw = read_workspace_pointer(
+        control_plane, legacy_default_config=legacy_default_config
+    )
     if not raw:
         return
     try:
-        candidate = normalize_workspace_path(bootstrap_root, raw)
+        candidate = normalize_workspace_path(media_bootstrap, raw)
     except ValueError:
-        write_workspace_pointer(default_config_root, "")
+        write_workspace_pointer(control_plane, "")
         return
     if not candidate.is_dir():
-        write_workspace_pointer(default_config_root, "")
+        write_workspace_pointer(control_plane, "")
 
 
-def is_workspace_configured(default_config_root: Path) -> bool:
-    """True when ``default_config/workspace.pointer.json`` names a workspace directory."""
-    return bool(read_workspace_pointer(default_config_root).strip())
+def is_workspace_configured(
+    control_plane: Path,
+    *,
+    legacy_default_config: Path | None = None,
+) -> bool:
+    """True when control-plane pointer names a workspace directory."""
+    return bool(
+        read_workspace_pointer(
+            control_plane, legacy_default_config=legacy_default_config
+        ).strip()
+    )
 
 
 def normalize_workspace_path(bootstrap_root: Path, raw: str) -> Path:
@@ -100,7 +122,7 @@ def _assert_workspace_paths_safe(old_root: Path, new_root: Path) -> None:
 
 
 def migrate_workspace_data(old_root: Path, new_root: Path) -> None:
-    """Move workspace data directories from old_root into an empty new_root."""
+    """Move media workspace directories from old_root into an empty new_root."""
     old_r = old_root.resolve()
     new_r = new_root.resolve()
     if old_r == new_r:
@@ -119,19 +141,22 @@ def migrate_workspace_data(old_root: Path, new_root: Path) -> None:
             shutil.move(str(src), str(dst))
         elif name == "models":
             (new_r / "models" / "Lora").mkdir(parents=True, exist_ok=True)
+        elif name == "datasets":
+            continue
         else:
             (new_r / name).mkdir(parents=True, exist_ok=True)
 
 
 def apply_workspace_relocation(
     *,
-    bootstrap_root: Path,
+    media_bootstrap: Path,
+    control_plane: Path,
     default_config_root: Path,
     old_root: Path,
     new_path_raw: str,
 ) -> Path:
-    """Validate empty target, migrate data, prepare layout; returns resolved new workspace root."""
-    new_root = normalize_workspace_path(bootstrap_root, new_path_raw)
+    """Validate empty target, migrate media data, prepare layout; returns new media root."""
+    new_root = normalize_workspace_path(media_bootstrap, new_path_raw)
     if new_root.resolve() == old_root.resolve():
         return new_root
     if not is_empty_directory(new_root):
@@ -139,7 +164,8 @@ def apply_workspace_relocation(
     migrate_workspace_data(old_root, new_root)
     ensure_workspace_layout(new_root)
     seed_workspace_config_from_defaults(default_config_root, new_root)
-    write_workspace_pointer(default_config_root, str(new_root))
+    write_workspace_pointer(control_plane, str(new_root))
+    migrate_app_settings_to_control_plane(control_plane, new_root)
     db_path = new_root / "db" / "studio.db"
     if db_path.is_file():
         from backend.persistence.asset_store import repair_asset_paths_in_database
@@ -153,17 +179,20 @@ def apply_workspace_relocation(
 
 
 def resolve_workspace_root(
-    bootstrap_root: Path,
+    media_bootstrap: Path,
     *,
-    default_config_root: Path,
+    control_plane: Path,
+    legacy_default_config: Path | None = None,
 ) -> Path:
-    """Effective data root: custom workspace if configured, else install/dev root."""
-    raw = read_workspace_pointer(default_config_root)
+    """Effective media root: custom workspace if configured, else media bootstrap."""
+    raw = read_workspace_pointer(
+        control_plane, legacy_default_config=legacy_default_config
+    )
     if not raw:
-        return bootstrap_root.resolve()
+        return media_bootstrap.resolve()
     candidate = Path(raw).expanduser()
     if not candidate.is_absolute():
-        candidate = (bootstrap_root / candidate).resolve()
+        candidate = (media_bootstrap / candidate).resolve()
     else:
         candidate = candidate.resolve()
     if not candidate.is_dir():
@@ -183,41 +212,68 @@ def _tree_has_user_files(path: Path) -> bool:
 
 
 def prune_obsolete_bootstrap_data_dirs(
-    bootstrap_root: Path,
+    media_bootstrap: Path,
     *,
-    default_config_root: Path,
+    control_plane: Path,
+    legacy_default_config: Path | None = None,
 ) -> None:
-    """Remove empty legacy data dirs under bootstrap after workspace migration."""
-    bootstrap = bootstrap_root.resolve()
-    if not is_workspace_configured(default_config_root):
+    """Remove empty legacy media dirs under bootstrap after workspace migration.
+
+    Never deletes control-plane ``config/`` (app settings live there).
+    """
+    bootstrap = media_bootstrap.resolve()
+    control = control_plane.resolve()
+    if not is_workspace_configured(
+        control, legacy_default_config=legacy_default_config
+    ):
         return
-    workspace = resolve_workspace_root(bootstrap, default_config_root=default_config_root)
+    workspace = resolve_workspace_root(
+        bootstrap,
+        control_plane=control,
+        legacy_default_config=legacy_default_config,
+    )
     if workspace == bootstrap:
         return
-    for name in _WORKSPACE_TOP_LEVEL:
-        if name == "config":
-            continue
+    for name in _MEDIA_PRUNE_NAMES:
         path = bootstrap / name
         if path.exists() and not _tree_has_user_files(path):
             shutil.rmtree(path)
+    # Media registry config may remain under bootstrap when it equals control plane —
+    # only remove if it no longer holds user files (app settings already migrated).
     legacy_cfg = bootstrap / "config"
-    if legacy_cfg.is_dir() and not _tree_has_user_files(legacy_cfg):
+    if legacy_cfg.is_dir() and bootstrap != control and not _tree_has_user_files(legacy_cfg):
         shutil.rmtree(legacy_cfg)
 
 
 def prepare_data_directories(
-    bootstrap_root: Path,
+    media_bootstrap: Path,
     *,
+    control_plane: Path | None = None,
     default_config_root: Path | None = None,
 ) -> Path:
-    """Create data layout under the effective workspace root."""
-    bootstrap = bootstrap_root.resolve()
+    """Create control-plane + media layout; return effective media workspace root."""
+    control = ensure_control_plane(control_plane or resolve_control_plane_dir())
+    migrate_legacy_data_into_control_plane_once(control)
+    bootstrap = media_bootstrap.resolve()
     default_cfg = _resolve_default_config(bootstrap, default_config_root)
-    sanitize_workspace_pointer(default_cfg, bootstrap_root=bootstrap)
-    root = resolve_workspace_root(bootstrap, default_config_root=default_cfg)
+    sanitize_workspace_pointer(
+        control,
+        media_bootstrap=bootstrap,
+        legacy_default_config=default_cfg,
+    )
+    root = resolve_workspace_root(
+        bootstrap,
+        control_plane=control,
+        legacy_default_config=default_cfg,
+    )
     ensure_workspace_layout(root)
     seed_workspace_config_from_defaults(default_cfg, root)
-    prune_obsolete_bootstrap_data_dirs(bootstrap, default_config_root=default_cfg)
+    migrate_app_settings_to_control_plane(control, root)
+    prune_obsolete_bootstrap_data_dirs(
+        bootstrap,
+        control_plane=control,
+        legacy_default_config=default_cfg,
+    )
     return root
 
 
@@ -226,8 +282,14 @@ def ensure_workspace_layout(workspace_root: Path) -> None:
         (workspace_root / rel).mkdir(parents=True, exist_ok=True)
 
 
-def workspace_layout_paths(workspace_root: Path) -> dict[str, str]:
+def workspace_layout_paths(
+    workspace_root: Path,
+    *,
+    control_plane: Path | None = None,
+) -> dict[str, str]:
+    control = (control_plane or resolve_control_plane_dir()).resolve()
     return {
+        "control_plane": str(control),
         "workspace": str(workspace_root),
         "config": str(workspace_root / "config"),
         "db": str(workspace_root / "db"),
