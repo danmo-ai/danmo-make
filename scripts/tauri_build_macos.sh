@@ -29,6 +29,8 @@ elif git -C "$ROOT" describe --exact-match --tags HEAD >/dev/null 2>&1; then
 fi
 
 "$PYTHON" "$ROOT/scripts/prepare_tauri_resources.py"
+# tauri.conf.json requires bundle.resources["runtime"]; MLX has no thin tree.
+bash "$ROOT/scripts/ensure_tauri_resource_stub.sh"
 
 if ! rustup target list --installed | grep -q '^aarch64-apple-darwin$'; then
   echo "==> rustup target add aarch64-apple-darwin"

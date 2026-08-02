@@ -9,18 +9,20 @@ STUB_DIR="$ROOT/desktop/src-tauri/danqing-api"
 
 if [[ -d "$STUB_DIR" ]] && [[ -f "$STUB_DIR/danqing-api" || -f "$STUB_DIR/danqing-api.exe" ]]; then
   # Real sidecar already staged — leave it alone.
-  exit 0
-fi
-
-mkdir -p "$STUB_DIR"
-cat > "$STUB_DIR/.dev-stub" <<'EOF'
+  :
+else
+  mkdir -p "$STUB_DIR"
+  cat > "$STUB_DIR/.dev-stub" <<'EOF'
 Dev placeholder for Tauri bundle.resources.
 
 Release builds replace this directory via:
   python scripts/prepare_tauri_resources.py
 EOF
-echo "==> Ensured Tauri resource stub: desktop/src-tauri/danqing-api/"
+  echo "==> Ensured Tauri resource stub: desktop/src-tauri/danqing-api/"
+fi
 
+# Always ensure ``runtime`` exists: tauri.conf.json lists it, but early-exit above
+# used to skip this when a real sidecar was already staged (broke macOS MLX CI).
 RUNTIME_DIR="$ROOT/desktop/src-tauri/runtime"
 if [[ ! -d "$RUNTIME_DIR/app" ]]; then
   mkdir -p "$RUNTIME_DIR"
