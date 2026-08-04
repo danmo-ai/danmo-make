@@ -7,7 +7,6 @@ from typing import Optional
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
 
 
 class TimestepEmbedder(nn.Module):
@@ -97,44 +96,23 @@ def build_model(cfg: HiDreamConfig, mlx_vlm_qwen3_vl_model):
     return HiDream()
 
 
-def precompute_text_embeds_with_vision(model, cfg, input_ids, pixel_values=None, image_grid_thw=None):
-    """Compute text embeddings + (in edit mode) inject vision features at image_token
-    positions. Returns embeds [B, S_text, hidden]. Call once before the denoising
-    loop — output is constant across timesteps.
+def precompute_text_embeds_with_vision(
+    backbone,
+    input_ids,
+    pixel_values=None,
+    image_grid_thw=None,
+):
+    """Text (+ optional vision) input embeddings via mlx-vlm ``Model.get_input_embeddings``.
+
+    Returns embeds ``[B, S_text, hidden]``. Call once before the denoising loop —
+    output is constant across timesteps. Do not reimplement vision scatter locally.
     """
-    embed_tokens = model.language_model.model.embed_tokens
-    inputs_embeds = embed_tokens(input_ids)
-
-    if pixel_values is None or image_grid_thw is None:
-        return inputs_embeds
-
-    vt_out = model.visual(pixel_values, image_grid_thw)
-    image_features = vt_out[0] if isinstance(vt_out, tuple) else vt_out
-    if isinstance(image_features, (list, tuple)):
-        image_features = mx.concatenate(image_features, axis=0)
-
-    # Build a [B, S, H] tensor that has image_features at image_token positions
-    # and inputs_embeds everywhere else, via mx.where on a broadcast mask.
-    ids_np = np.asarray(input_ids)
-    img_positions = np.where(ids_np[0] == cfg.image_token_id)[0]
-    if img_positions.shape[0] != image_features.shape[0]:
-        raise RuntimeError(
-            f"image_features {image_features.shape[0]} != "
-            f"image_token_id positions {img_positions.shape[0]} (input_ids was: {ids_np.shape})"
-        )
-
-    B, S, H = inputs_embeds.shape
-    # Build aligned-to-S features: zero everywhere except at image positions.
-    aligned = np.zeros((B, S, H), dtype=np.float32)
-    aligned[0, img_positions] = np.asarray(image_features.astype(mx.float32))
-    aligned_mx = mx.array(aligned).astype(inputs_embeds.dtype)
-
-    # Mask: 1 at image positions, 0 elsewhere
-    mask_2d = (ids_np == cfg.image_token_id).astype(np.bool_)
-    mask_3d = np.broadcast_to(mask_2d[..., None], (B, S, H))
-    mask_mx = mx.array(mask_3d.copy())
-
-    return mx.where(mask_mx, aligned_mx, inputs_embeds)
+    feats = backbone.get_input_embeddings(
+        input_ids,
+        pixel_values,
+        image_grid_thw=image_grid_thw,
+    )
+    return feats.inputs_embeds
 
 
 def forward_generation(model, cfg, inputs_embeds_with_vision, position_ids, vinputs, timestep,

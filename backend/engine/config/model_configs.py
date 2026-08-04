@@ -623,6 +623,41 @@ class LongCatConfig:
 
 
 @dataclass
+class MinimaxH3Config:
+    """MiniMax-H3 Base FL2VA (omni A/V DiT + Qwen3-VL conditioner).
+
+    Shape C family generator: joint video+audio denoising on a packed sequence.
+    Official checkpoints are CFG-distilled (no negative / guidance pass).
+    Spatial VAE compresses 16x; DiT patch (1,2,2) yields effective token scale 32.
+    """
+    video_pipeline_shape: str = "family_generator"
+    encoder_type: str = "minimax_h3_qwen3vl"
+    supports_guidance: bool = False
+    supports_img2img: bool = True
+    vae_scale: int = 32
+    temporal_vae_scale: int = 4
+    video_vae_backend: str = "minimax_h3"
+    default_scheduler: str = "flow_match_euler"
+    scheduler_shift: float = 12.0
+    audio_scheduler_shift: float = 3.0
+    default_infer_steps: int = 30
+    default_fps: int = 24
+    latent_channels: int = 24
+    audio_latent_channels: int = 32
+    hidden_size: int = 5376
+    num_layers: int = 50
+    num_attention_heads: int = 56
+    attention_head_dim: int = 128
+    ffn_dim: int = 14336
+    text_dim: int = 5120
+    text_encoder_layer: int = 50
+    patch_size: tuple = (1, 2, 2)
+    supports_long_video: bool = False
+    geometry_check: str = "generic"
+    license_territorial_notice: bool = True
+
+
+@dataclass
 class LongCatAvatarConfig:
     """LongCat-Video-Avatar 1.5 (audio-driven digital human, ATI2V / AT2V).
 
@@ -1087,6 +1122,7 @@ FAMILY_CONFIG_MAP: dict[str, type] = {
     "ltx": LTXConfig,
     "longcat": LongCatConfig,
     "longcat_avatar": LongCatAvatarConfig,
+    "minimax_h3": MinimaxH3Config,
     "wan": WanConfig,
     "hunyuan": HunyuanVideoConfig,
 }

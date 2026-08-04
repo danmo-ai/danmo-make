@@ -93,6 +93,7 @@ def edit(
     source_asset_id: str,
     prompt: str,
     *,
+    tail_asset_id: str | None = None,
     negative_prompt: str = "",
     steps: int | None = None,
     seed: int | None = None,
@@ -112,6 +113,7 @@ def edit(
         request = VideoEditRequest(
             model=model,
             source_asset_id=source_asset_id,
+            tail_asset_id=tail_asset_id,
             prompt=prompt,
             negative_prompt=negative_prompt,
             steps=steps,

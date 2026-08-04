@@ -387,6 +387,21 @@
       "hooks": [],
       "encoder_type": "wan_umt5"
     },
+    "minimax_h3": {
+      "paradigm": "flow_matching",
+      "media": [
+        "video"
+      ],
+      "backends": [
+        "mlx"
+      ],
+      "latent_layout": "nchw",
+      "cfg_mode": "none",
+      "latent_channels": 24,
+      "vae_scale": 32,
+      "hooks": [],
+      "encoder_type": "minimax_h3_qwen3vl"
+    },
     "qwen_image": {
       "paradigm": "diffusion",
       "media": [
@@ -9379,6 +9394,159 @@
               "tokenizer/**",
               "lora/**"
             ]
+          }
+        }
+      }
+    },
+    "minimax-h3-fl2va": {
+      "catalog": {
+        "media": "video",
+        "description": {
+          "zh": "MiniMax H3 Base FL2VA：文生/首尾帧联合生成 768p 音视频（24fps，4–15 秒）；CFG 蒸馏，无负向提示。",
+          "en": "MiniMax H3 Base FL2VA: text / first-last-frame joint A/V at 768p (24fps, 4–15s); CFG-distilled, no negative prompt."
+        },
+        "category": "video_models",
+        "commercial_use_allowed": false,
+        "type": "video",
+        "source": "huggingface",
+        "name": {
+          "zh": "MiniMax H3 FL2VA",
+          "en": "MiniMax H3 FL2VA"
+        },
+        "recommended": false,
+        "engine": "danqing-video"
+      },
+      "runtime": {
+        "family": "minimax_h3",
+        "backends": [
+          "mlx"
+        ],
+        "overrides": {
+          "scheduler_shift": 12.0,
+          "audio_scheduler_shift": 3.0,
+          "supports_guidance": false
+        }
+      },
+      "actions": {
+        "create": {},
+        "animate": {}
+      },
+      "ui": {
+        "parameters": {
+          "seed_support": true,
+          "steps": {
+            "default": 30,
+            "min": 8,
+            "max": 50,
+            "label": "步数",
+            "type": "int",
+            "note": "sigma 网格点数（含终点 0）；CFG 蒸馏无需负向提示"
+          },
+          "guide_scale": {
+            "default": 1.0,
+            "min": 1.0,
+            "max": 1.0,
+            "step": 0.5,
+            "label": "CFG引导",
+            "fixed": true,
+            "note": "CFG 蒸馏权重固定为 1.0",
+            "type": "float"
+          },
+          "width": {
+            "default": 1344,
+            "options": [
+              768,
+              1024,
+              1152,
+              1280,
+              1344
+            ],
+            "type": "enum",
+            "note": "短边 768；须为 32 的倍数"
+          },
+          "height": {
+            "default": 768,
+            "options": [
+              768,
+              1024,
+              1152,
+              1280,
+              1344
+            ],
+            "type": "enum",
+            "note": "短边 768；须为 32 的倍数"
+          },
+          "num_frames": {
+            "default": 125,
+            "min": 107,
+            "max": 362,
+            "step": 1,
+            "label": "帧数",
+            "type": "int",
+            "note": "对齐到 17n+5（约 4–15 秒 @24fps；107≈4.5s）"
+          },
+          "fps": {
+            "default": 24,
+            "min": 24,
+            "max": 24,
+            "step": 1,
+            "label": "FPS",
+            "fixed": true,
+            "type": "int"
+          },
+          "negative_prompt_support": false,
+          "video_edit_source_mode": "first_frame",
+          "resolution_presets": {
+            "default": "1344x768",
+            "options": [
+              "1344x768",
+              "768x1344",
+              "1024x768",
+              "768x1024",
+              "1152x768",
+              "768x1152"
+            ]
+          }
+        },
+        "extends": "video_dit_standard"
+      },
+      "distribution": {
+        "versions": {
+          "mlx-q4": {
+            "name": {
+              "zh": "4-bit 量化版",
+              "en": "4-bit Quantized"
+            },
+            "size": "40GB",
+            "min_unified_memory_gb": 64,
+            "default": true,
+            "source": "huggingface",
+            "repo_id": "ddalcu/MiniMax-H3-FL2VA-MLX-Serve-4bit",
+            "local_path": "models/Video/minimax-h3-fl2va-mlx-q4",
+            "source_type": "prequantized",
+            "quantization": {
+              "bits": 4,
+              "scheme": "mlx_affine",
+              "group_size": 64
+            }
+          },
+          "mlx-q8": {
+            "name": {
+              "zh": "8-bit 量化版",
+              "en": "8-bit Quantized"
+            },
+            "size": "69GB",
+            "min_unified_memory_gb": 96,
+            "default": false,
+            "source": "huggingface",
+            "repo_id": "ddalcu/MiniMax-H3-FL2VA-MLX-Serve-8bit",
+            "local_path": "models/Video/minimax-h3-fl2va-mlx-q8",
+            "source_type": "prequantized",
+            "quantization": {
+              "bits": 8,
+              "scheme": "mlx_affine",
+              "group_size": 64
+            }
           }
         }
       }

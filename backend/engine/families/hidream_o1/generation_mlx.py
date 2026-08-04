@@ -221,8 +221,7 @@ class HiDreamO1MlxGenerator:
             tgt_idx = vinput_idx
 
         inputs_embeds_pre = precompute_text_embeds_with_vision(
-            model,
-            cfg,
+            backbone,
             input_ids,
             pixel_values=pixel_values_mx,
             image_grid_thw=image_grid_thw_mx,

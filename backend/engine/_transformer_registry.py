@@ -525,6 +525,7 @@ _VIDEO_TRANSFORMER = {
     "ltx":       ("backend.engine.families.ltx.transformer",       "LTXTransformer"),
     "longcat":   ("backend.engine.families.longcat.transformer",   "LongCatTransformer"),
     "longcat_avatar": ("backend.engine.families.longcat_avatar.transformer", "LongCatAvatarTransformer"),
+    "minimax_h3": ("backend.engine.families.minimax_h3.transformer", "MinimaxH3Transformer"),
     "hunyuan":   ("backend.engine.families.hunyuan.transformer",   "HunyuanVideoTransformer"),
 }
 
@@ -532,6 +533,7 @@ _VIDEO_TRANSFORMER = {
 _VIDEO_GENERATION_FACTORY = {
     "ltx": ("backend.engine.families.ltx.generation", "create_ltx23_generator"),
     "longcat": ("backend.engine.families.longcat.generation", "create_longcat_generator"),
+    "minimax_h3": ("backend.engine.families.minimax_h3.generation", "create_minimax_h3_generator"),
     "wan": ("backend.engine.families.wan.generation", "create_bernini_renderer_generator"),
 }
 
@@ -569,6 +571,7 @@ _VIDEO_AVATAR_FACTORY = {
 _VIDEO_GENERATION_VALIDATE = {
     "ltx": ("backend.engine.families.ltx.generation", "validate_video_generation_params"),
     "longcat": ("backend.engine.families.longcat.generation", "validate_video_generation_params"),
+    "minimax_h3": ("backend.engine.families.minimax_h3.generation", "validate_video_generation_params"),
     "wan": ("backend.engine.families.wan.generation", "validate_video_generation_params"),
 }
 

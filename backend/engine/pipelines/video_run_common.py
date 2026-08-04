@@ -634,6 +634,7 @@ def execute_family_video_generator(pipeline,
     source_video_path: str | None = None
     source_image_path: str | None = None
     image_path: str | None = None
+    last_frame_path: str | None = None
     reference_image_paths: list[str] = []
     ref_ids = list(getattr(request, "reference_asset_ids", None) or [])
     meta_refs = getattr(request, "metadata", None) or {}
@@ -672,6 +673,12 @@ def execute_family_video_generator(pipeline,
             if src is None or not src.exists():
                 raise RuntimeError(f"Source image asset not found: {request.source_asset_id!r}")
             image_path = str(src)
+            tail_id = getattr(request, "tail_asset_id", None)
+            if tail_id:
+                tail = pipeline._asset_store.get_file_path(str(tail_id))
+                if tail is None or not Path(tail).exists():
+                    raise RuntimeError(f"Last-frame (tail) image asset not found: {tail_id!r}")
+                last_frame_path = str(tail)
 
     if on_log:
         on_log(
@@ -796,6 +803,13 @@ def execute_family_video_generator(pipeline,
             )
         else:
             gen_kwargs["image_path"] = image_path
+            # Optional last-frame for FL2VA-style families (VideoEditRequest.tail_asset_id).
+            import inspect as _inspect
+
+            if last_frame_path is not None and "last_frame_path" in _inspect.signature(
+                generator.generate_and_save
+            ).parameters:
+                gen_kwargs["last_frame_path"] = last_frame_path
         result_path = generator.generate_and_save(**gen_kwargs)
 
     if ctx_exec.cancel_token.is_cancelled():

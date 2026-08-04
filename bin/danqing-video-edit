@@ -31,6 +31,11 @@ def main():
     parser = argparse.ArgumentParser(description="DanQing CLI: video editing")
     parser.add_argument("--model", required=True)
     parser.add_argument("--source-asset-id", required=True)
+    parser.add_argument(
+        "--tail-asset-id",
+        default="",
+        help="Optional last-frame image asset (FL2VA first+last)",
+    )
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--negative-prompt", default="")
     parser.add_argument("--steps", type=int, default=None)
@@ -49,6 +54,7 @@ def main():
     edit(
         model=args.model,
         source_asset_id=args.source_asset_id,
+        tail_asset_id=(args.tail_asset_id or None),
         prompt=args.prompt,
         negative_prompt=args.negative_prompt,
         steps=args.steps,
