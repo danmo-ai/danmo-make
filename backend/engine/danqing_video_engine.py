@@ -12,7 +12,7 @@ from typing import ClassVar, List, Any
 from backend.core.contracts import (
     EngineResult, ExecutionContext,
     VideoAvatarRequest, VideoAvatarScriptRequest, VideoEditRequest,
-    VideoGenerationRequest, VideoLongGenerationRequest, VideoUpscaleRequest, parse_model_version,
+    VideoGenerationRequest, VideoUpscaleRequest, parse_model_version,
 )
 from backend.core.media_interfaces import IVideoEngine
 from backend.core.interfaces import IPathResolver
@@ -21,12 +21,7 @@ from backend.engine.group_utils import resolve_asset_group_id
 from .cache import ModelCache
 from .lineage import resolve_lineage, video_edit_relation_type
 from .progress_bridge import make_pipeline_progress_callback
-from backend.long_video.validate import (
-    LongVideoValidationError,
-    validate_long_video_request,
-)
 from .sessions.engine_dispatch import (
-    dispatch_long_video,
     dispatch_video_avatar,
     dispatch_video_create,
     dispatch_video_edit,
@@ -121,63 +116,6 @@ class DanQingVideoEngine(IVideoEngine):
         aid = ctx.asset_store.create_from_file(
             Path(output_path), kind="video", mime_type="video/mp4",
             source_task_id=ctx.task_id, metadata=metadata, source_action="create",
-            parent_asset_id=parent_id, relation_type=relation,
-            group_id=group_id,
-        )
-        return EngineResult(
-            primary_asset_id=aid,
-            asset_ids=[aid],
-            output_paths=[output_path],
-            metadata=inference_metadata_for_task(metadata),
-        )
-
-    async def generate_long(
-        self,
-        request: VideoLongGenerationRequest,
-        ctx: ExecutionContext,
-        *,
-        image_engine: Any,
-    ) -> EngineResult:
-        import asyncio
-
-        spec = request.long_video
-        phase = (request.metadata or {}).get("long_video_phase") or ""
-        try:
-            validate_long_video_request(
-                request, video_engine=self, image_engine=image_engine
-            )
-        except LongVideoValidationError as exc:
-            raise RuntimeError(exc.message) from exc
-        video_runtime = self._resolve_runtime(request.model)
-        if spec.strategy == "segmented_i2v" and phase != "assemble_only":
-            kf_model = (spec.keyframe_model or "").strip()
-            image_runtime = image_engine._resolve_runtime(kf_model)
-        else:
-            image_runtime = video_runtime
-
-        on_progress = make_pipeline_progress_callback(ctx)
-        result = await asyncio.to_thread(
-            dispatch_long_video,
-            image_runtime=image_runtime,
-            video_runtime=video_runtime,
-            registry=self._registry,
-            asset_store=ctx.asset_store,
-            model_cache=self._cache,
-            project_root=self._paths.get_project_root(),
-            request=request,
-            exec_ctx=ctx,
-            on_progress=on_progress,
-            on_log=ctx.on_log,
-        )
-        if result is None:
-            return EngineResult(primary_asset_id="", metadata={"status": "cancelled"})
-
-        output_path, metadata = result
-        parent_id, relation = resolve_lineage(request.metadata)
-        group_id = resolve_asset_group_id(request.metadata, ctx.asset_store)
-        aid = ctx.asset_store.create_from_file(
-            Path(output_path), kind="video", mime_type="video/mp4",
-            source_task_id=ctx.task_id, metadata=metadata, source_action="long_video",
             parent_asset_id=parent_id, relation_type=relation,
             group_id=group_id,
         )

@@ -8,7 +8,11 @@ from pathlib import Path
 
 import numpy as np
 
-from backend.long_video.plan import num_frames_for_duration_sec
+def num_frames_for_duration_sec(duration_sec: float, fps: float) -> int:
+    rate = max(1.0, float(fps))
+    sec = max(0.0, float(duration_sec))
+    return max(1, int(round(sec * rate)) + 1)
+
 from backend.engine.families.ltx.pipeline_math_mlx import AUDIO_SAMPLE_RATE
 from backend.utils.video_sr_ffmpeg import require_ffmpeg, require_ffprobe
 

@@ -216,9 +216,6 @@ def apply_video_registry_config_overrides(pipeline, entry: Any, config: Any) -> 
     sd = _registry_scalar_default_fn(entry, "step_distill", None)
     if sd is not None:
         config.step_distill = bool(sd)
-    lvs = _registry_scalar_default_fn(entry, "long_video_support", None)
-    if lvs is not None:
-        config.supports_long_video = bool(lvs)
     moe_boundary = _registry_scalar_default_fn(entry, "moe_boundary_step_index", None)
     if moe_boundary is not None:
         config.moe_boundary_step_index = int(moe_boundary)
@@ -732,85 +729,46 @@ def execute_family_video_generator(pipeline,
         return None
 
     prompt = (request.prompt or "").strip()
-    if not prompt and not (
-        isinstance(request, VideoGenerationRequest)
-        and request.long_video is not None
-        and (request.long_video.opening_prompt or "").strip()
-    ):
+    if not prompt:
         if stage2_steps > 0:
             raise RuntimeError("LTX 2.3 generation requires a non-empty prompt")
         if not bool(getattr(config, "bernini_renderer", False)):
             raise RuntimeError("Video generation requires a non-empty prompt")
 
-    long_spec = getattr(request, "long_video", None) if not is_edit else None
-    lv_fps = float(fps)
-    if long_spec is not None:
-        strategy = getattr(long_spec, "strategy", "latent_extend") or "latent_extend"
-        if strategy == "segmented_i2v":
-            raise RuntimeError(
-                "long_video strategy segmented_i2v must use POST /api/videos/long-generations "
-                "(task kind video.long_generation), not standard video create"
-            )
-        if not getattr(config, "supports_long_video", False):
-            raise RuntimeError(
-                f"Model {model_key!r} does not support long_video generation "
-                "(registry long_video_support=false)"
-            )
-        from backend.engine.families.ltx.ltx_long_video import run_ltx_long_video
-
-        lv_fps = float(request.fps) if getattr(request, "fps", None) else 24.0
-        max_frames = int(getattr(config, "ltx_long_video_max_frames", 257) or 257)
-        result_path = run_ltx_long_video(
-            generator,
-            request=request,
-            spec=long_spec,
-            output_path=out_path,
-            width=w,
-            height=h,
-            fps=lv_fps,
-            seed=seed,
-            steps=steps,
-            guidance=guidance,
-            step_distill=step_distill,
-            max_frames=max_frames,
-            on_log=on_log,
-            on_progress=on_progress,
+    gen_kwargs: dict[str, Any] = {
+        "prompt": prompt,
+        "output_path": out_path,
+        "width": w,
+        "height": h,
+        "num_frames": num_frames,
+        "fps": float(fps),
+        "seed": seed,
+        "steps": steps,
+        "guidance": guidance,
+        "step_distill": step_distill,
+        "negative_prompt": getattr(request, "negative_prompt", None) or "",
+        "on_log": on_log,
+        "on_progress": on_progress,
+    }
+    if bool(getattr(config, "bernini_renderer", False)):
+        gen_kwargs.update(
+            {
+                "source_video_path": source_video_path,
+                "source_image_path": source_image_path,
+                "reference_image_paths": reference_image_paths,
+                "is_edit": is_edit,
+            }
         )
     else:
-        gen_kwargs: dict[str, Any] = {
-            "prompt": prompt,
-            "output_path": out_path,
-            "width": w,
-            "height": h,
-            "num_frames": num_frames,
-            "fps": float(fps),
-            "seed": seed,
-            "steps": steps,
-            "guidance": guidance,
-            "step_distill": step_distill,
-            "negative_prompt": getattr(request, "negative_prompt", None) or "",
-            "on_log": on_log,
-            "on_progress": on_progress,
-        }
-        if bool(getattr(config, "bernini_renderer", False)):
-            gen_kwargs.update(
-                {
-                    "source_video_path": source_video_path,
-                    "source_image_path": source_image_path,
-                    "reference_image_paths": reference_image_paths,
-                    "is_edit": is_edit,
-                }
-            )
-        else:
-            gen_kwargs["image_path"] = image_path
-            # Optional last-frame for FL2VA-style families (VideoEditRequest.tail_asset_id).
-            import inspect as _inspect
+        gen_kwargs["image_path"] = image_path
+        # Optional last-frame for FL2VA-style families (VideoEditRequest.tail_asset_id).
+        import inspect as _inspect
 
-            if last_frame_path is not None and "last_frame_path" in _inspect.signature(
-                generator.generate_and_save
-            ).parameters:
-                gen_kwargs["last_frame_path"] = last_frame_path
-        result_path = generator.generate_and_save(**gen_kwargs)
+        if last_frame_path is not None and "last_frame_path" in _inspect.signature(
+            generator.generate_and_save
+        ).parameters:
+            gen_kwargs["last_frame_path"] = last_frame_path
+    result_path = generator.generate_and_save(**gen_kwargs)
 
     if ctx_exec.cancel_token.is_cancelled():
         return None
@@ -833,9 +791,6 @@ def execute_family_video_generator(pipeline,
         "video_pipeline_shape": "family_generator",
         "step_distill": step_distill,
     }
-    if long_spec is not None:
-        metadata["long_video"] = long_spec.model_dump()
-        metadata["fps"] = int(lv_fps)
     metadata.update(work_title_metadata(getattr(request, "title", None)))
     return result_path, metadata
 

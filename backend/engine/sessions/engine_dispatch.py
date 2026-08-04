@@ -15,7 +15,6 @@ from backend.core.contracts import (
     VideoEditRequest,
     VideoGenerationRequest,
     VideoAvatarRequest,
-    VideoLongGenerationRequest,
     VideoUpscaleRequest,
     parse_model_version,
 )
@@ -206,14 +205,6 @@ def dispatch_video_edit(
         model=request.model,
         operation="video edit",
     )
-    from backend.long_video.segment_source import resolve_long_video_edit_chain_source
-
-    request = resolve_long_video_edit_chain_source(
-        request,
-        asset_store=asset_store,
-        work_dir=Path(exec_ctx.work_dir),
-        task_id=exec_ctx.task_id,
-    )
     return VideoSession(**_session_kwargs(runtime, registry, asset_store, model_cache, project_root)).run_edit(
         request, exec_ctx, on_progress=on_progress, on_log=on_log
     )
@@ -269,103 +260,3 @@ def dispatch_video_upscale(
         request, exec_ctx, on_progress=on_progress, on_log=on_log
     )
 
-
-def dispatch_long_video(
-    *,
-    image_runtime: Any,
-    video_runtime: Any,
-    registry: Any,
-    asset_store: Any,
-    model_cache: Any | None,
-    project_root: Path | None,
-    request: VideoLongGenerationRequest,
-    exec_ctx: ExecutionContext,
-    on_progress: Callable | None = None,
-    on_log: Callable | None = None,
-) -> Any:
-    from backend.engine.inference.long_video_orchestrator import run_long_video_orchestrator
-
-    spec = request.long_video
-    phase = (request.metadata or {}).get("long_video_phase") or ""
-    if spec.strategy == "segmented_i2v" and phase != "assemble_only":
-        kf_model = (spec.keyframe_model or "").strip()
-        if not kf_model:
-            raise RuntimeError("long_video.keyframe_model is required for segmented_i2v")
-        assert_generation_family_has_plugin(kf_model, registry, expected_media="image")
-        _require_session_route(
-            routes_to_image_session(kf_model, registry),
-            model=kf_model,
-            operation="image create (long video keyframe)",
-        )
-    seg_model = (request.model or spec.segment_video_model or "").strip()
-    if spec.strategy == "segmented_i2v" and phase != "assemble_only":
-        assert_generation_family_has_plugin(seg_model, registry, expected_media="video")
-        _require_session_route(
-            routes_to_video_session(seg_model, registry),
-            model=seg_model,
-            operation="video animate (long video segment)",
-        )
-    elif spec.strategy == "latent_extend":
-        assert_generation_family_has_plugin(seg_model, registry, expected_media="video")
-        _require_session_route(
-            routes_to_video_session(seg_model, registry),
-            model=seg_model,
-            operation="video create (latent extend)",
-        )
-
-    kwargs = {
-        "registry": registry,
-        "asset_store": asset_store,
-        "model_cache": model_cache,
-        "project_root": project_root or Path.cwd(),
-    }
-    return run_long_video_orchestrator(
-        request=request,
-        exec_ctx=exec_ctx,
-        image_dispatch={"runtime": image_runtime, **kwargs},
-        video_dispatch={"runtime": video_runtime, **kwargs},
-        on_progress=on_progress,
-        on_log=on_log,
-    )
-
-
-def dispatch_audio_create(
-    *,
-    runtime: Any,
-    registry: Any,
-    asset_store: Any,
-    model_cache: Any | None,
-    project_root: Path | None,
-    request: AudioGenerationRequest,
-    exec_ctx: ExecutionContext,
-) -> Any:
-    assert_generation_family_has_plugin(request.model, registry, expected_media="audio")
-    _require_session_route(
-        routes_to_audio_session(request.model, registry),
-        model=request.model,
-        operation="audio create",
-    )
-    return AudioSession(**_session_kwargs(runtime, registry, asset_store, model_cache, project_root)).run(
-        request, exec_ctx
-    )
-
-
-def dispatch_audio_edit(
-    *,
-    runtime: Any,
-    registry: Any,
-    asset_store: Any,
-    model_cache: Any | None,
-    project_root: Path | None,
-    request: AudioEditRequest,
-    exec_ctx: ExecutionContext,
-) -> Any:
-    assert_generation_family_has_plugin(request.model, registry, expected_media="audio")
-    _require_session_route(
-        routes_to_audio_edit_session(request.model, registry),
-        model=request.model,
-        operation="audio edit",
-    )
-    return AudioSession(**_session_kwargs(runtime, registry, asset_store, model_cache, project_root)).run_edit(
-        request, exec_ctx
-    )

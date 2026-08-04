@@ -4,26 +4,14 @@ import type {
   CanvasSessionDetail,
   CanvasSessionState,
   CanvasSessionSummary,
-  CharacterVisibility,
-  FirstFrameStrategy,
   GalleryGroup,
   GalleryItem,
-  LongVideoChainMode,
-  LongVideoFlfMode,
-  LongVideoProjectDetail,
-  LongVideoProjectState,
-  LongVideoProjectSummary,
-  LongVideoSegmentRole,
-  LongVideoShotCastLook,
-  LongVideoShotSceneLook,
-  LongVideoStartFrameMode,
   QueueState,
   RegistryData,
   SettingsData,
   SystemInfo,
 } from '@/types';
 import { DQ_STORAGE, getItem } from '@/utils/storage';
-import { ScriptParseError, type ScriptParseQualityIssue } from '@/utils/scriptParseError';
 
 const API_BASE = '';
 
@@ -33,8 +21,6 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const LONG_REQUEST_TIMEOUT_MS = 600_000;
 /** Single-round local LLM (prompt enhance, lyrics, vision caption) — includes cold model load. */
 const LLM_REQUEST_TIMEOUT_MS = 180_000;
-/** Multi-round LLM (Plan → Expand batches → Continuity), e.g. long-video storyboard. */
-const LLM_MULTI_ROUND_TIMEOUT_MS = 300_000;
 
 /** OpenAI chat.completion response. */
 export type ChatCompletionResult = {
@@ -50,109 +36,6 @@ export function completionText(res: ChatCompletionResult): string {
   return (res.choices?.[0]?.message?.content ?? '').trim();
 }
 
-export type LongVideoChapterAnalyzeShot = {
-  id?: string;
-  order?: number;
-  visual_prompt?: string;
-  motion_prompt?: string;
-  video_prompt?: string;
-  start_visual_prompt?: string;
-  end_visual_prompt?: string;
-  anchor_visual_prompt?: string;
-  segment_role?: LongVideoSegmentRole;
-  start_frame_mode?: LongVideoStartFrameMode;
-  segment_group_id?: string;
-  segment_group_index?: number;
-  face_anchor_shot_id?: string;
-  flf_mode?: LongVideoFlfMode;
-  end_frame_sync_anchor?: boolean;
-  chain_mode?: LongVideoChainMode;
-  scene_prompt?: string;
-  cast_looks?: LongVideoShotCastLook[];
-  scene_look?: LongVideoShotSceneLook;
-  duration_sec?: number;
-  first_frame_visibility?: CharacterVisibility;
-  end_visibility?: CharacterVisibility;
-  characters_on_screen?: string[];
-  clip_start_state?: string;
-  clip_end_state?: string;
-  first_frame_requirement?: string;
-  camera_zone_id?: string;
-  first_frame_strategy?: FirstFrameStrategy;
-  location?: string;
-  narrative_beat_index?: number;
-  shot_size?: string;
-};
-
-export type ScriptParseDecomposeResult = {
-  chapter_title: string;
-  synopsis: string;
-  mood?: string;
-  character_anchor: string;
-  style_anchor?: string;
-  characters?: Array<{
-    id: string;
-    name: string;
-    default_look_id: string;
-    looks: Array<{ id: string; label: string; body: string }>;
-  }>;
-  scenes?: Array<{
-    id: string;
-    name: string;
-    default_look_id: string;
-    looks: Array<{ id: string; label: string; body: string }>;
-    spatial_layout_json?: Record<string, unknown>;
-  }>;
-  scene_beats: Array<{ order: number; title?: string; beat: string }>;
-  scene_count: number;
-  script_artifact: Record<string, unknown>;
-  parse_phases?: Array<{ phase: string; message?: string }>;
-  llm_calls: number;
-  parse_run_id?: string;
-  long_video_project_id?: string;
-};
-
-export type ScriptParseExpandResult = ScriptParseDecomposeResult & {
-  shots?: LongVideoChapterAnalyzeShot[];
-  quality_warnings?: string[];
-  quality_issues?: Array<{
-    code: string;
-    message: string;
-    severity?: 'warning' | 'critical';
-    shot_index?: number | null;
-    beat_index?: number | null;
-  }>;
-};
-
-/** @deprecated use ScriptParseExpandResult */
-export type LongVideoChapterAnalyzeResult = ScriptParseExpandResult;
-
-export type LongVideoProjectActivityItem = {
-  id: string;
-  project_id: string;
-  category: string;
-  event_type: string;
-  phase?: string;
-  status?: string;
-  summary?: string;
-  task_id?: string | null;
-  parse_run_id?: string | null;
-  shot_id?: string;
-  detail?: Record<string, unknown>;
-  created_at: string;
-};
-
-export type LongVideoParseRunDetail = {
-  parse_run_id: string;
-  project_id: string;
-  status: string;
-  started_at?: string;
-  completed_at?: string;
-  summary?: string;
-  detail?: Record<string, unknown>;
-  phases?: Array<{ phase?: string; message?: string; at?: string }>;
-  events?: LongVideoProjectActivityItem[];
-};
 
 const client = axios.create({
   baseURL: API_BASE,
@@ -208,76 +91,6 @@ export function taskIdFromSubmitResponse(res: unknown): string {
   return '';
 }
 
-
-async function parseScriptParseStream<T>(
-  path: string,
-  body: Record<string, unknown>,
-  onProgress?: (phase: string, message: string) => void,
-): Promise<T> {
-  const lang = getItem(DQ_STORAGE.LANG) || 'zh';
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept-Language': lang,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    let detail = res.statusText;
-    try {
-      const errBody = (await res.json()) as { detail?: string };
-      if (errBody.detail) detail = String(errBody.detail);
-    } catch {
-      /* ignore */
-    }
-    throw new Error(detail);
-  }
-  if (!res.body) {
-    throw new Error('empty stream body');
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let finalResult: T | null = null;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const chunks = buffer.split('\n\n');
-    buffer = chunks.pop() ?? '';
-    for (const chunk of chunks) {
-      const line = chunk.split('\n').find((l) => l.startsWith('data: '));
-      if (!line) continue;
-      const payload = JSON.parse(line.slice(6)) as {
-        event?: string;
-        phase?: string;
-        message?: string;
-        pass?: string;
-        detail?: string;
-        quality_issues?: ScriptParseQualityIssue[];
-        data?: T;
-      };
-      if (payload.event === 'progress' && payload.phase) {
-        onProgress?.(payload.phase, payload.message ?? payload.phase);
-      } else if (payload.event === 'review_retry') {
-        onProgress?.('review_retry', payload.pass ?? payload.message ?? 'review_retry');
-      } else if (payload.event === 'result' && payload.data) {
-        finalResult = payload.data;
-      } else if (payload.event === 'error') {
-        throw new ScriptParseError(
-          payload.detail || 'script parse failed',
-          payload.quality_issues ?? [],
-        );
-      }
-    }
-  }
-  if (!finalResult) {
-    throw new Error('script parse stream ended without result');
-  }
-  return finalResult;
-}
 
 function assetRowToGalleryItem(a: AssetRow): GalleryItem {
   const aid = a.id;
@@ -760,11 +573,6 @@ export const api = {
       return response.data;
     },
 
-    async createVideoLongGeneration(body: Record<string, unknown>): Promise<unknown> {
-      const response = await client.post('/api/videos/long-generations', body);
-      return response.data;
-    },
-
     async createVideoEdit(body: Record<string, unknown>): Promise<unknown> {
       const response = await client.post('/api/videos/edits', body);
       return response.data;
@@ -948,100 +756,6 @@ export const api = {
       return response.data;
     },
 
-    async scriptParseDecomposeStream(
-      body: {
-        script_text: string;
-        title?: string;
-        locale?: string;
-        long_video_project_id?: string;
-        model?: string;
-      },
-      onProgress?: (phase: string, message: string) => void,
-    ): Promise<ScriptParseDecomposeResult> {
-      return parseScriptParseStream<ScriptParseDecomposeResult>(
-        '/api/script-parse/decompose/stream',
-        body,
-        onProgress,
-      );
-    },
-
-    async scriptParseExpandStream(
-      body: {
-        script_artifact: Record<string, unknown>;
-        locale?: string;
-        target_duration_sec?: number;
-        segment_duration_sec?: number;
-        max_clip_sec?: number;
-        long_video_project_id?: string;
-        model?: string;
-        beat_indices?: number[];
-      },
-      onProgress?: (phase: string, message: string) => void,
-    ): Promise<ScriptParseExpandResult> {
-      return parseScriptParseStream<ScriptParseExpandResult>(
-        '/api/script-parse/expand/stream',
-        body,
-        onProgress,
-      );
-    },
-
-    async scriptParseExpandBeatStream(
-      body: {
-        script_artifact: Record<string, unknown>;
-        beat_index: number;
-        existing_shots?: Array<Record<string, unknown>>;
-        locale?: string;
-        target_duration_sec?: number;
-        segment_duration_sec?: number;
-        max_clip_sec?: number;
-        long_video_project_id?: string;
-        model?: string;
-      },
-      onProgress?: (phase: string, message: string) => void,
-    ): Promise<ScriptParseExpandResult> {
-      return parseScriptParseStream<ScriptParseExpandResult>(
-        '/api/script-parse/expand/beat/stream',
-        body,
-        onProgress,
-      );
-    },
-
-    async longVideoChapterAnalyzeStream(
-      body: {
-        chapter_text: string;
-        chapter_title?: string;
-        locale?: string;
-        target_duration_sec?: number;
-        segment_duration_sec?: number;
-        max_clip_sec?: number;
-        long_video_project_id?: string;
-        model?: string;
-      },
-      onProgress?: (phase: string, message: string) => void,
-    ): Promise<LongVideoChapterAnalyzeResult> {
-      const decomposed = await this.scriptParseDecomposeStream(
-        {
-          script_text: body.chapter_text,
-          title: body.chapter_title,
-          locale: body.locale,
-          long_video_project_id: body.long_video_project_id,
-          model: body.model,
-        },
-        onProgress,
-      );
-      return this.scriptParseExpandStream(
-        {
-          script_artifact: decomposed.script_artifact,
-          locale: body.locale,
-          target_duration_sec: body.target_duration_sec,
-          segment_duration_sec: body.segment_duration_sec,
-          max_clip_sec: body.max_clip_sec,
-          long_video_project_id: body.long_video_project_id,
-          model: body.model,
-        },
-        onProgress,
-      );
-    },
 
     async getLlmModelInfo(): Promise<{
       model_id: string;
@@ -1167,79 +881,6 @@ export const api = {
     },
   },
 
-  longVideo: {
-    async listProjects(limit = 100): Promise<LongVideoProjectSummary[]> {
-      const response = await client.get('/api/long-video/projects', { params: { limit } });
-      return (response.data?.items || []) as LongVideoProjectSummary[];
-    },
-
-    async getProject(projectId: string): Promise<LongVideoProjectDetail> {
-      const response = await client.get(`/api/long-video/projects/${encodeURIComponent(projectId)}`);
-      return response.data as LongVideoProjectDetail;
-    },
-
-    async createProject(body: {
-      title?: string;
-      state?: Partial<LongVideoProjectState>;
-    }): Promise<LongVideoProjectDetail> {
-      const response = await client.post('/api/long-video/projects', body);
-      return response.data as LongVideoProjectDetail;
-    },
-
-    async updateProject(
-      projectId: string,
-      body: { title?: string; state?: Partial<LongVideoProjectState> },
-    ): Promise<LongVideoProjectDetail> {
-      const response = await client.put(
-        `/api/long-video/projects/${encodeURIComponent(projectId)}`,
-        body,
-      );
-      return response.data as LongVideoProjectDetail;
-    },
-
-    async deleteProject(projectId: string): Promise<void> {
-      await client.delete(`/api/long-video/projects/${encodeURIComponent(projectId)}`);
-    },
-
-    async listProjectActivity(
-      projectId: string,
-      params?: {
-        limit?: number;
-        offset?: number;
-        category?: string;
-        phase?: string;
-        event_type?: string;
-        parse_run_id?: string;
-        task_id?: string;
-        shot_id?: string;
-      },
-    ): Promise<{ items: LongVideoProjectActivityItem[]; total: number }> {
-      const response = await client.get(
-        `/api/long-video/projects/${encodeURIComponent(projectId)}/activity`,
-        { params },
-      );
-      return response.data as { items: LongVideoProjectActivityItem[]; total: number };
-    },
-
-    async getParseRun(
-      projectId: string,
-      parseRunId: string,
-    ): Promise<LongVideoParseRunDetail> {
-      const response = await client.get(
-        `/api/long-video/projects/${encodeURIComponent(projectId)}/activity/parse-runs/${encodeURIComponent(parseRunId)}`,
-      );
-      return response.data as LongVideoParseRunDetail;
-    },
-
-    async sceneGroundingDepthFromAsset(body: {
-      source_asset_id: string;
-      width?: number;
-      height?: number;
-    }): Promise<{ depth_asset_id: string; panorama_asset_id: string }> {
-      const response = await client.post('/api/long-video/scene-grounding/depth-from-asset', body);
-      return response.data as { depth_asset_id: string; panorama_asset_id: string };
-    },
-  },
 
   loras: {
     async listDatasets(): Promise<unknown> {

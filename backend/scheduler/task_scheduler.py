@@ -8,7 +8,7 @@ import json
 from collections import defaultdict, deque
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Optional
+from typing import Any, Literal, Optional
 
 from backend.core.contracts import (
     CancelToken,
@@ -25,9 +25,6 @@ from backend.observability.graph_runtime import graph_id_for_task_kind
 from backend.observability.trace import RunTrace
 from backend.persistence.asset_store import SQLiteAssetStore
 from backend.scheduler.task_dispatch import dispatch_task
-
-if TYPE_CHECKING:
-    from backend.persistence.long_video_activity_store import LongVideoActivityStore
 
 
 def _task_error_message(exc: BaseException) -> str:
@@ -48,7 +45,7 @@ class TaskScheduler:
         asset_store: SQLiteAssetStore,
         engine_registry: EngineRegistry,
         config_store: Optional[IConfigStore] = None,
-        activity_store: Optional["LongVideoActivityStore"] = None,
+        activity_store: Optional[Any] = None,
     ):
         self._paths = path_resolver
         self._tasks = task_store

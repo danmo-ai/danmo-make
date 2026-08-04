@@ -19,7 +19,6 @@ from backend.core.contracts import (
     VideoAvatarScriptRequest,
     VideoEditRequest,
     VideoGenerationRequest,
-    VideoLongGenerationRequest,
     VideoUpscaleRequest,
 )
 
@@ -88,16 +87,6 @@ class IVideoEngine(ABC):
     @abstractmethod
     async def generate(
         self, request: VideoGenerationRequest, ctx: ExecutionContext
-    ) -> EngineResult:
-        pass
-
-    @abstractmethod
-    async def generate_long(
-        self,
-        request: VideoLongGenerationRequest,
-        ctx: ExecutionContext,
-        *,
-        image_engine: IImageEngine,
     ) -> EngineResult:
         pass
 

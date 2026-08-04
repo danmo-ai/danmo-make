@@ -132,31 +132,6 @@ def get_vision_model_info(service: LLMService = Depends(get_llm_service)):
     return service.get_vision_model_info()
 
 
-@router.post("/api/chat/long-video-storyboard")
-async def long_video_storyboard(http_request: Request, service: LLMService = Depends(get_llm_service)):
-    """Moved to Danmo Film."""
-    del http_request, service
-    raise HTTPException(
-        status_code=410,
-        detail="Long-video storyboard moved to Danmo Film (POST /api/script-parse/* on Film :7803).",
-    )
 
 
-@router.post("/api/chat/long-video-chapter-analyze")
-async def long_video_chapter_analyze(http_request: Request, service: LLMService = Depends(get_llm_service)):
-    """Moved to Danmo Film."""
-    del http_request, service
-    raise HTTPException(
-        status_code=410,
-        detail="Long-video chapter analyze moved to Danmo Film (script-parse on Film :7803).",
-    )
 
-
-@router.post("/api/chat/long-video-chapter-analyze/stream")
-async def long_video_chapter_analyze_stream(http_request: Request, service: LLMService = Depends(get_llm_service)):
-    """Moved to Danmo Film."""
-    del http_request, service
-    raise HTTPException(
-        status_code=410,
-        detail="Long-video chapter analyze stream moved to Danmo Film (script-parse SSE on Film :7803).",
-    )

@@ -31,9 +31,14 @@
     </div>
 
     <div class="video-composer__long-link">
-      <RouterLink :to="{ name: 'long_video_create' }" class="video-composer__long-link-anchor">
+      <a
+        class="video-composer__long-link-anchor"
+        :href="filmStudioUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
         {{ $tt('video.longVideoOpenStudio') }}
-      </RouterLink>
+      </a>
     </div>
 
     <!-- Prompt -->
@@ -494,7 +499,6 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { RouterLink } from 'vue-router';
 import ComposerAdvancedCollapsible from './ComposerAdvancedCollapsible.vue';
 import ComposerToolbar from './ComposerToolbar.vue';
 import ComposerPromptApplyStrip from './ComposerPromptApplyStrip.vue';
@@ -519,7 +523,6 @@ import { formatResolutionOptionLabel,
   normalizeParamsDef,
 } from '@/utils/registryParamSchema';
 import { appendStyleBoost } from '@/utils/styleBoost';
-import { isLongVideoTargetDuration } from '@/utils/videoStoryboardPrompt';
 import {
   findCompatibleLora,
   loraHintKey,
@@ -737,10 +740,12 @@ const selectedLoraHintKey = computed(() => {
   return loraHintKey(row);
 });
 
-const longVideoSupport = computed(() => Boolean(paramSchema.value.long_video_support));
+const filmStudioUrl =
+  (import.meta as any).env?.VITE_DANMO_FILM_URL || 'http://127.0.0.1:5803/#/long_video_create';
 
+/** Durations ≥30s are Film workbench territory — Make only runs short clip generation. */
 const isLongDuration = computed(
-  () => props.workMode === 'create' && isLongVideoTargetDuration(localDuration.value, longVideoSupport.value),
+  () => props.workMode === 'create' && Number(localDuration.value || 0) >= 30,
 );
 
 const showLongVideoHandoff = computed(() => isLongDuration.value);
