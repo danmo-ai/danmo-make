@@ -175,7 +175,6 @@ stop:
 test: verify-engine-stack
 
 test-integration:
-	PYTHONPATH=. $(PYTHON) tests/script_parse_integration.py ScriptParseIntegrationTests.test_decompose_and_expand_e2e ScriptParseIntegrationTests.test_wukong_decompose_and_expand_e2e
 
 # ============================================================================
 # Quality gates

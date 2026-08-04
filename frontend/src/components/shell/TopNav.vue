@@ -53,7 +53,6 @@ import { useI18n } from 'vue-i18n';
 import {
   Box,
   Brush,
-  Film,
   MagicStick,
   Microphone,
   Picture,
@@ -104,7 +103,6 @@ const navGroups = computed<NavGroup[]>(() => [
       { id: 'image_create', icon: Picture, label: t('nav.image_create') },
       { id: 'video_create', icon: VideoCamera, label: t('nav.video_create') },
       { id: 'avatar_create', icon: 'UserRound', label: t('nav.avatar_create') },
-      { id: 'long_video_create', icon: Film, label: t('nav.long_video_create') },
       { id: 'audio_create', icon: Microphone, label: t('nav.audio_create') },
       { id: 'lora_train', icon: MagicStick, label: t('nav.lora_train') },
     ],

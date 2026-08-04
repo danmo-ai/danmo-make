@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 
+def normalize_llm_locale(locale: str | None) -> str:
+    loc = (locale or "").strip().lower()
+    if loc.startswith("zh"):
+        return "zh"
+    return "en"
+
+
 def chapter_json_user_locale_block(locale: str) -> str:
     """Language constraint for JSON chapter analyze user messages."""
-    from backend.engine.llm.storyboard import normalize_storyboard_locale
-
-    loc = normalize_storyboard_locale(locale)
+    loc = normalize_llm_locale(locale)
     if loc == "zh":
         return (
             "\n\n## Output language\n"
@@ -17,43 +22,35 @@ def chapter_json_user_locale_block(locale: str) -> str:
 
 
 def scene_entity_json_user_locale_block(locale: str) -> str:
-    from backend.engine.llm.storyboard import normalize_storyboard_locale
-
-    loc = normalize_storyboard_locale(locale)
+    loc = normalize_llm_locale(locale)
     if loc == "zh":
         return "\n\n## Output language\nWrite every JSON string value in Simplified Chinese (简体中文)."
     return "\n\n## Output language\nWrite every JSON string value in English."
 
 
 def storyboard_user_locale_block(locale: str) -> str:
-    """Language, pronoun, and anchor-format constraints for storyboard/chapter user messages."""
-    from backend.engine.llm.storyboard import (
-        normalize_storyboard_locale,
-        storyboard_anchor_format_rule,
-    )
-
-    loc = normalize_storyboard_locale(locale)
+    """Kept for prompt helpers; long-video storyboard LLM moved to Danmo Film."""
+    loc = normalize_llm_locale(locale)
     pronoun_rule = (
         "Each [Visual]/[Motion]/[Beat] is sent to image/video models alone — "
         "name every character explicitly using proper names from the input. "
         "Never start with or rely on standalone pronouns (她/他/they/she/he)."
     )
-    anchor_fmt = storyboard_anchor_format_rule(loc)
     if loc == "zh":
         lang = (
             "Output language: Simplified Chinese (简体中文) ONLY for every "
             "[Synopsis], [Mood], [Anchor], [Beat], [Visual], and [Motion] line. "
             "Keep character names in Chinese script as in the input (do not romanize)."
         )
+        anchor_fmt = "Anchor format: keep [Anchor] lines concise and production-ready."
     else:
         lang = "Output language: English ONLY for every labeled block."
+        anchor_fmt = "Anchor format: keep [Anchor] lines concise and production-ready."
     return f"\n\n## Output constraints\n{lang}\n{pronoun_rule}\n{anchor_fmt}"
 
 
 def scene_entity_user_locale_block(locale: str) -> str:
-    from backend.engine.llm.storyboard import normalize_storyboard_locale
-
-    loc = normalize_storyboard_locale(locale)
+    loc = normalize_llm_locale(locale)
     if loc == "zh":
         return "\n\n## Output language\nSimplified Chinese (简体中文) ONLY for [SceneRoster] blocks."
     return "\n\n## Output language\nEnglish ONLY for [SceneRoster] blocks."

@@ -500,19 +500,8 @@ class TaskScheduler:
     ) -> None:
         if self._activity_store is None:
             return
-        from backend.long_video.activity import record_task_activity
-
-        record_task_activity(
-            self._activity_store,
-            event_type=event_type,
-            task_id=task_id,
-            task_kind=task_kind,
-            model_id=model_id,
-            params=params,
-            status=status,
-            result=result,
-            error_message=error_message,
-        )
+        # Long-video activity moved to Danmo Film; Make no longer records film project events.
+        return
 
     def _record_task_finished(self, task_id: str) -> None:
         if self._activity_store is None:

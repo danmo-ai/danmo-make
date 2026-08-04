@@ -134,38 +134,29 @@ def get_vision_model_info(service: LLMService = Depends(get_llm_service)):
 
 @router.post("/api/chat/long-video-storyboard")
 async def long_video_storyboard(http_request: Request, service: LLMService = Depends(get_llm_service)):
-    """Deprecated — use Long Video page with script-parse decompose + expand."""
+    """Moved to Danmo Film."""
     del http_request, service
     raise HTTPException(
         status_code=410,
-        detail=(
-            "Legacy long-video storyboard API removed. "
-            "Use POST /api/script-parse/decompose then /api/script-parse/expand."
-        ),
+        detail="Long-video storyboard moved to Danmo Film (POST /api/script-parse/* on Film :7803).",
     )
 
 
 @router.post("/api/chat/long-video-chapter-analyze")
 async def long_video_chapter_analyze(http_request: Request, service: LLMService = Depends(get_llm_service)):
-    """Deprecated — use script-parse decompose + expand."""
+    """Moved to Danmo Film."""
     del http_request, service
     raise HTTPException(
         status_code=410,
-        detail=(
-            "Legacy chapter analyze API removed. "
-            "Use POST /api/script-parse/decompose then /api/script-parse/expand."
-        ),
+        detail="Long-video chapter analyze moved to Danmo Film (script-parse on Film :7803).",
     )
 
 
 @router.post("/api/chat/long-video-chapter-analyze/stream")
 async def long_video_chapter_analyze_stream(http_request: Request, service: LLMService = Depends(get_llm_service)):
-    """Deprecated — use script-parse SSE endpoints."""
+    """Moved to Danmo Film."""
     del http_request, service
     raise HTTPException(
         status_code=410,
-        detail=(
-            "Legacy chapter analyze stream removed. "
-            "Use POST /api/script-parse/decompose/stream and /api/script-parse/expand/stream."
-        ),
+        detail="Long-video chapter analyze stream moved to Danmo Film (script-parse SSE on Film :7803).",
     )

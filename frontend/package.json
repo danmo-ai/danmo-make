@@ -9,7 +9,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
-    "canvas-unit": "npx --yes tsx src/utils/canvasEdges.unit.ts && npx --yes tsx src/utils/canvasExtendPreview.unit.ts && npx --yes tsx src/utils/canvasStaging.unit.ts && npx --yes tsx src/utils/registryParamSchema.unit.ts && npx --yes tsx src/utils/genTaskLog.unit.ts && npx --yes tsx src/utils/longVideoCast.unit.ts"
+    "canvas-unit": "npx --yes tsx src/utils/canvasEdges.unit.ts && npx --yes tsx src/utils/canvasExtendPreview.unit.ts && npx --yes tsx src/utils/canvasStaging.unit.ts && npx --yes tsx src/utils/registryParamSchema.unit.ts && npx --yes tsx src/utils/genTaskLog.unit.ts"
   },
   "dependencies": {
     "@danqing/dq-shell": "file:../../dq-ui/packages/shell",

@@ -307,7 +307,6 @@ import {
   videoRequiresSourceVideo,
   videoSupportsVideoEdit,
 } from '@/utils/videoEditSource';
-import { LONG_VIDEO_HANDOFF_STATE_KEY } from '@/utils/longVideoHandoff';
 import {
   applyLoraComposeOverrides,
   findCompatibleLora,
@@ -1131,16 +1130,8 @@ async function onEnhancePrompt(ctx?: { stylePositive?: string }) {
 }
 
 async function onOpenLongVideoStudio() {
-  const prompt = String(params.prompt || '').trim();
-  router.push({
-    name: 'long_video_create',
-    state: {
-      [LONG_VIDEO_HANDOFF_STATE_KEY]: {
-        script_text: prompt,
-        target_duration_sec: selectedDurationSec.value,
-      },
-    },
-  });
+  const filmUrl = (import.meta as any).env?.VITE_DANMO_FILM_URL || 'http://127.0.0.1:5803/#/long_video_create';
+  window.open(filmUrl, '_blank', 'noopener,noreferrer');
 }
 
 async function onReversePromptFromReference() {
