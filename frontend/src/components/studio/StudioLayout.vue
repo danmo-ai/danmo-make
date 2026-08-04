@@ -20,7 +20,7 @@
       <slot name="canvas" />
     </div>
 
-    <!-- Composer bar (legacy / long-video); hidden in unified drawer mode -->
+    <!-- Composer bar; hidden in unified drawer mode -->
     <div
       v-if="!hideComposerBar"
       class="studio-composer-bar"
@@ -54,10 +54,8 @@ import {
   COMPOSER_SCRIM_CSS_DRAWER_MODE,
   COMPOSER_RESERVE_CSS_COLLAPSED,
   COMPOSER_RESERVE_CSS_EXPANDED,
-  COMPOSER_RESERVE_CSS_LONG_VIDEO,
   COMPOSER_SCRIM_CSS_COLLAPSED,
   COMPOSER_SCRIM_CSS_EXPANDED,
-  COMPOSER_SCRIM_CSS_LONG_VIDEO,
   composerReservePx,
 } from '@/utils/composerReserve';
 
@@ -66,7 +64,7 @@ const props = defineProps<{
   collapsible?: boolean;
   composerCollapsed?: boolean;
   hideComposerBar?: boolean;
-  /** Taller composer reserve (long-video storyboard rail). */
+  /** Taller composer reserve for dense toolbars. */
   composerTall?: boolean;
 }>();
 
@@ -94,14 +92,14 @@ const layoutStyle = computed(() => {
       : collapsed
         ? COMPOSER_RESERVE_CSS_COLLAPSED
         : tall
-          ? COMPOSER_RESERVE_CSS_LONG_VIDEO
+          ? COMPOSER_RESERVE_CSS_EXPANDED
           : COMPOSER_RESERVE_CSS_EXPANDED,
     '--dq-composer-scrim-height': drawerMode
       ? COMPOSER_SCRIM_CSS_DRAWER_MODE
       : collapsed
         ? COMPOSER_SCRIM_CSS_COLLAPSED
         : tall
-          ? COMPOSER_SCRIM_CSS_LONG_VIDEO
+          ? COMPOSER_SCRIM_CSS_EXPANDED
           : COMPOSER_SCRIM_CSS_EXPANDED,
     '--dq-composer-reserve-px': `${composerReservePx(vh, collapsed, tall, drawerMode)}px`,
   };

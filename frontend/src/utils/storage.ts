@@ -61,7 +61,6 @@ export const DQ_STORAGE = Object.freeze({
   CANVAS_REGION_GUIDES: 'dq-studio.canvas.regionGuides.v4',
   LORA_TRAIN_DRAFT: 'dq-studio.lora-train-draft.v4',
   SETUP_HINT_DISMISSED: 'dq-studio.setupHintDismissed.v4',
-  LONG_VIDEO_PROJECT: 'dq-studio.longVideo.project.v4',
   /** Browser copy of server ``http_api_key`` for non-loopback /api (and SSE query). */
   HTTP_API_KEY: 'dq-studio.httpApiKey.v4',
 } as const);

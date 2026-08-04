@@ -25,7 +25,6 @@ Product name: **Danmo Make**. Runtime / CLI / sidecar ids stay `danqing-*` / `Da
 - **Studio UI** — Vue 3 + Vite + TypeScript + `@danqing/dq-ui`; Create / Gallery / Models / Settings; bilingual registry names.
 - **Infinite canvas** — Grid and canvas share one asset library; sessions, lineage edges, staging, composer bindings.
 - **Audio** — ACE-Step music generation (`danqing-audio`, MLX + CUDA) via `MusicPipeline`.
-- **Long video workbench** — sibling **[Danmo Film](https://github.com/danmo-ai/danmo-film)** (`:7803` / `:5803`). Make exposes only clip image/video generation APIs; Film orchestrates + assembles.
 - **MCP for agents** — Streamable HTTP at `/mcp/` (tools: `list_models`, `generate_*`, `edit_*`, …). Pair with **Danmo Work** builtin `danmo-make` expert (bound-only).
 - **Desktop apps** — macOS MLX `.dmg`; Windows **portable zip** (CUDA thin, first-run setup); Linux CUDA **server** tar.gz.
 
@@ -77,7 +76,6 @@ make dev      # uvicorn --reload (:7800) + Vite HMR (:5800)
 | **Make (this repo)** | 7800 | 5800 |
 | Work (Teams) | 7801 | 5801 |
 | Inbox (Mail) | 7802 | 5802 |
-| Film (long video) | 7803 | 5803 |
 
 Override: `DQ_BACKEND_PORT`, `DQ_FRONTEND_PORT`.
 

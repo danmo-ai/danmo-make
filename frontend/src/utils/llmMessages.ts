@@ -1,10 +1,4 @@
 import { api, completionText } from '@/utils/api';
-import {
-  buildCastVisionBackfillQuestion,
-  buildKeyframeConsistencyQuestion,
-  buildSceneVisionBackfillQuestion,
-} from '@/utils/longVideoProject';
-import type { LongVideoCharacter, LongVideoScene, LongVideoSceneLook } from '@/types';
 
 export type ChatContentPart =
   | { type: 'text'; text: string }
@@ -203,36 +197,6 @@ Answer the user's question about the attached image. Be concise and practical.
 
 Output **only** the answer — no preamble.`;
 
-const KEYFRAME_CONSISTENCY_SYSTEM = `# Role
-
-Visual continuity checker for storyboard production.
-
-## Task
-
-Compare the **portrait reference** (first image) with the **storyboard frame** (second image) for face, hair, and outfit consistency.
-
-## Output
-
-- If consistent: reply with exactly \`<consistent>\` (English) or \`<一致>\` (when user requests Chinese).
-- If mismatch: one concise sentence describing the gap.
-
-Output **only** the verdict or gap sentence.`;
-
-const SCRIPT_EXPAND_SYSTEM = `# Role
-
-Expand a short story outline into shootable narrative prose for storyboard breakdown.
-
-## Output
-
-- Output **only** the expanded story text.
-- No headers, beat list, or commentary.
-
-## Content
-
-- Write **4–12** paragraphs with concrete locations, named characters, visible actions, and lighting/mood cues.
-- Preserve the user's story intent.
-- Do not invent unrelated subplots.`;
-
 function visionUserLocaleBlock(locale?: string): string {
   const lang = (locale || '').startsWith('zh') ? 'zh' : 'en';
   if (lang === 'zh') {
@@ -241,17 +205,6 @@ function visionUserLocaleBlock(locale?: string): string {
   return '\n\n## Output language\nRespond in concise English.';
 }
 
-function storyboardUserLocaleBlock(locale?: string): string {
-  const lang = (locale || '').startsWith('zh') ? 'zh' : 'en';
-  if (lang === 'zh') {
-    return (
-      '\n\n## Output constraints\n' +
-      'Output language: Simplified Chinese (简体中文) ONLY.\n' +
-      'Keep character names in Chinese script as in the input.'
-    );
-  }
-  return '\n\n## Output constraints\nOutput language: English ONLY.';
-}
 
 function enhanceUserLocaleHint(text: string, targetAction?: string): string {
   const action = (targetAction || 'image_create').trim().toLowerCase();
@@ -359,44 +312,8 @@ export function buildReferenceAnalyzeMessages(
   ];
 }
 
-export function buildCastVisionBackfillMessages(
-  assetId: string,
-  ch: LongVideoCharacter,
-  otherCharacterNames: string[],
-  locale: 'zh' | 'en',
-): ChatMessagePayload[] {
-  const question = buildCastVisionBackfillQuestion(ch, otherCharacterNames, locale);
-  return buildReferenceAnalyzeMessages(assetId, question, { locale });
-}
 
-export function buildSceneVisionBackfillMessages(
-  assetId: string,
-  sc: LongVideoScene,
-  look: LongVideoSceneLook,
-  locale: 'zh' | 'en',
-): ChatMessagePayload[] {
-  const question = buildSceneVisionBackfillQuestion(sc, look, locale);
-  return buildReferenceAnalyzeMessages(assetId, question, { locale });
-}
 
-export function buildKeyframeConsistencyMessages(
-  portraitAssetId: string,
-  keyframeAssetId: string,
-  locale: 'zh' | 'en',
-): ChatMessagePayload[] {
-  const question = buildKeyframeConsistencyQuestion(locale);
-  return [
-    { role: 'system', content: KEYFRAME_CONSISTENCY_SYSTEM },
-    {
-      role: 'user',
-      content: [
-        { type: 'text', text: `${question}${visionUserLocaleBlock(locale)}` },
-        { type: 'image_url', image_url: { url: assetImageUrl(portraitAssetId) } },
-        { type: 'image_url', image_url: { url: assetImageUrl(keyframeAssetId) } },
-      ],
-    },
-  ];
-}
 
 export function buildCanvasDescribeMessages(
   assetId: string,
@@ -483,63 +400,3 @@ export async function describeCanvasNodeViaChat(
   return { note, visionUsed };
 }
 
-/** Align with backend ``chapter_analyze.SCRIPT_EXPAND_CHAR_THRESHOLD`` — UI hint only. */
-export const SCRIPT_EXPAND_CHAR_THRESHOLD = 500;
-
-export function suggestScriptExpand(text: string): boolean {
-  return text.trim().length > 0 && text.trim().length < SCRIPT_EXPAND_CHAR_THRESHOLD;
-}
-
-export function buildScriptExpandMessages(
-  outline: string,
-  opts?: {
-    locale?: string;
-    targetShotCount?: number;
-    narrativeBudget?: string;
-  },
-): ChatMessagePayload[] {
-  const n = opts?.targetShotCount;
-  const budget = opts?.narrativeBudget || 'standard';
-  let beatHint = 'Use 2–24 keyframe beats as the story requires.';
-  if (typeof n === 'number' && n >= 2) {
-    beatHint = `Suggested keyframe count ~${n} (soft — one beat ≈ one storyboard shot). Narrative budget: ${budget}.`;
-  }
-  const user = [
-    '## Story outline',
-    outline.trim(),
-    '',
-    '## Hints',
-    beatHint,
-    'Expand into full narrative prose for downstream storyboard extraction.',
-    storyboardUserLocaleBlock(opts?.locale),
-  ].join('\n');
-  return [
-    { role: 'system', content: SCRIPT_EXPAND_SYSTEM },
-    { role: 'user', content: user },
-  ];
-}
-
-export async function expandScriptViaChat(
-  outline: string,
-  opts?: {
-    locale?: string;
-    targetShotCount?: number;
-    narrativeBudget?: string;
-  },
-): Promise<string> {
-  return runChatCompletion(buildScriptExpandMessages(outline, opts), {
-    temperature: 0.65,
-    max_tokens: 1400,
-  });
-}
-
-export async function checkKeyframeConsistencyViaChat(
-  portraitAssetId: string,
-  keyframeAssetId: string,
-  locale: 'zh' | 'en',
-): Promise<string> {
-  return runChatCompletion(buildKeyframeConsistencyMessages(portraitAssetId, keyframeAssetId, locale), {
-    temperature: 0.4,
-    max_tokens: 256,
-  });
-}

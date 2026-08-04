@@ -3,21 +3,17 @@ export const COMPOSER_SCRIM_CSS_DRAWER_MODE = '0px';
 
 /** CSS length for floating canvas controls above the composer bar. */
 export const COMPOSER_RESERVE_CSS_EXPANDED = 'min(200px, 36vh)';
-export const COMPOSER_RESERVE_CSS_LONG_VIDEO = 'min(420px, 55vh)';
 export const COMPOSER_RESERVE_CSS_COLLAPSED = '56px';
 export const COMPOSER_SCRIM_CSS_EXPANDED = 'min(220px, 38vh)';
-export const COMPOSER_SCRIM_CSS_LONG_VIDEO = 'min(440px, 58vh)';
 export const COMPOSER_SCRIM_CSS_COLLAPSED = '80px';
 
 export function composerReservePx(
   viewportHeight: number,
   collapsed: boolean,
-  longVideo = false,
   drawerMode = false,
 ): number {
   if (drawerMode) return 72 + 16;
   if (collapsed) return 56 + 24;
-  if (longVideo) return Math.min(viewportHeight * 0.55, 420) + 88;
   return Math.min(viewportHeight * 0.38, 220) + 88;
 }
 

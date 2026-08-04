@@ -1,7 +1,6 @@
 <template>
   <div
     class="video-composer studio-composer-shell dq-glass--panel"
-    :class="{ 'video-composer--expanded-prompt': isLongDuration }"
   >
     <!-- Model not-ready alert -->
     <div v-if="modelNotReady" class="video-composer__model-meta">
@@ -28,17 +27,6 @@
         :placeholder="$tt('studio.workTitlePlaceholder')"
         class="video-composer__title"
       />
-    </div>
-
-    <div class="video-composer__long-link">
-      <a
-        class="video-composer__long-link-anchor"
-        :href="filmStudioUrl"
-        target="_blank"
-        rel="noopener noreferrer"
-      >
-        {{ $tt('video.longVideoOpenStudio') }}
-      </a>
     </div>
 
     <!-- Prompt -->
@@ -225,12 +213,6 @@
       @append="$emit('prompt-apply-append')"
       @dismiss="$emit('prompt-apply-dismiss')"
     />
-    <div v-if="showLongVideoHandoff" class="video-composer__long-video-handoff">
-      <span class="video-composer__long-video-handoff-text">{{ $t('video.longVideoHandoffHint') }}</span>
-      <DqButton size="sm" type="text" class="video-composer__long-video-handoff-btn" @click="$emit('open-long-video')">
-        {{ $t('video.openLongVideoStudio') }}
-      </DqButton>
-    </div>
     </div>
 
     <!-- Toolbar -->
@@ -610,7 +592,6 @@ const emit = defineEmits<{
   (e: 'prompt-apply-replace'): void;
   (e: 'prompt-apply-append'): void;
   (e: 'prompt-apply-dismiss'): void;
-  (e: 'open-long-video'): void;
 }>();
 
 const { t: $t } = useI18n();
@@ -740,21 +721,9 @@ const selectedLoraHintKey = computed(() => {
   return loraHintKey(row);
 });
 
-const filmStudioUrl =
-  (import.meta as any).env?.VITE_DANMO_FILM_URL || 'http://127.0.0.1:5803/#/long_video_create';
+const promptRows = computed(() => 5);
 
-/** Durations ≥30s are Film workbench territory — Make only runs short clip generation. */
-const isLongDuration = computed(
-  () => props.workMode === 'create' && Number(localDuration.value || 0) >= 30,
-);
-
-const showLongVideoHandoff = computed(() => isLongDuration.value);
-
-const promptRows = computed(() => (isLongDuration.value ? 8 : 5));
-
-const promptPlaceholder = computed(() =>
-  isLongDuration.value ? $tt('video.promptPlaceholderLong') : $tt('video.promptPlaceholder'),
-);
+const promptPlaceholder = computed(() => $tt('video.promptPlaceholder'));
 
 const showSeedField = computed(() => paramSchema.value.seed_support !== undefined);
 
@@ -867,22 +836,7 @@ function onKeydown(e: KeyboardEvent) {
   flex-shrink: 0;
 }
 
-.video-composer__long-video-handoff {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px 10px;
-  margin-top: 6px;
-  padding: 6px 10px;
-  border-radius: var(--dq-radius-control-sm);
-  background: var(--dq-fill-secondary);
-  font-size: var(--dq-font-size-caption);
-  color: var(--dq-label-secondary);
-}
 
-.video-composer__long-video-handoff-btn {
-  flex-shrink: 0;
-}
 
 .video-composer__prompt-wrap {
   position: relative;
@@ -906,10 +860,6 @@ function onKeydown(e: KeyboardEvent) {
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
-.video-composer--expanded-prompt .video-composer__prompt :deep(.dq-input--textarea) {
-  min-height: 8rem;
-  max-height: 14rem;
-}
 
 /* Reference media area inside textarea */
 .video-composer__ref-area {
@@ -1113,17 +1063,6 @@ function onKeydown(e: KeyboardEvent) {
   height: auto;
 }
 
-.video-composer__long-link {
-  padding: 6px 12px 0;
-}
 
-.video-composer__long-link-anchor {
-  font-size: var(--dq-font-size-caption);
-  color: var(--dq-accent);
-  text-decoration: none;
-}
 
-.video-composer__long-link-anchor:hover {
-  text-decoration: underline;
-}
 </style>

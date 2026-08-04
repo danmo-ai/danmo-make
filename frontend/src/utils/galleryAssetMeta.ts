@@ -11,7 +11,6 @@ const SOURCE_ACTION_I18N: Record<string, string> = {
   animate: 'action.video.animate',
   cover: 'action.audio.cover',
   upload: 'gallery.actionUpload',
-  long_video: 'gallery.actionLongVideo',
   avatar: 'gallery.actionAvatar',
   tool: 'gallery.actionTool',
   preview: 'gallery.actionPreview',

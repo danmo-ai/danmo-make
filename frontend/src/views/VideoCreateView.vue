@@ -145,7 +145,6 @@
         @prompt-apply-replace="onPromptApplyReplace"
         @prompt-apply-append="onPromptApplyAppend"
         @prompt-apply-dismiss="promptApply.clear()"
-        @open-long-video="onOpenLongVideoStudio"
       />
   </StudioComposerHost>
 
@@ -1129,10 +1128,6 @@ async function onEnhancePrompt(ctx?: { stylePositive?: string }) {
   }
 }
 
-async function onOpenLongVideoStudio() {
-  const filmUrl = (import.meta as any).env?.VITE_DANMO_FILM_URL || 'http://127.0.0.1:5803/#/long_video_create';
-  window.open(filmUrl, '_blank', 'noopener,noreferrer');
-}
 
 async function onReversePromptFromReference() {
   const assetId = assetIdFromGalleryPath(startImagePath.value || '');
@@ -1283,9 +1278,6 @@ const recentStartImages = ref<GalleryItem[]>([]);
 
 const videoWorkMode = ref('create');
 
-function longVideoSupported(): boolean {
-  return Boolean(currentModelConfig.value?.parameters?.long_video_support);
-}
 
 /* ------------------------------------------------------------------ */
 /*  Model Registry                                                     */
@@ -1603,14 +1595,6 @@ const durationOptions = computed(() => {
     if (!secs.includes(regSec)) {
       secs = [...secs, regSec].sort((a, b) => a - b);
     }
-  }
-  if (p?.long_video_support) {
-    const longOpts = (p.long_video_target_duration_sec?.options as number[]) || [30, 60, 90];
-    for (const s of longOpts) {
-      const n = Number(s);
-      if (n > 0 && !secs.includes(n)) secs.push(n);
-    }
-    secs.sort((a, b) => a - b);
   }
   return secs.map((sec) => ({ label: `${sec}s`, value: sec }));
 });
@@ -2288,9 +2272,6 @@ watch(
 watch(durationOptions, (opts) => {
   if (!opts.length) return;
   selectedDurationSec.value = snapDurationSecToOptions(selectedDurationSec.value, opts);
-  if (!longVideoSupported() && selectedDurationSec.value >= 30) {
-    selectedDurationSec.value = snapDurationSecToOptions(8, opts);
-  }
   syncNumFramesFromDuration();
 });
 
