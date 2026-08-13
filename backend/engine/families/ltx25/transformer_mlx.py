@@ -178,6 +178,7 @@ class LTX25AVBlock(nn.Module):
         ff_mult: float = 4.0,
         norm_eps: float = 1e-6,
         ff_bias: bool = True,
+        audio_ff_bias: bool = True,
         apply_gated_attention: bool = False,
         cross_attention_adaln: bool = False,
     ):
@@ -209,7 +210,7 @@ class LTX25AVBlock(nn.Module):
             use_rope=True, norm_eps=norm_eps, apply_gated_attention=apply_gated_attention,
         )
         self.ff = LTX25FeedForward(video_dim, dim_out=video_dim, mult=ff_mult, bias=ff_bias)
-        self.audio_ff = LTX25FeedForward(audio_dim, dim_out=audio_dim, mult=ff_mult, bias=ff_bias)
+        self.audio_ff = LTX25FeedForward(audio_dim, dim_out=audio_dim, mult=ff_mult, bias=audio_ff_bias)
 
         self._num_adaln_params = 9 if cross_attention_adaln else 6
         self._cross_attention_adaln = cross_attention_adaln
@@ -455,7 +456,10 @@ def _config_int(cfg: dict[str, Any], key: str, default: int, *, required: bool =
 
 
 def _config_flag(cfg: dict[str, Any], key: str, default: bool) -> bool:
-    return bool(cfg.get(key, default))
+    value = cfg.get(key, default)
+    if value is None:
+        return bool(default)
+    return bool(value)
 
 
 class LTX25Model(nn.Module):
@@ -488,6 +492,7 @@ class LTX25Model(nn.Module):
 
         ff_bias = _config_flag(cfg, "ff_bias", False)
         audio_ff_bias = _config_flag(cfg, "audio_ff_bias", True)
+        self.audio_ff_bias = audio_ff_bias
         apply_gated_attention = _config_flag(cfg, "apply_gated_attention", False)
         self.cross_attention_adaln = _config_flag(cfg, "cross_attention_adaln", False)
         self.use_prompt_adaln_single = _config_flag(cfg, "use_prompt_adaln_single", True)
@@ -547,13 +552,13 @@ class LTX25Model(nn.Module):
                 av_cross_head_dim=audio_head_dim,
                 norm_eps=self._norm_eps,
                 ff_bias=ff_bias,
+                audio_ff_bias=audio_ff_bias,
                 apply_gated_attention=apply_gated_attention,
                 cross_attention_adaln=self.cross_attention_adaln,
             )
             for _ in range(num_layers)
         ]
 
-        self.audio_ff_bias = audio_ff_bias
         self.video_cross_attention_dim = video_cross_attention_dim
         self.audio_cross_attention_dim = audio_cross_attention_dim
 

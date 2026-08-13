@@ -2972,6 +2972,51 @@ class DownloadStallTests(unittest.TestCase):
             ]
             self.assertTrue(_bundle_repo_is_complete(root, patterns))
 
+    def test_bundle_repo_complete_accepts_ltx25_small_components(self) -> None:
+        from backend.services.download_service import _bundle_repo_is_complete
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "diffusion_models").mkdir(parents=True)
+            (root / "text_encoders").mkdir(parents=True)
+            (root / "vae").mkdir(parents=True)
+            (root / "latent_upscale_models").mkdir(parents=True)
+            (root / "diffusion_models" / "ltx-2.5-22b-distilled-transformer-bf16.safetensors").write_bytes(
+                b"x" * (1024 ** 3 + 1)
+            )
+            (root / "text_encoders" / "gemma4-12b-with-proj-ltx-2.5-bf16.safetensors").write_bytes(
+                b"x" * (1024 ** 3 + 1)
+            )
+            (root / "vae" / "ltx-2.5-video-vae-conv-bf16.safetensors").write_bytes(
+                b"x" * (1024 ** 3 + 1)
+            )
+            # Sub-1GB legit components: audio VAE ~348MB, spatial upsampler ~950MB.
+            (root / "vae" / "ltx-2.5-audio-vae-bf16.safetensors").write_bytes(
+                b"x" * (348 * 1024 ** 2)
+            )
+            (root / "latent_upscale_models" / "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors").write_bytes(
+                b"x" * (950 * 1024 ** 2)
+            )
+            patterns = [
+                "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
+                "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors",
+                "vae/ltx-2.5-video-vae-conv-bf16.safetensors",
+                "vae/ltx-2.5-audio-vae-bf16.safetensors",
+                "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors",
+            ]
+            self.assertTrue(_bundle_repo_is_complete(root, patterns))
+
+    def test_bundle_repo_complete_rejects_truncated_ltx25_vae(self) -> None:
+        from backend.services.download_service import _bundle_repo_is_complete
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "vae").mkdir(parents=True)
+            # Truncated audio VAE (~10MB) must still fail the sanity floor.
+            (root / "vae" / "ltx-2.5-audio-vae-bf16.safetensors").write_bytes(b"x" * (10 * 1024 ** 2))
+            patterns = ["vae/ltx-2.5-audio-vae-bf16.safetensors"]
+            self.assertFalse(_bundle_repo_is_complete(root, patterns))
+
     def test_version_local_artifacts_ready_without_bundle_repos(self) -> None:
         from backend.services.download_service import DownloadService
 

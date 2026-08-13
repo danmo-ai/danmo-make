@@ -907,7 +907,7 @@ class LTX25Vocoder(nn.Module):
         ]
         upsample_initial_channel = int(cfg.get("upsample_initial_channel", 1024))
         resblock = str(cfg.get("resblock", "1"))
-        self.output_sampling_rate = int(cfg.get("output_sampling_rate", 24000))
+        self.output_sampling_rate = int(cfg.get("output_sampling_rate") or 24000)
         self.apply_final_activation = bool(cfg.get("apply_final_activation", True))
         self.use_tanh_at_final = bool(cfg.get("use_tanh_at_final", True))
         use_bias_at_final = bool(cfg.get("use_bias_at_final", True))

@@ -408,8 +408,8 @@ def _build_connector(bundle_root: Path, *, audio: bool) -> _Embeddings1DConnecto
         num_heads = int(tcfg.get("connector_num_attention_heads", 30))
         head_dim = int(tcfg.get("connector_attention_head_dim", 128))
         num_layers = int(tcfg.get("connector_num_layers", 2))
-    ff_bias = bool(tcfg.get("connector_ff_bias", True))
-    gated = bool(tcfg.get("connector_apply_gated_attention", False))
+    ff_bias = tcfg.get("connector_ff_bias", True) is not False
+    gated = tcfg.get("connector_apply_gated_attention", False) is True
     pe_max_pos = tcfg.get("connector_positional_embedding_max_pos", [1])
     max_pos = float(pe_max_pos[0]) if pe_max_pos else 1.0
     dim = num_heads * head_dim

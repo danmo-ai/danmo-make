@@ -224,6 +224,14 @@ def _split_modelscope_allow_patterns(patterns: list[str] | None) -> list[list[st
 def _min_bytes_for_pattern(pattern: str) -> int:
     name = pattern.rsplit("/", 1)[-1]
     if name.endswith(".safetensors"):
+        lower = name.lower()
+        if "vae" in lower or lower.startswith("ae."):
+            # Flux VAE ae.safetensors ~335MB, LTX-2.5 audio VAE ~348MB,
+            # LTX-2.5 video VAE conv ~1.45GB — do not use the 1GB DiT/T5 floor.
+            return 300 * 1024 ** 2
+        if "upscaler" in lower or "upsampler" in lower:
+            # LTX-2.5 spatial latent upsampler ~950MB.
+            return 800 * 1024 ** 2
         return 1024 ** 3
     if name.endswith(".pth"):
         lower = name.lower()

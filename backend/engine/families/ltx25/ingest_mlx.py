@@ -71,7 +71,13 @@ def _save(path: Path, weights: dict[str, mx.array]) -> None:
 
 
 def _meta_config(metadata: dict[str, Any]) -> dict[str, Any]:
-    return dict(metadata.get("config", {}) or {})
+    raw = metadata.get("config", {})
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Checkpoint 'config' metadata is not valid JSON: {exc}") from exc
+    return dict(raw or {})
 
 
 def _extract_transformer_weights(weights: dict[str, mx.array]) -> tuple[dict[str, mx.array], dict[str, mx.array]]:
@@ -118,9 +124,12 @@ def _build_bundle_config(
 ) -> dict[str, Any]:
     tcfg = _meta_config(transformer_meta)
     transformer_cfg = dict(tcfg.get("transformer", {}) or {})
-    for key in ("caption_proj_before_connector", "gemma_source_checkpoint", "model_version"):
-        if key in tcfg:
-            transformer_cfg[key] = tcfg[key]
+    if "caption_proj_before_connector" in tcfg:
+        transformer_cfg["caption_proj_before_connector"] = tcfg["caption_proj_before_connector"]
+    # Top-level checkpoint metadata (not inside the JSON 'config' blob).
+    for key in ("gemma_source_checkpoint", "model_version"):
+        if transformer_meta.get(key) is not None:
+            transformer_cfg[key] = transformer_meta[key]
 
     vae_cfg = _meta_config(video_vae_meta).get("vae", {}) or {}
     audio_cfg = _meta_config(audio_vae_meta).get("audio_vae", {}) or {}

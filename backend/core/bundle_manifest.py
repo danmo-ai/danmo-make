@@ -98,6 +98,10 @@ FAMILY_BUNDLE_CONTRACTS: dict[str, FamilyBundleContract] = {
         required=frozenset({"transformer", "text_encoder", "vae"}),
         optional=frozenset({"tokenizer"}),
     ),
+    "ltx25": FamilyBundleContract(
+        required=frozenset({"transformer", "text_encoder", "vae"}),
+        optional=frozenset({"tokenizer"}),
+    ),
     "wan": FamilyBundleContract(
         required=frozenset({"transformer", "text_encoder", "vae"}),
         optional=frozenset({"tokenizer"}),
