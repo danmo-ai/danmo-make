@@ -31,9 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -194,29 +192,86 @@ def _resolve_gemma_hf_config(source_te_path: Path) -> dict[str, Any]:
     raise RuntimeError("Cannot locate the Gemma 4 HF config for the LTX text encoder checkpoint.")
 
 
-def _convert_text_encoder(source_te_path: Path, target_dir: Path) -> None:
-    """Convert the HF gemma4-with-proj checkpoint into an mlx-lm bundle."""
+def _convert_text_encoder(
+    source_te_path: Path,
+    target_dir: Path,
+    *,
+    quantize: int | None = None,
+    group_size: int = 64,
+) -> None:
+    """Convert the gemma4-with-proj checkpoint into an mlx-lm bundle.
+
+    The LTX text-encoder checkpoint uses Comfy-flat LM keys (``model.layers.*``
+    / ``model.embed_tokens.*`` / ``model.norm.*``) plus packed tokenizer assets
+    (``tokenizer_json`` / ``hf_asset__*`` tensors) and the feature-extractor
+    projection (``text_embedding_projection.*``). We remap the LM tree into the
+    layout mlx-lm's ``gemma4`` model expects (``language_model.model.*``), unpack
+    the tokenizer sidecars, and let mlx-lm quantize at load time via the bundle
+    ``quantization`` config.
+    """
     target_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        from mlx_lm import convert as mlx_lm_convert
-    except ImportError as exc:
-        raise RuntimeError("mlx_lm is required to convert the LTX 2.5 Gemma 4 text encoder.") from exc
 
     hf_config = _resolve_gemma_hf_config(source_te_path)
+    text_config = dict(hf_config.get("text_config", {}) or {})
+    if not text_config:
+        raise RuntimeError("Gemma HF config lacks text_config.")
 
-    with tempfile.TemporaryDirectory(prefix="ltx25-te-") as tmp:
-        tmp_path = Path(tmp)
-        shutil.copy2(source_te_path, tmp_path / "model.safetensors")
-        rewritten = dict(hf_config)
-        rewritten["model_type"] = "gemma4"
-        (tmp_path / "config.json").write_text(json.dumps(rewritten, indent=2), encoding="utf-8")
-        mlx_lm_convert(
-            hf_path=str(tmp_path),
-            mlx_path=str(target_dir),
-            quantize=False,
+    _LM_SKIP_PREFIXES = (
+        "hf_asset__",
+        "tokenizer_json",
+        "text_embedding_projection",
+        "vision_model",
+        "multi_modal_projector",
+        "audio_projector",
+    )
+
+    def _tensor_bytes(tensor: mx.array) -> bytes:
+        arr = np.asarray(tensor)
+        if arr.dtype == np.uint8:
+            return arr.tobytes()
+        if arr.dtype.kind in ("U", "S"):
+            return str(arr).encode("utf-8")
+        raise RuntimeError(f"Unexpected packed tokenizer tensor dtype {arr.dtype}")
+
+    raw_weights = _load_weights(source_te_path)
+    lm_weights: dict[str, mx.array] = {}
+    tokenizer_assets: dict[str, bytes] = {}
+    for key, tensor in raw_weights.items():
+        if key.startswith(_LM_SKIP_PREFIXES):
+            if key == "tokenizer_json":
+                tokenizer_assets["tokenizer.json"] = _tensor_bytes(tensor)
+            elif key == "hf_asset__tokenizer_config":
+                tokenizer_assets["tokenizer_config.json"] = _tensor_bytes(tensor)
+            elif key == "hf_asset__generation_config":
+                tokenizer_assets["generation_config.json"] = _tensor_bytes(tensor)
+            continue
+        if key.startswith("model."):
+            # Comfy-flat LM keys → mlx-lm gemma4 tree (language_model.model.*).
+            lm_weights[f"language_model.model.{key[len('model.'):]}"] = tensor
+            continue
+        if key.startswith("language_model"):
+            lm_weights[key] = tensor
+            continue
+        # Unknown top-level keys are ignored (packed sidecars).
+    if not lm_weights:
+        raise RuntimeError("No Gemma language-model weights found in the LTX text encoder checkpoint.")
+
+    _save(target_dir / "model.safetensors", lm_weights)
+    bundle_config: dict[str, Any] = {
+        "model_type": "gemma4",
+        "vocab_size": int(text_config.get("vocab_size", 262144)),
+        "text_config": text_config,
+    }
+    if quantize in (4, 8):
+        bundle_config["quantization"] = {"group_size": int(group_size), "bits": int(quantize)}
+    (target_dir / "config.json").write_text(json.dumps(bundle_config, indent=2), encoding="utf-8")
+    for filename, data in tokenizer_assets.items():
+        (target_dir / filename).write_bytes(data)
+    if not (target_dir / "tokenizer.json").is_file():
+        raise RuntimeError(
+            "LTX text encoder checkpoint has no packed tokenizer_json; "
+            "cannot build the mlx-lm bundle."
         )
-    if not (target_dir / "config.json").is_file() or not (target_dir / "model.safetensors").is_file():
-        raise RuntimeError("mlx_lm.convert did not produce the expected Gemma 4 bundle layout.")
 
 
 def ingest_ltx25_bundle(
@@ -259,27 +314,9 @@ def ingest_ltx25_bundle(
     _log("Splitting transformer + connector weights")
     transformer_weights = _load_weights(transformer_path)
     dit_weights, connector_weights = _extract_transformer_weights(transformer_weights)
+    del transformer_weights
 
-    _log("Extracting feature-extractor weights from the text encoder checkpoint")
-    te_weights = _load_weights(te_path)
-    feature_weights = _extract_feature_extractor_weights(te_weights)
-    _save(target / "connector.safetensors", {**connector_weights, **feature_weights})
-
-    _log("Converting text encoder (Gemma 4, mlx-lm)")
-    _convert_text_encoder(te_path, target / "text_encoder")
-
-    _log("Writing video VAE")
-    video_vae_weights = {k: v for k, v in _load_weights(video_vae_path).items()}
-    _save(target / "video_vae.safetensors", video_vae_weights)
-
-    _log("Writing audio VAE + vocoder")
-    audio_vae_weights = {k: v for k, v in _load_weights(audio_vae_path).items()}
-    _save(target / "audio_vae.safetensors", audio_vae_weights)
-
-    _log("Writing spatial upsampler")
-    _save(target / "upsampler.safetensors", _load_weights(upsampler_path))
-
-    _log("Writing DiT weights")
+    _log("Quantizing + writing DiT weights")
     if quantize in (4, 8):
         dit_weights = _quantize_weights(dit_weights, bits=int(quantize), group_size=group_size)
         (target / "quantize_config.json").write_text(
@@ -287,6 +324,30 @@ def ingest_ltx25_bundle(
             encoding="utf-8",
         )
     _save(target / "transformer.safetensors", dit_weights)
+    del dit_weights
+
+    _log("Extracting feature-extractor weights from the text encoder checkpoint")
+    te_weights = _load_weights(te_path)
+    feature_weights = _extract_feature_extractor_weights(te_weights)
+    del te_weights
+    _save(target / "connector.safetensors", {**connector_weights, **feature_weights})
+    del connector_weights, feature_weights
+
+    _log("Converting text encoder (Gemma 4, mlx-lm)")
+    _convert_text_encoder(te_path, target / "text_encoder", quantize=quantize, group_size=group_size)
+
+    _log("Writing video VAE")
+    video_vae_weights = {k: v for k, v in _load_weights(video_vae_path).items()}
+    _save(target / "video_vae.safetensors", video_vae_weights)
+    del video_vae_weights
+
+    _log("Writing audio VAE + vocoder")
+    audio_vae_weights = {k: v for k, v in _load_weights(audio_vae_path).items()}
+    _save(target / "audio_vae.safetensors", audio_vae_weights)
+    del audio_vae_weights
+
+    _log("Writing spatial upsampler")
+    _save(target / "upsampler.safetensors", _load_weights(upsampler_path))
 
     _log("Writing bundle config")
     bundle_config = _build_bundle_config(
