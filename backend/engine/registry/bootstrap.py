@@ -20,6 +20,7 @@ def bootstrap_family_plugins() -> None:
     from backend.engine.families.hidream_o1.plugin import register_hidream_o1_plugin
     from backend.engine.families.step1x_edit.plugin import register_step1x_edit_plugin
     from backend.engine.families.ltx.plugin import register_ltx_plugin
+    from backend.engine.families.ltx25.plugin import register_ltx25_plugin
     from backend.engine.families.longcat.plugin import register_longcat_plugin
     from backend.engine.families.longcat_avatar.plugin import register_longcat_avatar_plugin
     from backend.engine.families.minimax_h3.plugin import register_minimax_h3_plugin
@@ -39,6 +40,7 @@ def bootstrap_family_plugins() -> None:
     register_cogview4_plugin()
     register_wan_plugin()
     register_ltx_plugin()
+    register_ltx25_plugin()
     register_longcat_plugin()
     register_longcat_avatar_plugin()
     register_minimax_h3_plugin()

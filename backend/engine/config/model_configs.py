@@ -599,6 +599,42 @@ class LTXConfig:
 
 
 @dataclass
+class LTX25Config:
+    """LTX-2.5 (22B) video — Lightricks LTX-2.5 distilled, MLX only.
+
+    Shape C family generator: 22B A/V DiT + Gemma 4 text encoder + V2 feature
+    extractor + 1D connectors. Only the distilled 8+3-step two-stage pipeline
+    is implemented (``step_distill`` must be true).
+    """
+
+    video_pipeline_shape: str = "family_generator"
+    encoder_type: str = "ltx25_gemma4"
+    dim: int = 0
+    depth: int = 0
+    num_heads: int = 0
+    head_dim: int = 0
+    dim_in: int = 128
+    dim_out: int = 128
+    text_dim: int = 0
+    max_seq_len: int = 0
+    time_dim: int = 256
+    patch_size: int = 1
+    temporal_patch_size: int = 1
+    supports_guidance: bool = False
+    step_distill: bool = True
+    supports_img2img: bool = True
+    vae_scale: int = 32
+    temporal_vae_scale: int = 8
+    default_scheduler: str = "flow_match_euler"
+    post_denoise_clear_cache: bool = True
+    video_vae_backend: str = ""
+    video_i2v_style: str = "ltx25"
+    release_t5_after_encode: bool = False
+    ltx_low_memory: bool = True
+    supports_long_video: bool = False
+
+
+@dataclass
 class LongCatConfig:
     """LongCat-Video (Meituan 13.6B, mlx-community MLX port).
 
@@ -1120,6 +1156,7 @@ FAMILY_CONFIG_MAP: dict[str, type] = {
     "ace_step": AceStepConfig,
     # Video
     "ltx": LTXConfig,
+    "ltx25": LTX25Config,
     "longcat": LongCatConfig,
     "longcat_avatar": LongCatAvatarConfig,
     "minimax_h3": MinimaxH3Config,

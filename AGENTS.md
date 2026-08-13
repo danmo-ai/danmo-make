@@ -181,7 +181,7 @@ Default per family: `transformer.py`, `text_encoder.py` (if needed), `weights.py
 
 ### Implemented families (indicative)
 
-`flux1`, `flux2`, `z_image`, `fibo`, `qwen` (`qwen_image` in registry), `seedvr2`, `ltx`, `wan`, `ace_step`, … — source of truth is `_transformer_registry.py` + `models_registry.json`.
+`flux1`, `flux2`, `z_image`, `fibo`, `qwen` (`qwen_image` in registry), `seedvr2`, `ltx`, `ltx25`, `wan`, `ace_step`, … — source of truth is `_transformer_registry.py` + `models_registry.json`.
 
 ---
 

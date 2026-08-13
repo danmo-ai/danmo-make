@@ -496,6 +496,21 @@
       "vae_scale": 8,
       "encoder_type": "qwen3_vl",
       "hooks": []
+    },
+    "ltx25": {
+      "paradigm": "two_stage",
+      "media": [
+        "video"
+      ],
+      "backends": [
+        "mlx"
+      ],
+      "latent_layout": "nchw",
+      "cfg_mode": "none",
+      "latent_channels": 128,
+      "vae_scale": 32,
+      "hooks": [],
+      "encoder_type": "gemma4"
     }
   },
   "models": {
@@ -7300,6 +7315,201 @@
                 "source": "modelscope"
               }
             ]
+          }
+        }
+      }
+    },
+    "ltx-2.5-distilled": {
+      "catalog": {
+        "media": "video",
+        "description": {
+          "zh": "Lightricks LTX-2.5 22B 蒸馏版，8+3 步两阶段，原生 4K 音视频。安装时自动转换为 MLX；推荐 64GB+ 统一内存。",
+          "en": "Lightricks LTX-2.5 22B distilled A/V DiT; 8+3-step two-stage, native 4K audio+video. Auto-converted to MLX on install; 64GB+ unified memory recommended."
+        },
+        "category": "video_models",
+        "commercial_use_allowed": false,
+        "type": "video",
+        "source": "modelscope",
+        "name": {
+          "zh": "LTX 2.5 [Distilled 22B]",
+          "en": "LTX 2.5 [Distilled 22B]"
+        },
+        "recommended": false,
+        "engine": "danqing-video"
+      },
+      "runtime": {
+        "family": "ltx25",
+        "backends": [
+          "mlx"
+        ],
+        "overrides": {
+          "vae_scale": 32,
+          "supports_guidance": false,
+          "step_distill": true
+        }
+      },
+      "actions": {
+        "create": {},
+        "animate": {}
+      },
+      "ui": {
+        "parameters": {
+          "seed_support": true,
+          "steps": {
+            "default": 8,
+            "min": 1,
+            "max": 50,
+            "label": "步数",
+            "note": "蒸馏两阶段：Stage1 固定 8 步 + Stage2 固定 3 步（非 8 会被忽略）",
+            "type": "int"
+          },
+          "guide_scale": {
+            "default": 1.0,
+            "min": 1.0,
+            "max": 10.0,
+            "step": 0.5,
+            "label": "CFG引导",
+            "fixed": true,
+            "note": "蒸馏版固定为1.0",
+            "type": "float"
+          },
+          "width": {
+            "default": 768,
+            "options": [
+              512,
+              640,
+              768,
+              896,
+              1024,
+              1152,
+              1280
+            ],
+            "type": "enum",
+            "note": "须为 64 的倍数（两阶段：Stage1 半分辨率须为 32 的倍数）"
+          },
+          "height": {
+            "default": 768,
+            "options": [
+              512,
+              640,
+              768,
+              896,
+              1024
+            ],
+            "type": "enum",
+            "note": "须为 64 的倍数"
+          },
+          "num_frames": {
+            "default": 121,
+            "min": 9,
+            "max": 257,
+            "step": 1,
+            "label": "帧数",
+            "note": "须为 8k+1（自动向下取整）",
+            "type": "int"
+          },
+          "fps": {
+            "default": 24,
+            "min": 1,
+            "max": 60,
+            "step": 1,
+            "label": "FPS",
+            "type": "int"
+          },
+          "negative_prompt_support": false,
+          "long_video_support": false,
+          "default_scheduler": "flow_match_euler",
+          "resolution_presets": {
+            "default": "768x768",
+            "options": [
+              "512x512",
+              "768x768",
+              "1024x768",
+              "1152x640",
+              "1280x720",
+              "1280x768"
+            ]
+          },
+          "memory_note": {
+            "zh": "22B DiT + Gemma 4 12B 编码器；4-bit 版约需 32GB 统一内存（推荐 64GB+），8 步约需数分钟/条。",
+            "en": "22B DiT + Gemma 4 12B encoder; 4-bit needs ~32GB unified memory (64GB+ recommended), several minutes per clip at 8 steps."
+          }
+        },
+        "extends": "video_dit_standard"
+      },
+      "distribution": {
+        "versions": {
+          "mlx-q4": {
+            "name": {
+              "zh": "4-bit 量化版",
+              "en": "4-bit Quantized"
+            },
+            "size": "约 90GB 源文件 → 12GB 转换后",
+            "default": true,
+            "source": "modelscope",
+            "repo_id": "Lightricks/LTX-2.5",
+            "local_path": "models/Video/ltx-2.5-distilled-mlx-q4",
+            "source_type": "full",
+            "allow_patterns": [
+              "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
+              "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors",
+              "vae/ltx-2.5-video-vae-conv-bf16.safetensors",
+              "vae/ltx-2.5-audio-vae-bf16.safetensors",
+              "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
+            ],
+            "quantization": {
+              "bits": 4,
+              "scheme": "mlx_affine",
+              "group_size": 64
+            },
+            "install_hooks": [
+              {
+                "type": "ltx25_ingest",
+                "source": ".",
+                "quantize": 4,
+                "group_size": 64
+              }
+            ],
+            "note": {
+              "zh": "魔搭镜像无需授权；原始仓库为 Hugging Face gated（Lightricks/LTX-2.5，需同意条款）。",
+              "en": "ModelScope mirror requires no auth; the original gated Hugging Face repo is Lightricks/LTX-2.5."
+            }
+          },
+          "mlx-q8": {
+            "name": {
+              "zh": "8-bit 量化版",
+              "en": "8-bit Quantized"
+            },
+            "size": "约 90GB 源文件 → 23GB 转换后",
+            "default": false,
+            "source": "modelscope",
+            "repo_id": "Lightricks/LTX-2.5",
+            "local_path": "models/Video/ltx-2.5-distilled-mlx-q8",
+            "source_type": "full",
+            "allow_patterns": [
+              "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
+              "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors",
+              "vae/ltx-2.5-video-vae-conv-bf16.safetensors",
+              "vae/ltx-2.5-audio-vae-bf16.safetensors",
+              "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
+            ],
+            "quantization": {
+              "bits": 8,
+              "scheme": "mlx_affine",
+              "group_size": 64
+            },
+            "install_hooks": [
+              {
+                "type": "ltx25_ingest",
+                "source": ".",
+                "quantize": 8,
+                "group_size": 64
+              }
+            ],
+            "note": {
+              "zh": "魔搭镜像无需授权；原始仓库为 Hugging Face gated（Lightricks/LTX-2.5，需同意条款）。",
+              "en": "ModelScope mirror requires no auth; the original gated Hugging Face repo is Lightricks/LTX-2.5."
+            }
           }
         }
       }

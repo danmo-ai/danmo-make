@@ -9,7 +9,9 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 # hook ``type`` -> ``module.path:function_name``
-_HOOK_RUNNERS: dict[str, str] = {}
+_HOOK_RUNNERS: dict[str, str] = {
+    "ltx25_ingest": "backend.engine.families.ltx25.ingest_mlx:run_ltx25_ingest_hook",
+}
 
 
 def install_hooks_from_version(ver_config: dict[str, Any] | None) -> list[dict[str, Any]]:

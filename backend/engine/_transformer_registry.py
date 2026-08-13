@@ -532,6 +532,7 @@ _VIDEO_TRANSFORMER = {
 # family → (module, factory_fn) for VideoPipeline Shape C (in-repo family generator)
 _VIDEO_GENERATION_FACTORY = {
     "ltx": ("backend.engine.families.ltx.generation", "create_ltx23_generator"),
+    "ltx25": ("backend.engine.families.ltx25.generation", "create_ltx25_generator"),
     "longcat": ("backend.engine.families.longcat.generation", "create_longcat_generator"),
     "minimax_h3": ("backend.engine.families.minimax_h3.generation", "create_minimax_h3_generator"),
     "wan": ("backend.engine.families.wan.generation", "create_bernini_renderer_generator"),
@@ -570,6 +571,7 @@ _VIDEO_AVATAR_FACTORY = {
 
 _VIDEO_GENERATION_VALIDATE = {
     "ltx": ("backend.engine.families.ltx.generation", "validate_video_generation_params"),
+    "ltx25": ("backend.engine.families.ltx25.generation", "validate_video_generation_params"),
     "longcat": ("backend.engine.families.longcat.generation", "validate_video_generation_params"),
     "minimax_h3": ("backend.engine.families.minimax_h3.generation", "validate_video_generation_params"),
     "wan": ("backend.engine.families.wan.generation", "validate_video_generation_params"),
