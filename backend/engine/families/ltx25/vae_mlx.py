@@ -8,6 +8,7 @@ shared CausalVideoAutoencoder block family.
 from __future__ import annotations
 
 import os
+import math
 import shutil
 import subprocess
 import tempfile
@@ -835,31 +836,129 @@ class _IdentityAudio(nn.Module):
 # ---------------------------------------------------------------------------
 
 
+def _kaiser_sinc_filter1d(cutoff: float, half_width: float, kernel_size: int) -> mx.array:
+    """BigVGAN kaiser-windowed sinc filter (checkpoint ``*.filter`` buffers)."""
+    even = kernel_size % 2 == 0
+    half_size = kernel_size // 2
+    delta_f = 4 * half_width
+    amplitude = 2.285 * (half_size - 1) * math.pi * delta_f + 7.95
+    if amplitude > 50.0:
+        beta = 0.1102 * (amplitude - 8.7)
+    elif amplitude >= 21.0:
+        beta = 0.5842 * (amplitude - 21) ** 0.4 + 0.07886 * (amplitude - 21.0)
+    else:
+        beta = 0.0
+    window = np.kaiser(kernel_size, beta)
+    if even:
+        time_axis = np.arange(-half_size, half_size) + 0.5
+    else:
+        time_axis = np.arange(kernel_size) - half_size
+    if cutoff == 0:
+        filt = np.zeros_like(time_axis)
+    else:
+        filt = 2 * cutoff * window * np.sinc(2 * cutoff * time_axis)
+        filt /= filt.sum()
+    return mx.array(filt.reshape(1, 1, kernel_size).astype(np.float32))
+
+
+class _SnakeBeta(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        self.alpha = mx.zeros((channels,))
+        self.beta = mx.zeros((channels,))
+
+    def __call__(self, x: mx.array) -> mx.array:
+        # x: (B, C, L) channel-first
+        a = mx.exp(self.alpha).reshape(1, -1, 1)
+        b = mx.exp(self.beta).reshape(1, -1, 1)
+        return x + (1.0 / (b + 1e-9)) * mx.square(mx.sin(a * x))
+
+
+class _KaiserUpSample1d(nn.Module):
+    """BigVGAN UpSample1d (ratio=2, kaiser filter, groups=C)."""
+
+    def __init__(self, ratio: int = 2, kernel_size: int = 12):
+        super().__init__()
+        self.ratio = ratio
+        self.pad = kernel_size // ratio - 1
+        self.pad_left = self.pad * ratio + (kernel_size - ratio) // 2
+        self.pad_right = self.pad * ratio + (kernel_size - ratio + 1) // 2
+        self.filter = _kaiser_sinc_filter1d(
+            cutoff=0.5 / ratio, half_width=0.6 / ratio, kernel_size=kernel_size,
+        )
+
+    def __call__(self, x: mx.array) -> mx.array:
+        # x: (B, C, L) channel-first
+        x = mx.pad(x, [(0, 0), (0, 0), (self.pad, self.pad)])
+        base = self.filter.transpose(0, 2, 1).astype(x.dtype)  # (1, k, 1)
+        outs = []
+        for ch in range(x.shape[1]):
+            channel = x[:, ch:ch + 1, :].transpose(0, 2, 1)  # (B, L, 1)
+            outs.append(mx.conv_transpose1d(channel, base, stride=self.ratio) * self.ratio)
+        out = mx.concatenate(outs, axis=-1).transpose(0, 2, 1)
+        return out[..., self.pad_left:-self.pad_right]
+
+
+class _KaiserDownSample1d(nn.Module):
+    """BigVGAN DownSample1d (LowPassFilter1d, stride=2, groups=C)."""
+
+    def __init__(self, ratio: int = 2, kernel_size: int = 12):
+        super().__init__()
+        self.ratio = ratio
+        self.kernel_size = kernel_size
+        even = kernel_size % 2 == 0
+        self.pad_left = kernel_size // 2 - int(even)
+        self.pad_right = kernel_size // 2
+        self.lowpass = nn.Module()
+        self.lowpass.filter = _kaiser_sinc_filter1d(
+            cutoff=0.5 / ratio, half_width=0.6 / ratio, kernel_size=kernel_size,
+        )
+
+    def __call__(self, x: mx.array) -> mx.array:
+        # x: (B, C, L) channel-first
+        x = mx.pad(x, [(0, 0), (0, 0), (self.pad_left, self.pad_right)])
+        base = self.lowpass.filter.transpose(0, 2, 1).astype(x.dtype)  # (1, k, 1)
+        outs = []
+        for ch in range(x.shape[1]):
+            channel = x[:, ch:ch + 1, :].transpose(0, 2, 1)  # (B, L, 1)
+            outs.append(mx.conv1d(channel, base, stride=self.ratio))
+        return mx.concatenate(outs, axis=-1).transpose(0, 2, 1)
+
+
+class _Activation1d(nn.Module):
+    """BigVGAN Activation1d: upsample → SnakeBeta → downsample."""
+
+    def __init__(self, channels: int):
+        super().__init__()
+        self.act = _SnakeBeta(channels)
+        self.upsample = _KaiserUpSample1d(ratio=2, kernel_size=12)
+        self.downsample = _KaiserDownSample1d(ratio=2, kernel_size=12)
+
+    def __call__(self, x: mx.array) -> mx.array:
+        x = self.upsample(x)
+        x = self.act(x)
+        return self.downsample(x)
+
+
 class _AMPBlock1(nn.Module):
-    """BigVGAN v2 AMP block (SnakeBeta activation, dilated convs)."""
+    """BigVGAN v2 AMP block (per-conv Activation1d + dilated convs)."""
 
     def __init__(self, channels: int, kernel_size: int, dilations: list[int], activation: str = "snakebeta"):
         super().__init__()
-        self.alpha1 = mx.zeros((channels,))
-        self.alpha2 = mx.zeros((channels,))
-        self.beta1 = mx.zeros((channels,))
-        self.beta2 = mx.zeros((channels,))
-        self.convs1 = [nn.Conv1d(channels, channels, kernel_size, dilation=d) for d in dilations]
-        self.convs2 = [nn.Conv1d(channels, channels, kernel_size, dilation=1) for _ in dilations]
-
-    @staticmethod
-    def _act(x: mx.array, alpha: mx.array, beta: mx.array) -> mx.array:
-        # x: (B, C, L) channel-first
-        a = mx.exp(alpha).reshape(1, -1, 1)
-        b = mx.exp(beta).reshape(1, -1, 1)
-        return x + (1.0 / (b + 1e-9)) * mx.square(mx.sin(a * x))
+        self.convs1 = [
+            nn.Conv1d(channels, channels, kernel_size, dilation=d, padding=((kernel_size * d - d) // 2))
+            for d in dilations
+        ]
+        self.convs2 = [nn.Conv1d(channels, channels, kernel_size, padding=((kernel_size - 1) // 2)) for _ in dilations]
+        self.acts1 = [_Activation1d(channels) for _ in dilations]
+        self.acts2 = [_Activation1d(channels) for _ in dilations]
 
     def __call__(self, x: mx.array) -> mx.array:
-        for conv1, conv2 in zip(self.convs1, self.convs2):
-            xt = self._act(x, self.alpha1, self.beta1)
-            xt = _conv1d_same(conv1, xt)
-            xt = self._act(xt, self.alpha2, self.beta2)
-            xt = _conv1d_same(conv2, xt)
+        for conv1, conv2, act1, act2 in zip(self.convs1, self.convs2, self.acts1, self.acts2):
+            xt = act1(x)
+            xt = conv1(xt.transpose(0, 2, 1)).transpose(0, 2, 1)
+            xt = act2(xt)
+            xt = conv2(xt.transpose(0, 2, 1)).transpose(0, 2, 1)
             x = x + xt
         return x
 
@@ -867,31 +966,20 @@ class _AMPBlock1(nn.Module):
 class _ResBlock1(nn.Module):
     def __init__(self, channels: int, kernel_size: int, dilations: list[int]):
         super().__init__()
-        self.convs1 = [nn.Conv1d(channels, channels, kernel_size, dilation=d) for d in dilations]
-        self.convs2 = [nn.Conv1d(channels, channels, kernel_size, dilation=1) for _ in dilations]
+        self.convs1 = [
+            nn.Conv1d(channels, channels, kernel_size, dilation=d, padding=((kernel_size * d - d) // 2))
+            for d in dilations
+        ]
+        self.convs2 = [nn.Conv1d(channels, channels, kernel_size, padding=((kernel_size - 1) // 2)) for _ in dilations]
 
     def __call__(self, x: mx.array) -> mx.array:
         for conv1, conv2 in zip(self.convs1, self.convs2):
             xt = mx.maximum(x, _LRELU_SLOPE * x)
-            xt = _conv1d_same(conv1, xt)
+            xt = conv1(xt.transpose(0, 2, 1)).transpose(0, 2, 1)
             xt = mx.maximum(xt, _LRELU_SLOPE * xt)
-            xt = _conv1d_same(conv2, xt)
+            xt = conv2(xt.transpose(0, 2, 1)).transpose(0, 2, 1)
             x = x + xt
         return x
-
-
-def _conv1d_same(conv: nn.Conv1d, x: mx.array) -> mx.array:
-    """'same' padding for Conv1d (centered, causal-free); x is (B, C, L) channel-first."""
-    k = conv.weight.shape[1]
-    dilation = int(getattr(conv, "dilation", 1) or 1)
-    k_eff = (k - 1) * dilation + 1
-    left = (k_eff - 1) // 2
-    right = k_eff - 1 - left
-    if left or right:
-        x = mx.pad(x, [(0, 0), (0, 0), (left, right)])
-    y = mx.conv1d(x.transpose(0, 2, 1), conv.weight, dilation=dilation)
-    y = y + conv.bias if getattr(conv, "bias", None) is not None else y
-    return y.transpose(0, 2, 1)
 
 
 class LTX25Vocoder(nn.Module):
@@ -936,15 +1024,20 @@ class LTX25Vocoder(nn.Module):
                     self.resblocks.append(_AMPBlock1(ch, kernel_size, dilations, activation=str(cfg.get("activation", "snakebeta"))))
                 else:
                     self.resblocks.append(_ResBlock1(ch, kernel_size, dilations))
-        self.act_post = _AMPBlock1._act if self.is_amp else None
-        self._amp_post_alpha = mx.zeros((final_channels,))
-        self._amp_post_beta = mx.zeros((final_channels,))
+        if self.is_amp:
+            self.act_post = _Activation1d(final_channels)
+        else:
+            self.act_post = None
         self.conv_post = nn.Conv1d(final_channels, 2, 7, padding=3, bias=use_bias_at_final)
 
     def __call__(self, x: mx.array) -> mx.array:
-        """Mel ``(B, 2, T, mel_bins)`` → waveform ``(B, 2, T_out)``."""
+        """Mel ``(B, 2, T, mel_bins)`` → waveform ``(B, 2, T_out)``.
+
+        Runs in float32 throughout (upstream: bf16 accumulation through ~108
+        sequential convs degrades spectral metrics and produces NaN/overflow).
+        """
         output_dtype = x.dtype
-        x = x.astype(mx.bfloat16)
+        x = x.astype(mx.float32)
         x = x.transpose(0, 1, 3, 2)  # (B, 2, mel_bins, T)
         b, s, _, _ = x.shape
         x = x.reshape(b, s * x.shape[2], -1)  # (B, 2*mel_bins, T)
@@ -963,7 +1056,7 @@ class LTX25Vocoder(nn.Module):
             outs = mx.stack([self.resblocks[idx](x) for idx in range(start, start + self.num_kernels)], axis=0)
             x = outs.mean(axis=0)
         if self.is_amp:
-            x = _AMPBlock1._act(x, self._amp_post_alpha, self._amp_post_beta)
+            x = self.act_post(x)
         else:
             x = mx.maximum(x, _LRELU_SLOPE * x)
         y = mx.conv1d(x.transpose(0, 2, 1), self.conv_post.weight, padding=3)
@@ -1116,6 +1209,10 @@ def _normalize_vae_keys(weights: dict[str, Any]) -> dict[str, Any]:
         nk = nk.replace(".per_channel_statistics.mean-of-means", ".per_channel_statistics_mean")
         nk = nk.replace(".time_embedder.timestep_embedder.", ".time_embedder.")
         nk = nk.replace(".last_time_embedder.timestep_embedder.", ".last_time_embedder.")
+        if nk == "std-of-means":
+            nk = "per_channel_statistics_std"
+        elif nk == "mean-of-means":
+            nk = "per_channel_statistics_mean"
         out[nk] = tensor
     return out
 
@@ -1195,9 +1292,9 @@ def load_ltx25_vocoder(bundle_root: Path, *, load_fn: Any | None = None) -> LTX2
     else:
         module = LTX25Vocoder(dict(cfg.get("vocoder", cfg)))
     weights = _normalize_vae_keys(_load_bundle_weights(bundle_root, _AUDIO_VAE_FILE, "vocoder.", load_fn=load_fn))
-    # Strip the single extra "vocoder." prefix emitted by BWE keys.
-    weights = {k[len("vocoder."):] if k.startswith("vocoder.") else k: v for k, v in weights.items()}
     params = _flat_param_map(module)
+    # The BWE hann resampler filter is computed at runtime (non-persistent upstream).
+    params = {k: v for k, v in params.items() if k != "resampler.filter"}
     missing = [k for k in params if k not in weights]
     if missing:
         raise RuntimeError(f"LTX 2.5 vocoder weights missing: {missing[:8]}")

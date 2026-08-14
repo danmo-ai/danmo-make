@@ -68,6 +68,38 @@ def _save(path: Path, weights: dict[str, mx.array]) -> None:
     mx.save_safetensors(str(path), {k: v.astype(mx.bfloat16) for k, v in weights.items()})
 
 
+def _transpose_conv_layouts(component: str, weights: dict[str, mx.array]) -> dict[str, mx.array]:
+    """Convert torch conv weight layouts to MLX channel-last layouts.
+
+    * conv3d ``(O, I, kD, kH, kW)`` → ``(O, kD, kH, kW, I)``
+    * conv2d ``(O, I, kH, kW)`` → ``(O, kH, kW, I)``
+    * conv1d ``(O, I, k)`` → ``(O, k, I)``; ConvTranspose1d ``(I, O, k)`` → ``(O, k, I)``
+    """
+    out: dict[str, mx.array] = {}
+    for key, tensor in weights.items():
+        t = tensor
+        if key.endswith(".weight"):
+            if component == "video_vae":
+                if t.ndim == 5:
+                    t = t.transpose(0, 2, 3, 4, 1)
+            elif component == "audio_vae":
+                if key.startswith("audio_vae.decoder.") and t.ndim == 4:
+                    t = t.transpose(0, 2, 3, 1)
+                elif key.startswith("vocoder."):
+                    if t.ndim == 3:
+                        if key.startswith(("vocoder.ups.", "vocoder.vocoder.ups.", "vocoder.bwe_generator.ups.")):
+                            t = t.transpose(1, 2, 0)
+                        elif not key.startswith("vocoder.mel_stft."):
+                            t = t.transpose(0, 2, 1)
+            elif component == "upsampler":
+                if t.ndim == 5:
+                    t = t.transpose(0, 2, 3, 4, 1)
+                elif t.ndim == 4:
+                    t = t.transpose(0, 2, 3, 1)
+        out[key] = t
+    return out
+
+
 def _meta_config(metadata: dict[str, Any]) -> dict[str, Any]:
     raw = metadata.get("config", {})
     if isinstance(raw, str):
@@ -109,8 +141,32 @@ def _extract_feature_extractor_weights(te_weights: dict[str, mx.array]) -> dict[
     return out
 
 
+_QUANT_SKIP_SUFFIXES = (".q_norm.weight", ".k_norm.weight")
+
+
 def _quantize_weights(weights: dict[str, mx.array], *, bits: int, group_size: int) -> dict[str, mx.array]:
-    return dict(mx.quantize(weights, group_size=group_size, bits=bits))
+    """Affine-quantize Linear weights (engine ``X.scales``/``X.biases`` layout).
+
+    Only 2D ``*.weight`` entries with divisible in-features are quantized —
+    matching the engine's quantized-load skeleton (``nn.quantize`` over Linear
+    modules). RMSNorm weights, biases, and plain tables stay dense. Companion
+    keys are emitted at the module base (``B.weight`` / ``B.scales`` /
+    ``B.biases``), the layout ``collect_affine_quant_bases`` expects.
+    """
+    out: dict[str, mx.array] = {}
+    for key, tensor in weights.items():
+        if not key.endswith(".weight") or key.endswith(_QUANT_SKIP_SUFFIXES):
+            out[key] = tensor
+            continue
+        if tensor.ndim != 2 or tensor.shape[-1] % group_size != 0:
+            out[key] = tensor
+            continue
+        base = key[: -len(".weight")]
+        quantized, scales, biases = mx.quantize(tensor, group_size=group_size, bits=bits)
+        out[key] = quantized
+        out[f"{base}.scales"] = scales
+        out[f"{base}.biases"] = biases
+    return out
 
 
 def _build_bundle_config(
@@ -338,16 +394,16 @@ def ingest_ltx25_bundle(
 
     _log("Writing video VAE")
     video_vae_weights = {k: v for k, v in _load_weights(video_vae_path).items()}
-    _save(target / "video_vae.safetensors", video_vae_weights)
+    _save(target / "video_vae.safetensors", _transpose_conv_layouts("video_vae", video_vae_weights))
     del video_vae_weights
 
     _log("Writing audio VAE + vocoder")
     audio_vae_weights = {k: v for k, v in _load_weights(audio_vae_path).items()}
-    _save(target / "audio_vae.safetensors", audio_vae_weights)
+    _save(target / "audio_vae.safetensors", _transpose_conv_layouts("audio_vae", audio_vae_weights))
     del audio_vae_weights
 
     _log("Writing spatial upsampler")
-    _save(target / "upsampler.safetensors", _load_weights(upsampler_path))
+    _save(target / "upsampler.safetensors", _transpose_conv_layouts("upsampler", _load_weights(upsampler_path)))
 
     _log("Writing bundle config")
     bundle_config = _build_bundle_config(
@@ -374,12 +430,30 @@ def run_ltx25_ingest_hook(
         source_path = Path(bundle_root) / source
     quantize = hook_spec.get("quantize")
     group_size = int(hook_spec.get("group_size") or 64)
+    if ltx25_bundle_is_ready(Path(bundle_root)):
+        print(f"[info] LTX 2.5 bundle already converted at {bundle_root}; skipping ingest")
+        return
     ingest_ltx25_bundle(
         source=source_path,
         target=Path(bundle_root),
         quantize=int(quantize) if quantize in (4, 8) else None,
         group_size=group_size,
         on_log=print,
+    )
+
+
+def ltx25_bundle_is_ready(bundle_root: Path) -> bool:
+    """True when the converted MLX bundle is complete (idempotent re-install)."""
+    root = Path(bundle_root)
+    return (
+        (root / _BUNDLE_CONFIG_NAME).is_file()
+        and (root / "transformer.safetensors").is_file()
+        and (root / "connector.safetensors").is_file()
+        and (root / "video_vae.safetensors").is_file()
+        and (root / "audio_vae.safetensors").is_file()
+        and (root / "upsampler.safetensors").is_file()
+        and (root / "text_encoder" / "config.json").is_file()
+        and (root / "text_encoder" / "model.safetensors").is_file()
     )
 
 

@@ -144,9 +144,16 @@ class _Gemma4LanguageModel:
             lt = str(layer.layer_type)
             if lt not in masks:
                 window = text_model.window_size if lt == "sliding_attention" else None
-                masks[lt] = create_causal_mask(t, window_size=window, left_padding=left_padding)
-            if masks[lt] is not None and masks[lt].ndim == 3:
-                masks[lt] = masks[lt][None, None]
+                layer_mask = create_causal_mask(t, window_size=window, left_padding=left_padding)
+                # Normalize to (B, 1, L, L) boolean layout for mlx SDPA
+                # (no-pad → (L, L); padded → (B, 1, 1, L, L)).
+                if layer_mask.ndim == 2:
+                    layer_mask = layer_mask[None, None]
+                elif layer_mask.ndim > 4:
+                    layer_mask = layer_mask.reshape(layer_mask.shape[0], 1, t, t)
+                elif layer_mask.ndim == 3:
+                    layer_mask = layer_mask[:, None]
+                masks[lt] = layer_mask
 
         cache = [None] * len(text_model.layers)
         intermediates = [(None, None)] * len(text_model.layers)
@@ -467,9 +474,15 @@ class LTX25PromptEncoder:
         weights = _load_connector_weights(self.bundle_root, getattr(self.ctx, "load_weights", None))
         prefix = "connector."
         cleaned = {k[len(prefix):] if k.startswith(prefix) else k: v for k, v in weights.items()}
+        # Normalize checkpoint internals (ff.net.0.proj → proj_in, ff.net.2 → proj_out,
+        # to_out.0 → to_out) — the official connector reuses the DiT FeedForward/
+        # Attention key layout.
+        from backend.engine.families.ltx25.weights_mlx import normalize_ltx25_keys
+
+        cleaned = normalize_ltx25_keys(cleaned)
 
         extractor_weights = {
-            k: v for k, v in cleaned.items() if k.startswith("feature_extractor.")
+            k[len("feature_extractor."):]: v for k, v in cleaned.items() if k.startswith("feature_extractor.")
         }
         video_connector_weights = {
             k[len("video_connector."):]: v for k, v in cleaned.items() if k.startswith("video_connector.")
@@ -479,27 +492,18 @@ class LTX25PromptEncoder:
         }
 
         extractor = _build_extractor(self.bundle_root)
-        ext_params = {
-            "video_aggregate_embed.weight": extractor.video_aggregate_embed.weight,
-            "video_aggregate_embed.bias": extractor.video_aggregate_embed.bias,
-            "audio_aggregate_embed.weight": extractor.audio_aggregate_embed.weight,
-            "audio_aggregate_embed.bias": extractor.audio_aggregate_embed.bias,
-        }
-        missing = [k for k in ext_params if k not in extractor_weights]
+        missing = [k for k in ("video_aggregate_embed.weight", "video_aggregate_embed.bias",
+                               "audio_aggregate_embed.weight", "audio_aggregate_embed.bias")
+                   if k not in extractor_weights]
         if missing:
             raise RuntimeError(f"LTX 2.5 connector weights missing feature_extractor keys: {missing[:8]}")
-        for key, value in extractor_weights.items():
-            if key in ext_params:
-                ext_params[key] = value
-        from mlx.utils import tree_unflatten
-
-        extractor.update(tree_unflatten(list(ext_params.items())))
+        extractor.load_weights(list(extractor_weights.items()), strict=False)
 
         video_connector = _build_connector(self.bundle_root, audio=False)
-        video_connector.update(tree_unflatten(list(video_connector_weights.items())))
+        video_connector.load_weights(list(video_connector_weights.items()), strict=False)
 
         audio_connector = _build_connector(self.bundle_root, audio=True)
-        audio_connector.update(tree_unflatten(list(audio_connector_weights.items())))
+        audio_connector.load_weights(list(audio_connector_weights.items()), strict=False)
 
         self._extractor = extractor
         self._video_connector = video_connector
