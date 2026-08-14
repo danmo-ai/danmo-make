@@ -64,8 +64,19 @@ def _load_weights(path: Path) -> dict[str, mx.array]:
 
 
 def _save(path: Path, weights: dict[str, mx.array]) -> None:
+    """Save weights to safetensors, preserving quantized (uint) tensor dtypes.
+
+    ``mx.quantize`` packs weights into uint32/uint8 arrays — casting those to
+    bf16 corrupts the packed bits. Only float tensors are normalized to bf16.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    mx.save_safetensors(str(path), {k: v.astype(mx.bfloat16) for k, v in weights.items()})
+    out: dict[str, mx.array] = {}
+    for key, tensor in weights.items():
+        if tensor.dtype in (mx.uint8, mx.uint32):
+            out[key] = tensor
+        else:
+            out[key] = tensor.astype(mx.bfloat16)
+    mx.save_safetensors(str(path), out)
 
 
 def _transpose_conv_layouts(component: str, weights: dict[str, mx.array]) -> dict[str, mx.array]:
@@ -312,6 +323,11 @@ def _convert_text_encoder(
     if not lm_weights:
         raise RuntimeError("No Gemma language-model weights found in the LTX text encoder checkpoint.")
 
+    if quantize in (4, 8):
+        # mlx-lm convention: store affine-quantized weights with X.scales /
+        # X.biases companions and the quantization config; load_model quantizes
+        # the skeleton only for layers whose companions exist.
+        lm_weights = _quantize_weights(lm_weights, bits=int(quantize), group_size=group_size)
     _save(target_dir / "model.safetensors", lm_weights)
     bundle_config: dict[str, Any] = {
         "model_type": "gemma4",
@@ -440,12 +456,28 @@ def run_ltx25_ingest_hook(
         group_size=group_size,
         on_log=print,
     )
+    if hook_spec.get("cleanup_source"):
+        for rel in (_TRANSFORMER_FILE, _TEXT_ENCODER_FILE, _VIDEO_VAE_FILE, _AUDIO_VAE_FILE, _UPSAMPLER_FILE):
+            source_file = Path(bundle_root) / rel
+            if source_file.is_file():
+                source_file.unlink()
+        for sub in ("diffusion_models", "text_encoders", "vae", "latent_upscale_models", "loras", "model_patches"):
+            try:
+                (Path(bundle_root) / sub).rmdir()
+            except OSError:
+                pass
+        print(f"[info] LTX 2.5 source files cleaned from {bundle_root}")
 
 
 def ltx25_bundle_is_ready(bundle_root: Path) -> bool:
-    """True when the converted MLX bundle is complete (idempotent re-install)."""
+    """True when the converted MLX bundle is complete AND weights are intact.
+
+    When ``quantize_config.json`` declares 4/8-bit quantization, the stored DiT
+    (and text-encoder) weights must still be uint-packed quantized tensors —
+    a previous bug cast them to bf16, silently corrupting the packed bits.
+    """
     root = Path(bundle_root)
-    return (
+    base = (
         (root / _BUNDLE_CONFIG_NAME).is_file()
         and (root / "transformer.safetensors").is_file()
         and (root / "connector.safetensors").is_file()
@@ -455,6 +487,46 @@ def ltx25_bundle_is_ready(bundle_root: Path) -> bool:
         and (root / "text_encoder" / "config.json").is_file()
         and (root / "text_encoder" / "model.safetensors").is_file()
     )
+    if not base:
+        return False
+    qcfg_path = root / "quantize_config.json"
+    if not qcfg_path.is_file():
+        return True
+    try:
+        qcfg = json.loads(qcfg_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    bits = (qcfg.get("quantization") or {}).get("bits") if isinstance(qcfg, dict) else None
+    if bits not in (4, 8):
+        return True
+
+    def _quantized_intact(path: Path) -> bool:
+        try:
+            weights = dict(mx.load(str(path)))
+        except Exception:
+            return False
+        scales_keys = [k for k in weights if k.endswith(".scales")]
+        if not scales_keys:
+            return False
+        scales = weights[scales_keys[0]]
+        if scales.dtype not in (mx.bfloat16, mx.float16, mx.float32) or scales.ndim != 2:
+            return False
+        weight_key = scales_keys[0][: -len(".scales")] + ".weight"
+        if weight_key not in weights or weights[weight_key].dtype not in (mx.uint8, mx.uint32):
+            return False
+        return True
+
+    if not _quantized_intact(root / "transformer.safetensors"):
+        return False
+    te_config = root / "text_encoder" / "config.json"
+    try:
+        te_cfg = json.loads(te_config.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if (te_cfg.get("quantization") or {}).get("bits") in (4, 8):
+        if not _quantized_intact(root / "text_encoder" / "model.safetensors"):
+            return False
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:

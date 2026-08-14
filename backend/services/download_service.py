@@ -25,6 +25,17 @@ from backend.core.bundle_repos import (
 )
 from backend.core.dependency_specs import DependencySpec, parse_dependencies
 from backend.core.install_hooks import install_hooks_from_version, run_install_hooks
+
+
+def _run_skip_completeness_check(target: str, dest: Path) -> bool:
+    """Invoke a hook's ``skip_completeness_if`` callback (``module:function``)."""
+    import importlib
+
+    mod_name, fn_name = target.rsplit(":", 1)
+    fn = getattr(importlib.import_module(mod_name), fn_name, None)
+    if fn is None or not callable(fn):
+        raise RuntimeError(f"skip_completeness_if target not found: {target}")
+    return bool(fn(dest))
 from backend.core.bundle_manifest import skips_full_family_bundle_contract, write_bundle_manifest
 from backend.core.interfaces import (
     IDownloadService, IPathResolver, IConfigStore,
@@ -613,6 +624,26 @@ class DownloadService(IDownloadService):
         variant = self._hunyuan_ms_variant_for_spec(spec, ver_config)
         if variant:
             self._require_hunyuan_ms_bundle_complete(dest, variant, label=label)
+            return
+        # Registry-driven "converted bundle is the real artifact" hooks: when a
+        # hook declares ``skip_completeness_if``, the converted bundle's readiness
+        # supersedes the raw-download completeness check. If neither the converted
+        # bundle nor the raw files are present, fail with a reinstall hint.
+        for hook in install_hooks_from_version(ver_config):
+            check = hook.get("skip_completeness_if")
+            if not check:
+                continue
+            if _run_skip_completeness_check(check, dest):
+                return
+            patterns = spec.get("allow_patterns")
+            raw_missing = _missing_bundle_patterns(dest, patterns if isinstance(patterns, list) else None)
+            if raw_missing:
+                repo = str(spec.get("repo_id") or label)
+                raise RuntimeError(
+                    f"{label} incomplete after download ({repo}): missing {', '.join(raw_missing)}. "
+                    "The converted bundle is also incomplete — reinstall to re-download the "
+                    "source files and re-run conversion."
+                )
             return
         patterns = spec.get("allow_patterns")
         missing = _missing_bundle_patterns(dest, patterns if isinstance(patterns, list) else None)

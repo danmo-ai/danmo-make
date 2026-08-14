@@ -3017,6 +3017,77 @@ class DownloadStallTests(unittest.TestCase):
             patterns = ["vae/ltx-2.5-audio-vae-bf16.safetensors"]
             self.assertFalse(_bundle_repo_is_complete(root, patterns))
 
+    def test_ltx25_skip_completeness_when_converted_bundle_ready(self) -> None:
+        from unittest.mock import patch
+
+        from backend.services.download_service import DownloadService
+
+        ver = {
+            "install_hooks": [
+                {
+                    "type": "ltx25_ingest",
+                    "skip_completeness_if": "backend.engine.families.ltx25.ingest_mlx:ltx25_bundle_is_ready",
+                }
+            ],
+            "allow_patterns": ["vae/ltx-2.5-audio-vae-bf16.safetensors"],
+        }
+        spec = {"repo_id": "Lightricks/LTX-2.5", "allow_patterns": ["vae/ltx-2.5-audio-vae-bf16.safetensors"]}
+        svc = object.__new__(DownloadService)
+        svc._hunyuan_ms_variant_for_spec = lambda s, v: None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Converted bundle ready → raw completeness check skipped.
+            with patch(
+                "backend.engine.families.ltx25.ingest_mlx.ltx25_bundle_is_ready",
+                return_value=True,
+            ):
+                svc._require_bundle_repo_complete(Path(tmp), spec, label="LTX 2.5", ver_config=ver)
+
+            # Converted bundle NOT ready + raw missing → reinstall hint.
+            with patch(
+                "backend.engine.families.ltx25.ingest_mlx.ltx25_bundle_is_ready",
+                return_value=False,
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    svc._require_bundle_repo_complete(Path(tmp), spec, label="LTX 2.5", ver_config=ver)
+            self.assertIn("reinstall", str(ctx.exception))
+
+            # Raw files present → hook conversion runs instead of failing.
+            root = Path(tmp)
+            (root / "vae").mkdir()
+            (root / "vae" / "ltx-2.5-audio-vae-bf16.safetensors").write_bytes(b"x" * (400 * 1024 ** 2))
+            with patch(
+                "backend.engine.families.ltx25.ingest_mlx.ltx25_bundle_is_ready",
+                return_value=False,
+            ):
+                svc._require_bundle_repo_complete(root, spec, label="LTX 2.5", ver_config=ver)
+
+    def test_ltx25_bundle_ready_rejects_corrupted_quantized_weights(self) -> None:
+        from backend.engine.families.ltx25.ingest_mlx import ltx25_bundle_is_ready
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "bundle_config.json").write_text("{}")
+            for name in ("transformer", "connector", "video_vae", "audio_vae", "upsampler"):
+                (root / f"{name}.safetensors").write_bytes(b"x" * 64)
+            (root / "text_encoder").mkdir()
+            (root / "text_encoder" / "config.json").write_text('{"model_type": "gemma4"}')
+            (root / "text_encoder" / "model.safetensors").write_bytes(b"x" * 64)
+            (root / "quantize_config.json").write_text('{"quantization": {"bits": 8, "group_size": 64}}')
+            # No uint-packed scales companions → not ready.
+            self.assertFalse(ltx25_bundle_is_ready(root))
+
+            # Proper quantized layout → ready.
+            import mlx.core as mx
+
+            w = mx.zeros((128, 256), mx.bfloat16)
+            q, s, b = mx.quantize(w, group_size=64, bits=8)
+            mx.save_safetensors(
+                str(root / "transformer.safetensors"),
+                {"lin.weight": q, "lin.scales": s, "lin.biases": b},
+            )
+            self.assertTrue(ltx25_bundle_is_ready(root))
+
     def test_version_local_artifacts_ready_without_bundle_repos(self) -> None:
         from backend.services.download_service import DownloadService
 

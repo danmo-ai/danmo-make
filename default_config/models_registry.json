@@ -7467,7 +7467,9 @@
                 "type": "ltx25_ingest",
                 "source": ".",
                 "quantize": 4,
-                "group_size": 64
+                "group_size": 64,
+                "cleanup_source": true,
+                "skip_completeness_if": "backend.engine.families.ltx25.ingest_mlx:ltx25_bundle_is_ready"
               }
             ],
             "note": {
@@ -7503,7 +7505,9 @@
                 "type": "ltx25_ingest",
                 "source": ".",
                 "quantize": 8,
-                "group_size": 64
+                "group_size": 64,
+                "cleanup_source": true,
+                "skip_completeness_if": "backend.engine.families.ltx25.ingest_mlx:ltx25_bundle_is_ready"
               }
             ],
             "note": {
