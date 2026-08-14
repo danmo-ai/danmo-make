@@ -436,6 +436,19 @@ class LTX25MlxGenerator:
         audio_patchifier = AudioPatchifier()
         audio_latent = audio_patchifier.unpatchify(audio_x[:1])
         _materialize(ctx, video_latent, audio_latent)
+
+        # Release the DiT / text-encoder weights before VAE decode: the conv
+        # decoder materializes multi-GB activations per stage at high
+        # resolutions, and the 22B transformer (~21GB dequantized) plus Gemma 4
+        # (~12GB) no longer need to be resident. Reloaded lazily on next use.
+        self._dit = None
+        self._encoder = None
+        import gc
+
+        gc.collect()
+        if hasattr(ctx, "clear_cache"):
+            ctx.clear_cache()
+
         emit_post_progress(on_progress, n_steps=total_steps, within_post=1.0)
         return mux_video_audio_mp4(
             self.bundle_root,

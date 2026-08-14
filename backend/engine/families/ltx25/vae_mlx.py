@@ -1326,6 +1326,57 @@ def decode_audio_latent(
     return waveform_np, vocoder.output_sampling_rate
 
 
+def _decode_video_latent_chunked(
+    decoder: Any,
+    latent: mx.array,
+    *,
+    seed: int | None = None,
+    chunk_px: int | None = None,
+    overlap_px: int | None = None,
+) -> mx.array:
+    """Chunked causal decode with linear crossfade to bound peak memory.
+
+    Decoding 121+ frames at high resolution in one pass materializes
+    multi-GB activation tensors per decoder stage; split the pixel timeline
+    into overlapping windows, decode each independently, and crossfade the
+    overlap (the decoder is causal in time, so windowed output matches the
+    full decode except inside the blend region).
+    """
+    chunk_px = int(chunk_px or os.environ.get("LTX25_VAE_DECODE_CHUNK_PX", "33"))
+    overlap_px = int(overlap_px or os.environ.get("LTX25_VAE_DECODE_OVERLAP_PX", "9"))
+    _, _, f_lat, _, _ = latent.shape
+    f_px = (f_lat - 1) * 8 + 1
+    if f_px <= chunk_px + overlap_px:
+        return decoder.decode(latent, seed=seed)
+
+    windows: list[mx.array] = []
+    s = 0
+    while s < f_px:
+        e = min(s + chunk_px, f_px)
+        l_s = 0 if s == 0 else (s - 1) // 8
+        l_e = min(f_lat, ((e - 1) // 8) + 3)
+        px = decoder.decode(latent[:, :, l_s:l_e], seed=seed)
+        base_px = 0 if l_s == 0 else 8 * (l_s - 1) + 1
+        offset = s - base_px
+        if e >= f_px:
+            px = px[:, :, -(e - s):]
+        else:
+            px = px[:, :, offset:offset + (e - s)]
+        windows.append(px)
+        if e >= f_px:
+            break
+        s = e - overlap_px
+
+    result = windows[0]
+    for w in windows[1:]:
+        ov = min(overlap_px, result.shape[2], w.shape[2])
+        fade = mx.linspace(0.0, 1.0, ov, dtype=mx.float32).reshape(1, 1, ov, 1, 1)
+        fade = fade.astype(result.dtype)
+        tail = result[:, :, -ov:] * (1.0 - fade) + w[:, :, :ov] * fade
+        result = mx.concatenate([result[:, :, :-ov], tail, w[:, :, ov:]], axis=2)
+    return result
+
+
 def _find_ffmpeg() -> str:
     path = shutil.which("ffmpeg")
     if path is None:
@@ -1347,7 +1398,7 @@ def mux_video_audio_mp4(
     from PIL import Image
 
     decoder = load_ltx25_video_decoder(bundle_root, load_fn=load_fn)
-    pixels = decoder.decode(video_latent, seed=seed)
+    pixels = _decode_video_latent_chunked(decoder, video_latent, seed=seed)
     pixels_np = pixels[0].astype(mx.float32)
     _materialize(pixels_np)
     pixels = np.asarray(pixels_np)  # (3, F, H, W)
