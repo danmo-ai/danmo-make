@@ -211,6 +211,7 @@ def _i2v_conditionings(
 ) -> list[VideoConditionByLatentIndex]:
     pixels = _load_i2v_image_tensor(image_path, enc_h, enc_w)
     pixels = ctx.array(pixels.astype(np.float32))
+    pixels = ctx.expand_dims(pixels, axis=2)  # (1, C, 1, H, W) single-frame clip
     latent = video_encoder.encode(pixels)
     patchifier = VideoLatentPatchifier()
     tokens, _ = patchifier.patchify(latent, ctx)
