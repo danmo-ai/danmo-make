@@ -610,19 +610,20 @@ class _AudioGroupNorm(nn.Module):
         self.eps = eps
 
     def __call__(self, x: mx.array) -> mx.array:
+        dtype = x.dtype
         b, c, t, f = x.shape
-        x = x.reshape(b, self.num_groups, c // self.num_groups, t, f)
+        # Stats in f32: bf16 reductions on non-contiguous views diverge.
+        x = x.reshape(b, self.num_groups, c // self.num_groups, t, f).astype(mx.float32)
         mean = mx.mean(x, axis=(2, 3, 4), keepdims=True)
         var = mx.var(x, axis=(2, 3, 4), keepdims=True)
-        x = (x - mean) * mx.rsqrt(var + self.eps)
-        x = x.reshape(b, c, t, f)
+        x = ((x - mean) * mx.rsqrt(var + self.eps)).reshape(b, c, t, f).astype(dtype)
         return x * self.weight.reshape(1, c, 1, 1) + self.bias.reshape(1, c, 1, 1)
 
 
 class _AudioPixelNorm(nn.Module):
     def __call__(self, x: mx.array) -> mx.array:
-        mean_sq = mx.mean(x * x, axis=1, keepdims=True)
-        return x / mx.sqrt(mean_sq + 1e-6)
+        mean_sq = mx.mean((x * x).astype(mx.float32), axis=1, keepdims=True)
+        return x / mx.sqrt(mean_sq + 1e-6).astype(x.dtype)
 
 
 class _AudioCausalConv2d(nn.Module):

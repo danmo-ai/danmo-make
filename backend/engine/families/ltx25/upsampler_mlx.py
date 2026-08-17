@@ -30,12 +30,14 @@ class _GroupNorm3dCF(nn.Module):
         self.num_groups = num_groups
 
     def __call__(self, x: mx.array) -> mx.array:
+        dtype = x.dtype
         b, c, f, h, w = x.shape
-        x = x.reshape(b, self.num_groups, c // self.num_groups, f, h, w)
+        # bf16 reductions on non-contiguous views (e.g. conv3d outputs after
+        # transpose) accumulate naively and diverge badly; compute stats in f32.
+        x = x.reshape(b, self.num_groups, c // self.num_groups, f, h, w).astype(mx.float32)
         mean = mx.mean(x, axis=(2, 3, 4, 5), keepdims=True)
         var = mx.var(x, axis=(2, 3, 4, 5), keepdims=True)
-        x = (x - mean) * mx.rsqrt(var + 1e-6)
-        x = x.reshape(b, c, f, h, w)
+        x = ((x - mean) * mx.rsqrt(var + 1e-6)).reshape(b, c, f, h, w).astype(dtype)
         return x * self.weight.reshape(1, c, 1, 1, 1) + self.bias.reshape(1, c, 1, 1, 1)
 
 
