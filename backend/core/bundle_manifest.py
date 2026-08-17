@@ -146,6 +146,11 @@ FAMILY_BUNDLE_CONTRACTS: dict[str, FamilyBundleContract] = {
         required=frozenset({"transformer", "vae"}),
         optional=frozenset({"text_encoder", "scheduler", "tokenizer"}),
     ),
+    # Flat ddalcu pack: transformer / text_encoder / video_vae+audio_vae (both scan as "vae") / tokenizer.
+    "minimax_h3": FamilyBundleContract(
+        required=frozenset({"transformer", "text_encoder", "vae", "tokenizer"}),
+        optional=frozenset(),
+    ),
 }
 
 

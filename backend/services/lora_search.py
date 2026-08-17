@@ -13,7 +13,7 @@ import aiohttp
 from backend.core.registry_format import resolve_registry_label
 from backend.third_party.civitai_client import CivitAIClient
 
-HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com").rstrip("/")
+HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
 MS_ENDPOINT = "https://www.modelscope.cn"
 
 LORA_SEARCH_DEFAULT_LIMIT = 500

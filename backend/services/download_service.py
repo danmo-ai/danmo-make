@@ -3,8 +3,8 @@ Download service implementation - supports HuggingFace and HTTP dual-source down
 """
 
 import os
-# Configure HF mirror site
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+# Configure HF Hub endpoint (official by default; override with HF_ENDPOINT for mirrors).
+os.environ.setdefault("HF_ENDPOINT", "https://huggingface.co")
 
 import logging
 import threading
@@ -47,6 +47,123 @@ from backend.core.downloaders import HTTPDownloader
 from backend.services.hf_repo_resolve import resolve_huggingface_repo_id
 
 logger = logging.getLogger(__name__)
+
+_HF_OFFICIAL_ENDPOINT = "https://huggingface.co"
+_HF_DEFAULT_ENDPOINT = "https://huggingface.co"
+_HF_MIRROR_ENDPOINT = "https://hf-mirror.com"
+
+
+def _hf_endpoint() -> str:
+    return (os.environ.get("HF_ENDPOINT") or _HF_DEFAULT_ENDPOINT).rstrip("/")
+
+
+def _is_hf_mirror_endpoint(endpoint: str) -> bool:
+    return "hf-mirror.com" in (endpoint or "").lower()
+
+
+def _hf_candidate_endpoints() -> list[str]:
+    """Ordered Hub endpoints: env preference first, then official, then mirror."""
+    ordered = [_hf_endpoint(), _HF_OFFICIAL_ENDPOINT, _HF_MIRROR_ENDPOINT]
+    out: list[str] = []
+    seen: set[str] = set()
+    for ep in ordered:
+        key = ep.rstrip("/").lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(ep.rstrip("/"))
+    return out
+
+
+def _is_hf_file_resolve_error(exc: BaseException) -> bool:
+    """True when the Hub client cannot resolve a remote file (common on broken mirrors)."""
+    name = type(exc).__name__
+    msg = str(exc)
+    if name in (
+        "LocalEntryNotFoundError",
+        "EntryNotFoundError",
+        "RepositoryNotFoundError",
+        "OfflineModeIsEnabled",
+    ):
+        return True
+    lowered = msg.lower()
+    return (
+        "locate the file on the hub" in lowered
+        or "cannot find the requested files in the local cache" in lowered
+        or "cannot find the requested files" in lowered
+    )
+
+
+def _is_hf_transport_error(exc: BaseException) -> bool:
+    """True for timeouts / DNS / connection failures worth trying another endpoint."""
+    name = type(exc).__name__
+    if name in ("ConnectTimeout", "ReadTimeout", "ConnectionError", "ProxyError", "SSLError"):
+        return True
+    if name == "OSError":
+        return True
+    lowered = str(exc).lower()
+    return any(
+        token in lowered
+        for token in (
+            "timed out",
+            "timeout",
+            "connection refused",
+            "nodename nor servname",
+            "name or service not known",
+            "temporary failure in name resolution",
+            "network is unreachable",
+            "failed to establish a new connection",
+            "max retries exceeded",
+        )
+    )
+
+
+def hf_snapshot_download(**kwargs: Any) -> str:
+    """``snapshot_download`` trying preferred Hub endpoint, then official / mirror.
+
+    Do **not** gate on a HEAD probe of the endpoint root — that often hangs or
+    false-negatives while the Hub API still works. Fail loud only after every
+    candidate endpoint fails; log each failover explicitly.
+    """
+    from huggingface_hub import snapshot_download
+
+    kwargs = dict(kwargs)
+    # Caller may pass endpoint=; still walk the full candidate list on failure.
+    preferred = kwargs.pop("endpoint", None)
+    endpoints = _hf_candidate_endpoints()
+    if preferred:
+        pref = str(preferred).rstrip("/")
+        endpoints = [pref] + [e for e in endpoints if e.lower() != pref.lower()]
+
+    errors: list[str] = []
+    for idx, endpoint in enumerate(endpoints):
+        try:
+            if idx > 0:
+                logger.warning(
+                    "Retrying HuggingFace snapshot_download via %s after prior endpoint failure",
+                    endpoint,
+                )
+            return snapshot_download(**kwargs, endpoint=endpoint)
+        except Exception as exc:
+            errors.append(f"{endpoint}: {type(exc).__name__}: {exc}")
+            retryable = _is_hf_file_resolve_error(exc) or _is_hf_transport_error(exc)
+            if not retryable or idx >= len(endpoints) - 1:
+                if idx >= len(endpoints) - 1:
+                    break
+                raise
+            logger.warning(
+                "HuggingFace endpoint %s failed (%s: %s); trying next candidate",
+                endpoint,
+                type(exc).__name__,
+                exc,
+            )
+
+    raise RuntimeError(
+        "HuggingFace download failed on all endpoints "
+        f"({', '.join(_hf_candidate_endpoints())}). "
+        f"Errors: {' | '.join(errors)}. "
+        "Check network / set HF_ENDPOINT=https://huggingface.co or configure HF_TOKEN."
+    )
 
 
 def _calc_download_dir_bytes(root: Path) -> int:
@@ -550,20 +667,39 @@ class DownloadService(IDownloadService):
         return None
 
     @staticmethod
-    def _check_hf_connectivity(timeout: float = 10.0) -> bool:
-        """Check if HuggingFace mirror is accessible."""
+    def _check_hf_connectivity(timeout: float = 5.0) -> bool:
+        """Soft probe: True if any Hub candidate answers (API or root).
+
+        Root HEAD probes often hang or false-negative; keep timeout short and
+        treat failure as non-fatal for downloads (``hf_snapshot_download`` retries).
+        """
         import urllib.request
-        try:
-            endpoint = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
-            req = urllib.request.Request(
-                endpoint,
-                method="HEAD",
-                headers={"User-Agent": "huggingface_hub"}
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return resp.status == 200
-        except Exception:
-            return False
+
+        for endpoint in _hf_candidate_endpoints():
+            for url in (f"{endpoint}/api/models", endpoint):
+                try:
+                    req = urllib.request.Request(
+                        url,
+                        method="HEAD",
+                        headers={"User-Agent": "danqing-studio"},
+                    )
+                    with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        if 200 <= int(resp.status) < 500:
+                            return True
+                except Exception:
+                    continue
+        return False
+
+    @staticmethod
+    def _ensure_hf_download_possible() -> None:
+        """Log connectivity probe; do not block solely on mirror HEAD failure."""
+        if DownloadService._check_hf_connectivity():
+            return
+        logger.warning(
+            "HuggingFace connectivity probe failed for %s; "
+            "proceeding with snapshot_download multi-endpoint retry anyway",
+            ", ".join(_hf_candidate_endpoints()),
+        )
 
     @staticmethod
     def _check_modelscope_connectivity(timeout: float = 10.0) -> bool:
@@ -1188,14 +1324,8 @@ class DownloadService(IDownloadService):
             return str(dest)
 
         if source == "huggingface":
-            from huggingface_hub import snapshot_download as hf_snapshot
-
-            if not self._check_hf_connectivity():
-                raise ConnectionError(
-                    "Cannot connect to model download server (HF_ENDPOINT=%s), please check network connection"
-                    % os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
-                )
-            return hf_snapshot(
+            self._ensure_hf_download_possible()
+            return hf_snapshot_download(
                 repo_id=resolve_huggingface_repo_id(repo),
                 local_dir=str(dest),
                 allow_patterns=patterns if patterns else None,
@@ -1386,7 +1516,6 @@ class DownloadService(IDownloadService):
 
             if source == "huggingface" and repo_id:
                 # Inline HuggingFace download: snapshot_download + poll directory size for progress
-                from huggingface_hub import snapshot_download
 
                 def calc_downloaded_for(p: Path) -> int:
                     if not p.exists():
@@ -1416,11 +1545,8 @@ class DownloadService(IDownloadService):
                 loop = asyncio.get_event_loop()
 
                 def do_download():
-                    # Check network connectivity first; avoid snapshot_download silently falling back to existing dir
-                    if not self._check_hf_connectivity():
-                        raise ConnectionError(
-                            "Cannot connect to model download server (HF_ENDPOINT=%s), please check network connection" % os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
-                        )
+                    # Soft connectivity probe only — hard block on mirror HEAD caused false negatives.
+                    self._ensure_hf_download_possible()
                     allow_patterns = None
                     if ver_config:
                         from backend.services.hunyuan_ms_bundle import resolve_hunyuan_modelscope_allow_patterns
@@ -1433,7 +1559,7 @@ class DownloadService(IDownloadService):
                     }
                     if isinstance(allow_patterns, list) and allow_patterns:
                         kwargs["allow_patterns"] = allow_patterns
-                    return snapshot_download(**kwargs)
+                    return hf_snapshot_download(**kwargs)
 
                 download_future = loop.run_in_executor(None, do_download)
 

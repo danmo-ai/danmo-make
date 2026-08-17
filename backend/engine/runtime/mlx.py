@@ -47,7 +47,7 @@ class MLXContext(RuntimeContext):
 
     def __init__(self, memory_limit_gb: int = 120):
         os.environ.setdefault("MLX_METAL_DEVICE_ONLY", "1")
-        os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+        os.environ.setdefault("HF_ENDPOINT", "https://huggingface.co")
         os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
         from backend.engine.memory_policy import clamp_mlx_memory_limit_gb
 

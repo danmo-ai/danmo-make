@@ -143,7 +143,11 @@ class MiniMaxH3VideoCausalConv3d(nn.Module):
 
 
 class MiniMaxH3VideoGroupNorm(nn.Module):
-    """GroupNorm with T folded into batch (per-frame stats)."""
+    """GroupNorm with T folded into batch (per-frame stats).
+
+    MLX ``nn.GroupNorm`` (including ``pytorch_compatible=True``) applies affine over the
+    **last** axis — feed NHWC, not NCHW.
+    """
 
     def __init__(self, num_groups: int, num_channels: int, eps: float = 1e-6):
         super().__init__()
@@ -152,7 +156,9 @@ class MiniMaxH3VideoGroupNorm(nn.Module):
     def __call__(self, hidden_states: mx.array) -> mx.array:
         b, c, t, h, w = hidden_states.shape
         x = mx.transpose(hidden_states, (0, 2, 1, 3, 4)).reshape(b * t, c, h, w)
-        x = self.norm(x)
+        x = mx.transpose(x, (0, 2, 3, 1))  # NHWC for MLX GroupNorm
+        x = self.norm(x.astype(mx.float32)).astype(hidden_states.dtype)
+        x = mx.transpose(x, (0, 3, 1, 2))  # NCHW
         return x.reshape(b, t, c, h, w).transpose(0, 2, 1, 3, 4)
 
 
@@ -439,6 +445,8 @@ class MiniMaxH3VideoViTDecoder3d(nn.Module):
         self.rope = MiniMaxH3VideoRotaryPosEmbed(int(attention_head_dim * rope_dim_ratio), theta=rope_theta)
         self.proj_in = nn.Linear(in_channels, dim)
         self.register_tokens = mx.zeros((1, num_register_tokens, dim))
+        # Upstream ``mask_token`` (CLS-like) — ddalcu / MiniMax packs ship ``decoder.mask_token``.
+        self.mask_token = mx.zeros((1, 1, dim))
         self.transformer_blocks = [
             MiniMaxH3VideoTransformerBlock(
                 dim=dim, heads=num_attention_heads, dim_head=attention_head_dim,
@@ -455,7 +463,7 @@ class MiniMaxH3VideoViTDecoder3d(nn.Module):
         hidden_states = self.proj_in(hidden_states)
         num_patches = int(hidden_states.shape[1])
         reg = mx.broadcast_to(self.register_tokens, (b, self.num_register_tokens, hidden_states.shape[-1]))
-        cls = mx.zeros_like(hidden_states[:, :1, :])
+        cls = mx.broadcast_to(self.mask_token.astype(hidden_states.dtype), (b, 1, hidden_states.shape[-1]))
         hidden_states = mx.concatenate([hidden_states, reg, cls], axis=1)
 
         def _axis_grid(size: int) -> mx.array:
@@ -645,29 +653,120 @@ class AutoencoderKLMiniMaxH3MLX(nn.Module):
 
     def load_weights(self, path: str | Path, *, load_fn: Any | None = None) -> None:
         raw = load_weights_dict(load_fn, str(path))
-        remapped: dict[str, mx.array] = {}
-        for k, v in raw.items():
-            key = k[6:] if k.startswith("model.") else k
-            arr = v if isinstance(v, mx.array) else mx.array(v)
-            if key.endswith(".weight") and arr.ndim == 5:
-                # quant_conv / post_quant_conv / encoder.conv* nested as .conv.weight
-                if "quant_conv" in key or "post_quant_conv" in key:
-                    arr = _conv3d_weight_torch_to_mlx(arr)
-                elif key.endswith(".conv.weight"):
-                    arr = _conv3d_weight_torch_to_mlx(arr)
-            remapped[key] = arr
-        # Flatten Module params and assign
+        remapped = remap_minimax_h3_video_vae_weights(raw)
         params = dict(tree_flatten_params(self))
-        missing = [k for k in params if k not in remapped]
-        if missing and len(missing) > len(params) // 2:
+        # Soft buffers / no-affine RMSNorm leaves — keep init when absent from checkpoint.
+        allowed_missing = {
+            k
+            for k in params
+            if k == "decoder.rope.inv_freq"
+            or k.endswith(".attn.norm_q.weight")
+            or k.endswith(".attn.norm_k.weight")
+        }
+        missing = [k for k in params if k not in remapped and k not in allowed_missing]
+        if missing:
             raise RuntimeError(
                 f"MiniMax-H3 video VAE weight load failed: {len(missing)}/{len(params)} keys missing "
                 f"(example: {missing[:5]})"
             )
+        assigned = 0
         for k, v in remapped.items():
-            if k in params:
-                params[k] = v.astype(params[k].dtype) if hasattr(params[k], "dtype") else v
+            if k not in params:
+                continue
+            params[k] = v.astype(params[k].dtype) if hasattr(params[k], "dtype") else v
+            assigned += 1
+        if assigned == 0:
+            raise RuntimeError(
+                "MiniMax-H3 video VAE load_weights assigned 0 keys — checkpoint layout mismatch "
+                f"(saw {len(remapped)} remapped keys, model has {len(params)} params)"
+            )
         self.update(tree_unflatten_params(params))
+
+
+def _strip_model_prefix(key: str) -> str:
+    return key[6:] if key.startswith("model.") else key
+
+
+def _remap_video_vae_encoder_key(key: str) -> str:
+    """Map MiniMax / Comfy compact encoder keys onto nested CausalConv3d + GroupNorm params."""
+    if key.startswith("encoder.down."):
+        key = "encoder.down_blocks." + key[len("encoder.down.") :]
+        key = key.replace(".block.", ".resnets.")
+        key = key.replace(".downsample.", ".downsamplers.0.")
+        key = key.replace(".nin_shortcut.", ".conv_shortcut.")
+    # Wrap nn.Conv3d leaves inside MiniMaxH3VideoCausalConv3d (.conv).
+    for leaf in (
+        ".conv_in.",
+        ".conv_out.",
+        ".conv1.",
+        ".conv2.",
+        ".conv_shortcut.",
+    ):
+        if leaf in key and f"{leaf}conv." not in key:
+            key = key.replace(leaf, f"{leaf}conv.", 1)
+    # Downsample: …downsamplers.0.conv.{weight,bias} → …conv.conv.{weight,bias}
+    if ".downsamplers." in key and ".conv.conv." not in key and ".conv." in key:
+        # after rename: encoder.down_blocks.N.downsamplers.0.conv.weight
+        key = key.replace(".downsamplers.0.conv.", ".downsamplers.0.conv.conv.")
+    # Wrap GroupNorm leaves inside MiniMaxH3VideoGroupNorm (.norm).
+    for leaf in (".norm1.", ".norm2.", ".norm_out."):
+        if leaf in key and f"{leaf}norm." not in key:
+            key = key.replace(leaf, f"{leaf}norm.", 1)
+    return key
+
+
+def _remap_video_vae_decoder_key(key: str) -> str:
+    """Map compact decoder keys (x_embedder / fused qkv / SwiGLU) onto Diffusers-style modules."""
+    if key.startswith("decoder.x_embedder."):
+        key = "decoder.proj_in." + key[len("decoder.x_embedder.") :]
+    if ".attn.to_out." in key and ".attn.to_out.0." not in key:
+        key = key.replace(".attn.to_out.", ".attn.to_out.0.")
+    if ".ff.w1." in key:
+        key = key.replace(".ff.w1.", ".ff.net.0.proj.")
+    if ".ff.w2." in key:
+        key = key.replace(".ff.w2.", ".ff.net.2.")
+    return key
+
+
+def remap_minimax_h3_video_vae_weights(weights: dict[str, Any]) -> dict[str, mx.array]:
+    """Remap MiniMax-H3 / ddalcu ``video_vae.safetensors`` keys onto ``AutoencoderKLMiniMaxH3MLX`` params.
+
+    Upstream packs use compact names (``encoder.down.*.block`` / fused ``to_qkv`` / ``ff.w1``).
+    Our MLX modules mirror Diffusers nesting (``down_blocks`` / ``resnets`` / separate ``to_q|k|v``).
+    """
+    out: dict[str, mx.array] = {}
+    for raw_key, raw_val in weights.items():
+        key = _strip_model_prefix(raw_key)
+        arr = raw_val if isinstance(raw_val, mx.array) else mx.array(raw_val)
+
+        if key in ("latents_mean", "latents_std") and arr.ndim == 1:
+            arr = arr.reshape(1, -1, 1, 1, 1)
+
+        # Fused QKV → separate projections (same layout as Diffusers Attention).
+        if ".attn.to_qkv.weight" in key or key.endswith(".attn.to_qkv.weight"):
+            base = key[: -len(".attn.to_qkv.weight")]
+            q, k, v = mx.split(arr, 3, axis=0)
+            out[f"{base}.attn.to_q.weight"] = q
+            out[f"{base}.attn.to_k.weight"] = k
+            out[f"{base}.attn.to_v.weight"] = v
+            continue
+        if ".attn.to_qkv.bias" in key or key.endswith(".attn.to_qkv.bias"):
+            base = key[: -len(".attn.to_qkv.bias")]
+            q, k, v = mx.split(arr, 3, axis=0)
+            out[f"{base}.attn.to_q.bias"] = q
+            out[f"{base}.attn.to_k.bias"] = k
+            out[f"{base}.attn.to_v.bias"] = v
+            continue
+
+        if key.startswith("encoder."):
+            key = _remap_video_vae_encoder_key(key)
+        elif key.startswith("decoder."):
+            key = _remap_video_vae_decoder_key(key)
+
+        if key.endswith(".weight") and arr.ndim == 5:
+            arr = _conv3d_weight_torch_to_mlx(arr)
+        out[key] = arr
+    return out
 
 
 # ---------------------------------------------------------------------------
