@@ -106,8 +106,15 @@ class _Gemma4LanguageModel:
         if self._tokenizer is None:
             raise RuntimeError("Gemma not loaded")
         tokens = self._tokenizer.encode(text.strip())
+        # Gemma 4's tokenizer.json post-processor adds no BOS (upstream
+        # ``LTXGemmaTokenizer`` prepends it manually); bos_token_id=2 in the
+        # bundle text_config, but AutoTokenizer reports None without a
+        # tokenizer_config.json, so fall back to the well-known id.
+        bos_id = self._tokenizer.bos_token_id if self._tokenizer.bos_token_id is not None else 2
+        if not tokens or tokens[0] != bos_id:
+            tokens = [bos_id, *tokens]
         if len(tokens) > max_length:
-            tokens = tokens[-max_length:]
+            tokens = tokens[:max_length]
         pad_token = self._tokenizer.pad_token_id if self._tokenizer.pad_token_id is not None else 0
         pad_length = max_length - len(tokens)
         padded = [pad_token] * pad_length + tokens
@@ -172,6 +179,11 @@ class _Gemma4LanguageModel:
             all_states.append(h)
             if eval_every and (idx + 1) % eval_every == 0:
                 _materialize(h)
+        # HF ``output_hidden_states`` returns the final-layer output AFTER the
+        # model's terminal RMSNorm as the last entry (upstream feature
+        # extractor expects exactly num_hidden_layers + 1 states).
+        if hasattr(text_model, "norm"):
+            all_states[-1] = text_model.norm(all_states[-1])
         return all_states
 
 
