@@ -3088,6 +3088,78 @@ class DownloadStallTests(unittest.TestCase):
             )
             self.assertTrue(ltx25_bundle_is_ready(root))
 
+    def test_ltx25_decoder_honors_causal_decoder_false(self) -> None:
+        """LTX 2.5 checkpoints set causal_decoder=false; all decoder convs must match.
+
+        Baking causal=True on conv_in / resnets while upsample convs used False mixed
+        padding modes and smeared spatial detail (blurry 2.5 vs sharp 2.3).
+        """
+        from backend.engine.families.ltx25.vae_mlx import LTX25VideoDecoder
+
+        cfg = {
+            "latent_channels": 128,
+            "out_channels": 3,
+            "patch_size": 4,
+            "norm_layer": "pixel_norm",
+            "causal_decoder": False,
+            "timestep_conditioning": False,
+            "spatial_padding_mode": "zeros",
+            "decoder_base_channels": 128,
+            "decoder_blocks": [
+                ["res_x", {"num_layers": 1}],
+                ["compress_space", {"multiplier": 2}],
+                ["res_x", {"num_layers": 1}],
+            ],
+        }
+        decoder = LTX25VideoDecoder(cfg)
+        self.assertFalse(decoder.causal)
+        self.assertFalse(decoder.conv_in.causal)
+        self.assertFalse(decoder.conv_out.causal)
+        self.assertFalse(decoder.up_blocks[0].res_blocks[0].conv1.causal)
+        self.assertFalse(decoder.up_blocks[1].conv.causal)
+
+    def test_ltx25_vae_decode_defaults_to_full_clip(self) -> None:
+        from backend.engine.families.ltx25.vae_mlx import _decode_video_latent_chunked
+
+        calls: list[tuple[int, int]] = []
+
+        class _FakeDecoder:
+            def decode(self, latent, *, seed=None):
+                calls.append((int(latent.shape[2]), seed if seed is not None else -1))
+                f_lat = int(latent.shape[2])
+                f_px = (f_lat - 1) * 8 + 1
+                import mlx.core as mx
+
+                return mx.zeros((1, 3, f_px, 4, 4))
+
+        import mlx.core as mx
+
+        latent = mx.zeros((1, 128, 16, 2, 2))
+        out = _decode_video_latent_chunked(_FakeDecoder(), latent, seed=7)
+        self.assertEqual(calls, [(16, 7)])
+        self.assertEqual(tuple(out.shape), (1, 3, 121, 4, 4))
+
+    def test_ltx25_i2v_applies_h264_crf_preprocess(self) -> None:
+        """I2V must H.264-roundtrip the source (same as LTX 2.3 / upstream).
+
+        A clean-photo pin without CRF is outside the compressed-video domain the
+        distilled DiT expects; later frames then smear/grid while frame 0 stays sharp.
+        """
+        import numpy as np
+        from PIL import Image
+
+        from backend.engine.families.ltx25 import generation_mlx as g
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "src.png"
+            Image.new("RGB", (64, 64), color=(180, 120, 90)).save(path)
+            with_crf = g._load_i2v_image_tensor(str(path), 64, 64, crf=33)
+            without = g._load_i2v_image_tensor(str(path), 64, 64, crf=0)
+            self.assertEqual(with_crf.shape, (1, 3, 64, 64))
+            self.assertEqual(without.shape, (1, 3, 64, 64))
+            # CRF path must change pixels (fail loud if preprocess is a no-op).
+            self.assertFalse(np.allclose(with_crf, without, atol=1e-3))
+
     def test_version_local_artifacts_ready_without_bundle_repos(self) -> None:
         from backend.services.download_service import DownloadService
 

@@ -20,7 +20,9 @@ import mlx.core as mx
 import numpy as np
 
 from backend.engine.config.model_configs import LTX25Config
+from backend.engine.families.ltx.generation_mlx import _preprocess_i2v_image
 from backend.engine.families.ltx.pipeline_math_mlx import (
+    DEFAULT_LTX_IMAGE_CRF,
     AudioPatchifier,
     LatentState,
     VideoConditionByLatentIndex,
@@ -184,11 +186,26 @@ def _denoise_loop(
     return video_x, audio_x
 
 
-def _load_i2v_image_tensor(image_path: str, enc_h: int, enc_w: int) -> np.ndarray:
-    """Load + resize (center-crop) an image to ``(1, C, H, W)`` in [-1, 1]."""
+def _load_i2v_image_tensor(
+    image_path: str,
+    enc_h: int,
+    enc_w: int,
+    *,
+    crf: int = DEFAULT_LTX_IMAGE_CRF,
+) -> np.ndarray:
+    """Load + H.264 CRF round-trip + resize (center-crop) → ``(1, C, H, W)`` in [-1, 1].
+
+    Official LTX I2V (and our working LTX 2.3 path) run a single-frame H.264
+    encode/decode at ``DEFAULT_LTX_IMAGE_CRF`` before VAE encode so first-frame
+    conditioning matches the compressed-video domain the DiT was trained on.
+    Skipping CRF leaves a "clean photo" pin that later frames cannot follow,
+    which shows up as chroma smear / grid collapse after ~1s.
+    """
     from PIL import Image
 
-    img = Image.open(image_path).convert("RGB")
+    arr = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.uint8)
+    arr = _preprocess_i2v_image(arr, float(crf))
+    img = Image.fromarray(arr, mode="RGB")
     w, h = img.size
     scale = max(enc_w / w, enc_h / h)
     nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
@@ -196,8 +213,8 @@ def _load_i2v_image_tensor(image_path: str, enc_h: int, enc_w: int) -> np.ndarra
     left = (nw - enc_w) // 2
     top = (nh - enc_h) // 2
     img = img.crop((left, top, left + enc_w, top + enc_h))
-    arr = np.asarray(img, dtype=np.float32) / 127.5 - 1.0
-    return arr.transpose(2, 0, 1)[None]  # (1, C, H, W)
+    out = np.asarray(img, dtype=np.float32) / 127.5 - 1.0
+    return out.transpose(2, 0, 1)[None]  # (1, C, H, W)
 
 
 def _i2v_conditionings(

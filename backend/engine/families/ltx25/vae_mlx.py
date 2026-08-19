@@ -125,6 +125,7 @@ class _ResnetBlock3D(nn.Module):
         inject_noise: bool = False,
         timestep_conditioning: bool = False,
         spatial_padding_mode: str = "zeros",
+        causal: bool = True,
     ):
         super().__init__()
         out_channels = out_channels if out_channels is not None else in_channels
@@ -140,20 +141,20 @@ class _ResnetBlock3D(nn.Module):
 
         self.norm1 = _make_norm(in_channels)
         self.conv1 = Conv3dBlock(
-            in_channels, out_channels, kernel_size=3, padding=1, causal=True,
+            in_channels, out_channels, kernel_size=3, padding=1, causal=causal,
             spatial_padding_mode=spatial_padding_mode,
         )
         if inject_noise:
             self.per_channel_scale1 = mx.zeros((1, in_channels, 1, 1))
         self.norm2 = _make_norm(out_channels)
         self.conv2 = Conv3dBlock(
-            out_channels, out_channels, kernel_size=3, padding=1, causal=True,
+            out_channels, out_channels, kernel_size=3, padding=1, causal=causal,
             spatial_padding_mode=spatial_padding_mode,
         )
         if inject_noise:
             self.per_channel_scale2 = mx.zeros((1, in_channels, 1, 1))
         self.conv_shortcut = (
-            Conv3dBlock(in_channels, out_channels, kernel_size=1, padding=0, causal=True,
+            Conv3dBlock(in_channels, out_channels, kernel_size=1, padding=0, causal=causal,
                         spatial_padding_mode=spatial_padding_mode)
             if in_channels != out_channels
             else None
@@ -221,6 +222,7 @@ class _ResStage(nn.Module):
         timestep_conditioning: bool,
         spatial_padding_mode: str,
         has_attn: bool = False,
+        causal: bool = True,
     ):
         super().__init__()
         self.timestep_conditioning = timestep_conditioning
@@ -234,6 +236,7 @@ class _ResStage(nn.Module):
                 inject_noise=inject_noise,
                 timestep_conditioning=timestep_conditioning,
                 spatial_padding_mode=spatial_padding_mode,
+                causal=causal,
             )
             for _ in range(num_blocks)
         ]
@@ -348,8 +351,12 @@ class LTX25VideoDecoder(nn.Module):
         self.per_channel_statistics_std = mx.ones((in_channels,))
 
         feature_channels = _decoder_bottleneck_channels(base_channels, decoder_blocks)
+        # Official ConvVideoDecoder builds CausalConv3d then calls them with
+        # ``causal=self.causal``. LTX 2.5 checkpoints set ``causal_decoder=false``
+        # (symmetric temporal pad, same as the working LTX 2.3 decoder). Baking
+        # causal=True here mixed padding modes across layers and smeared detail.
         self.conv_in = Conv3dBlock(
-            in_channels, feature_channels, kernel_size=3, padding=1, causal=True,
+            in_channels, feature_channels, kernel_size=3, padding=1, causal=causal,
             spatial_padding_mode=spatial_padding_mode,
         )
 
@@ -366,6 +373,7 @@ class LTX25VideoDecoder(nn.Module):
                         inject_noise=bool(config.get("inject_noise", False)),
                         timestep_conditioning=timestep_conditioning,
                         spatial_padding_mode=spatial_padding_mode,
+                        causal=causal,
                     )
                 )
             elif block_name == "res_x_y":
@@ -378,6 +386,7 @@ class LTX25VideoDecoder(nn.Module):
                         norm_layer=norm_layer,
                         inject_noise=bool(config.get("inject_noise", False)),
                         spatial_padding_mode=spatial_padding_mode,
+                        causal=causal,
                     )
                 )
                 feature_channels = feature_channels // multiplier
@@ -421,7 +430,7 @@ class LTX25VideoDecoder(nn.Module):
             out_channels * patch_size * patch_size,
             kernel_size=3,
             padding=1,
-            causal=True,
+            causal=causal,
             spatial_padding_mode=spatial_padding_mode,
         )
         if timestep_conditioning:
@@ -1335,20 +1344,35 @@ def _decode_video_latent_chunked(
     chunk_px: int | None = None,
     overlap_px: int | None = None,
 ) -> mx.array:
-    """Chunked causal decode with linear crossfade to bound peak memory.
+    """Decode video latents. Full-clip decode is the default.
 
-    Decoding 121+ frames at high resolution in one pass materializes
-    multi-GB activation tensors per decoder stage; split the pixel timeline
-    into overlapping windows, decode each independently, and crossfade the
-    overlap (the decoder is causal in time, so windowed output matches the
-    full decode except inside the blend region).
+    Independent temporal windows are **incorrect** for LTX 2.5
+    (``causal_decoder=false`` / symmetric temporal pad): each window treats a
+    mid-clip latent slice as a new video start, which shows up as grid, chroma
+    noise, and ghosting after the first ~1s. Prefix ``LTX25_VAE_DECODE_CHUNK_PX``
+    only when unified memory cannot hold a full decode; quality will drop.
+    ``chunk_px=0`` (default) disables windowing.
     """
-    chunk_px = int(chunk_px or os.environ.get("LTX25_VAE_DECODE_CHUNK_PX", "33"))
-    overlap_px = int(overlap_px or os.environ.get("LTX25_VAE_DECODE_OVERLAP_PX", "9"))
+    if chunk_px is None:
+        chunk_px = int(os.environ.get("LTX25_VAE_DECODE_CHUNK_PX", "0"))
+    else:
+        chunk_px = int(chunk_px)
+    if overlap_px is None:
+        overlap_px = int(os.environ.get("LTX25_VAE_DECODE_OVERLAP_PX", "9"))
+    else:
+        overlap_px = int(overlap_px)
     _, _, f_lat, _, _ = latent.shape
     f_px = (f_lat - 1) * 8 + 1
-    if f_px <= chunk_px + overlap_px:
+    if chunk_px <= 0 or f_px <= chunk_px:
         return decoder.decode(latent, seed=seed)
+
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "LTX 2.5 VAE windowed decode is on (chunk_px=%s); later frames will lose "
+        "temporal context. Unset LTX25_VAE_DECODE_CHUNK_PX for full-clip quality.",
+        chunk_px,
+    )
 
     windows: list[mx.array] = []
     s = 0
