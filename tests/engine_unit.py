@@ -3160,6 +3160,41 @@ class DownloadStallTests(unittest.TestCase):
             # CRF path must change pixels (fail loud if preprocess is a no-op).
             self.assertFalse(np.allclose(with_crf, without, atol=1e-3))
 
+    def test_ltx25_wav_interleaving_is_pcm16_stereo(self) -> None:
+        """LTX25 mux must write interleaved (L0,R0,L1,R1,...) PCM16 stereo.
+
+        The vocoder returns ``(C, T)`` (channel-first). PCM/stereo WAV expects
+        interleaved frames; writing planar bytes produces broadband noise.
+        """
+        import numpy as np
+        import wave
+
+        from backend.engine.families.ltx25.vae_mlx import _write_waveform_wav_pcm16
+
+        # (C, T): 2 channels with distinct sample patterns.
+        waveform = np.array(
+            [
+                [0.0, 0.5, -0.5, 1.0],
+                [1.0, 0.25, -0.25, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        expected_i16 = (np.clip(waveform.T, -1.0, 1.0) * 32767.0).astype(np.int16)  # (T, 2)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "test.wav"
+            _write_waveform_wav_pcm16(waveform, sample_rate=48000, audio_path=path)
+
+            with wave.open(str(path), "rb") as wf:
+                self.assertEqual(wf.getnchannels(), 2)
+                self.assertEqual(wf.getsampwidth(), 2)
+                self.assertEqual(wf.getframerate(), 48000)
+                frames = wf.readframes(wf.getnframes())
+
+            data = np.frombuffer(frames, dtype="<i2").reshape(-1, 2)  # (T, 2)
+            self.assertEqual(tuple(data.shape), (waveform.shape[1], 2))
+            np.testing.assert_array_equal(data, expected_i16)
+
     def test_version_local_artifacts_ready_without_bundle_repos(self) -> None:
         from backend.services.download_service import DownloadService
 

@@ -1409,6 +1409,47 @@ def _find_ffmpeg() -> str:
     return path
 
 
+def _write_waveform_wav_pcm16(
+    waveform: np.ndarray,
+    *,
+    sample_rate: int,
+    audio_path: Path,
+) -> None:
+    """Write WAV with interleaved PCM16 samples.
+
+    The LTX25 vocoder decoder returns ``waveform`` shaped like ``(C, T)`` where
+    ``C`` is the channel count (typically 2). Python's ``wave`` module expects
+    interleaved bytes order for multi-channel PCM:
+
+    ``L0, R0, L1, R1, ...`` (not planar: ``LLLL...RRRR...``).
+    """
+    arr = np.asarray(waveform)
+    if arr.ndim == 1:
+        nch = 1
+        pcm = arr[:, None]  # (T, 1)
+    elif arr.ndim == 2:
+        # Prefer interpreting (C, T) where C is small (1/2).
+        if int(arr.shape[0]) in (1, 2):
+            nch = int(arr.shape[0])
+            pcm = arr.T  # (T, C) -> interleaved when tobytes()
+        elif int(arr.shape[1]) in (1, 2):
+            nch = int(arr.shape[1])
+            pcm = arr  # already (T, C)
+        else:
+            raise RuntimeError(f"Unexpected LTX25 waveform shape {arr.shape} (need channels in first or second dim).")
+    else:
+        raise RuntimeError(f"Unexpected LTX25 waveform ndim={arr.ndim}, shape={arr.shape}.")
+
+    pcm = np.clip(pcm, -1.0, 1.0).astype(np.float32)
+    pcm_i16 = (pcm * 32767.0).astype(np.int16)
+
+    with wave.open(str(audio_path), "wb") as wf:
+        wf.setnchannels(nch)
+        wf.setsampwidth(2)
+        wf.setframerate(int(sample_rate))
+        wf.writeframes(pcm_i16.tobytes())
+
+
 def mux_video_audio_mp4(
     bundle_root: Path,
     video_latent: mx.array,
@@ -1440,12 +1481,11 @@ def mux_video_audio_mp4(
     with tempfile.TemporaryDirectory(prefix="ltx25-mux-") as tmp:
         tmp_path = Path(tmp)
         audio_path = tmp_path / "audio.wav"
-        channels = waveform.shape[0] if waveform.ndim > 1 else 1
-        with wave.open(str(audio_path), "wb") as wf:
-            wf.setnchannels(channels)
-            wf.setsampwidth(2)
-            wf.setframerate(sample_rate)
-            wf.writeframes((np.clip(waveform, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes())
+        _write_waveform_wav_pcm16(
+            waveform,
+            sample_rate=sample_rate,
+            audio_path=audio_path,
+        )
         video_only = tmp_path / "video_only.mp4"
         ffmpeg = _find_ffmpeg()
         cmd_v = [
