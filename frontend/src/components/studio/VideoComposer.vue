@@ -481,6 +481,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
+import { useComposerDefaultModel } from '@/composables/useComposerDefaultModel';
 import ComposerAdvancedCollapsible from './ComposerAdvancedCollapsible.vue';
 import ComposerToolbar from './ComposerToolbar.vue';
 import ComposerPromptApplyStrip from './ComposerPromptApplyStrip.vue';
@@ -636,6 +637,15 @@ const localModel = computed({
   get: () => props.model,
   set: (v) => emit('update:model', v),
 });
+
+useComposerDefaultModel(
+  () => props.modelOptions || [],
+  () => props.model,
+  (value) => {
+    emit('update:model', value);
+    emit('model-change', value);
+  },
+);
 
 const localSize = computed({
   get: () => props.size,

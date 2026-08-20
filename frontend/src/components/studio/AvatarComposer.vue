@@ -163,6 +163,7 @@
 <script setup lang="ts">
 // @ts-nocheck — registry param schema is dynamic
 import { computed } from 'vue';
+import { useComposerDefaultModel } from '@/composables/useComposerDefaultModel';
 import { Close, Microphone, Picture } from '@danqing/dq-shell';
 import { DqSegmented } from '@danqing/dq-ui';
 import { $tt } from '@/utils/i18n';
@@ -231,6 +232,15 @@ const localModel = computed({
   get: () => props.model,
   set: (v: string) => emit('update:model', v),
 });
+
+useComposerDefaultModel(
+  () => props.modelOptions || [],
+  () => props.model,
+  (value) => {
+    emit('update:model', value);
+    emit('model-change');
+  },
+);
 const localResolution = computed({
   get: () => props.resolution,
   set: (v: string) => emit('update:resolution', v),

@@ -1268,11 +1268,8 @@ onMounted(async () => {
   if (!params.model) {
     const versions = filteredModelPickerVersions.value;
     if (versions.length > 0) {
-      const rec =
-        versions.find((v) => v.ready && v.recommended) ||
-        versions.find((v) => v.ready) ||
-        versions[0];
-      selectedModelVersion.value = `${rec.modelKey}|${rec.versionKey}`;
+      const first = versions[0];
+      selectedModelVersion.value = `${first.modelKey}|${first.versionKey}`;
       onModelChange(selectedModelVersion.value);
     }
   }

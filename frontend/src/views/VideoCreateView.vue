@@ -1614,31 +1614,12 @@ const loadModelRegistry = async () => {
     modelRegistry.value = (registryData && (registryData as any).models) || {};
     modelsDetailedStatus.value = (detailedStatusData as any) || {};
 
-    // Set default model
-    if (!selectedModelVersion.value) {
-      let found = false;
-      for (const item of videoRecommendedForMode.value) {
-        if (item.ready) {
-          params.model = item.modelKey;
-          params.version = item.versionKey;
-          selectedModelVersion.value = item.modelKey + '|' + item.versionKey;
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        for (const item of videoVersionsForMode.value) {
-          if (item.ready) {
-            params.model = item.modelKey;
-            params.version = item.versionKey;
-            selectedModelVersion.value = item.modelKey + '|' + item.versionKey;
-            found = true;
-            break;
-          }
-        }
-      }
-      if (!found && videoVersionsForMode.value.length > 0) {
-        const first = videoVersionsForMode.value[0];
+    const picker = videoModelPickerVersions.value;
+    const inPicker = (key: string) =>
+      picker.some((v) => `${v.modelKey}|${v.versionKey}` === key);
+    if (!selectedModelVersion.value || !inPicker(selectedModelVersion.value)) {
+      if (picker.length > 0) {
+        const first = picker[0];
         params.model = first.modelKey;
         params.version = first.versionKey;
         selectedModelVersion.value = first.modelKey + '|' + first.versionKey;

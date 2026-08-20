@@ -1976,73 +1976,29 @@ const loadModelRegistry = async () => {
     modelRegistry.value = (registryData as Record<string, unknown>).models || {};
     modelsDetailedStatus.value = (detailedStatusData as any) || {};
 
-    if (!selectedModelVersion.value) {
-      // 尝试从本地存储恢复上次选择的模型
+    const picker = filteredModelPickerVersions.value;
+    const inPicker = (key: string) =>
+      picker.some((v) => `${v.modelKey}|${v.versionKey}` === key);
+    if (!selectedModelVersion.value || !inPicker(selectedModelVersion.value)) {
       const lastModel = getItem(DQ_STORAGE.IMAGE_LAST_MODEL);
-      if (lastModel) {
+      if (lastModel && inPicker(lastModel)) {
         const parsed = parseModelVersionValue(lastModel);
         if (parsed) {
-          const detailed = (detailedStatusData as Record<string, Record<string, unknown>>)[parsed.modelKey] || {};
-          const versions = detailed.versions || {};
-          if (versions[parsed.versionKey]?.ready) {
-            params.model = parsed.modelKey;
-            params.version = parsed.versionKey;
-            selectedModelVersion.value = lastModel;
-            loadModelDefaults();
-            restoreSavedSize();
-            loadCompatibleAdapters(parsed.modelKey);
-            return;
-          }
+          params.model = parsed.modelKey;
+          params.version = parsed.versionKey;
+          selectedModelVersion.value = lastModel;
         }
-      }
-
-      let found = false;
-      for (const [modelKey, config] of Object.entries(modelRegistry.value)) {
-        if (config.recommended) {
-          const detailed = (detailedStatusData as Record<string, Record<string, unknown>>)[modelKey] || {};
-          const versions = detailed.versions || {};
-          const defaultVersionKey = Object.keys(config.versions || {}).find((k) => (config.versions as Record<string, Record<string, unknown>>)[k]?.default) || Object.keys(config.versions || {})[0];
-
-          if (defaultVersionKey && versions[defaultVersionKey]?.ready) {
-            params.model = modelKey;
-            params.version = defaultVersionKey;
-            selectedModelVersion.value = modelKey + '|' + defaultVersionKey;
-            found = true;
-            break;
-          }
-        }
-      }
-
-      if (!found) {
-        for (const [modelKey, config] of Object.entries(modelRegistry.value)) {
-          const detailed = (detailedStatusData as Record<string, Record<string, unknown>>)[modelKey] || {};
-          const versions = detailed.versions || {};
-          for (const versionKey of Object.keys(config.versions || {})) {
-            if (versions[versionKey]?.ready) {
-              params.model = modelKey;
-              params.version = versionKey;
-              selectedModelVersion.value = modelKey + '|' + versionKey;
-              found = true;
-              break;
-            }
-          }
-          if (found) break;
-        }
-      }
-
-      if (!found) {
-        const firstModel = Object.keys(modelRegistry.value)[0];
-        if (firstModel) {
-          const firstVersion = Object.keys(modelRegistry.value[firstModel].versions || {})[0] || 'default';
-          params.model = firstModel;
-          params.version = firstVersion;
-          selectedModelVersion.value = firstModel + '|' + firstVersion;
-        }
+      } else if (picker.length > 0) {
+        const first = picker[0];
+        params.model = first.modelKey;
+        params.version = first.versionKey;
+        selectedModelVersion.value = `${first.modelKey}|${first.versionKey}`;
       }
     }
 
     loadModelDefaults();
     restoreSavedSize();
+    if (params.model) loadCompatibleAdapters(String(params.model));
   } catch (e) {
     console.error('Failed to load model registry:', e);
   }

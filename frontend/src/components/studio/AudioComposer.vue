@@ -465,6 +465,7 @@ import {
   Refresh,
 } from '@danqing/dq-shell';
 import { $tt } from '@/utils/i18n';
+import { useComposerDefaultModel } from '@/composables/useComposerDefaultModel';
 import { isAudioLyricsRequired, audioLyricsRequiredHintKey } from '@/utils/audioLyrics';
 import { useVocalLanguageOptions } from '@/composables/useVocalLanguageOptions';
 import { appendStyleBoost } from '@/utils/styleBoost';
@@ -585,6 +586,15 @@ const localModel = computed({
   get: () => props.model,
   set: (v) => emit('update:model', v),
 });
+
+useComposerDefaultModel(
+  () => props.modelOptions || [],
+  () => props.model,
+  (value) => {
+    emit('update:model', value);
+    emit('model-change', value);
+  },
+);
 
 const localDuration = computed({
   get: () => props.duration,

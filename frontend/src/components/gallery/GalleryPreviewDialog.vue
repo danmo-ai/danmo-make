@@ -42,14 +42,32 @@
         :class="{
           'gallery-preview-media--audio': media === 'audio',
           'gallery-preview-media--video': media === 'video',
+          'gallery-preview-media--image': media === 'image',
         }"
       >
-        <img
+        <div
           v-if="media === 'image'"
-          class="gallery-preview-img"
-          :src="getImageUrl(currentItem)"
-          :alt="imageCaption || currentItem.name"
-        />
+          ref="stageRef"
+          class="gallery-preview-zoom-stage"
+          :class="{
+            'is-zoomed': imageZoom > 1,
+            'is-panning': imagePanning,
+          }"
+          @wheel.prevent="onImageWheel"
+          @pointerdown="onImagePointerDown"
+          @pointermove="onImagePointerMove"
+          @pointerup="onImagePointerUp"
+          @pointercancel="onImagePointerUp"
+          @dblclick.prevent="onImageDblClick"
+        >
+          <img
+            class="gallery-preview-img"
+            :style="imageTransformStyle"
+            :src="getImageUrl(currentItem)"
+            :alt="imageCaption || currentItem.name"
+            draggable="false"
+          />
+        </div>
         <CreateVideoPlayer
           v-else-if="media === 'video'"
           :key="currentItem.path"
@@ -90,6 +108,35 @@
         <GalleryAssetDetailMeta :item="currentItem" show-prompt />
       </div>
 
+      <div v-if="media === 'image'" class="gallery-preview-zoom-bar">
+        <button
+          type="button"
+          class="gallery-preview-zoom-btn"
+          :disabled="imageZoom <= IMAGE_ZOOM_MIN"
+          :aria-label="$t('gallery.zoomOut')"
+          @click="nudgeImageZoom(1 / 1.25)"
+        >
+          <span aria-hidden="true">&minus;</span>
+        </button>
+        <button
+          type="button"
+          class="gallery-preview-zoom-label"
+          :aria-label="$t('gallery.zoomReset')"
+          @click="resetImageZoom"
+        >
+          {{ Math.round(imageZoom * 100) }}%
+        </button>
+        <button
+          type="button"
+          class="gallery-preview-zoom-btn"
+          :disabled="imageZoom >= IMAGE_ZOOM_MAX"
+          :aria-label="$t('gallery.zoomIn')"
+          @click="nudgeImageZoom(1.25)"
+        >
+          <DqIcon :size="14"><ZoomIn /></DqIcon>
+        </button>
+      </div>
+
       <div v-if="items.length > 1" class="gallery-preview-counter">
         {{ currentIndex + 1 }} / {{ items.length }}
       </div>
@@ -99,7 +146,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue';
-import { ArrowLeft, ArrowRight } from '@danqing/dq-shell';
+import { ArrowLeft, ArrowRight, ZoomIn } from '@danqing/dq-shell';
 import { api } from '@/utils/api';
 import { $tt } from '@/utils/i18n';
 import type { GalleryItem } from '@/types';
@@ -125,6 +172,110 @@ const dialogVisible = computed({
 });
 
 const containerRef = ref<HTMLElement | null>(null);
+const stageRef = ref<HTMLElement | null>(null);
+
+const IMAGE_ZOOM_MIN = 1;
+const IMAGE_ZOOM_MAX = 8;
+const imageZoom = ref(1);
+const imagePanX = ref(0);
+const imagePanY = ref(0);
+const imagePanning = ref(false);
+const panLastX = ref(0);
+const panLastY = ref(0);
+
+const imageTransformStyle = computed(() => ({
+  transform: `translate(${imagePanX.value}px, ${imagePanY.value}px) scale(${imageZoom.value})`,
+}));
+
+function resetImageZoom() {
+  imageZoom.value = 1;
+  imagePanX.value = 0;
+  imagePanY.value = 0;
+  imagePanning.value = false;
+}
+
+function clampImageZoom(next: number) {
+  return Math.min(IMAGE_ZOOM_MAX, Math.max(IMAGE_ZOOM_MIN, next));
+}
+
+function applyImageZoomAt(clientX: number, clientY: number, nextZoom: number) {
+  const stage = stageRef.value;
+  const z = imageZoom.value;
+  const nz = clampImageZoom(nextZoom);
+  if (nz === z) {
+    if (nz <= IMAGE_ZOOM_MIN) resetImageZoom();
+    return;
+  }
+  if (!stage) {
+    imageZoom.value = nz;
+    if (nz <= IMAGE_ZOOM_MIN) resetImageZoom();
+    return;
+  }
+  const rect = stage.getBoundingClientRect();
+  const mx = clientX - rect.left;
+  const my = clientY - rect.top;
+  const cx = rect.width / 2;
+  const cy = rect.height / 2;
+  const ratio = nz / z;
+  imagePanX.value = (mx - cx) - ratio * ((mx - cx) - imagePanX.value);
+  imagePanY.value = (my - cy) - ratio * ((my - cy) - imagePanY.value);
+  imageZoom.value = nz;
+  if (nz <= IMAGE_ZOOM_MIN) resetImageZoom();
+}
+
+function nudgeImageZoom(factor: number) {
+  const stage = stageRef.value;
+  if (!stage) {
+    const nz = clampImageZoom(imageZoom.value * factor);
+    imageZoom.value = nz;
+    if (nz <= IMAGE_ZOOM_MIN) resetImageZoom();
+    return;
+  }
+  const rect = stage.getBoundingClientRect();
+  applyImageZoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, imageZoom.value * factor);
+}
+
+function onImageWheel(e: WheelEvent) {
+  if (props.media !== 'image') return;
+  const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+  applyImageZoomAt(e.clientX, e.clientY, imageZoom.value * factor);
+}
+
+function onImagePointerDown(e: PointerEvent) {
+  if (props.media !== 'image') return;
+  if (e.button !== 0) return;
+  if (imageZoom.value <= IMAGE_ZOOM_MIN) return;
+  imagePanning.value = true;
+  panLastX.value = e.clientX;
+  panLastY.value = e.clientY;
+  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+}
+
+function onImagePointerMove(e: PointerEvent) {
+  if (!imagePanning.value) return;
+  imagePanX.value += e.clientX - panLastX.value;
+  imagePanY.value += e.clientY - panLastY.value;
+  panLastX.value = e.clientX;
+  panLastY.value = e.clientY;
+}
+
+function onImagePointerUp(e: PointerEvent) {
+  if (!imagePanning.value) return;
+  imagePanning.value = false;
+  const el = e.currentTarget as HTMLElement | null;
+  if (el?.hasPointerCapture(e.pointerId)) {
+    el.releasePointerCapture(e.pointerId);
+  }
+}
+
+function onImageDblClick(e: MouseEvent) {
+  if (props.media !== 'image') return;
+  if (imageZoom.value > 1) {
+    resetImageZoom();
+    return;
+  }
+  applyImageZoomAt(e.clientX, e.clientY, 2.5);
+}
 
 const currentIndex = computed({
   get: () => props.index,
@@ -211,11 +362,13 @@ function downloadCurrent() {
 
 function goPrev() {
   if (!canGoPrev.value) return;
+  resetImageZoom();
   currentIndex.value--;
 }
 
 function goNext() {
   if (!canGoNext.value) return;
+  resetImageZoom();
   currentIndex.value++;
 }
 
@@ -227,19 +380,40 @@ function handleKeydown(e: KeyboardEvent) {
   } else if (e.key === 'ArrowRight') {
     e.preventDefault();
     goNext();
+  } else if (e.key === '+' || e.key === '=') {
+    if (props.media === 'image') {
+      e.preventDefault();
+      nudgeImageZoom(1.25);
+    }
+  } else if (e.key === '-' || e.key === '_') {
+    if (props.media === 'image') {
+      e.preventDefault();
+      nudgeImageZoom(1 / 1.25);
+    }
+  } else if (e.key === '0') {
+    if (props.media === 'image') {
+      e.preventDefault();
+      resetImageZoom();
+    }
   } else if (e.key === 'Escape') {
     dialogVisible.value = false;
   }
 }
 
+watch(currentIndex, () => {
+  resetImageZoom();
+});
+
 watch(dialogVisible, (val) => {
   if (val) {
+    resetImageZoom();
     nextTick(() => {
       containerRef.value?.focus();
     });
     document.addEventListener('keydown', handleKeydown);
   } else {
     document.removeEventListener('keydown', handleKeydown);
+    resetImageZoom();
   }
 });
 
@@ -327,6 +501,29 @@ onBeforeUnmount(() => {
 
 .gallery-preview-container--image .gallery-preview-media {
   padding: 12px 52px 220px;
+  min-height: min(78vh, 720px);
+  min-width: 0;
+}
+
+.gallery-preview-zoom-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: min(72vh, calc(78vh - 80px));
+  min-height: 240px;
+  overflow: hidden;
+  touch-action: none;
+  cursor: zoom-in;
+  user-select: none;
+}
+
+.gallery-preview-zoom-stage.is-zoomed {
+  cursor: grab;
+}
+
+.gallery-preview-zoom-stage.is-panning {
+  cursor: grabbing;
 }
 
 .gallery-preview-img {
@@ -335,6 +532,56 @@ onBeforeUnmount(() => {
   border-radius: var(--dq-radius-group);
   object-fit: contain;
   box-shadow: var(--dq-shadow-lg);
+  transform-origin: center center;
+  will-change: transform;
+  pointer-events: none;
+}
+
+.gallery-preview-zoom-bar {
+  position: absolute;
+  right: 56px;
+  top: 12px;
+  left: auto;
+  bottom: auto;
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--dq-radius-pill);
+  border: 0.5px solid var(--dq-glass-border);
+  background: var(--dq-glass-tooltip-bg);
+  -webkit-backdrop-filter: var(--dq-glass-blur-light);
+  backdrop-filter: var(--dq-glass-blur-light);
+}
+
+.gallery-preview-zoom-btn,
+.gallery-preview-zoom-label {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--dq-label-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: var(--dq-radius-pill);
+  font-size: var(--dq-font-size-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.gallery-preview-zoom-btn:hover:not(:disabled),
+.gallery-preview-zoom-label:hover {
+  background: var(--dq-fill-on-glass-hover);
+  color: var(--dq-label-primary);
+}
+
+.gallery-preview-zoom-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .gallery-preview-media--audio {
