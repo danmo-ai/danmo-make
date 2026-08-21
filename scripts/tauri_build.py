@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tauri release builds — macOS (MLX), Linux (CUDA), Windows (CUDA)."""
+"""Tauri release builds — macOS (MLX Metal), Linux (MLX / mlx[cuda]). Windows unsupported."""
 
 from __future__ import annotations
 
@@ -119,49 +119,8 @@ def build_linux() -> None:
 
 
 def build_windows(*, thin_runtime: bool = True) -> None:
-    if sys.platform != "win32":
-        raise SystemExit("Windows desktop build must run on Windows.")
-
-    cargo_target = os.environ.get("CARGO_TARGET_DIR", str(op.DESKTOP_CARGO_TARGET))
-    os.environ["CARGO_TARGET_DIR"] = cargo_target
-    op.DESKTOP_CARGO_TARGET.mkdir(parents=True, exist_ok=True)
-
-    _maybe_set_desktop_version()
-    if thin_runtime:
-        import stage_cuda_runtime as stage  # noqa: WPS433
-
-        stage.stage_runtime(platform="windows-x86_64")
-        stage.prepare_tauri_resource()
-        # Keep danqing-api resource path present for tauri.conf
-        stub = op.PROJECT_ROOT / "desktop" / "src-tauri" / "danqing-api"
-        stub.mkdir(parents=True, exist_ok=True)
-        marker = stub / ".thin-runtime-stub"
-        if not (stub / "danqing-api.exe").is_file() and not (stub / "danqing-api").is_file():
-            marker.write_text("thin runtime build — no PyInstaller sidecar\n", encoding="utf-8")
-    else:
-        prep.prepare()
-
-    _run(["rustup", "target", "add", "x86_64-pc-windows-msvc"])
-
-    desktop = op.PROJECT_ROOT / "desktop"
-    npm = _npm()
-    _run([npm, "install"], cwd=desktop)
-    # Thin zip (or legacy large sidecar): NSIS cannot pack ~2GB trees.
-    _run(
-        [
-            npm,
-            "exec",
-            "tauri",
-            "build",
-            "--",
-            "--target",
-            "x86_64-pc-windows-msvc",
-            "--no-bundle",
-        ],
-        cwd=desktop,
-    )
-
-    _run([_python(), str(op.PROJECT_ROOT / "scripts" / "package_windows_desktop_zip.py")])
+    _ = thin_runtime
+    raise SystemExit("Windows temporarily unsupported")
 
 
 def main() -> None:
@@ -176,12 +135,12 @@ def main() -> None:
         "--thin-runtime",
         action="store_true",
         default=True,
-        help="Windows/Linux: stage thin CUDA runtime (default)",
+        help="Linux: stage thin MLX runtime (default)",
     )
     parser.add_argument(
         "--legacy-sidecar",
         action="store_true",
-        help="Windows: use PyInstaller sidecar instead of thin runtime",
+        help="Unused (Windows unsupported)",
     )
     args = parser.parse_args()
     if args.platform == "macos":

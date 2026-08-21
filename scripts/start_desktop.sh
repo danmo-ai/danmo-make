@@ -8,6 +8,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/out_paths.sh"
 # shellcheck source=dev_process.sh
 source "$SCRIPT_DIR/dev_process.sh"
+# shellcheck source=platform_requirements.sh
+source "$SCRIPT_DIR/platform_requirements.sh"
+
+dq_resolve_platform_requirements "$DQ_ROOT"
 
 APP_NAME="${DQ_APP_NAME:-danmo-make}"
 BACKEND_PORT="${DQ_BACKEND_PORT}"
@@ -35,23 +39,18 @@ if [[ -z "$PYTHON311" ]]; then
 fi
 
 VENV_DIR="$DQ_ROOT/.venv"
-if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* || "$(uname -s)" == CYGWIN* ]]; then
-  VENV_PYTHON="$VENV_DIR/Scripts/python.exe"
-  VENV_PIP="$VENV_DIR/Scripts/pip.exe"
-else
-  VENV_PYTHON="$VENV_DIR/bin/python3"
-  VENV_PIP="$VENV_DIR/bin/pip3"
-fi
+VENV_PYTHON="$VENV_DIR/bin/python3"
+VENV_PIP="$VENV_DIR/bin/pip3"
 
 ensure_venv() {
   if [[ ! -f "$VENV_PYTHON" ]]; then
     echo "==> Creating virtual environment..."
     "$PYTHON311" -m venv "$VENV_DIR"
   fi
-  if ! "$VENV_PYTHON" -c "import fastapi, uvicorn" 2>/dev/null; then
-    echo "==> Installing Python dependencies..."
+  if ! "$VENV_PYTHON" -c "import fastapi, uvicorn, mlx" 2>/dev/null; then
+    echo "==> Installing Python dependencies from $DQ_PLATFORM_REQS ..."
     "$VENV_PIP" install --upgrade pip -q
-    "$VENV_PIP" install -r "$DQ_ROOT/requirements.txt" -q
+    "$VENV_PIP" install -r "$DQ_PLATFORM_REQS" -q
   fi
   "$VENV_PYTHON" -c "
 from pathlib import Path

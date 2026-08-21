@@ -1,11 +1,11 @@
 [[permission]]
 identifier = "allow-runtime-status"
-description = "Allow reading CUDA thin runtime status"
+description = "Allow reading MLX thin runtime status"
 commands.allow = ["runtime_status"]
 
 [[permission]]
 identifier = "allow-runtime-set-mirror"
-description = "Allow setting pip/torch mirror preference"
+description = "Allow setting pip mirror preference"
 commands.allow = ["runtime_set_mirror"]
 
 [[permission]]

@@ -15,6 +15,7 @@ from typing import Any, Callable, List, Optional, Protocol, Tuple
 import numpy as np
 
 from backend.core.contracts import AudioEditRequest, AudioGenerationRequest
+from backend.engine.common.model.dit_stem import require_mlx_ctx
 from backend.engine.config.model_configs import AceStepConfig
 from backend.engine.families.ace_step.lm.lm_format import (
     is_instrumental_lyrics,
@@ -552,18 +553,10 @@ def create_ace_step_generator(
     entry: Any | None = None,
     version_key: str | None = None,
 ) -> _AceStepGeneratorProto:
-    backend = getattr(ctx, "backend", "mlx")
-    if backend == "mlx":
-        from backend.engine.families.ace_step.generation_mlx import AceStepMlxGenerator
+    require_mlx_ctx(ctx, feature="ACE-Step audio")
+    from backend.engine.families.ace_step.generation_mlx import AceStepMlxGenerator
 
-        return AceStepMlxGenerator(ctx, bundle_root, entry=entry, version_key=version_key)
-    if backend == "cuda":
-        from backend.engine.families.ace_step.generation_cuda import AceStepCudaGenerator
-
-        return AceStepCudaGenerator(ctx, bundle_root, entry=entry, version_key=version_key)
-    raise RuntimeError(
-        f"ACE-Step audio requires mlx or cuda runtime (got {backend!r})"
-    )
+    return AceStepMlxGenerator(ctx, bundle_root, entry=entry, version_key=version_key)
 
 
 _LM_EXPANSION_REASON_MESSAGES: dict[str, str] = {
@@ -652,8 +645,9 @@ def prepare_music_request(
         resolve_resource_policy,
     )
 
+    _ = backend
     events: List[Tuple[str, str]] = []
-    policy = resolve_resource_policy(backend=backend)
+    policy = resolve_resource_policy()
     lm_enabled = os.environ.get("ACESTEP_USE_LM", "1").strip().lower() not in (
         "0",
         "false",

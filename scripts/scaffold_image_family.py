@@ -58,7 +58,7 @@ class {cls_name}(DelegatingDiTStem):
     def __init__(self, config: Any, ctx: Any):
         from .transformer_mlx import {cls_name} as _MLX
 
-        super().__init__(config, ctx, mlx_cls=_MLX, unavailable_product="{cls_name}")
+        super().__init__(config, ctx, mlx_cls=_MLX)
 ''',
         force=args.force,
     )
@@ -152,7 +152,7 @@ def {register_fn}() -> None:
     # Count root-level stem units + sub-packages
     root_units = len(
         {
-            p.stem.removesuffix("_mlx").removesuffix("_cuda")
+            p.stem.removesuffix("_mlx")
             for p in family_dir.glob("*.py")
             if p.name != "__init__.py"
         }

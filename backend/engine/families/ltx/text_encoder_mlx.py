@@ -399,10 +399,6 @@ class LTX23GemmaEncoder:
         return int(os.environ.get("LTX2_GEMMA_MAX_LENGTH", str(_DEFAULT_MAX_LENGTH)))
 
     def load(self, on_log: Callable[[str, str], None] | None = None) -> None:
-        if getattr(self.ctx, "backend", None) != "mlx":
-            raise RuntimeError(
-                f"LTX 2.3 Gemma encoder requires MLX runtime (got {getattr(self.ctx, 'backend', None)!r})"
-            )
         if not self.bundle_root.is_dir():
             raise RuntimeError(f"LTX 2.3 bundle directory not found: {self.bundle_root}")
 

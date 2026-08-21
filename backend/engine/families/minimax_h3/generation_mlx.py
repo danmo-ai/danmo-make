@@ -49,10 +49,6 @@ class MinimaxH3MlxGenerator:
             on_log(level, msg)
 
     def load(self) -> None:
-        if getattr(self.ctx, "backend", None) != "mlx":
-            raise RuntimeError(
-                f"MiniMax-H3 requires MLX runtime (got {getattr(self.ctx, 'backend', None)!r})"
-            )
         (
             self._video_vae,
             self._audio_vae,

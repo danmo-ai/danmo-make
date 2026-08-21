@@ -2,7 +2,7 @@
 
 Language: **English** | [中文](README_zh.md)
 
-Local **image / video / audio** studio on **MLX** (Apple Silicon) and **CUDA** (NVIDIA). Split stack: FastAPI + Vue 3 SPA + CLI + SQLite, with bilingual UI and **fail-loud** errors (no silent downgrades).
+Local **image / video / audio** studio on **MLX** (Apple Silicon Metal; Linux **mlx[cuda]**). Split stack: FastAPI + Vue 3 SPA + CLI + SQLite, with bilingual UI and **fail-loud** errors (no silent downgrades). **Windows is temporarily unsupported.**
 
 Product name: **Danmo Make**. Runtime / CLI / sidecar ids stay `danqing-*` / `DanQing*Engine` for upgrade compatibility ([AGENTS.md](AGENTS.md) → Naming boundary).
 
@@ -18,15 +18,15 @@ Product name: **Danmo Make**. Runtime / CLI / sidecar ids stay `danqing-*` / `Da
 
 ## Features
 
-- **Dual runtime** — `MLXContext` on Apple Silicon; `CudaContext` when PyTorch CUDA is available (per-model `backends` in the registry).
+- **MLX runtime** — single `MLXContext` stack: Metal on Apple Silicon, **mlx[cuda]** on Linux NVIDIA (per-model `backends: ["mlx"]` in the registry).
 - **Plugin models** — New families = registry JSON + `model_configs` + `families/<family>/` + `_transformer_registry`; pipelines stay family-agnostic.
 - **Contract API + CLI** — Routes/CLI only through contracts + `IImageEngine` / `IVideoEngine` / `IAudioEngine`.
 - **Global queue** — One serial worker for image / video / audio; SSE progress, priority, persistent logs.
 - **Studio UI** — Vue 3 + Vite + TypeScript + `@danqing/dq-ui`; Create / Gallery / Models / Settings; bilingual registry names.
 - **Infinite canvas** — Grid and canvas share one asset library; sessions, lineage edges, staging, composer bindings.
-- **Audio** — ACE-Step music generation (`danqing-audio`, MLX + CUDA) via `MusicPipeline`.
+- **Audio** — ACE-Step music generation (`danqing-audio`, MLX) via `MusicPipeline`.
 - **MCP for agents** — Streamable HTTP at `/mcp/` (tools: `list_models`, `generate_*`, `edit_*`, …). Pair with **Danmo Work** builtin `danmo-make` expert (bound-only).
-- **Desktop apps** — macOS MLX `.dmg`; Windows **portable zip** (CUDA thin, first-run setup); Linux CUDA **server** tar.gz.
+- **Desktop apps** — macOS MLX `.dmg`; Linux mlx[cuda] desktop / **server** tar.gz. Windows packs are temporarily unsupported.
 
 ---
 
@@ -34,8 +34,9 @@ Product name: **Danmo Make**. Runtime / CLI / sidecar ids stay `danqing-*` / `Da
 
 | Platform | Notes |
 |----------|--------|
-| **macOS (Apple Silicon)** | Primary; MLX via Metal |
-| **Linux / Windows + NVIDIA** | CUDA thin desktop/server; first launch installs torch into a local runtime venv |
+| **macOS (Apple Silicon)** | Primary; MLX via Metal — `pip install -r requirements-macos.txt` |
+| **Linux + NVIDIA** | MLX via **mlx[cuda]** — `pip install -r requirements-linux.txt` |
+| **Windows** | Temporarily unsupported |
 | **Python** | 3.11+ (repo `.venv/` for web/dev) |
 | **RAM** | 32 GB+ recommended for large models |
 | **Node.js** | Frontend + desktop packaging |
@@ -54,8 +55,11 @@ git clone https://github.com/danmo-ai/danmo-make.git
 cd danmo-make
 
 python3.11 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+source .venv/bin/activate
+# macOS Apple Silicon:
+pip install -r requirements-macos.txt
+# Linux (NVIDIA / mlx[cuda]):
+# pip install -r requirements-linux.txt
 ```
 
 ### Run (web)
@@ -82,12 +86,12 @@ Override: `DQ_BACKEND_PORT`, `DQ_FRONTEND_PORT`.
 ### Desktop
 
 ```bash
-make pack-macos-desktop    # .app / .dmg (MLX sidecar)
-make pack-windows-desktop  # *-portable.zip (CUDA thin; build on Windows)
-make pack-linux-server     # CUDA thin server tar.gz
+make pack-macos-desktop    # .app / .dmg (MLX Metal sidecar)
+make pack-linux-desktop    # AppImage / .deb (mlx[cuda])
+make pack-linux-server     # Linux MLX thin server tar.gz
 ```
 
-Windows users: unzip the **portable** build to a short path (e.g. `C:\DanmoMake`) and run the exe — not an NSIS installer. First launch opens runtime setup (torch not in the zip).
+Windows is temporarily unsupported.
 
 Details: [desktop/README.md](desktop/README.md).
 
@@ -109,7 +113,7 @@ CLI ↔ REST: [AGENTS.md](AGENTS.md#cli-vs-rest-api).
 
 | Path | Role |
 |------|------|
-| `~/.danmo-make/` | Control plane: workspace pointer, app config, logs, `api.port`, CUDA `runtime-venv` |
+| `~/.danmo-make/` | Control plane: workspace pointer, app config, logs, `api.port`, optional Linux `runtime-venv` |
 | `{workspace}/config/` | Runtime `models_registry.json`, presets (seeded from `default_config/`) |
 | `{workspace}/models/` | Weights / LoRAs |
 | `{workspace}/outputs/` | Generations |
@@ -175,7 +179,7 @@ Create → **Canvas** view: import (`I`), generate into staging (`S` snap), line
 
 ### ControlNet (FLUX.1)
 
-Structural guide on text-to-image for `flux1*` (Canny / Depth / Redux); Fill model for retouch/extend. MLX-first today; CUDA paths fail loud if unimplemented. Details in [AGENTS.md](AGENTS.md) → Gotchas.
+Structural guide on text-to-image for `flux1*` (Canny / Depth / Redux); Fill model for retouch/extend. MLX stack only. Details in [AGENTS.md](AGENTS.md) → Gotchas.
 
 ---
 
@@ -213,7 +217,7 @@ TaskScheduler  (single global queue)
         ↓
 DanQingImageEngine / DanQingVideoEngine / DanQingAudioEngine
         ↓
-Pipelines + FamilyPlugin + RuntimeContext (MLX | CUDA)
+Pipelines + FamilyPlugin + RuntimeContext (MLX)
         ↓
 V3TaskStore + SQLiteAssetStore
 ```
@@ -228,17 +232,17 @@ Tag `v*` → [`.github/workflows/release.yml`](.github/workflows/release.yml):
 
 | Platform | Artifact |
 |----------|----------|
-| macOS Apple Silicon | MLX `.dmg` / `.app` |
-| Windows x64 | CUDA thin **`*-portable.zip`** |
-| Linux x64 | CUDA thin **server** `.tar.gz` |
+| macOS Apple Silicon | MLX `.dmg` / `.app` (Metal) |
+| Linux x64 | MLX (**mlx[cuda]**) desktop / **server** `.tar.gz` |
+| Windows | Temporarily unsupported |
 
 ```bash
 make pack-macos-desktop
-make pack-windows-desktop    # on Windows
+make pack-linux-desktop
 make pack-linux-server
 ```
 
-Do not mix MLX and CUDA in one bundle.
+Single MLX stack on all supported platforms (Metal or mlx[cuda]) — no separate torch CUDA engine.
 
 ---
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Protocol
 
+from backend.engine.common.model.dit_stem import require_mlx_ctx
 from backend.engine.config.model_configs import WanConfig
 
 
@@ -42,12 +43,7 @@ def create_bernini_renderer_generator(
     version_key: str | None = None,
     project_root: Path | None = None,
 ) -> BerniniRendererProto:
-    backend = getattr(ctx, "backend", "mlx")
-    if backend != "mlx":
-        raise RuntimeError(
-            f"Bernini-R renderer requires MLX runtime (got {backend!r}). "
-            "Select an MLX model version on Apple Silicon."
-        )
+    require_mlx_ctx(ctx, feature="Bernini-R renderer")
     if not bundle_root.is_dir():
         raise RuntimeError(f"Bernini-R bundle directory not found: {bundle_root}")
     cfg = config or WanConfig()

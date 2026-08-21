@@ -32,11 +32,11 @@ Allowlist：`engine_governance_allowlist.txt`（`# --- imports ---` 等分段）
 |------|------|
 | `build_desktop.sh` | 前端 + `make pack-macos-desktop` |
 | `build_sidecar.py` | PyInstaller sidecar |
-| `prune_sidecar.py` / `prune_sidecar_cuda.py` | sidecar 瘦身 |
-| `pyinstaller_common.py` / `pyinstaller_runtime_hook.py` / `pyinstaller_hooks/` | 冻结打包 |
+| `prune_sidecar.py` | sidecar 瘦身（MLX） |
+| `pyinstaller_common.py` / `pyinstaller_runtime_hook.py` / `pyinstaller_hooks/` | 冻结打包（profile=`mlx`） |
 | `prepare_tauri_resources.py` / `set_desktop_version.py` / `stage_desktop_bundle.py` | Tauri |
 | `tauri_build_macos.sh` / `tauri_build.sh` / `tauri_build.py` | Tauri 构建 |
-| `package_linux_cuda_release.py` / `package_windows_cuda_release.py` | CUDA 发行包 |
+| `package_linux_cuda_release.py` / `package_cuda_thin.py` | Linux MLX thin 发行包（`danmo-make-linux-mlx-*`） |
 | `clean_build.py` | `make clean` |
 
 ## 可选工具

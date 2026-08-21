@@ -1,37 +1,26 @@
-"""DiT dispatch stem — shared backend selection and ``_inner`` delegation (≥2 families)."""
+"""DiT stem — construct MLX implementation and proxy attributes (no dual-backend dispatch)."""
 from __future__ import annotations
 
 from typing import Any, Type
 
-from backend.engine.common.model.base import TransformerBase
 
-
-def dispatch_dit_implementation(
-    config: Any,
-    ctx: Any,
-    *,
-    mlx_cls: Type[Any],
-    cuda_cls: Type[Any] | None = None,
-    unavailable_product: str | None = None,
-    **factory_kwargs: Any,
-) -> Any:
-    """Instantiate MLX or CUDA DiT; fail loud when CUDA is requested but not provided."""
+def require_mlx_ctx(ctx: Any, *, feature: str = "DiT") -> None:
+    """Fail loud unless ``ctx.backend`` is mlx (Metal or mlx[cuda])."""
     backend = getattr(ctx, "backend", "mlx")
-    if backend == "mlx":
-        return mlx_cls(config, ctx, **factory_kwargs)
-    if backend == "cuda":
-        if cuda_cls is not None:
-            return cuda_cls(config, ctx, **factory_kwargs)
-        if unavailable_product is None:
-            raise RuntimeError(f"CUDA DiT is not implemented for backend={backend!r}")
-        from backend.engine.common.model.dit_cuda_unavailable import raise_cuda_dit_unavailable
-
-        raise_cuda_dit_unavailable(unavailable_product)
-    raise RuntimeError(f"Unsupported DiT backend: {backend!r}")
+    if backend != "mlx":
+        raise RuntimeError(
+            f"{feature} requires MLX runtime (got backend={backend!r}; "
+            "use mlx on macOS or mlx[cuda] on Linux)"
+        )
 
 
-class DelegatingDiTStem(TransformerBase):
-    """Thin stem: ``_inner`` holds MLX/CUDA implementation; forwards unknown attrs."""
+class DelegatingDiTStem:
+    """Construct-only stem: hold ``_inner`` MLX DiT; attribute access proxies to it.
+
+    Does **not** subclass :class:`TransformerBase` — that avoided dual-backend MRO
+    gaps that forced per-hook forwarders. Product hooks live on the MLX impl
+    (or on a stem subclass override, e.g. Wan).
+    """
 
     _inner: Any
 
@@ -41,19 +30,10 @@ class DelegatingDiTStem(TransformerBase):
         ctx: Any,
         *,
         mlx_cls: Type[Any],
-        cuda_cls: Type[Any] | None = None,
-        unavailable_product: str | None = None,
         **factory_kwargs: Any,
     ) -> None:
-        super().__init__()
-        self._inner = dispatch_dit_implementation(
-            config,
-            ctx,
-            mlx_cls=mlx_cls,
-            cuda_cls=cuda_cls,
-            unavailable_product=unavailable_product,
-            **factory_kwargs,
-        )
+        require_mlx_ctx(ctx, feature=getattr(mlx_cls, "__name__", "DiT"))
+        self._inner = mlx_cls(config, ctx, **factory_kwargs)
         self.ctx = self._inner.ctx
         self.config = self._inner.config
         self._param_map = getattr(self._inner, "_param_map", {})
@@ -74,38 +54,20 @@ class DelegatingDiTStem(TransformerBase):
         self._param_map = getattr(self._inner, "_param_map", {})
         return out
 
-    def after_load_weights(self, bundle_root: str | None = None) -> None:
-        if hasattr(self._inner, "after_load_weights"):
-            self._inner.after_load_weights(bundle_root)
-
-    def sanitize(self, weights: dict) -> dict:
-        if hasattr(self._inner, "sanitize"):
-            return self._inner.sanitize(weights)
-        return weights
-
-    def combine_cfg_noise(self, *args: Any, **kwargs: Any) -> Any:
-        return self._inner.combine_cfg_noise(*args, **kwargs)
-
-    def refine_cfg_noise(self, *args: Any, **kwargs: Any) -> Any:
-        return self._inner.refine_cfg_noise(*args, **kwargs)
-
-    # ── Hook delegation (MRO gap fix for methods with defaults) ────
-    def pack_latents(self, ctx: Any, latents: Any) -> Any:
-        return self._inner.pack_latents(ctx, latents)
-
-    def unpack_latents(self, ctx: Any, latents: Any, h: int, w: int) -> Any:
-        return self._inner.unpack_latents(ctx, latents, h, w)
-
-    def prepare_conditioning(self, request, bundle_root=None) -> dict:
-        return self._inner.prepare_conditioning(request, bundle_root)
-
-    def before_denoise(self, latents, timesteps, sigmas, **cond):
-        return self._inner.before_denoise(latents, timesteps, sigmas, **cond)
-
-    def step_callback(self, step_idx: int, latents, noise_pred):
-        return self._inner.step_callback(step_idx, latents, noise_pred)
-
     def _build_param_map(self) -> None:
         if hasattr(self._inner, "_build_param_map"):
             self._inner._build_param_map()
             self._param_map = getattr(self._inner, "_param_map", {})
+
+
+# Back-compat alias used by a few imports / tests
+def dispatch_dit_implementation(
+    config: Any,
+    ctx: Any,
+    *,
+    mlx_cls: Type[Any],
+    **factory_kwargs: Any,
+) -> Any:
+    """Instantiate ``mlx_cls`` after mlx backend check."""
+    require_mlx_ctx(ctx, feature=getattr(mlx_cls, "__name__", "DiT"))
+    return mlx_cls(config, ctx, **factory_kwargs)

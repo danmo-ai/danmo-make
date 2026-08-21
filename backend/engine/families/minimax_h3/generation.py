@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Protocol
 
+from backend.engine.common.model.dit_stem import require_mlx_ctx
 from backend.engine.config.model_configs import MinimaxH3Config
 from backend.engine.families.minimax_h3.generation_mlx import MinimaxH3MlxGenerator
 
@@ -40,12 +41,7 @@ def create_minimax_h3_generator(
     entry: Any | None = None,
     version_key: str | None = None,
 ) -> MinimaxH3GeneratorProto:
-    backend = getattr(ctx, "backend", "mlx")
-    if backend != "mlx":
-        raise RuntimeError(
-            f"MiniMax-H3 requires MLX runtime (got {backend!r}). "
-            "Select an MLX backend model version on Apple Silicon."
-        )
+    require_mlx_ctx(ctx, feature="MiniMax-H3")
     if not bundle_root.is_dir():
         raise RuntimeError(f"MiniMax-H3 bundle directory not found: {bundle_root}")
     return MinimaxH3MlxGenerator(

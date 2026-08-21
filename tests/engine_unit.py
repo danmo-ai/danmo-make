@@ -603,24 +603,23 @@ class ZImageEnhancementTests(unittest.TestCase):
 
         require_mlx_if_option_active(_CudaCtx(), feature="lemica_mode", option="none")
 
-    def test_esrgan_stem_cuda_placeholder(self) -> None:
-        import tempfile
-        from pathlib import Path
+    def test_esrgan_stem_requires_mlx(self) -> None:
+        from unittest.mock import patch
 
-        from backend.engine.families.esrgan.stem_cuda import run_esrgan_upscale
+        from backend.engine.families.esrgan import stem as esrgan_stem
 
-        with tempfile.TemporaryDirectory() as td:
+        with patch.object(esrgan_stem, "_require_mlx_esrgan", side_effect=RuntimeError("Real-ESRGAN upscale requires MLX runtime")):
             with self.assertRaises(RuntimeError) as ctx:
-                run_esrgan_upscale(
-                    bundle_path=Path(td),
+                esrgan_stem.run_esrgan_upscale(
+                    bundle_path="/tmp",
                     model_key="real-esrgan-x4plus",
-                    source_image=Path(td) / "x.png",
+                    source_image="/tmp/x.png",
                     scale=4,
                     softness=0.0,
                     seed=0,
-                    output_png=Path(td) / "out.png",
+                    output_png="/tmp/out.png",
                 )
-            self.assertIn("MLX-only", str(ctx.exception))
+            self.assertIn("MLX", str(ctx.exception))
 
     def test_register_merged_z_image_model(self) -> None:
         import json
@@ -643,7 +642,7 @@ class ZImageEnhancementTests(unittest.TestCase):
             },
             "runtime": {
                 "family": "z_image",
-                "backends": ["mlx", "cuda"],
+                "backends": ["mlx"],
                 "overrides": {"supports_guidance": False},
             },
             "actions": {"create": {}},
@@ -816,7 +815,6 @@ class ControlNetRuntimeTests(unittest.TestCase):
                 require_controlnet_runtime(fake_ctx, feature="structural_guide")
         msg = str(ctx.exception).lower()
         self.assertIn("mlx-only", msg)
-        self.assertIn("cuda", msg)
 
 
 class DepthProMlxTests(unittest.TestCase):
@@ -851,10 +849,9 @@ class DepthProMlxTests(unittest.TestCase):
 
 
 class FluxReduxParityTests(unittest.TestCase):
-    def test_redux_mlx_matches_cuda_when_bundle_present(self) -> None:
+    def test_redux_mlx_shape_when_bundle_present(self) -> None:
         import json
 
-        import numpy as np
         from PIL import Image
 
         pointer = (
@@ -869,32 +866,18 @@ class FluxReduxParityTests(unittest.TestCase):
         if not bundle.is_dir():
             self.skipTest("flux-redux bundle not installed")
 
-        from backend.engine.families.flux1.redux_encode_cuda import encode_redux_context_tokens_cuda
         from backend.engine.families.flux1.redux_encode_mlx import encode_redux_context_tokens_mlx
 
         img = Image.new("RGB", (512, 512), color=(40, 120, 200))
         out_mlx = encode_redux_context_tokens_mlx(img, redux_bundle_root=bundle)
-        out_cuda = encode_redux_context_tokens_cuda(img, redux_bundle_root=bundle)
-        self.assertEqual(out_mlx.shape, out_cuda.shape)
         self.assertEqual(out_mlx.shape[1:], (729, 4096))
-        cos = float(
-            np.sum(out_mlx.flatten() * out_cuda.flatten())
-            / (np.linalg.norm(out_mlx) * np.linalg.norm(out_cuda) + 1e-8)
-        )
-        # Native MLX SigLIP + redux MLP — not bit-identical to HF torch path.
-        self.assertGreater(cos, 0.85)
 
 
 class FluxDepthParityTests(unittest.TestCase):
-    def test_depth_mlx_matches_cuda_when_bundle_present(self) -> None:
-        import importlib.util
+    def test_depth_mlx_shape_when_bundle_present(self) -> None:
         import json
 
-        import numpy as np
         from PIL import Image
-
-        if importlib.util.find_spec("torchvision") is None:
-            self.skipTest("torchvision required for depth-pro CUDA reference path")
 
         pointer = (
             Path(__file__).resolve().parents[1]
@@ -908,27 +891,17 @@ class FluxDepthParityTests(unittest.TestCase):
         if not (bundle / "model.safetensors").is_file():
             self.skipTest("depth-pro bundle not installed")
 
-        from backend.engine.families.flux1.depth_encode_cuda import estimate_depth_rgb01_cuda
         from backend.engine.families.flux1.depth_encode_mlx import estimate_depth_rgb01_mlx
 
         img = Image.new("RGB", (512, 512), color=(40, 120, 200))
         out_mlx = estimate_depth_rgb01_mlx(
             img, width=256, height=256, depth_bundle_root=bundle,
         )
-        out_cuda = estimate_depth_rgb01_cuda(
-            img, width=256, height=256, depth_bundle_root=bundle,
-        )
-        self.assertEqual(out_mlx.shape, out_cuda.shape)
-        cos = float(
-            np.sum(out_mlx.flatten() * out_cuda.flatten())
-            / (np.linalg.norm(out_mlx) * np.linalg.norm(out_cuda) + 1e-8)
-        )
-        # Native Depth Pro MLX reimplementation — min-max RGB postprocess aligns; internals differ.
-        self.assertGreater(cos, 0.90)
+        self.assertEqual(out_mlx.shape, (256, 256, 3))
 
 
 class CogView4GlmEncoderMlxTests(unittest.TestCase):
-    def test_glm_encode_mlx_matches_torch_when_bundle_present(self) -> None:
+    def test_glm_encode_mlx_shape_when_bundle_present(self) -> None:
         import json
 
         import mlx.core as mx
@@ -949,7 +922,6 @@ class CogView4GlmEncoderMlxTests(unittest.TestCase):
             self.skipTest("cogview4-6b text encoder bundle not installed")
 
         from backend.engine.families.cogview4.text_encoder import CogView4TextEncoder
-        from backend.engine.families.cogview4.text_encoder_cuda import build_glm4_text_encoder_torch
         from backend.engine.runtime.mlx import MLXContext
 
         ctx = MLXContext()
@@ -961,15 +933,13 @@ class CogView4GlmEncoderMlxTests(unittest.TestCase):
         )
         prompt = "a studio photo of a red backpack"
         out_mlx = np.array(enc.encode([prompt]).astype(mx.float32))
-        torch_enc = build_glm4_text_encoder_torch(str(te_dir))
-        np_ids = enc._tokenize_glm_np([prompt]).astype(np.int64)
-        out_torch = torch_enc.encode_numpy(np_ids)
-        self.assertEqual(out_mlx.shape, out_torch.shape)
-        cos = float(
-            np.sum(out_mlx.flatten() * out_torch.flatten())
-            / (np.linalg.norm(out_mlx) * np.linalg.norm(out_torch) + 1e-8)
-        )
-        self.assertGreater(cos, 0.999)
+        self.assertEqual(out_mlx.ndim, 3)
+        self.assertEqual(out_mlx.shape[0], 1)
+        # MLX GLM tokenize uses padding="longest" then pad-prefix to multiple of 16
+        # (not fixed max_seq_len=256 like the removed torch path).
+        self.assertGreaterEqual(out_mlx.shape[1], 1)
+        self.assertEqual(out_mlx.shape[1] % 16, 0)
+        self.assertLessEqual(out_mlx.shape[1], 256)
 
 
 class CogView4DiTForwardSmokeTests(unittest.TestCase):
@@ -1483,17 +1453,11 @@ class LtxWeightTests(unittest.TestCase):
         gen = create_step1x_edit_generator(_Ctx(), Path("/tmp"), config=get_config_class("step1x_edit")())
         self.assertEqual(gen.__class__.__name__, "Step1XEditMlxGenerator")
 
-        try:
-            import torch  # noqa: F401
-            import torchvision  # noqa: F401
-        except ImportError:
-            return
-
         class _CudaCtx:
             backend = "cuda"
 
-        gen_cuda = create_step1x_edit_generator(_CudaCtx(), Path("/tmp"), config=get_config_class("step1x_edit")())
-        self.assertEqual(gen_cuda.__class__.__name__, "Step1XEditCudaGenerator")
+        with self.assertRaises(RuntimeError):
+            create_step1x_edit_generator(_CudaCtx(), Path("/tmp"), config=get_config_class("step1x_edit")())
 
     def test_hidream_o1_registry_models_present(self) -> None:
         from backend.core.model_registry import ModelRegistry
@@ -1659,35 +1623,31 @@ class ZImageCudaTests(unittest.TestCase):
         model = ZImageTransformer(ZImageConfig(), MLXContext())
         self.assertIs(model.__class__.forward, ZImageTransformer.forward)
 
-    def test_transformer_dispatch_cuda(self) -> None:
+    def test_transformer_dispatch_cuda_fail_loud(self) -> None:
+        from types import SimpleNamespace
+
         from backend.engine.config.model_configs import ZImageConfig
         from backend.engine.families.z_image.transformer import ZImageTransformer
-        from backend.engine.families.z_image.transformer_cuda import ZImageDiTCuda
-        from backend.engine.runtime.cuda import CudaContext
 
-        model = ZImageTransformer(ZImageConfig(), CudaContext("cpu"))
-        self.assertIsInstance(model._inner, ZImageDiTCuda)
+        with self.assertRaises(RuntimeError):
+            ZImageTransformer(ZImageConfig(), SimpleNamespace(backend="cuda"))
 
-    def test_transformer_param_map_on_cuda_context(self) -> None:
+    def test_transformer_param_map_on_mlx_context(self) -> None:
         from backend.engine.config.model_configs import ZImageConfig
         from backend.engine.families.z_image.transformer import ZImageTransformer
-        from backend.engine.runtime.cuda import CudaContext
+        from backend.engine.runtime.mlx import MLXContext
 
-        ctx = CudaContext("cpu")
+        ctx = MLXContext()
         model = ZImageTransformer(ZImageConfig(), ctx)
         self.assertGreater(len(model._param_map), 100)
         self.assertIn("x_embedder.weight", model._param_map)
-        import torch
-
-        w = model._param_map["x_embedder.weight"]
-        self.assertIsInstance(w, torch.Tensor)
 
     def test_combine_cfg_noise_z_image_convention(self) -> None:
         from backend.engine.config.model_configs import ZImageConfig
         from backend.engine.families.z_image.transformer import ZImageTransformer
-        from backend.engine.runtime.cuda import CudaContext
+        from backend.engine.runtime.mlx import MLXContext
 
-        model = ZImageTransformer(ZImageConfig(), CudaContext("cpu"))
+        model = ZImageTransformer(ZImageConfig(), MLXContext())
         cond, uncond = 2.0, 1.0
         g = 4.0
         out = model.combine_cfg_noise(cond, uncond, g)
@@ -1704,14 +1664,14 @@ class QwenImageTransformerTests(unittest.TestCase):
         model = QwenImageTransformer(QwenImageConfig(), MLXContext())
         self.assertIsInstance(model._inner, QwenMLX)
 
-    def test_transformer_dispatch_cuda(self) -> None:
+    def test_transformer_dispatch_cuda_fail_loud(self) -> None:
+        from types import SimpleNamespace
+
         from backend.engine.config.model_configs import QwenImageConfig
         from backend.engine.families.qwen.transformer import QwenImageTransformer
-        from backend.engine.families.qwen.transformer_cuda import QwenImageDiTCuda
-        from backend.engine.runtime.cuda import CudaContext
 
-        model = QwenImageTransformer(QwenImageConfig(), CudaContext("cpu"))
-        self.assertIsInstance(model._inner, QwenImageDiTCuda)
+        with self.assertRaises(RuntimeError):
+            QwenImageTransformer(QwenImageConfig(), SimpleNamespace(backend="cuda"))
 
     def test_transformer_unsupported_backend(self) -> None:
         from backend.engine.config.model_configs import QwenImageConfig
@@ -1721,10 +1681,9 @@ class QwenImageTransformerTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             QwenImageTransformer(QwenImageConfig(), ctx)
 
-    def test_qwen_image_registry_declares_cuda_backend(self) -> None:
+    def test_qwen_image_registry_declares_mlx_backend(self) -> None:
         entry = _load_default_registry_expanded()["models"]["qwen-image"]
-        self.assertIn("cuda", entry.get("backends", []))
-        self.assertIn("mlx", entry.get("backends", []))
+        self.assertEqual(entry.get("backends", []), ["mlx"])
 
     def test_qwen_lightning_lora_registry(self) -> None:
         models = _load_default_registry_expanded()["models"]
@@ -1782,7 +1741,7 @@ class QwenImageTransformerTests(unittest.TestCase):
         self.assertTrue(params["edit_use_picture_prefix"])
         self.assertTrue(params["edit_plus_multi_image"])
         self.assertEqual(params["steps"]["default"], 40)
-        self.assertIn("cuda", entry.get("backends", []))
+        self.assertEqual(entry.get("backends", []), ["mlx"])
 
     def test_qwen_image_lora_scope_across_edit_models(self) -> None:
         from backend.engine.families.qwen.weights_mlx import (
@@ -1923,7 +1882,7 @@ class ErnieImageTransformerTests(unittest.TestCase):
 class TransformerStemDispatchTests(unittest.TestCase):
     _FAMILY_PKG = {"qwen_image": "qwen"}
 
-    def test_registry_transformer_stems_have_backend_dispatch(self) -> None:
+    def test_registry_transformer_stems_use_mlx_stem(self) -> None:
         from pathlib import Path
 
         from backend.engine import _transformer_registry as reg
@@ -1934,7 +1893,7 @@ class TransformerStemDispatchTests(unittest.TestCase):
             from backend.engine.config.model_configs import get_config_class
 
             cfg = get_config_class(family)()
-            # Shape C / avatar family_* stems are placeholders (no DiT backend dispatch).
+            # Shape C / avatar family_* stems are placeholders (no DiT stem).
             shapes = (
                 str(getattr(cfg, "image_pipeline_shape", "") or ""),
                 str(getattr(cfg, "video_pipeline_shape", "") or ""),
@@ -1945,14 +1904,24 @@ class TransformerStemDispatchTests(unittest.TestCase):
             stem = root / "backend" / "engine" / "families" / pkg / "transformer.py"
             self.assertTrue(stem.is_file(), f"missing stem: {stem}")
             text = stem.read_text(encoding="utf-8")
-            self.assertIn("backend", text, family)
-            has_dispatch = (
-                "_inner" in text
-                or 'backend == "cuda"' in text
-                or "DelegatingDiTStem" in text
+            has_mlx_stem = (
+                "DelegatingDiTStem" in text
                 or "dispatch_dit_implementation" in text
+                or "require_mlx_ctx" in text
+                or "_inner" in text
             )
-            self.assertTrue(has_dispatch, f"{family} transformer.py lacks backend dispatch")
+            self.assertTrue(has_mlx_stem, f"{family} transformer.py lacks MLX stem wiring")
+
+    def test_require_mlx_ctx_rejects_non_mlx(self) -> None:
+        from types import SimpleNamespace
+
+        from backend.engine.common.model.dit_stem import require_mlx_ctx
+
+        require_mlx_ctx(SimpleNamespace(backend="mlx"), feature="unit")
+        with self.assertRaises(RuntimeError) as ctx:
+            require_mlx_ctx(SimpleNamespace(backend="cuda"), feature="unit")
+        self.assertIn("MLX", str(ctx.exception))
+        self.assertIn("cuda", str(ctx.exception))
 
     def test_get_transformer_class_resolves_stems(self) -> None:
         from backend.engine._transformer_registry import get_transformer_class, get_video_transformer_class
@@ -1972,12 +1941,13 @@ class DiTBackendDispatchTests(unittest.TestCase):
         self.assertIsInstance(model._inner, Flux1MLX)
 
     def test_flux1_dispatch_cuda_fail_loud(self) -> None:
+        from types import SimpleNamespace
+
         from backend.engine.config.model_configs import Flux1Config
         from backend.engine.families.flux1.transformer import Flux1Transformer
-        from backend.engine.runtime.cuda import CudaContext
 
         with self.assertRaises(RuntimeError):
-            Flux1Transformer(Flux1Config(), CudaContext("cpu"))
+            Flux1Transformer(Flux1Config(), SimpleNamespace(backend="cuda"))
 
     def test_ltx_dispatch_mlx(self) -> None:
         from backend.engine.config.model_configs import LTXConfig
@@ -2134,29 +2104,31 @@ class DiTBackendDispatchTests(unittest.TestCase):
         self.assertEqual(pinned[0, 2, 0].item(), 7.0)
 
     def test_ltx_dispatch_cuda_fail_loud(self) -> None:
+        from types import SimpleNamespace
+
         from backend.engine.config.model_configs import LTXConfig
         from backend.engine.families.ltx.transformer import LTXTransformer
-        from backend.engine.runtime.cuda import CudaContext
 
         with self.assertRaises(RuntimeError):
-            LTXTransformer(LTXConfig(), CudaContext("cpu"))
+            LTXTransformer(LTXConfig(), SimpleNamespace(backend="cuda"))
 
-    def test_wan_dispatch_cuda(self) -> None:
+    def test_wan_dispatch_cuda_fail_loud(self) -> None:
+        from types import SimpleNamespace
+
         from backend.engine.config.model_configs import WanConfig
         from backend.engine.families.wan.transformer import WanTransformer
-        from backend.engine.families.wan.transformer_cuda import WanModelCUDA
-        from backend.engine.runtime.cuda import CudaContext
 
-        model = WanTransformer(WanConfig(), CudaContext("cpu"))
-        self.assertIsInstance(model._inner, WanModelCUDA)
+        with self.assertRaises(RuntimeError):
+            WanTransformer(WanConfig(), SimpleNamespace(backend="cuda"))
 
     def test_flux2_and_fibo_cuda_fail_loud(self) -> None:
+        from types import SimpleNamespace
+
         from backend.engine.config.model_configs import FIBOConfig, Flux2Config
         from backend.engine.families.fibo.transformer import FIBOTransformer
         from backend.engine.families.flux2.transformer import Flux2Transformer
-        from backend.engine.runtime.cuda import CudaContext
 
-        ctx = CudaContext("cpu")
+        ctx = SimpleNamespace(backend="cuda")
         with self.assertRaises(RuntimeError):
             Flux2Transformer(Flux2Config(), ctx)
         with self.assertRaises(RuntimeError):
@@ -4143,11 +4115,8 @@ class HunyuanWeightTests(unittest.TestCase):
             )
 
     def test_torch_device_preferences(self) -> None:
-        from backend.engine.common.codecs.text_encoders.torch_device import resolve_torch_inference_device
-
-        self.assertEqual(resolve_torch_inference_device("cpu"), "cpu")
-        with self.assertRaises(RuntimeError):
-            resolve_torch_inference_device("bad-device")
+        # torch_device helper removed with PyTorch CUDA stack (MLX-only).
+        self.skipTest("torch_device removed; engine is MLX-only")
 
     def test_hunyuan_text_encoder_cache(self) -> None:
         from pathlib import Path
@@ -5138,26 +5107,7 @@ class DiffRhythmDecodeTests(unittest.TestCase):
         self.assertEqual(lat_mlx.shape, (512,))
         self.assertAlmostEqual(float(np.linalg.norm(lat_mlx)), 1.0, places=3)
 
-        try:
-            import torch  # noqa: F401
-            from backend.engine.families.diffrhythm.mulan_cuda import MuQStyleEncoderTorch
-        except ImportError:
-            return
-
-        try:
-            import muq  # noqa: F401
-        except ImportError:
-            return
-
-        torch_enc = MuQStyleEncoderTorch(bundle, cfg.mulan_repo_id)
-        torch_enc.load()
-        lat_torch = np.array(torch_enc.encode_text(prompt, array_fn=ctx.array), dtype=np.float32)
-        cos = float(
-            np.dot(lat_mlx, lat_torch)
-            / (np.linalg.norm(lat_mlx) * np.linalg.norm(lat_torch) + 1e-9)
-        )
-        self.assertGreater(cos, 0.999)
-        self.assertLess(float(np.max(np.abs(lat_mlx - lat_torch))), 0.01)
+        # MLX-only: torch MuQ reference path removed with CUDA engine.
 
     def test_bigvgan_mlx_decode_peak_when_bundle_present(self) -> None:
         import json
@@ -7008,11 +6958,12 @@ class ArchitectureWrapUpTests(unittest.TestCase):
         i2v_patterns = i2v_v1.get("allow_patterns") or []
         self.assertIn("high_noise_model.safetensors", i2v_patterns[0])
         self.assertNotIn("config.json", i2v_patterns)
-        distill = models["wan-2.2-t2v-14b-distill"]
+        distill = models["wan-2.2-i2v-14b-distill"]
         self.assertEqual(distill.get("dependencies") or [], [])
-        fp8 = distill["versions"]["fp8"]
-        repos = [r.get("repo_id") for r in (fp8.get("bundle_repos") or []) if isinstance(r, dict)]
+        bf16 = distill["versions"]["bf16"]
+        repos = [r.get("repo_id") for r in (bf16.get("bundle_repos") or []) if isinstance(r, dict)]
         self.assertIn("Wan-AI/Wan2.2-T2V-A14B", repos)
+        self.assertNotIn("wan-2.2-t2v-14b-distill", models)
 
     def test_merge_wan_config_moe_without_json_sets_dual_model(self) -> None:
         from backend.engine.config.model_configs import WanConfig, merge_wan_config_from_bundle

@@ -1325,8 +1325,6 @@ def decode_video_latents_ncthw(
     on_stage: Callable[[float], None] | None = None,
     on_log: Callable[[str], None] | None = None,
 ) -> mx.array:
-    if getattr(ctx, "backend", None) != "mlx":
-        raise RuntimeError(f"MiniMax-H3 VAE decode requires MLX (got {getattr(ctx, 'backend', None)!r})")
     if on_log:
         on_log(f"MiniMax-H3 video VAE decode start {tuple(latents_bcthw.shape)}")
     if on_stage:
@@ -1347,8 +1345,6 @@ def decode_audio_latents(
     bundle_root: Path,
 ) -> mx.array:
     """Decode ``[2, 32, T]`` (stereo as batch) → ``[2, 1, samples]`` waveform."""
-    if getattr(ctx, "backend", None) != "mlx":
-        raise RuntimeError(f"MiniMax-H3 audio VAE decode requires MLX (got {getattr(ctx, 'backend', None)!r})")
     vae = load_audio_vae(bundle_root, load_fn=getattr(ctx, "load_weights", None))
     wav = vae.decode(audio_latent, denormalize=True)
     _eval(wav)
@@ -1389,8 +1385,6 @@ def mux_video_audio_mp4(
     on_log: Callable[[str], None] | None = None,
 ) -> str:
     """Decode video+audio latents and mux with ffmpeg (stereo wav + raw RGB frames)."""
-    if getattr(ctx, "backend", None) != "mlx":
-        raise RuntimeError(f"MiniMax-H3 mux requires MLX (got {getattr(ctx, 'backend', None)!r})")
     ffmpeg = require_ffmpeg()
     load_fn = getattr(ctx, "load_weights", None)
     video_vae = load_video_vae(bundle_root, load_fn=load_fn)

@@ -1,4 +1,4 @@
-//! CUDA thin-runtime helpers for the desktop shell.
+//! Linux MLX thin-runtime helpers for the desktop shell.
 
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
@@ -275,7 +275,7 @@ pub fn start_install(
     mirror: Option<String>,
 ) -> Result<(), String> {
     if !is_thin_runtime(&app) {
-        return Err("Runtime install is only available on CUDA thin desktop builds".into());
+        return Err("Runtime install is only available on Linux MLX thin desktop builds".into());
     }
     if INSTALL_RUNNING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -410,8 +410,10 @@ fn pipe_lines<T: std::io::Read + Send + 'static>(
         if let Some(f) = log_file.as_mut() {
             let _ = writeln!(f, "{line}");
         }
-        let phase = if line.contains("torch") {
-            "torch"
+        let phase = if line.contains("mlx") {
+            "mlx"
+        } else if line.contains("torch") {
+            "deps"
         } else if line.contains("pip") {
             "pip"
         } else {

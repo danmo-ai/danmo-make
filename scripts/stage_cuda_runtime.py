@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage thin CUDA runtime tree (portable Python + app code, no torch)."""
+"""Stage thin Linux MLX runtime tree (portable Python + app code, no mlx wheels)."""
 
 from __future__ import annotations
 
@@ -22,8 +22,7 @@ _APP_COPY_DIRS = (
 )
 _APP_COPY_FILES = (
     "requirements.txt",
-    "requirements-cuda.txt",
-    "requirements-torch-cuda.txt",
+    "requirements-linux.txt",
 )
 
 
@@ -93,7 +92,7 @@ def prepare_tauri_resource(src: Path | None = None) -> Path:
     src_dir = src or (op.OUT_ROOT / "runtime")
     dst = op.PROJECT_ROOT / "desktop" / "src-tauri" / "runtime"
     if not src_dir.is_dir():
-        raise SystemExit(f"Missing thin runtime at {src_dir}; run package_cuda_thin stage first")
+            raise SystemExit(f"Missing thin runtime at {src_dir}; run stage_cuda_runtime first")
     if not (src_dir / "python").is_dir():
         raise SystemExit(f"Missing portable python under {src_dir / 'python'}")
     if not (src_dir / "app" / "backend").is_dir():
@@ -106,8 +105,8 @@ def prepare_tauri_resource(src: Path | None = None) -> Path:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Stage CUDA thin runtime (no torch)")
-    p.add_argument("--platform", choices=("linux-x86_64", "windows-x86_64"), default=None)
+    p = argparse.ArgumentParser(description="Stage Linux MLX thin runtime (no mlx wheels)")
+    p.add_argument("--platform", choices=("linux-x86_64",), default="linux-x86_64")
     p.add_argument("--dest", type=Path, default=None)
     p.add_argument("--skip-fetch-python", action="store_true")
     p.add_argument("--prepare-tauri", action="store_true", help="Also copy into desktop/src-tauri/runtime")

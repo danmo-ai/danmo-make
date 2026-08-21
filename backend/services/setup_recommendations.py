@@ -25,8 +25,6 @@ _VERSION_PREF_MLX = (
     "bf16",
     "xl-sft",
 )
-_VERSION_PREF_CUDA = ("int4", "int8", "fp16", "bf16", "fp8", "xl-sft")
-
 _PREFERRED_MODEL_ORDER: dict[str, dict[str, tuple[str, ...]]] = {
     "image": {
         "low": ("flux2-klein-4b", "z-image-turbo"),
@@ -103,14 +101,6 @@ def _resolve_reference_memory_gb(
     available_backends: list[str],
 ) -> float:
     cap = float(mlx_memory_limit) if mlx_memory_limit > 0 else memory_gb
-    if "cuda" in available_backends and "mlx" not in available_backends:
-        from backend.engine.families.ace_step.quality.resource_policy_cuda import (
-            detect_cuda_memory_gb,
-        )
-
-        cuda_gb = detect_cuda_memory_gb()
-        if cuda_gb is not None and cuda_gb > 0:
-            return cuda_gb
     if memory_gb > 0 and cap > 0:
         return min(memory_gb, cap)
     if memory_gb > 0:
@@ -182,7 +172,7 @@ def _pick_version(
     if not versions:
         return None, None, None
 
-    pref = _VERSION_PREF_MLX if primary_backend == "mlx" else _VERSION_PREF_CUDA
+    pref = _VERSION_PREF_MLX
     budget = ref_gb * 0.70
     ranked: list[tuple[str, dict[str, Any], float]] = []
     for key, cfg in versions.items():

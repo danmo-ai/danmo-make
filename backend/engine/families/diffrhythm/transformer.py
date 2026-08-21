@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from backend.engine.common.model.base import TransformerBase
+from backend.engine.common.model.dit_stem import require_mlx_ctx
 
 
 class DiffRhythmTransformer(TransformerBase):
@@ -16,12 +17,7 @@ class DiffRhythmTransformer(TransformerBase):
     def __init__(self, ctx: Any, **config: Any):
         super().__init__()
         self._ctx = ctx
-        backend = getattr(ctx, "backend", "mlx")
-        if backend != "mlx":
-            raise RuntimeError(
-                f"DiffRhythmTransformer registry stub supports mlx only (got {backend!r}); "
-                "use generation_mlx for inference."
-            )
+        require_mlx_ctx(ctx, feature="DiffRhythmTransformer")
         from .transformer_mlx import DiffRhythm2CFMMLX, DiffRhythm2DiTMLX
 
         dit = DiffRhythm2DiTMLX(**config)

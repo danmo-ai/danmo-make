@@ -1,0 +1,9 @@
+# Linux x86_64 — MLX with CUDA backend (mlx[cuda]).
+# Requires NVIDIA driver / CUDA toolkit per upstream MLX install docs.
+# Includes common deps + MLX CUDA stack.
+-r requirements.txt
+
+# MLX core (CUDA)
+mlx[cuda]>=0.21.0
+mlx-lm
+mlx-vlm

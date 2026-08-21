@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Shared CUDA runtime bootstrap (desktop Tauri + headless server).
+"""Shared MLX runtime bootstrap (desktop Tauri + headless Linux server).
 
-Creates/repairs a venv under ``data_dir/runtime-venv``, installs torch + app
-requirements with visible progress, verifies CUDA, writes ``runtime-env.json``.
+Creates/repairs a venv under ``data_dir/runtime-venv``, installs
+``requirements-linux.txt`` (mlx[cuda] + app deps) with visible progress,
+verifies ``mlx.core``, writes ``runtime-env.json``.
+
+Windows is temporarily unsupported.
 """
 
 from __future__ import annotations
@@ -11,17 +14,14 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable
 
 ProgressCb = Callable[[dict], None]
 
@@ -32,20 +32,19 @@ LOG_NAME = "runtime-setup.log"
 
 MIRRORS: dict[str, dict[str, str]] = {
     "official": {
-        "torch_index": "https://download.pytorch.org/whl/cu124",
         "pip_index": "https://pypi.org/simple",
     },
     "tuna": {
-        "torch_index": "https://mirrors.tuna.tsinghua.edu.cn/pytorch-wheels/cu124",
         "pip_index": "https://pypi.tuna.tsinghua.edu.cn/simple",
     },
     "aliyun": {
-        "torch_index": "https://mirrors.aliyun.com/pytorch-wheels/cu124",
         "pip_index": "https://mirrors.aliyun.com/pypi/simple",
     },
 }
 
 _MIN_FREE_BYTES = 8 * 1024**3  # 8 GiB soft check
+_LINUX_REQ = "requirements-linux.txt"
+_COMMON_REQ = "requirements.txt"
 
 
 class BootstrapError(RuntimeError):
@@ -106,7 +105,7 @@ def _file_sha256(path: Path) -> str:
 
 def requirements_hash(app_root: Path) -> str:
     parts: list[str] = []
-    for name in ("requirements-torch-cuda.txt", "requirements-cuda.txt", "requirements.txt"):
+    for name in (_LINUX_REQ, _COMMON_REQ):
         p = app_root / name
         if p.is_file():
             parts.append(f"{name}:{_file_sha256(p)}")
@@ -117,11 +116,12 @@ def requirements_hash(app_root: Path) -> str:
 
 def portable_python_exe(portable_root: Path) -> Path:
     if sys.platform == "win32" or (portable_root / "python.exe").is_file():
-        exe = portable_root / "python.exe"
-    else:
-        exe = portable_root / "bin" / "python3"
-        if not exe.is_file():
-            exe = portable_root / "bin" / "python"
+        raise BootstrapError(
+            "Windows is temporarily unsupported. Use Linux with mlx[cuda] or macOS with MLX."
+        )
+    exe = portable_root / "bin" / "python3"
+    if not exe.is_file():
+        exe = portable_root / "bin" / "python"
     if not exe.is_file():
         raise BootstrapError(f"Portable Python not found under {portable_root}")
     return exe
@@ -129,7 +129,9 @@ def portable_python_exe(portable_root: Path) -> Path:
 
 def venv_python(venv_dir: Path) -> Path:
     if (venv_dir / "Scripts" / "python.exe").is_file():
-        return venv_dir / "Scripts" / "python.exe"
+        raise BootstrapError(
+            "Windows is temporarily unsupported. Use Linux with mlx[cuda] or macOS with MLX."
+        )
     for name in ("python3", "python"):
         p = venv_dir / "bin" / name
         if p.is_file():
@@ -271,33 +273,6 @@ def _pip_base(venv_py: Path, mirror: str) -> list[str]:
     ]
 
 
-def _install_torch(
-    venv_py: Path,
-    paths: BootstrapPaths,
-    mirror: str,
-    cb: ProgressCb | None,
-    cancel: threading.Event | None,
-) -> None:
-    torch_req = paths.app_root / "requirements-torch-cuda.txt"
-    if not torch_req.is_file():
-        raise BootstrapError(f"Missing {torch_req}")
-    torch_index = os.environ.get("DANQING_TORCH_INDEX_URL", "").strip() or MIRRORS[mirror]["torch_index"]
-    _emit(cb, phase="torch", message=f"index={torch_index}")
-    cmd = [
-        str(venv_py),
-        "-m",
-        "pip",
-        "install",
-        "--upgrade",
-        "--disable-pip-version-check",
-        "--index-url",
-        torch_index,
-        "-r",
-        str(torch_req),
-    ]
-    _run_logged(cmd, log_path=paths.log_path, cb=cb, phase="torch", cancel=cancel)
-
-
 def _install_app_reqs(
     venv_py: Path,
     paths: BootstrapPaths,
@@ -305,27 +280,26 @@ def _install_app_reqs(
     cb: ProgressCb | None,
     cancel: threading.Event | None,
 ) -> None:
-    cuda_req = paths.app_root / "requirements-cuda.txt"
-    if not cuda_req.is_file():
-        raise BootstrapError(f"Missing {cuda_req}")
-    cmd = _pip_base(venv_py, mirror) + ["-r", str(cuda_req)]
+    linux_req = paths.app_root / _LINUX_REQ
+    if not linux_req.is_file():
+        raise BootstrapError(f"Missing {linux_req}")
+    cmd = _pip_base(venv_py, mirror) + ["-r", str(linux_req)]
     _run_logged(cmd, log_path=paths.log_path, cb=cb, phase="pip", cancel=cancel)
 
 
-def _verify_cuda(venv_py: Path, paths: BootstrapPaths, cb: ProgressCb | None) -> dict:
+def _verify_mlx(venv_py: Path, paths: BootstrapPaths, cb: ProgressCb | None) -> dict:
     code = (
-        "import json,torch;"
-        "ok=bool(torch.cuda.is_available());"
+        "import json, mlx.core as mx;"
+        "devs = list(getattr(mx, 'devices', lambda: [])() or []);"
+        "def_dev = str(getattr(mx, 'default_device', lambda: None)());"
         "info={"
-        "'torch': getattr(torch,'__version__',None),"
-        "'cuda_available': ok,"
-        "'cuda_version': getattr(getattr(torch,'version',None),'cuda',None),"
-        "'device_count': int(torch.cuda.device_count()) if ok else 0,"
-        "'device_name': torch.cuda.get_device_name(0) if ok else None,"
+        "'mlx': getattr(mx, '__version__', None),"
+        "'default_device': def_dev,"
+        "'device_count': len(devs) if isinstance(devs, list) else 0,"
         "};"
         "print(json.dumps(info))"
     )
-    _emit(cb, phase="verify", message="import torch; torch.cuda.is_available()")
+    _emit(cb, phase="verify", message="import mlx.core")
     proc = subprocess.run(
         [str(venv_py), "-c", code],
         capture_output=True,
@@ -336,30 +310,28 @@ def _verify_cuda(venv_py: Path, paths: BootstrapPaths, cb: ProgressCb | None) ->
     _append_log(paths.log_path, proc.stderr or "")
     if proc.returncode != 0:
         raise BootstrapError(
-            "Failed to import torch in runtime venv.\n"
+            "Failed to import mlx.core in runtime venv. "
+            "Install mlx[cuda] on a Linux machine with a compatible NVIDIA driver "
+            "(see https://ml-explore.github.io/mlx/build/html/install.html).\n"
             f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
         )
     line = (proc.stdout or "").strip().splitlines()[-1]
     info = json.loads(line)
-    if not info.get("cuda_available"):
-        raise BootstrapError(
-            "torch.cuda.is_available() is False. Install a compatible NVIDIA driver "
-            "and ensure this machine has a CUDA GPU. Refusing CPU fallback."
-        )
-    _emit(cb, phase="verify", message=f"cuda ok: {info.get('device_name')}", detail=info)
+    _emit(cb, phase="verify", message=f"mlx ok: {info.get('default_device')}", detail=info)
     return info
 
 
-def _write_env_json(paths: BootstrapPaths, *, mirror: str, torch_info: dict, mode: str) -> None:
+def _write_env_json(paths: BootstrapPaths, *, mirror: str, mlx_info: dict, mode: str) -> None:
     payload = {
         "ready": True,
         "mode": mode,
         "mirror": mirror,
+        "backend": "mlx",
         "python": str(venv_python(paths.venv_dir)),
         "venv_dir": str(paths.venv_dir),
         "app_root": str(paths.app_root),
         "requirements_hash": requirements_hash(paths.app_root),
-        "torch": torch_info,
+        "mlx": mlx_info,
         "updated_at": int(time.time()),
     }
     paths.env_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -391,9 +363,12 @@ def run_install(
     progress: ProgressCb | None = None,
     cancel: threading.Event | None = None,
 ) -> dict:
+    if sys.platform == "win32":
+        raise BootstrapError(
+            "Windows is temporarily unsupported. Use Linux with mlx[cuda] or macOS with MLX."
+        )
     if mode not in ("bootstrap", "repair", "reinstall"):
         raise BootstrapError(f"Unknown mode {mode!r}")
-    # Truncate log for this run
     paths.log_path.parent.mkdir(parents=True, exist_ok=True)
     paths.log_path.write_text("", encoding="utf-8")
     _append_log(paths.log_path, f"=== runtime bootstrap mode={mode} ===")
@@ -410,7 +385,6 @@ def run_install(
         wipe_venv(paths, progress)
 
     venv_py = _create_venv(paths, progress, cancel)
-    # Always refresh pip tooling
     _run_logged(
         [str(venv_py), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"],
         log_path=paths.log_path,
@@ -418,10 +392,9 @@ def run_install(
         phase="pip",
         cancel=cancel,
     )
-    _install_torch(venv_py, paths, mid, progress, cancel)
     _install_app_reqs(venv_py, paths, mid, progress, cancel)
-    torch_info = _verify_cuda(venv_py, paths, progress)
-    _write_env_json(paths, mirror=mid, torch_info=torch_info, mode=mode)
+    mlx_info = _verify_mlx(venv_py, paths, progress)
+    _write_env_json(paths, mirror=mid, mlx_info=mlx_info, mode=mode)
     status = read_env_status(paths)
     _emit(progress, phase="done", message="runtime ready", status=status)
     return status
@@ -446,7 +419,7 @@ def default_paths_from_env() -> BootstrapPaths:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Danmo Make CUDA runtime bootstrap")
+    parser = argparse.ArgumentParser(description="Danmo Make MLX (Linux) runtime bootstrap")
     parser.add_argument("--data-dir", type=Path, default=None)
     parser.add_argument("--app-root", type=Path, default=None)
     parser.add_argument("--portable-python", type=Path, default=None)

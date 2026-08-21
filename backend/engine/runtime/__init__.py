@@ -1,4 +1,4 @@
-"""Runtime backends (MLX / CUDA) and MLX-side helpers behind :class:`RuntimeContext`."""
+"""Runtime backends (MLX) and MLX-side helpers behind :class:`RuntimeContext`."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from ._base import RuntimeContext
 __all__ = [
     "RuntimeContext",
     "MLXContext",
-    "CudaContext",
     "cast_floating_mx_tree",
     "cast_module_parameters",
     "load_weights_dict",
@@ -20,10 +19,6 @@ def __getattr__(name: str):
         from .mlx import MLXContext as _MLXContext
 
         return _MLXContext
-    if name == "CudaContext":
-        from .cuda import CudaContext as _CudaContext
-
-        return _CudaContext
     if name in ("run_eval", "load_weights_dict"):
         from . import mlx_runtime as _mr
 

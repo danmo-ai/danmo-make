@@ -99,10 +99,6 @@ class MiniMaxH3TextEncoderMLX:
         vision_config: dict[str, Any] | None = None,
         quant_cfg: dict[str, Any] | None = None,
     ):
-        if getattr(ctx, "backend", None) != "mlx":
-            raise RuntimeError(
-                f"MiniMax-H3 text encoder requires MLX (got {getattr(ctx, 'backend', None)!r})"
-            )
         self.ctx = ctx
         self.model_path = Path(model_path)
         self.tokenizer_path = Path(tokenizer_path) if tokenizer_path else self.model_path

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -10,7 +11,7 @@ from typing import Any, Literal
 class PlatformSession:
     """v3 device session. Numeric work uses ``kernels`` (narrow RuntimeContext bridge)."""
 
-    backend: Literal["mlx", "cuda", "fake"]
+    backend: Literal["mlx", "fake"]
     device: str
     dtype_name: str = "bfloat16"
     memory_limit_gb: int | None = None
@@ -19,10 +20,6 @@ class PlatformSession:
     @property
     def is_mlx(self) -> bool:
         return self.backend == "mlx"
-
-    @property
-    def is_cuda(self) -> bool:
-        return self.backend == "cuda"
 
     @property
     def kernels(self) -> Any:
@@ -52,11 +49,14 @@ class PlatformSession:
 def platform_from_runtime(ctx: Any) -> PlatformSession:
     """Wrap ``RuntimeContext`` as ``PlatformSession``."""
     backend = getattr(ctx, "backend", "mlx")
-    if backend not in ("mlx", "cuda"):
-        backend = "mlx"
-    device = "cuda" if backend == "cuda" else "metal"
+    if backend != "mlx":
+        raise RuntimeError(
+            f"Unsupported runtime backend {backend!r}; Danmo Make is MLX-only "
+            "(macOS Metal or Linux mlx[cuda])."
+        )
+    device = "metal" if sys.platform == "darwin" else "cuda"
     return PlatformSession(
-        backend=backend,  # type: ignore[arg-type]
+        backend="mlx",
         device=device,
         dtype_name="bfloat16",
     ).bind_kernels(ctx)

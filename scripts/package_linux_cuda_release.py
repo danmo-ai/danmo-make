@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Stage ``out/sidecar/danqing-api`` OR produce thin Linux CUDA server ``.tar.gz``.
+"""Stage ``out/sidecar/danqing-api`` OR produce thin Linux MLX server ``.tar.gz``.
 
-Default: thin bundle (portable Python + app, first-run bootstrap).
+Default: thin bundle (portable Python + app, first-run bootstrap for mlx[cuda]).
 Legacy PyInstaller onedir: ``--legacy-sidecar``.
 """
 
@@ -20,7 +20,7 @@ import package_linux_cuda_release_legacy as legacy  # noqa: E402
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Package Linux CUDA server tar.gz")
+    parser = argparse.ArgumentParser(description="Package Linux MLX server tar.gz")
     parser.add_argument("--version", help="Release version (default: RELEASE_VERSION or git describe)")
     parser.add_argument(
         "--legacy-sidecar",

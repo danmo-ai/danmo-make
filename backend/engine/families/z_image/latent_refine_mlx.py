@@ -162,8 +162,6 @@ def _resize_latent_nchw(ctx: Any, latents: Any, new_h: int, new_w: int, *, mode:
     import mlx.core as mx
     import mlx.nn as nn
 
-    if getattr(ctx, "backend", None) != "mlx":
-        raise RuntimeError("latent_refine is MLX-only today")
     # [C,F,H,W] → upsample H,W via nn.Upsample (NHWC; mx.core has no image API)
     c, f, h, w = latents.shape
     flat = mx.reshape(latents, (c * f, h, w))

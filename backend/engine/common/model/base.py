@@ -208,13 +208,15 @@ class TransformerBase:
         Must be called **after** all weight loading/merging (``load_weights`` +
         ``after_load_weights`` + LoRA/Adapter merging) and **before** the first forward pass.
 
-        CUDA backend is a no-op (runtime quantization not yet implemented).
-
         Works with both `nn.Module`-based models (SeedVR2-style) and plain Python class
         models (z-image-style) via manual attribute tree traversal.
         """
-        if ctx is not None and getattr(ctx, "backend", "") != "mlx":
-            return
+        from backend.engine.common.model.dit_stem import require_mlx_ctx
+
+        effective_ctx = ctx if ctx is not None else getattr(self, "ctx", None)
+        if effective_ctx is None:
+            raise RuntimeError("quantize_runtime requires an MLX RuntimeContext (pass ctx=...)")
+        require_mlx_ctx(effective_ctx, feature="quantize_runtime")
 
         from importlib import import_module
 

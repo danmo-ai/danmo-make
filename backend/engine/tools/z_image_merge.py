@@ -32,11 +32,6 @@ def load_z_image_dit_weights(bundle_root: Path, *, ctx: Any) -> dict[str, Any]:
         raise RuntimeError(
             "Merging quantized (int4/int8) Z-Image weights is not supported; use FP16/BF16 bundles"
         )
-    backend = str(getattr(ctx, "backend", "mlx") or "mlx")
-    if backend != "mlx":
-        from backend.engine.tools.z_image_merge_cuda import assert_z_image_merge_mlx
-
-        assert_z_image_merge_mlx()
     return flat
 
 

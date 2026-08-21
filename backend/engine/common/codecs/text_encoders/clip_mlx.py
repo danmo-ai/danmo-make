@@ -1,4 +1,4 @@
-"""CLIP 文本编码器 — MLX 前向；PyTorch 见 ``clip_cuda``。"""
+"""CLIP 文本编码器 — MLX 前向。"""
 from __future__ import annotations
 from typing import Any
 

@@ -41,6 +41,12 @@ def entry_version_declares_quantization(entry: Any, version_key: str | None) -> 
     return quant.get("bits") in (4, 8)
 
 
+def _require_mlx_quant_inference(ctx: Any, *, version: str) -> None:
+    backend = str(getattr(ctx, "backend", "") or "")
+    if backend != "mlx":
+        raise RuntimeError(_i18n("error.quantized_inference_mlx_only", version=version))
+
+
 def resolve_inference_weight_mode_from_bundle(
     ctx: Any,
     *,
@@ -51,9 +57,7 @@ def resolve_inference_weight_mode_from_bundle(
     keys = weight_keys or frozenset()
     if bundle_affine_bits not in (4, 8) or not any(k.endswith(".scales") for k in keys):
         return WeightInferenceMode(kind="dense")
-    backend = str(getattr(ctx, "backend", "") or "")
-    if backend != "mlx":
-        raise RuntimeError(_i18n("error.quantized_inference_mlx_only", version="bundle"))
+    _require_mlx_quant_inference(ctx, version="bundle")
     return WeightInferenceMode(kind="quantized", bits=int(bundle_affine_bits))
 
 
@@ -77,9 +81,7 @@ def resolve_inference_weight_mode(
     if inference == "dense":
         return WeightInferenceMode(kind="dense")
 
-    backend = str(getattr(ctx, "backend", "") or "")
-    if backend != "mlx":
-        raise RuntimeError(_i18n("error.quantized_inference_mlx_only", version=version_key or "default"))
+    _require_mlx_quant_inference(ctx, version=version_key or "default")
 
     if scheme and scheme != "mlx_affine":
         raise RuntimeError(
@@ -141,9 +143,7 @@ def resolve_component_inference_weight_mode(
     if not has_affine:
         return WeightInferenceMode(kind="dense")
 
-    backend = str(getattr(ctx, "backend", "") or "")
-    if backend != "mlx":
-        raise RuntimeError(_i18n("error.quantized_inference_mlx_only", version=version_key or "default"))
+    _require_mlx_quant_inference(ctx, version=version_key or "default")
 
     scheme = str(comp.get("scheme") or quant.get("scheme") or "").strip()
     if scheme and scheme != "mlx_affine":

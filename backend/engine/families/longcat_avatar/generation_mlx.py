@@ -39,10 +39,6 @@ class LongCatAvatarMlxGenerator:
             on_log(level, msg)
 
     def load(self) -> None:
-        if getattr(self.ctx, "backend", None) != "mlx":
-            raise RuntimeError(
-                f"LongCat-Avatar requires MLX runtime (got {getattr(self.ctx, 'backend', None)!r})"
-            )
         vae, umt5, whisper, dit, variant_dir = bundle_load.load_longcat_avatar_components(self.bundle_root)
         sched = FlowMatchEulerScheduler(
             num_train_timesteps=int(getattr(self.config, "num_train_timesteps", 1000)),

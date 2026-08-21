@@ -59,10 +59,6 @@ class LongCatMlxGenerator:
             on_log(level, msg)
 
     def load(self) -> None:
-        if getattr(self.ctx, "backend", None) != "mlx":
-            raise RuntimeError(
-                f"LongCat-Video requires MLX runtime (got {getattr(self.ctx, 'backend', None)!r})"
-            )
         self._vae, self._umt5, self._dit, self._variant_dir = bundle_load.load_longcat_components(
             self.bundle_root,
         )

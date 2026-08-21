@@ -1,9 +1,11 @@
 """
 Shared PyInstaller metadata for Danmo Make desktop sidecar.
 
-Profiles (platform-specific bundles — do not mix MLX + CUDA in one sidecar):
-  mlx  — macOS Apple Silicon: MLX only, no torch/CUDA.
-  cuda — Linux / Windows NVIDIA: PyTorch CUDA only, no MLX (``full`` is an alias).
+Single product profile:
+  mlx — macOS (Metal) and Linux (mlx[cuda]): MLX only, no torch.
+  cuda / full — unsupported (fail loud).
+
+Windows packaging is temporarily unsupported.
 """
 
 from __future__ import annotations
@@ -127,14 +129,11 @@ _MLX_ONLY_HIDDEN_IMPORTS: tuple[str, ...] = (
     "backend.engine.families.wan.vae_mlx",
     "backend.engine.families.wan.text_encoder",
     "backend.engine.families.qwen.text_encoder_mlx",
-    "backend.engine.common.model.dit_cuda_unavailable",
     "backend.engine.common.model.dit_stem",
     "backend.engine.families.flux2.text_encoder_mlx",
     "backend.engine.families.wan.text_encoder_mlx",
     "backend.engine.families.flux1.flux1_dual_mlx",
     "backend.engine.families.fibo.text_encoder_mlx",
-    "backend.engine.families.qwen.transformer_cuda",
-    "backend.engine.families.qwen.text_encoder_cuda",
     "backend.engine.families.hunyuan.image_encoder_mlx",
     "backend.engine.families.ltx.generation_mlx",
     "backend.engine.families.longcat.generation_mlx",
@@ -171,19 +170,7 @@ _MLX_ONLY_HIDDEN_IMPORTS: tuple[str, ...] = (
     "mlx_lm",
 )
 
-_CUDA_ONLY_HIDDEN_IMPORTS: tuple[str, ...] = (
-    "backend.engine.runtime.cuda",
-    "backend.engine.families.z_image.text_encoder_cuda",
-    "backend.engine.common.codecs.text_encoders.clip_cuda",
-    "backend.engine.common.codecs.text_encoders.t5_cuda",
-    "backend.engine.common.codecs.text_encoders.qwen25vl_cuda",
-    "backend.engine.families.ace_step.transformer_cuda",
-    "backend.engine.families.ace_step.vae.vae_cuda",
-    "backend.engine.families.ace_step.generation_cuda",
-    "backend.engine.families.qwen.transformer_cuda",
-    "backend.engine.families.qwen.text_encoder_cuda",
-)
-
+# Always exclude torch (engine is MLX-only; no torch in product bundles).
 _MLX_EXCLUDED_MODULES: tuple[str, ...] = (
     "torch",
     "torchvision",
@@ -191,19 +178,6 @@ _MLX_EXCLUDED_MODULES: tuple[str, ...] = (
     "torchgen",
     "functorch",
     "triton",
-    "backend.engine.runtime.cuda",
-    "backend.engine.families.cogview4.text_encoder_cuda",
-    "backend.engine.families.z_image.text_encoder_cuda",
-    "backend.engine.families.diffrhythm.mulan_cuda",
-    "backend.engine.families.flux1.redux_encode_cuda",
-    "backend.engine.families.flux1.depth_encode_cuda",
-    "backend.engine.families.ace_step.quality.resource_policy_cuda",
-    "backend.engine.common.codecs.text_encoders.t5_cuda",
-    "backend.engine.common.codecs.text_encoders.clip_cuda",
-    "backend.engine.common.codecs.text_encoders.qwen25vl_cuda",
-    "backend.engine.families.ace_step.transformer_cuda",
-    "backend.engine.families.ace_step.vae.vae_cuda",
-    "backend.engine.families.ace_step.generation_cuda",
     "cv2",
     "opencv_python",
     "pyarrow",
@@ -220,97 +194,39 @@ _MLX_EXCLUDED_MODULES: tuple[str, ...] = (
     "hf_xet",
 )
 
-_CUDA_EXCLUDED_MODULES: tuple[str, ...] = (
-    "mlx",
-    "mlx.core",
-    "mlx.nn",
-    "mlx_lm",
-    "backend.engine.runtime.mlx",
-    "backend.engine.families.seedvr2.stem_mlx",
-    "backend.engine.families.seedvr2.stem",
-    "backend.engine.families.wan.transformer_mlx",
-    "backend.engine.families.wan.vae_mlx",
-    "backend.engine.families.wan.text_encoder",
-    "backend.engine.families.wan.text_encoder_mlx",
-    "backend.engine.families.ltx.generation_mlx",
-    "backend.engine.families.longcat.generation_mlx",
-    "backend.engine.families.longcat.bundle_load_mlx",
-    "backend.engine.families.longcat.transformer_mlx",
-    "backend.engine.families.longcat.dit_blocks_mlx",
-    "backend.engine.families.longcat.dit_attention_mlx",
-    "backend.engine.families.longcat.dit_rope_mlx",
-    "backend.engine.families.longcat.vae_mlx",
-    "backend.engine.families.longcat.text_encoder_mlx",
-    "backend.engine.families.longcat.conditioning_mlx",
-    "backend.engine.families.longcat.lora_mlx",
-    "backend.engine.families.longcat_avatar.generation_mlx",
-    "backend.engine.families.longcat_avatar.bundle_load_mlx",
-    "backend.engine.families.longcat_avatar.pipeline_mlx",
-    "backend.engine.families.longcat_avatar.transformer_mlx",
-    "backend.engine.families.longcat_avatar.whisper_mlx",
-    "backend.engine.families.longcat_avatar.audio_mlx",
-    "backend.engine.families.minimax_h3.generation_mlx",
-    "backend.engine.families.minimax_h3.bundle_load_mlx",
-    "backend.engine.families.minimax_h3.transformer_mlx",
-    "backend.engine.families.minimax_h3.vae_mlx",
-    "backend.engine.families.minimax_h3.text_encoder_mlx",
-    "backend.engine.families.minimax_h3.packing",
-    "mlx_vlm",
-    "mlx_vlm.models.qwen3_vl",
-    "mlx_vlm.models.qwen3_vl.qwen3_vl",
-    "mlx_vlm.models.qwen3_vl.vision",
-    "mlx_vlm.models.qwen3_vl.language",
-    "mlx_vlm.models.qwen3_vl.config",
-    "backend.engine.families.hunyuan.image_encoder_mlx",
-    "backend.engine.families.qwen.text_encoder_mlx",
-    "backend.engine.families.flux2.text_encoder_mlx",
-    "backend.engine.families.flux1.flux1_dual_mlx",
-    "backend.engine.families.fibo.text_encoder_mlx",
-    "tensorboard",
-    "tensorboard_data_server",
-    "torch.utils.tensorboard",
-)
-
-
-def _normalize_profile(raw: str) -> str:
-    if raw in ("cuda", "full"):
-        return "cuda"
-    if raw == "mlx":
-        return "mlx"
-    return raw
-
 
 def packaging_profile() -> str:
-    """``mlx`` (macOS) or ``cuda`` (Linux/Windows)."""
+    """Return ``mlx`` (only supported packaging profile)."""
+    if sys.platform == "win32":
+        raise SystemExit("Windows is temporarily unsupported")
+
     raw = os.environ.get("DANQING_PYINSTALLER_PROFILE", "").strip().lower()
-    if raw:
-        profile = _normalize_profile(raw)
-        if profile in ("mlx", "cuda"):
-            return profile
-    if sys.platform == "darwin":
+    if not raw:
         return "mlx"
-    return "cuda"
-
-
-def is_cuda_profile(profile: str | None = None) -> bool:
-    return (profile or packaging_profile()) == "cuda"
+    if raw in ("cuda", "full"):
+        raise SystemExit(
+            f"DANQING_PYINSTALLER_PROFILE={raw!r} is unsupported. "
+            "Use mlx (macOS Metal / Linux mlx[cuda])."
+        )
+    if raw != "mlx":
+        raise SystemExit(
+            f"Unknown DANQING_PYINSTALLER_PROFILE={raw!r}. Only 'mlx' is supported."
+        )
+    return "mlx"
 
 
 def get_hidden_imports(profile: str | None = None) -> list[str]:
     profile = profile or packaging_profile()
-    imports = list(_SHARED_HIDDEN_IMPORTS)
-    if profile == "mlx":
-        imports.extend(_MLX_ONLY_HIDDEN_IMPORTS)
-    else:
-        imports.extend(_CUDA_ONLY_HIDDEN_IMPORTS)
-    return imports
+    if profile != "mlx":
+        raise SystemExit(f"Unsupported packaging profile: {profile!r} (only mlx)")
+    return list(_SHARED_HIDDEN_IMPORTS) + list(_MLX_ONLY_HIDDEN_IMPORTS)
 
 
 def get_exclude_modules(profile: str | None = None) -> list[str]:
     profile = profile or packaging_profile()
-    if profile == "mlx":
-        return list(_MLX_EXCLUDED_MODULES)
-    return list(_CUDA_EXCLUDED_MODULES)
+    if profile != "mlx":
+        raise SystemExit(f"Unsupported packaging profile: {profile!r} (only mlx)")
+    return list(_MLX_EXCLUDED_MODULES)
 
 
 def _site_packages_dirs(project_root: Path) -> list[Path]:
@@ -351,6 +267,7 @@ def get_data_files(project_root: Path | None = None, *, profile: str | None = No
 
 
 def get_binary_files(project_root: Path, *, profile: str | None = None) -> list[str]:
+    """Collect soundfile + MLX native libs (darwin/linux; best-effort if layout differs)."""
     profile = profile or packaging_profile()
     binaries: list[str] = []
     separator = ";" if sys.platform == "win32" else ":"
@@ -366,14 +283,18 @@ def get_binary_files(project_root: Path, *, profile: str | None = None) -> list[
     if profile != "mlx":
         return binaries
 
-    if sys.platform == "darwin":
-        for site in _site_packages_dirs(project_root):
-            mlx_lib = site / "mlx" / "lib"
-            if mlx_lib.exists():
-                for pattern in ("*.dylib", "*.metallib"):
-                    for lib_file in mlx_lib.glob(pattern):
-                        binaries.append(f"{lib_file}{separator}mlx/lib")
-                break
+    # Best-effort: macOS uses .dylib/.metallib; Linux mlx[cuda] may ship .so under mlx/lib.
+    for site in _site_packages_dirs(project_root):
+        mlx_lib = site / "mlx" / "lib"
+        if not mlx_lib.is_dir():
+            continue
+        try:
+            for pattern in ("*.dylib", "*.metallib", "*.so"):
+                for lib_file in mlx_lib.glob(pattern):
+                    binaries.append(f"{lib_file}{separator}mlx/lib")
+        except OSError:
+            pass
+        break
 
     return binaries
 

@@ -12,12 +12,12 @@ case "$OS" in
     exec ./scripts/pack_desktop_macos.sh
     ;;
   Linux)
-    export DANQING_PYINSTALLER_PROFILE="${DANQING_PYINSTALLER_PROFILE:-cuda}"
+    export DANQING_PYINSTALLER_PROFILE="${DANQING_PYINSTALLER_PROFILE:-mlx}"
     exec ./scripts/pack_desktop_linux.sh
     ;;
   MINGW*|MSYS*|CYGWIN*|Windows*)
-    export DANQING_PYINSTALLER_PROFILE="${DANQING_PYINSTALLER_PROFILE:-cuda}"
-    exec ./scripts/pack_desktop_windows.sh
+    echo "Windows temporarily unsupported" >&2
+    exit 1
     ;;
   *)
     echo "Unsupported OS for desktop build: $OS" >&2

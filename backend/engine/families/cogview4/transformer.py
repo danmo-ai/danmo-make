@@ -16,5 +16,4 @@ class CogView4Transformer(DelegatingDiTStem):
             config,
             ctx,
             mlx_cls=_MLX,
-            unavailable_product="CogView4",
         )

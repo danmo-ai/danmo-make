@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Linux Tauri desktop (CUDA sidecar) — AppImage + .deb
+# Linux Tauri desktop (MLX sidecar / mlx[cuda]) — AppImage + .deb
 # Naming aligned with danmo-work pack_desktop_linux.sh.
 set -euo pipefail
 
@@ -24,24 +24,22 @@ if [[ -x "$DQ_ROOT/.venv/bin/python3" ]]; then
   PYTHON="$DQ_ROOT/.venv/bin/python3"
 fi
 
-export DANQING_PYINSTALLER_PROFILE="${DANQING_PYINSTALLER_PROFILE:-cuda}"
+export DANQING_PYINSTALLER_PROFILE="${DANQING_PYINSTALLER_PROFILE:-mlx}"
 export RELEASE_VERSION="${RELEASE_VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
-export TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
 
-echo "==> Ensure CUDA venv"
+echo "==> Ensure MLX (mlx[cuda]) venv"
 if [[ ! -d "$DQ_ROOT/.venv" ]]; then
   python3.11 -m venv "$DQ_ROOT/.venv" 2>/dev/null || python3 -m venv "$DQ_ROOT/.venv"
 fi
 PYTHON="$DQ_ROOT/.venv/bin/python3"
 "$PYTHON" -m pip install --upgrade pip
-"$PYTHON" -m pip install torch torchvision --index-url "$TORCH_INDEX_URL"
-"$PYTHON" -m pip install -r "$DQ_ROOT/requirements-cuda.txt" pyinstaller
+"$PYTHON" -m pip install -r "$DQ_ROOT/requirements-linux.txt" pyinstaller
 
 echo "==> Frontend -> $DQ_FRONTEND_DIST"
 (cd "$DQ_ROOT/frontend" && npm install && npm run build)
 
-echo "==> PyInstaller sidecar (CUDA)"
-DANQING_PYINSTALLER_PROFILE=cuda "$PYTHON" "$SCRIPT_DIR/build_sidecar.py"
+echo "==> PyInstaller sidecar (MLX)"
+DANQING_PYINSTALLER_PROFILE=mlx "$PYTHON" "$SCRIPT_DIR/build_sidecar.py"
 
 echo "==> Tauri shell (Linux AppImage + deb)"
 "$PYTHON" "$SCRIPT_DIR/tauri_build.py" --platform linux

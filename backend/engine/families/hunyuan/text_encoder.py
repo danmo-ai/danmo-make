@@ -92,11 +92,9 @@ def extract_glyph_texts(prompt: str) -> str | None:
 
 def get_hunyuan_text_encoder(ctx: Any, bundle_root: Path, config: Any) -> "HunyuanVideoTextEncoder":
     """Reuse one loaded encoder pair per bundle + TE paths (avoids reloading ~7B Qwen each request)."""
-    if getattr(ctx, "backend", None) != "mlx":
-        raise RuntimeError(
-            "HunyuanVideo text encoding requires MLX runtime; "
-            f"got backend={getattr(ctx, 'backend', None)!r}."
-        )
+    from backend.engine.common.model.dit_stem import require_mlx_ctx
+
+    require_mlx_ctx(ctx, feature="HunyuanVideo text encoding")
     qwen = str(getattr(config, "text_encoder_qwen_local", "") or "").strip()
     byt5 = str(getattr(config, "text_encoder_byt5_local", "") or "").strip()
     key = f"{Path(bundle_root).resolve()}|{qwen}|{byt5}"
@@ -112,8 +110,6 @@ class HunyuanVideoTextEncoder:
     """Registry-driven dual encoder — MLX inference only."""
 
     def __init__(self, ctx: Any, bundle_root: Path, config: Any):
-        if getattr(ctx, "backend", None) != "mlx":
-            raise RuntimeError("HunyuanVideoTextEncoder requires MLX RuntimeContext.")
         self.ctx = ctx
         self.bundle_root = Path(bundle_root)
         self.mllm_max_length = int(getattr(config, "mllm_max_length", 1000))

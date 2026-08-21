@@ -1,4 +1,4 @@
-"""GPU memory budget and shared :class:`ModelCache` wiring (MLX + CUDA, REST + CLI)."""
+"""GPU memory budget and shared :class:`ModelCache` wiring (MLX, REST + CLI)."""
 from __future__ import annotations
 
 import gc
@@ -20,19 +20,13 @@ def clamp_mlx_memory_limit_gb(gb: int | float | None, *, default: int = 120) -> 
 
 
 def release_cached_model(model: Any) -> None:
-    """Drop a cached model and release allocator caches (MLX Metal + CUDA VRAM)."""
+    """Drop a cached model and release MLX allocator caches."""
     del model
     gc.collect()
     try:
         from backend.engine.memory_policy_mlx import clear_mlx_cache
 
         clear_mlx_cache()
-    except Exception:
-        pass
-    try:
-        from backend.engine.memory_policy_cuda import clear_cuda_cache
-
-        clear_cuda_cache()
     except Exception:
         pass
 
@@ -74,10 +68,6 @@ def build_gpu_runtimes(settings: AppSettings) -> dict[str, Any]:
         from backend.engine.runtime.mlx import MLXContext
 
         runtimes["mlx"] = MLXContext(memory_limit_gb=limit_gb)
-    if "cuda" in platforms:
-        from backend.engine.runtime.cuda import CudaContext
-
-        runtimes["cuda"] = CudaContext()
     return runtimes
 
 
@@ -86,14 +76,11 @@ def apply_memory_settings(
     runtimes: Mapping[str, Any] | None,
     cache: ModelCache | None,
 ) -> None:
-    """MLX: Metal limit; CUDA: no PyTorch global cap (driver manages VRAM). Cache TTL always."""
+    """MLX: memory limit. Cache TTL always."""
     limit_gb = clamp_mlx_memory_limit_gb(settings.mlx_memory_limit)
     mlx = (runtimes or {}).get("mlx")
     if mlx is not None and hasattr(mlx, "apply_memory_limit_gb"):
         mlx.apply_memory_limit_gb(limit_gb)
-    cuda = (runtimes or {}).get("cuda")
-    if cuda is not None and hasattr(cuda, "clear_cache"):
-        cuda.clear_cache()
     if cache is not None:
         ttl = int(getattr(settings, "model_cache_ttl_minutes", 30) or 30)
         cache.set_ttl_minutes(max(1, ttl))

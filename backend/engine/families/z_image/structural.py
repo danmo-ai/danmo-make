@@ -29,10 +29,10 @@ def require_controlnet_runtime(ctx: Any, *, feature: str = "structural_guide") -
         )
     backend = getattr(ctx, "backend", "mlx")
     if backend not in Z_IMAGE_CONTROLNET_DECLARED_BACKENDS:
-        from backend.engine.families.z_image.control_cuda import assert_z_image_control_mlx
-
-        assert_z_image_control_mlx()
-
+        raise RuntimeError(
+            f"{feature} requires MLX runtime (got backend={backend!r}); "
+            f"required one of {Z_IMAGE_CONTROLNET_DECLARED_BACKENDS!r}"
+        )
 
 def infer_guide_type(controlnet_id: str) -> GuideType:
     k = (controlnet_id or "").strip().lower()
@@ -51,7 +51,6 @@ def _preprocess_guide_rgb(
     registry: Any,
     project_root: Path,
     on_log: Callable[..., None] | None,
-    backend: str,
 ) -> Any:
     if guide_type in ("auto", "pose", "hed", "mlsd", "scribble", "gray"):
         if pil.mode != "RGB":
@@ -75,7 +74,6 @@ def _preprocess_guide_rgb(
         registry=registry,
         project_root=project_root,
         on_log=on_log,
-        backend=backend,
     )
 
 
@@ -255,7 +253,6 @@ def attach_structural_conditioning(
     if guide_type == "redux":
         raise RuntimeError("redux structural_guide is FLUX-only; use z_image union controlnet with a control image")
 
-    backend = getattr(pipeline.ctx, "backend", "mlx")
     src_path = ctx_exec.asset_store.get_file_path(guide.asset_id)
     pil = Image.open(str(src_path))
 
@@ -288,7 +285,6 @@ def attach_structural_conditioning(
         registry=pipeline._registry,
         project_root=pipeline._project_root,
         on_log=on_log,
-        backend=backend,
     )
     control_context = build_z_image_control_context_nchw(
         pipeline,

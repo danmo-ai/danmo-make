@@ -1,10 +1,11 @@
-"""Step1X-Edit generation — family_generator entry (MLX + CUDA)."""
+"""Step1X-Edit generation — family_generator entry (MLX)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Protocol
 
+from backend.engine.common.model.dit_stem import require_mlx_ctx
 from backend.engine.config.model_configs import Step1XEditConfig
 
 
@@ -39,30 +40,15 @@ def create_step1x_edit_generator(
 ) -> Step1XEditGeneratorProto:
     if not bundle_root.is_dir():
         raise RuntimeError(f"Step1X-Edit bundle directory not found: {bundle_root}")
-    backend = getattr(ctx, "backend", "mlx")
-    if backend == "mlx":
-        from backend.engine.families.step1x_edit.generation_mlx import Step1XEditMlxGenerator
+    require_mlx_ctx(ctx, feature="Step1X-Edit")
+    from backend.engine.families.step1x_edit.generation_mlx import Step1XEditMlxGenerator
 
-        return Step1XEditMlxGenerator(
-            ctx,
-            bundle_root,
-            config=config,
-            entry=entry,
-            version_key=version_key,
-        )
-    if backend == "cuda":
-        from backend.engine.families.step1x_edit.generation_cuda import Step1XEditCudaGenerator
-
-        return Step1XEditCudaGenerator(
-            ctx,
-            bundle_root,
-            config=config,
-            entry=entry,
-            version_key=version_key,
-        )
-    raise RuntimeError(
-        f"Step1X-Edit requires mlx or cuda runtime (got {backend!r}). "
-        "Select a compatible backend model version."
+    return Step1XEditMlxGenerator(
+        ctx,
+        bundle_root,
+        config=config,
+        entry=entry,
+        version_key=version_key,
     )
 
 

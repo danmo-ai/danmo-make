@@ -15,33 +15,26 @@
 	pack-windows-server-archive pack-windows-server \
 	pack-windows-desktop-shell pack-windows-desktop pack-windows-desktop-release \
 	desktop-prereqs desktop-sidecar desktop-tauri desktop-bundle \
+	linux-mlx-venv linux-mlx-sidecar release-linux-mlx-tar release-linux-mlx \
 	linux-cuda-venv linux-cuda-sidecar release-linux-cuda-tar release-linux-cuda \
 	windows-cuda-venv windows-cuda-sidecar windows-cuda-desktop-sidecar \
 	windows-desktop-tauri windows-desktop-bundle release-windows-desktop \
 	release-windows-cuda-zip release-windows-cuda
 
-# Windows Git Bash / MSYS: use Scripts/python.exe so pack-windows-* works via make.
-ifeq ($(OS),Windows_NT)
-  PYTHON := .venv/Scripts/python.exe
-  BENCH_PY := tests/benchmark/venv/Scripts/python.exe
-  BENCH_PIP := tests/benchmark/venv/Scripts/pip.exe
-  BENCH_BIN := tests/benchmark/venv/Scripts
-else
-  PYTHON := .venv/bin/python3
-  BENCH_PY := tests/benchmark/venv/bin/python3
-  BENCH_PIP := tests/benchmark/venv/bin/pip
-  BENCH_BIN := tests/benchmark/venv/bin
-endif
+PYTHON := .venv/bin/python3
+BENCH_PY := tests/benchmark/venv/bin/python3
+BENCH_PIP := tests/benchmark/venv/bin/pip
+BENCH_BIN := tests/benchmark/venv/bin
 BENCH_OUT := tests/benchmark/outputs
 OUT_DIR := $(CURDIR)/out
 
 # Release packaging (see scripts/out_paths.py)
 # Naming: pack-<platform>-<product>-<step>
-#   platform: macos | linux | windows
+#   platform: macos | linux (windows temporarily unsupported)
 #   product:  desktop (Tauri) | server (API only, zip/tar)
 #   step:     venv | sidecar | shell | archive | bundle | release
 RELEASE_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-TORCH_INDEX_URL ?= https://download.pytorch.org/whl/cu124
+_WINDOWS_UNSUPPORTED = @echo "Windows temporarily unsupported" >&2; exit 1
 
 # ============================================================================
 # Benchmark (independent venv: tests/benchmark/venv)
@@ -278,8 +271,8 @@ pack-prereqs:
 	@echo "pack-prereqs OK (npm + cargo)"
 
 # --- Desktop (Tauri) — naming aligned with danmo-work / danmo-inbox ---
-#   pack-macos-desktop | pack-linux-desktop | pack-windows-desktop
-# Sidecar profiles: macOS=MLX, Linux/Windows=CUDA (never mix in one bundle).
+#   pack-macos-desktop | pack-linux-desktop
+# Sidecar profile: mlx only (macOS Metal / Linux mlx[cuda]). Windows unsupported.
 
 export DANQING_PYINSTALLER_PROFILE ?= mlx
 
@@ -294,36 +287,36 @@ pack-macos-desktop: pack-prereqs
 	@chmod +x scripts/*.sh
 	@RELEASE_VERSION=$(RELEASE_VERSION) ./scripts/pack_desktop_macos.sh
 
-# --- Linux desktop (CUDA sidecar + Tauri AppImage/deb) — Linux x86_64 ---
+# --- Linux desktop (MLX sidecar + Tauri AppImage/deb) — Linux x86_64 ---
 
 pack-linux-desktop-venv: pack-linux-server-venv
 
 pack-linux-desktop-sidecar: frontend-build
-	DANQING_PYINSTALLER_PROFILE=cuda $(PYTHON) scripts/build_sidecar.py
+	DANQING_PYINSTALLER_PROFILE=mlx $(PYTHON) scripts/build_sidecar.py
 
 pack-linux-desktop-shell: pack-prereqs
-	DANQING_PYINSTALLER_PROFILE=cuda $(PYTHON) scripts/tauri_build.py --platform linux
+	DANQING_PYINSTALLER_PROFILE=mlx $(PYTHON) scripts/tauri_build.py --platform linux
 
 pack-linux-desktop: pack-prereqs
 	@chmod +x scripts/*.sh
-	@RELEASE_VERSION=$(RELEASE_VERSION) TORCH_INDEX_URL=$(TORCH_INDEX_URL) ./scripts/pack_desktop_linux.sh
+	@RELEASE_VERSION=$(RELEASE_VERSION) ./scripts/pack_desktop_linux.sh
 
-# --- Linux server (thin CUDA runtime + first-run bootstrap) — Linux x86_64 ---
+# --- Linux server (thin MLX runtime + first-run bootstrap) — Linux x86_64 ---
 
 pack-linux-server-venv:
 	@test -d .venv || python3.11 -m venv .venv || python3 -m venv .venv
 	$(PYTHON) -m pip install --upgrade pip
-	@echo "Thin server packs do not need torch in the build venv."
+	@echo "Thin server packs do not need mlx wheels in the build venv."
 
 pack-linux-server-runtime: frontend-build
 	$(PYTHON) scripts/stage_cuda_runtime.py --platform linux-x86_64
 
 pack-linux-server-sidecar: frontend-build
-	DANQING_PYINSTALLER_PROFILE=cuda $(PYTHON) scripts/build_sidecar.py
+	DANQING_PYINSTALLER_PROFILE=mlx $(PYTHON) scripts/build_sidecar.py
 
 pack-linux-server-archive: pack-linux-server-runtime
 	RELEASE_VERSION=$(RELEASE_VERSION) $(PYTHON) scripts/package_linux_cuda_release.py --version $(RELEASE_VERSION)
-	@echo "pack-linux-server-archive -> $(OUT_DIR)/dist/danmo-make-linux-cuda-x86_64-$(RELEASE_VERSION).tar.gz"
+	@echo "pack-linux-server-archive -> $(OUT_DIR)/dist/danmo-make-linux-mlx-x86_64-$(RELEASE_VERSION).tar.gz"
 
 pack-linux-server: pack-linux-server-archive
 
@@ -334,45 +327,14 @@ pack-linux-server-legacy: pack-linux-server-venv-full pack-linux-server-sidecar
 pack-linux-server-venv-full:
 	@test -d .venv || python3.11 -m venv .venv || python3 -m venv .venv
 	$(PYTHON) -m pip install --upgrade pip
-	$(PYTHON) -m pip install torch torchvision --index-url $(TORCH_INDEX_URL)
-	$(PYTHON) -m pip install -r requirements-cuda.txt pyinstaller
+	$(PYTHON) -m pip install -r requirements-linux.txt pyinstaller
 
-# --- Windows desktop (thin CUDA runtime + portable zip) — Windows x86_64 ---
+# --- Windows — temporarily unsupported ---
 
-pack-windows-venv:
-	@test -d .venv || py -3.11 -m venv .venv || python -m venv .venv
-	$(PYTHON) -m pip install --upgrade pip
-	@echo "Thin desktop packs do not need torch in the build venv (only tooling)."
-	$(PYTHON) -m pip install --upgrade pip
-
-pack-windows-venv-full:
-	@test -d .venv || py -3.11 -m venv .venv || python -m venv .venv
-	$(PYTHON) -m pip install --upgrade pip
-	$(PYTHON) -m pip install torch torchvision --index-url $(TORCH_INDEX_URL)
-	$(PYTHON) -m pip install -r requirements-cuda.txt pyinstaller
-
-pack-windows-sidecar: frontend-build
-	DANQING_PYINSTALLER_PROFILE=cuda $(PYTHON) scripts/build_sidecar.py
-
-pack-windows-server-archive: pack-windows-runtime
-	RELEASE_VERSION=$(RELEASE_VERSION) $(PYTHON) scripts/package_windows_cuda_release.py --version $(RELEASE_VERSION)
-	@echo "pack-windows-server-archive -> $(OUT_DIR)/dist/danmo-make-windows-cuda-x86_64-$(RELEASE_VERSION).zip"
-
-pack-windows-runtime: frontend-build
-	$(PYTHON) scripts/stage_cuda_runtime.py --platform windows-x86_64
-
-pack-windows-server: pack-windows-server-archive
-
-pack-windows-desktop-shell: pack-prereqs
-	$(PYTHON) scripts/tauri_build.py --platform windows
-
-# Full Windows desktop (thin runtime + portable zip) — primary release target
-pack-windows-desktop: pack-prereqs
-	@chmod +x scripts/*.sh
-	@RELEASE_VERSION=$(RELEASE_VERSION) ./scripts/pack_desktop_windows.sh
-
-# Alias kept for CI / older docs
-pack-windows-desktop-release: pack-windows-desktop
+pack-windows-venv pack-windows-venv-full pack-windows-runtime pack-windows-sidecar \
+pack-windows-server-archive pack-windows-server pack-windows-desktop-shell \
+pack-windows-desktop pack-windows-desktop-release:
+	$(_WINDOWS_UNSUPPORTED)
 
 # ============================================================================
 # Deprecated aliases (old names → pack-*)
@@ -383,19 +345,21 @@ desktop-sidecar: pack-macos-desktop-sidecar
 desktop-tauri: pack-macos-desktop-shell
 desktop-bundle: pack-macos-desktop
 
+linux-mlx-venv: pack-linux-server-venv
+linux-mlx-sidecar: pack-linux-server-sidecar
+release-linux-mlx-tar: pack-linux-server-archive
+release-linux-mlx: pack-linux-server
+
+# Old cuda aliases → linux mlx targets
 linux-cuda-venv: pack-linux-server-venv
 linux-cuda-sidecar: pack-linux-server-sidecar
 release-linux-cuda-tar: pack-linux-server-archive
 release-linux-cuda: pack-linux-server
 
-windows-cuda-venv: pack-windows-venv
-windows-cuda-sidecar: pack-windows-sidecar
-windows-cuda-desktop-sidecar: pack-windows-sidecar
-windows-desktop-tauri: pack-windows-desktop-shell
-windows-desktop-bundle: pack-windows-desktop
-release-windows-desktop: pack-windows-desktop-release
-release-windows-cuda-zip: pack-windows-server-archive
-release-windows-cuda: pack-windows-server
+windows-cuda-venv windows-cuda-sidecar windows-cuda-desktop-sidecar \
+windows-desktop-tauri windows-desktop-bundle release-windows-desktop \
+release-windows-cuda-zip release-windows-cuda:
+	$(_WINDOWS_UNSUPPORTED)
 
 # ============================================================================
 # Help
@@ -414,14 +378,13 @@ help:
 	@echo "Quality:   lint | check-* | check-frontend-governance | check-engine-governance"
 	@echo "Clean:     clean | clean-download-cache"
 	@echo ""
-	@echo "Release desktop (aligned with danmo-work / danmo-inbox):"
-	@echo "  pack-macos-desktop     macOS arm64 · MLX · .app/.dmg"
-	@echo "  pack-linux-desktop     Linux x86_64 · CUDA · AppImage/.deb"
-	@echo "  pack-windows-desktop   Windows x86_64 · CUDA thin · portable zip (run on Windows)"
+	@echo "Release desktop:"
+	@echo "  pack-macos-desktop     macOS arm64 · MLX (Metal) · .app/.dmg"
+	@echo "  pack-linux-desktop     Linux x86_64 · MLX (mlx[cuda]) · AppImage/.deb"
+	@echo "  pack-windows-*         Windows temporarily unsupported"
 	@echo ""
-	@echo "Release server (headless thin archives; first run downloads torch):"
-	@echo "  pack-linux-server      Linux CUDA thin .tar.gz"
-	@echo "  pack-windows-server    Windows CUDA .zip (optional)"
+	@echo "Release server (headless thin archives; first run installs mlx[cuda]):"
+	@echo "  pack-linux-server      Linux MLX thin .tar.gz (danmo-make-linux-mlx-*)"
 	@echo ""
 	@echo "Benchmark: bench-setup | bench-eval | bench-eval-smoke | calibrate-teacache-* | chapter-parse-bench"
 	@echo ""

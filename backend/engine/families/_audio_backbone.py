@@ -68,15 +68,3 @@ class AudioPluginBackbone:
 
     def forward(self, latents: Any, t: Any, **kwargs: Any) -> Any:
         return self.model(latents, t, **kwargs)
-
-    def prepare_conditioning(self, request: Any, bundle: Any) -> dict[str, Any]:
-        return {}
-
-    def before_denoise(
-        self,
-        latents: Any,
-        timesteps: Any,
-        sigmas: Any | None,
-        **cond: Any,
-    ) -> Any:
-        return latents

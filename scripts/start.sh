@@ -7,6 +7,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/out_paths.sh"
 # shellcheck source=dev_process.sh
 source "$SCRIPT_DIR/dev_process.sh"
+# shellcheck source=platform_requirements.sh
+source "$SCRIPT_DIR/platform_requirements.sh"
+
+dq_resolve_platform_requirements "$DQ_ROOT"
 
 BACKEND_PORT="${DQ_BACKEND_PORT}"
 FRONTEND_PORT="${DQ_FRONTEND_PORT}"
@@ -46,8 +50,8 @@ if [[ "$NEED_CREATE" -eq 1 ]]; then
 fi
 
 if ! "$VENV_PYTHON" -c "import fastapi, uvicorn, mlx, pydantic" 2>/dev/null; then
-  echo "Installing dependencies..."
-  "$VENV_PIP" install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt -q
+  echo "Installing dependencies from $DQ_PLATFORM_REQS ..."
+  "$VENV_PIP" install -i https://pypi.tuna.tsinghua.edu.cn/simple -r "$DQ_PLATFORM_REQS" -q
 fi
 
 "$VENV_PYTHON" -c "

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
-
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from backend.engine.protocols.bundle import MediaBundle, TensorRef
 
@@ -20,23 +18,13 @@ class EncodeResult:
 
 @runtime_checkable
 class Backbone(Protocol):
-    """DiT / UNet backbone — family-specific math behind stem dispatch."""
+    """DiT / UNet backbone — load + forward; hooks live on the DiT model itself."""
 
     def forward(self, latents: TensorRef, t: TensorRef, **kwargs: Any) -> TensorRef: ...
 
     def load(self, bundle: MediaBundle, platform: Any) -> None: ...
 
     def after_load(self, bundle: MediaBundle) -> None: ...
-
-    def prepare_conditioning(self, request: Any, bundle: MediaBundle) -> dict[str, Any]: ...
-
-    def before_denoise(
-        self,
-        latents: TensorRef,
-        timesteps: Any,
-        sigmas: Any | None,
-        **cond: Any,
-    ) -> TensorRef: ...
 
 
 @runtime_checkable

@@ -34,7 +34,6 @@ def health() -> dict[str, Any]:
         "gpu": _gpu_memory_fields(),
         "backends": {
             "mlx": "unavailable",
-            "cuda": "unavailable",
         },
         "engines": {
             "danqing-image": "unavailable",
@@ -47,13 +46,6 @@ def health() -> dict[str, Any]:
         out["backends"]["mlx"] = "ok"
     except Exception:
         out["backends"]["mlx"] = "unavailable"
-    try:
-        torch = __import__("torch")
-        cuda = getattr(torch, "cuda", None)
-        if cuda is not None and cuda.is_available():
-            out["backends"]["cuda"] = "ok"
-    except Exception:
-        pass
 
     for b in PlatformInfo.detect():
         out["backends"][b] = "ok"

@@ -110,20 +110,3 @@ class ImagePluginBackbone:
 
     def forward(self, latents: Any, t: Any, **kwargs: Any) -> Any:
         return self.model(latents, t, **kwargs)
-
-    def prepare_conditioning(self, request: Any, bundle: Any) -> dict[str, Any]:
-        if self._model is None:
-            return {}
-        root = bundle.root if isinstance(bundle, MediaBundle) else bundle
-        return self._model.prepare_conditioning(request, bundle_root=str(root) if root else None)
-
-    def before_denoise(
-        self,
-        latents: Any,
-        timesteps: Any,
-        sigmas: Any | None,
-        **cond: Any,
-    ) -> Any:
-        if self._model is None:
-            return latents
-        return self._model.before_denoise(latents, timesteps, sigmas, **cond)

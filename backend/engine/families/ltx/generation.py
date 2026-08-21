@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Protocol
 
+from backend.engine.common.model.dit_stem import require_mlx_ctx
 from backend.engine.config.model_configs import LTXConfig
 from backend.engine.families.ltx.generation_mlx import LTX23MlxGenerator
 
@@ -43,12 +44,7 @@ def create_ltx23_generator(
     entry: Any | None = None,
     version_key: str | None = None,
 ) -> LTX23GeneratorProto:
-    backend = getattr(ctx, "backend", "mlx")
-    if backend != "mlx":
-        raise RuntimeError(
-            f"LTX 2.3 requires MLX runtime (got {backend!r}). "
-            "Select an MLX backend model version on Apple Silicon."
-        )
+    require_mlx_ctx(ctx, feature="LTX 2.3")
     if not bundle_root.is_dir():
         raise RuntimeError(f"LTX 2.3 bundle directory not found: {bundle_root}")
     return LTX23MlxGenerator(

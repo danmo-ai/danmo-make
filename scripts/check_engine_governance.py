@@ -36,8 +36,8 @@ TORCH_IMPORT_PREFIXES = (
     "from torch",
 )
 IMPORT_FORBIDDEN_PREFIXES = MLX_IMPORT_PREFIXES + TORCH_IMPORT_PREFIXES
-# Sole non-*_cuda.py torch site: CUDA RuntimeContext implementation.
-_TORCH_IMPORT_RUNTIME_ALLOW = frozenset({"backend/engine/runtime/cuda.py"})
+# MLX-only: no torch under backend/engine/ (no *_cuda.py exception).
+_TORCH_IMPORT_RUNTIME_ALLOW = frozenset()
 LAYOUT_FORBIDDEN_DIRS = {"mlx", "torch", "runtime", "common"}
 FORBIDDEN_ENGINE_CODEC_DIRS = (
     "backend/engine/vae_codecs",
@@ -83,11 +83,6 @@ REMOVED_SHARED_MODEL_IDS = (
 )
 WAN_STEP_DISTILL_IDS = (
     "wan-2.2-i2v-14b-distill",
-    "wan-2.2-t2v-14b-distill",
-    "wan-2.2-i2v-14b-turbo",
-    "wan-2.2-t2v-14b-turbo-720p",
-    "wan-2.2-t2v-14b-turbo-480p",
-    "wan-2.2-t2v-1.3b-turbo",
 )
 HUNYUAN_STEP_DISTILL_IDS = (
     "hunyuan-video-1.5-t2v-distill",
@@ -199,14 +194,12 @@ def _path_allowed(rel: str, allowlist: list[str]) -> bool:
 def _mlx_import_allowed(rel: str) -> bool:
     if rel.startswith("backend/engine/runtime/"):
         return True
-    name = Path(rel).name
-    return name.endswith("_mlx.py") or name.endswith("_cuda.py")
+    return Path(rel).name.endswith("_mlx.py")
 
 
 def _torch_import_allowed(rel: str) -> bool:
-    if rel in _TORCH_IMPORT_RUNTIME_ALLOW:
-        return True
-    return Path(rel).name.endswith("_cuda.py")
+    """Torch is forbidden under ``backend/engine/`` (MLX-only; allowlist only)."""
+    return rel in _TORCH_IMPORT_RUNTIME_ALLOW
 
 
 def _import_line_allowed(rel: str, line: str) -> bool:
@@ -234,10 +227,10 @@ _BUNDLE_PYTHON_PATTERNS = (
 
 
 def check_mlx_torch(allow: dict[str, list[str]]) -> list[str]:
-    """``*_mlx.py`` must not import ``*_cuda`` modules (MLX hot path cannot depend on torch)."""
+    """Engine must not use torch or leftover ``*_cuda`` modules (MLX-only stack)."""
     violations: list[str] = []
     exempt = set(allow.get("mlx-torch", []))
-    for path in sorted(ENGINE.rglob("*_mlx.py")):
+    for path in sorted(ENGINE.rglob("*.py")):
         rel = str(path.relative_to(ROOT)).replace("\\", "/")
         if rel in exempt:
             continue
@@ -347,8 +340,17 @@ def check_layout(allow: dict[str, list[str]]) -> list[str]:
                     continue
                 violations.append(
                     f"{rel}: forbidden family subtree directory '{path.name}' "
-                    "(use common/ or *_mlx.py/*_cuda.py hooks instead)"
+                    "(use common/ or *_mlx.py hooks instead)"
                 )
+    if ENGINE.is_dir():
+        for path in sorted(ENGINE.rglob("*_cuda.py")):
+            rel = str(path.relative_to(ROOT)).replace("\\", "/")
+            if _path_allowed(rel, allow["layout"]):
+                continue
+            violations.append(
+                f"{rel}: forbidden *_cuda.py under engine/ "
+                "(MLX-only; use stem.py + stem_mlx.py — do not add torch CUDA)"
+            )
     for rel in FORBIDDEN_ENGINE_CODEC_DIRS:
         if (ROOT / rel).is_dir():
             violations.append(
@@ -765,7 +767,12 @@ def _family_dirs() -> list[Path]:
 
 
 def _family_logical_units(family_dir: Path) -> int:
-    """Count logical units: top-level stems + one unit per subpackage directory."""
+    """Count logical units: top-level stems + one unit per subpackage directory.
+
+    Expected Go-style pair: ``stem.py`` + ``stem_mlx.py`` = 1 unit. Legacy
+    ``*_cuda.py`` (if any) still collapses into the same stem for counting, but
+    ``check_layout`` forbids new ``*_cuda.py`` files.
+    """
     stems: set[str] = set()
     skip_subdirs = frozenset({"data", "__pycache__"})
 
@@ -919,13 +926,14 @@ RULE_RUNNERS: dict[str, Callable[[dict[str, list[str]]], list[str]]] = {
 }
 
 RULE_HINTS: dict[str, str] = {
-    "imports": "Move mlx imports to *_mlx.py / *_cuda.py / runtime/; torch only in *_cuda.py "
-    f"(+ runtime/cuda.py), or shrink allowlist in {ALLOWLIST} [imports]",
-    "mlx-torch": "MLX hot path (*_mlx.py) must not import torch or *_cuda modules; use native MLX "
-    f"or dispatch from text_encoder.py / fail loud; shrink allowlist in {ALLOWLIST} [mlx-torch]",
+    "imports": "Move mlx imports to *_mlx.py or runtime/; torch is forbidden under backend/engine/ "
+    f"(MLX-only), or shrink allowlist in {ALLOWLIST} [imports]",
+    "mlx-torch": "Engine must not import torch or leftover *_cuda modules; use native MLX "
+    f"(Metal / mlx[cuda]) or fail loud; shrink allowlist in {ALLOWLIST} [mlx-torch]",
     "bundle-python": "Runtime bundle Python bootstrap only in allowlisted files (model download dirs); "
     f"see {ALLOWLIST} [bundle-python]",
-    "layout": f"Flatten family layout or shrink allowlist in {ALLOWLIST} [layout]",
+    "layout": "Flatten family layout (stem.py + stem_mlx.py; no *_cuda.py) or shrink allowlist "
+    f"in {ALLOWLIST} [layout]",
     "primitives": f"Reuse common primitives or shrink allowlist in {ALLOWLIST} [primitives]",
     "attention": "Use backend/engine/common/ops/attention.py helpers or shrink allowlist "
     f"in {ALLOWLIST} [attention]",
@@ -968,12 +976,15 @@ def _write_allowlist_for_rule(rule: str) -> int:
                 for path in sorted(family_dir.rglob("*")):
                     if path.is_dir() and path.name in LAYOUT_FORBIDDEN_DIRS:
                         found.append(str(path.relative_to(ROOT)).replace("\\", "/"))
+        if ENGINE.is_dir():
+            for path in sorted(ENGINE.rglob("*_cuda.py")):
+                found.append(str(path.relative_to(ROOT)).replace("\\", "/"))
         _write_allowlist_section("layout", found)
         return 0
 
     if rule == "mlx-torch":
         found: list[str] = []
-        for path in sorted(ENGINE.rglob("*_mlx.py")):
+        for path in sorted(ENGINE.rglob("*.py")):
             rel = str(path.relative_to(ROOT)).replace("\\", "/")
             try:
                 text = path.read_text(encoding="utf-8")
@@ -983,7 +994,11 @@ def _write_allowlist_for_rule(rule: str) -> int:
                 s = line.strip()
                 if s.startswith("#") or not s:
                     continue
-                if s.startswith(TORCH_IMPORT_PREFIXES) or _MLX_TORCH_BRIDGE_IMPORT_RE.match(s):
+                if (
+                    s.startswith(TORCH_IMPORT_PREFIXES)
+                    or _MLX_TORCH_BRIDGE_IMPORT_RE.match(s)
+                    or _MLX_TORCH_INDIRECT_RE.search(s)
+                ):
                     found.append(rel)
                     break
         _write_allowlist_section("mlx-torch", sorted(set(found)))

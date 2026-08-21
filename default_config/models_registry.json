@@ -191,7 +191,6 @@
         "audio"
       ],
       "backends": [
-        "cuda",
         "mlx"
       ],
       "latent_layout": "audio_1d",
@@ -207,7 +206,6 @@
         "audio"
       ],
       "backends": [
-        "cuda",
         "mlx"
       ],
       "latent_layout": "audio_1d",
@@ -332,8 +330,7 @@
         "image"
       ],
       "backends": [
-        "mlx",
-        "cuda"
+        "mlx"
       ],
       "latent_layout": "nchw",
       "cfg_mode": "dual",
@@ -408,7 +405,6 @@
         "image"
       ],
       "backends": [
-        "cuda",
         "mlx"
       ],
       "latent_layout": "qwen_grid",
@@ -455,7 +451,6 @@
         "video"
       ],
       "backends": [
-        "cuda",
         "mlx"
       ],
       "latent_layout": "nchw",
@@ -470,7 +465,6 @@
         "image"
       ],
       "backends": [
-        "cuda",
         "mlx"
       ],
       "latent_layout": "nchw",
@@ -2148,8 +2142,7 @@
       "runtime": {
         "family": "z_image",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ],
         "overrides": {
           "enable_thinking": true,
@@ -2356,8 +2349,7 @@
       "runtime": {
         "family": "z_image",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ],
         "overrides": {
           "supports_guidance": false,
@@ -3242,8 +3234,7 @@
       "runtime": {
         "family": "qwen_image",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ],
         "overrides": {
           "vae_scale": 16,
@@ -3472,8 +3463,7 @@
       "runtime": {
         "family": "qwen_image",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ],
         "overrides": {
           "vae_scale": 16,
@@ -3650,8 +3640,7 @@
       "runtime": {
         "family": "qwen_image",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ],
         "overrides": {
           "vae_scale": 16,
@@ -3964,8 +3953,7 @@
       "runtime": {
         "family": "step1x_edit",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ],
         "overrides": {
           "image_pipeline_shape": "family_generator",
@@ -6401,8 +6389,7 @@
       "runtime": {
         "family": "wan",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ],
         "overrides": {
           "video_step_distill": true,
@@ -6481,8 +6468,7 @@
       "runtime": {
         "family": "wan",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ],
         "overrides": {
           "video_step_distill": true,
@@ -6611,8 +6597,7 @@
       "runtime": {
         "family": "z_image",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ]
       },
       "actions": {},
@@ -6728,8 +6713,7 @@
       "runtime": {
         "family": "qwen_image",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ]
       },
       "actions": {},
@@ -6787,8 +6771,7 @@
       "runtime": {
         "family": "qwen_image",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ]
       },
       "actions": {},
@@ -8117,14 +8100,12 @@
           "en": "Wan 2.2 T2V 14B"
         },
         "recommended": false,
-        "engine": "danqing-video",
-        "distilled_variant": "wan-2.2-t2v-14b-distill"
+        "engine": "danqing-video"
       },
       "runtime": {
         "family": "wan",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ]
       },
       "actions": {
@@ -8317,8 +8298,7 @@
       "runtime": {
         "family": "wan",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ]
       },
       "actions": {
@@ -8506,151 +8486,6 @@
         }
       }
     },
-    "wan-2.2-t2v-14b-distill": {
-      "catalog": {
-        "media": "video",
-        "description": {
-          "zh": "Wan 2.2 文生视频 14B LightX2V 4 步蒸馏（FP8，仅 CUDA）；需先安装 Wan 2.2 14B 共享编码器。",
-          "en": "Wan 2.2 T2V 14B LightX2V 4-step distill (FP8, CUDA only); requires Wan 2.2 14B shared encoders."
-        },
-        "category": "video_models",
-        "commercial_use_allowed": true,
-        "type": "video",
-        "source": "modelscope",
-        "name": {
-          "zh": "Wan 2.2 T2V 14B [Distilled]",
-          "en": "Wan 2.2 T2V 14B [Distilled]"
-        },
-        "recommended": true,
-        "engine": "danqing-video",
-        "distilled_from": "wan-2.2-t2v-14b"
-      },
-      "runtime": {
-        "family": "wan",
-        "backends": [
-          "cuda"
-        ],
-        "overrides": {
-          "supports_guidance": false,
-          "step_distill": true,
-          "moe_boundary_step_index": 2
-        }
-      },
-      "actions": {
-        "create": {}
-      },
-      "ui": {
-        "parameters": {
-          "seed_support": true,
-          "steps": {
-            "default": 4,
-            "min": 4,
-            "max": 4,
-            "label": "步数",
-            "note": "LightX2V 4-step distill（固定 4 步）",
-            "type": "int"
-          },
-          "shift": {
-            "default": 5.0,
-            "min": 5.0,
-            "max": 5.0,
-            "step": 0.5,
-            "label": "Shift",
-            "type": "float"
-          },
-          "width": {
-            "default": 704,
-            "options": [
-              480,
-              704,
-              1280
-            ],
-            "type": "enum",
-            "note": "720P 竖屏 704×1280、横屏 1280×704（VAE×patch 对齐 32）"
-          },
-          "height": {
-            "default": 1280,
-            "options": [
-              704,
-              1280
-            ],
-            "type": "enum"
-          },
-          "num_frames": {
-            "default": 81,
-            "min": 1,
-            "max": 129,
-            "step": 4,
-            "label": "帧数",
-            "note": "必须为 4n+1",
-            "type": "int"
-          },
-          "negative_prompt_support": false,
-          "resolution_presets": {
-            "default": "704x1280",
-            "options": [
-              "480x704",
-              "704x1280",
-              "1280x704"
-            ]
-          }
-        },
-        "extends": "video_dit_standard"
-      },
-      "distribution": {
-        "versions": {
-          "fp8": {
-            "name": {
-              "zh": "FP8 版",
-              "en": "FP8"
-            },
-            "size": "11GB",
-            "default": true,
-            "repo_id": "lightx2v/Wan2.2-Distill-Models",
-            "local_path": "models/Video/wan-2.2-t2v-14b-distill-fp8",
-            "source": "modelscope",
-            "source_type": "full",
-            "wan_distill_variant": "t2v_fp8",
-            "allow_patterns": [
-              "wan2.2_t2v_A14b_high_noise_scaled_fp8_e4m3_lightx2v_4step.safetensors",
-              "wan2.2_t2v_A14b_low_noise_scaled_fp8_e4m3_lightx2v_4step.safetensors"
-            ],
-            "bundle_repos": [
-              {
-                "repo_id": "lightx2v/Wan2.2-Distill-Models",
-                "local_path": "models/Video/wan-2.2-t2v-14b-distill-fp8",
-                "name": {
-                  "zh": "Wan T2V Distill DiT",
-                  "en": "Wan T2V Distill DiT"
-                },
-                "source": "modelscope",
-                "size": "0B",
-                "allow_patterns": [
-                  "wan2.2_t2v_A14b_high_noise_scaled_fp8_e4m3_lightx2v_4step.safetensors",
-                  "wan2.2_t2v_A14b_low_noise_scaled_fp8_e4m3_lightx2v_4step.safetensors"
-                ]
-              },
-              {
-                "repo_id": "Wan-AI/Wan2.2-T2V-A14B",
-                "source": "modelscope",
-                "size": "11GB",
-                "name": {
-                  "zh": "Wan UMT5 + VAE",
-                  "en": "Wan UMT5 + VAE"
-                },
-                "allow_patterns": [
-                  "Wan2.1_VAE.pth",
-                  "models_t5_umt5-xxl-enc-bf16.pth",
-                  "google/**",
-                  "configuration.json"
-                ],
-                "local_path": "models/Video/wan-2.2-t2v-14b-distill-fp8"
-              }
-            ]
-          }
-        }
-      }
-    },
     "wan-2.2-i2v-14b-distill": {
       "catalog": {
         "media": "video",
@@ -8673,8 +8508,7 @@
       "runtime": {
         "family": "wan",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ],
         "overrides": {
           "supports_guidance": false,
@@ -8797,331 +8631,6 @@
         }
       }
     },
-    "wan-2.2-i2v-14b-turbo": {
-      "catalog": {
-        "media": "video",
-        "description": {
-          "zh": "Wan 2.2 I2V 14B TurboDiffusion rCM 4 步极速（CUDA）；基于 SageAttention+SLA 加速，无需 CFG。",
-          "en": "Wan 2.2 I2V 14B TurboDiffusion rCM 4-step fast mode (CUDA); SageAttention+SLA accelerated, no CFG."
-        },
-        "category": "video_models",
-        "commercial_use_allowed": true,
-        "type": "video",
-        "source": "huggingface",
-        "name": {
-          "zh": "Wan 2.2 I2V 14B [Turbo]",
-          "en": "Wan 2.2 I2V 14B [Turbo]"
-        },
-        "recommended": false,
-        "engine": "danqing-video"
-      },
-      "runtime": {
-        "family": "wan",
-        "backends": [
-          "cuda"
-        ],
-        "overrides": {
-          "supports_guidance": false,
-          "step_distill": true,
-          "moe_boundary_step_index": 2
-        }
-      },
-      "actions": {
-        "animate": {}
-      },
-      "ui": {
-        "parameters": {
-          "seed_support": true,
-          "steps": {
-            "default": 4,
-            "min": 4,
-            "max": 4,
-            "label": "步数",
-            "note": "TurboDiffusion rCM（固定 4 步）",
-            "type": "int"
-          },
-          "shift": {
-            "default": 5.0,
-            "min": 5.0,
-            "max": 5.0,
-            "step": 0.5,
-            "label": "Shift",
-            "type": "float"
-          },
-          "width": {
-            "default": 704,
-            "options": [
-              480,
-              704,
-              1280
-            ],
-            "type": "enum"
-          },
-          "height": {
-            "default": 1280,
-            "options": [
-              704,
-              1280
-            ],
-            "type": "enum"
-          },
-          "num_frames": {
-            "default": 81,
-            "min": 1,
-            "max": 129,
-            "step": 4,
-            "label": "帧数",
-            "type": "int"
-          },
-          "negative_prompt_support": false,
-          "resolution_presets": {
-            "default": "704x1280",
-            "options": [
-              "480x704",
-              "704x1280",
-              "1280x704"
-            ]
-          }
-        },
-        "extends": "video_dit_standard"
-      },
-      "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "64GB",
-            "default": true,
-            "repo_id": "TurboDiffusion/TurboWan2.2-I2V-A14B-720P",
-            "local_path": "models/Video/wan-2.2-i2v-14b-turbo-fp16",
-            "source": "huggingface",
-            "source_type": "full",
-            "wan_distill_variant": "turbo_i2v_720p",
-            "allow_patterns": [
-              "TurboWan2.2-I2V-A14B-high-720P.pth",
-              "TurboWan2.2-I2V-A14B-low-720P.pth"
-            ],
-            "bundle_repos": [
-              {
-                "repo_id": "TurboDiffusion/TurboWan2.2-I2V-A14B-720P",
-                "local_path": "models/Video/wan-2.2-i2v-14b-turbo-fp16",
-                "name": {
-                  "zh": "Turbo I2V DiT",
-                  "en": "Turbo I2V DiT"
-                },
-                "source": "huggingface",
-                "size": "53GB",
-                "allow_patterns": [
-                  "TurboWan2.2-I2V-A14B-high-720P.pth",
-                  "TurboWan2.2-I2V-A14B-low-720P.pth"
-                ]
-              },
-              {
-                "repo_id": "Wan-AI/Wan2.2-T2V-A14B",
-                "source": "modelscope",
-                "size": "11GB",
-                "name": {
-                  "zh": "Wan UMT5 + VAE",
-                  "en": "Wan UMT5 + VAE"
-                },
-                "allow_patterns": [
-                  "Wan2.1_VAE.pth",
-                  "models_t5_umt5-xxl-enc-bf16.pth",
-                  "google/**",
-                  "configuration.json"
-                ],
-                "local_path": "models/Video/wan-2.2-i2v-14b-turbo-fp16"
-              }
-            ]
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "38GB",
-            "default": false,
-            "repo_id": "TurboDiffusion/TurboWan2.2-I2V-A14B-720P",
-            "local_path": "models/Video/wan-2.2-i2v-14b-turbo-int8",
-            "source": "huggingface",
-            "source_type": "full",
-            "wan_distill_variant": "turbo_i2v_720p_quant",
-            "allow_patterns": [
-              "TurboWan2.2-I2V-A14B-high-720P-quant.pth",
-              "TurboWan2.2-I2V-A14B-low-720P-quant.pth"
-            ],
-            "bundle_repos": [
-              {
-                "repo_id": "TurboDiffusion/TurboWan2.2-I2V-A14B-720P",
-                "local_path": "models/Video/wan-2.2-i2v-14b-turbo-int8",
-                "name": {
-                  "zh": "Turbo I2V DiT INT8",
-                  "en": "Turbo I2V DiT INT8"
-                },
-                "source": "huggingface",
-                "size": "27GB",
-                "allow_patterns": [
-                  "TurboWan2.2-I2V-A14B-high-720P-quant.pth",
-                  "TurboWan2.2-I2V-A14B-low-720P-quant.pth"
-                ]
-              },
-              {
-                "repo_id": "Wan-AI/Wan2.2-T2V-A14B",
-                "source": "modelscope",
-                "size": "11GB",
-                "name": {
-                  "zh": "Wan UMT5 + VAE",
-                  "en": "Wan UMT5 + VAE"
-                },
-                "allow_patterns": [
-                  "Wan2.1_VAE.pth",
-                  "models_t5_umt5-xxl-enc-bf16.pth",
-                  "google/**",
-                  "configuration.json"
-                ],
-                "local_path": "models/Video/wan-2.2-i2v-14b-turbo-int8"
-              }
-            ]
-          }
-        }
-      }
-    },
-    "wan-2.2-t2v-1.3b-turbo": {
-      "catalog": {
-        "media": "video",
-        "description": {
-          "zh": "Wan 2.1 T2V 1.3B TurboDiffusion rCM 4 步极速（CUDA，480p）；轻量快速文生视频。",
-          "en": "Wan 2.1 T2V 1.3B TurboDiffusion rCM 4-step fast mode (CUDA, 480p); lightweight fast T2V."
-        },
-        "category": "video_models",
-        "commercial_use_allowed": true,
-        "type": "video",
-        "source": "huggingface",
-        "name": {
-          "zh": "Wan 2.2 T2V 1.3B [Turbo]",
-          "en": "Wan 2.2 T2V 1.3B [Turbo]"
-        },
-        "recommended": false,
-        "engine": "danqing-video"
-      },
-      "runtime": {
-        "family": "wan",
-        "backends": [
-          "cuda"
-        ],
-        "overrides": {
-          "supports_guidance": false,
-          "step_distill": true
-        }
-      },
-      "actions": {
-        "create": {}
-      },
-      "ui": {
-        "parameters": {
-          "seed_support": true,
-          "steps": {
-            "default": 4,
-            "min": 4,
-            "max": 4,
-            "label": "步数",
-            "type": "int"
-          },
-          "shift": {
-            "default": 5.0,
-            "min": 5.0,
-            "max": 5.0,
-            "step": 0.5,
-            "label": "Shift",
-            "type": "float"
-          },
-          "width": {
-            "default": 480,
-            "options": [
-              480,
-              704
-            ],
-            "type": "enum"
-          },
-          "height": {
-            "default": 704,
-            "options": [
-              704
-            ],
-            "type": "enum"
-          },
-          "num_frames": {
-            "default": 81,
-            "min": 1,
-            "max": 129,
-            "step": 4,
-            "label": "帧数",
-            "type": "int"
-          },
-          "negative_prompt_support": false,
-          "resolution_presets": {
-            "default": "480x704",
-            "options": [
-              "480x704"
-            ]
-          }
-        },
-        "extends": "video_dit_standard"
-      },
-      "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "14GB",
-            "default": true,
-            "repo_id": "TurboDiffusion/TurboWan2.1-T2V-1.3B-480P",
-            "local_path": "models/Video/wan-2.2-t2v-1.3b-turbo-fp16",
-            "source": "huggingface",
-            "source_type": "full",
-            "wan_distill_variant": "turbo_t2v_480p_1.3b",
-            "allow_patterns": [
-              "TurboWan2.1-T2V-1.3B-480P.pth"
-            ],
-            "bundle_repos": [
-              {
-                "repo_id": "TurboDiffusion/TurboWan2.1-T2V-1.3B-480P",
-                "local_path": "models/Video/wan-2.2-t2v-1.3b-turbo-fp16",
-                "name": {
-                  "zh": "Turbo T2V 1.3B DiT",
-                  "en": "Turbo T2V 1.3B DiT"
-                },
-                "source": "huggingface",
-                "size": "2.6GB",
-                "allow_patterns": [
-                  "TurboWan2.1-T2V-1.3B-480P.pth"
-                ]
-              },
-              {
-                "repo_id": "Wan-AI/Wan2.2-T2V-A14B",
-                "source": "modelscope",
-                "size": "11GB",
-                "name": {
-                  "zh": "Wan UMT5 + VAE",
-                  "en": "Wan UMT5 + VAE"
-                },
-                "allow_patterns": [
-                  "Wan2.1_VAE.pth",
-                  "models_t5_umt5-xxl-enc-bf16.pth",
-                  "google/**",
-                  "configuration.json"
-                ],
-                "local_path": "models/Video/wan-2.2-t2v-1.3b-turbo-fp16"
-              }
-            ]
-          }
-        }
-      }
-    },
     "bernini-r-14b": {
       "catalog": {
         "media": "video",
@@ -9143,8 +8652,7 @@
       "runtime": {
         "family": "wan",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ],
         "overrides": {
           "moe_boundary_step_index": 2,
@@ -9305,8 +8813,7 @@
       "runtime": {
         "family": "wan",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ],
         "overrides": {
           "shift": 3.0,
@@ -9953,8 +9460,7 @@
       "runtime": {
         "family": "wan",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ]
       },
       "actions": {
@@ -10108,8 +9614,7 @@
       "runtime": {
         "family": "ace_step",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ]
       },
       "actions": {
@@ -10431,8 +9936,7 @@
       "runtime": {
         "family": "diffrhythm",
         "backends": [
-          "mlx",
-          "cuda"
+          "mlx"
         ]
       },
       "actions": {
@@ -11033,278 +10537,6 @@
             "repo_id": "SecretDongGe/StarFace-Z-Image",
             "local_path": "models/Lora/starface-z-image-turbo-ms-fp16",
             "source_type": "full"
-          }
-        }
-      }
-    },
-    "wan-2.2-t2v-14b-turbo-720p": {
-      "catalog": {
-        "media": "video",
-        "description": {
-          "zh": "Wan 2.1 T2V 14B TurboDiffusion rCM 4 步极速（CUDA，720p）；无需 CFG。",
-          "en": "Wan 2.1 T2V 14B TurboDiffusion rCM 4-step fast mode (CUDA, 720p); no CFG."
-        },
-        "category": "video_models",
-        "commercial_use_allowed": true,
-        "type": "video",
-        "source": "huggingface",
-        "name": {
-          "zh": "Wan 2.2 T2V 14B [Turbo] 720P",
-          "en": "Wan 2.2 T2V 14B [Turbo] 720P"
-        },
-        "recommended": true,
-        "engine": "danqing-video"
-      },
-      "runtime": {
-        "family": "wan",
-        "backends": [
-          "cuda"
-        ],
-        "overrides": {
-          "supports_guidance": false,
-          "step_distill": true
-        }
-      },
-      "actions": {
-        "create": {}
-      },
-      "ui": {
-        "parameters": {
-          "seed_support": true,
-          "steps": {
-            "default": 4,
-            "min": 4,
-            "max": 4,
-            "label": "步数",
-            "type": "int"
-          },
-          "shift": {
-            "default": 5.0,
-            "min": 5.0,
-            "max": 5.0,
-            "step": 0.5,
-            "label": "Shift",
-            "type": "float"
-          },
-          "width": {
-            "default": 704,
-            "options": [
-              480,
-              704,
-              1280
-            ],
-            "type": "enum"
-          },
-          "height": {
-            "default": 1280,
-            "options": [
-              704,
-              1280
-            ],
-            "type": "enum"
-          },
-          "num_frames": {
-            "default": 81,
-            "min": 1,
-            "max": 129,
-            "step": 4,
-            "label": "帧数",
-            "type": "int"
-          },
-          "negative_prompt_support": false,
-          "resolution_presets": {
-            "default": "704x1280",
-            "options": [
-              "480x704",
-              "704x1280",
-              "1280x704"
-            ]
-          }
-        },
-        "extends": "video_dit_standard"
-      },
-      "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "38GB",
-            "default": true,
-            "repo_id": "TurboDiffusion/TurboWan2.1-T2V-14B-720P",
-            "local_path": "models/Video/wan-2.2-t2v-14b-turbo-720p-fp16",
-            "source": "huggingface",
-            "source_type": "full",
-            "wan_distill_variant": "turbo_t2v_720p_14b",
-            "allow_patterns": [
-              "TurboWan2.1-T2V-14B-720P.pth"
-            ],
-            "bundle_repos": [
-              {
-                "repo_id": "TurboDiffusion/TurboWan2.1-T2V-14B-720P",
-                "local_path": "models/Video/wan-2.2-t2v-14b-turbo-720p-fp16",
-                "name": {
-                  "zh": "Turbo T2V 720p DiT",
-                  "en": "Turbo T2V 720p DiT"
-                },
-                "source": "huggingface",
-                "size": "27GB",
-                "allow_patterns": [
-                  "TurboWan2.1-T2V-14B-720P.pth"
-                ]
-              },
-              {
-                "repo_id": "Wan-AI/Wan2.2-T2V-A14B",
-                "source": "modelscope",
-                "size": "11GB",
-                "name": {
-                  "zh": "Wan UMT5 + VAE",
-                  "en": "Wan UMT5 + VAE"
-                },
-                "allow_patterns": [
-                  "Wan2.1_VAE.pth",
-                  "models_t5_umt5-xxl-enc-bf16.pth",
-                  "google/**",
-                  "configuration.json"
-                ],
-                "local_path": "models/Video/wan-2.2-t2v-14b-turbo-720p-fp16"
-              }
-            ]
-          }
-        }
-      }
-    },
-    "wan-2.2-t2v-14b-turbo-480p": {
-      "catalog": {
-        "media": "video",
-        "description": {
-          "zh": "Wan 2.1 T2V 14B TurboDiffusion rCM 4 步极速（CUDA，480p）；无需 CFG。",
-          "en": "Wan 2.1 T2V 14B TurboDiffusion rCM 4-step fast mode (CUDA, 480p); no CFG."
-        },
-        "category": "video_models",
-        "commercial_use_allowed": true,
-        "type": "video",
-        "source": "huggingface",
-        "name": {
-          "zh": "Wan 2.2 T2V 14B [Turbo] 480P",
-          "en": "Wan 2.2 T2V 14B [Turbo] 480P"
-        },
-        "recommended": false,
-        "engine": "danqing-video"
-      },
-      "runtime": {
-        "family": "wan",
-        "backends": [
-          "cuda"
-        ],
-        "overrides": {
-          "supports_guidance": false,
-          "step_distill": true
-        }
-      },
-      "actions": {
-        "create": {}
-      },
-      "ui": {
-        "parameters": {
-          "seed_support": true,
-          "steps": {
-            "default": 4,
-            "min": 4,
-            "max": 4,
-            "label": "步数",
-            "type": "int"
-          },
-          "shift": {
-            "default": 5.0,
-            "min": 5.0,
-            "max": 5.0,
-            "step": 0.5,
-            "label": "Shift",
-            "type": "float"
-          },
-          "width": {
-            "default": 480,
-            "options": [
-              480,
-              704
-            ],
-            "type": "enum"
-          },
-          "height": {
-            "default": 704,
-            "options": [
-              704
-            ],
-            "type": "enum"
-          },
-          "num_frames": {
-            "default": 81,
-            "min": 1,
-            "max": 129,
-            "step": 4,
-            "label": "帧数",
-            "type": "int"
-          },
-          "negative_prompt_support": false,
-          "resolution_presets": {
-            "default": "480x704",
-            "options": [
-              "480x704"
-            ]
-          }
-        },
-        "extends": "video_dit_standard"
-      },
-      "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "38GB",
-            "default": true,
-            "repo_id": "TurboDiffusion/TurboWan2.1-T2V-14B-480P",
-            "local_path": "models/Video/wan-2.2-t2v-14b-turbo-480p-fp16",
-            "source": "huggingface",
-            "source_type": "full",
-            "wan_distill_variant": "turbo_t2v_480p_14b",
-            "allow_patterns": [
-              "TurboWan2.1-T2V-14B-480P.pth"
-            ],
-            "bundle_repos": [
-              {
-                "repo_id": "TurboDiffusion/TurboWan2.1-T2V-14B-480P",
-                "local_path": "models/Video/wan-2.2-t2v-14b-turbo-480p-fp16",
-                "name": {
-                  "zh": "Turbo T2V 480p DiT",
-                  "en": "Turbo T2V 480p DiT"
-                },
-                "source": "huggingface",
-                "size": "27GB",
-                "allow_patterns": [
-                  "TurboWan2.1-T2V-14B-480P.pth"
-                ]
-              },
-              {
-                "repo_id": "Wan-AI/Wan2.2-T2V-A14B",
-                "source": "modelscope",
-                "size": "11GB",
-                "name": {
-                  "zh": "Wan UMT5 + VAE",
-                  "en": "Wan UMT5 + VAE"
-                },
-                "allow_patterns": [
-                  "Wan2.1_VAE.pth",
-                  "models_t5_umt5-xxl-enc-bf16.pth",
-                  "google/**",
-                  "configuration.json"
-                ],
-                "local_path": "models/Video/wan-2.2-t2v-14b-turbo-480p-fp16"
-              }
-            ]
           }
         }
       }

@@ -14,7 +14,7 @@ Operational product rules: [`AGENTS.md`](../AGENTS.md). Cursor enforcement: [`.c
 | **No silent downgrade** | No weak CLI fallback, unknown-model shim, or partial key match loading |
 | **Registry retained** | `default_config/models_registry.json` is the product catalog; profiles shrink duplication only |
 | **Engine net LOC** | Refactors under `backend/engine/` should net-delete or stay neutral |
-| **Dual-platform honesty** | Registry `backends` must match implementation; missing capability fails at task entry |
+| **MLX-only honesty** | Registry `backends: ["mlx"]` must match implementation (Metal or mlx[cuda]); missing capability fails at task entry |
 | **No parallel trees** | No `vae_codecs/`, `video_codecs/`, or `common/{vae,text_encoders,...}/` wrapper dirs |
 
 **Explicit non-goals:** directory scan replacing registry; runtime structure inference; undocumented fallback toggles; ComfyUI-style open node canvas; pipeline as arbitrary graph executor (GenerationGraph is internal observability only).
@@ -64,7 +64,7 @@ backend/
     ├── protocols/      # Backbone, VAE, TextEncoder Protocol stubs
     ├── platform/       # PlatformSession (device session stub)
     ├── registry/       # family_registry + bootstrap_family_plugins()
-    ├── runtime/        # MLXContext, CudaContext, mlx_runtime, mlx_dtype
+    ├── runtime/        # MLXContext, mlx_runtime, mlx_dtype
     ├── common/         # __init__.py facade only at root
     │   ├── ops/        # attention, norm, embeddings, schedulers, cfg_batch
     │   ├── model/      # TransformerBase, DelegatingDiTStem
@@ -96,19 +96,21 @@ backend/
 
 ---
 
-## 4. Dual platform & plugin shapes
+## 4. MLX runtime & plugin shapes
 
 ### 4.1 RuntimeContext tiers
 
-- **Tier 1:** hot path uses `ctx.*` (Linear, RMSNorm, attention helpers).
-- **Tier 2:** platform-specific blocks in `*_mlx.py` / `*_cuda.py` when `ctx` cannot express required APIs.
-- **`import mlx`** only in `runtime/` or `*_mlx.py` / `*_cuda.py`.
-- **`import torch`** only in `*_cuda.py` (plus `runtime/cuda.py` for `CudaContext`; enforced by `make check-engine-imports`).
-- **MLX hot path** — `*_mlx.py` must not `import torch` or import from `*_cuda` modules; CUDA dispatch belongs in `text_encoder.py` / `t5.py` / fail loud (`make check-engine-governance --rule mlx-torch`).
+Engine is **MLX-only**: one API on macOS **Metal** and Linux **mlx[cuda]**. No `CudaContext` / torch CUDA under `backend/engine/`.
+
+- **Tier 1:** hot path uses `ctx.*` (Linear, RMSNorm, attention helpers) via `MLXContext`.
+- **Tier 2:** device-specific blocks in `*_mlx.py` when `ctx` cannot express required APIs.
+- **`import mlx`** only in `runtime/` or `*_mlx.py`.
+- **`import torch`** is **forbidden** under `backend/engine/` (`make check-engine-imports` / `--rule mlx-torch`).
+- Do **not** add `*_cuda.py` or torch CUDA parallel trees.
 
 ### 4.2 Go-style stem (one logical unit)
 
-`stem.py` + `stem_mlx.py` + `stem_cuda.py` count as **1** unit. Registry-facing class lives in `transformer.py` or `stem.py`; implementation classes in `*DiTMLX` / `*DiTCuda` avoid name clashes.
+`stem.py` + `stem_mlx.py` count as **1** unit. Registry-facing class lives in `transformer.py` or `stem.py`; implementation classes in `*DiTMLX` avoid name clashes. Do not scaffold or expect `stem_cuda.py`.
 
 ### 4.3 Shape A / B / C
 
@@ -209,7 +211,7 @@ Implementation: [`scripts/check_engine_governance.py`](../scripts/check_engine_g
 | Full stack | `make verify-engine-stack` |
 | All engine rules | `make check-engine-governance` |
 | Imports | `make check-engine-imports` |
-| MLX / torch | `make check-engine-governance --rule mlx-torch` |
+| MLX / no-torch | `make check-engine-governance --rule mlx-torch` |
 | Family layout / budget | `make check-engine-family-layout` |
 | Weight key parity | `make check-engine-governance --rule parity` |
 | Registry contracts | `make check-engine-governance --rule registry` |
@@ -221,9 +223,9 @@ Implementation: [`scripts/check_engine_governance.py`](../scripts/check_engine_g
 
 | Rule | Checks |
 |------|--------|
-| `imports` | No raw `mlx` outside `runtime` / `*_mlx` / `*_cuda`; no raw `torch` outside `*_cuda` / `runtime/cuda.py` |
-| `mlx-torch` | No `torch` or `*_cuda` imports inside `*_mlx.py` (MLX hot path) |
-| `layout` | No forbidden family subtrees; `common/` subpackage layout; ≤8 logical units |
+| `imports` | No raw `mlx` outside `runtime` / `*_mlx`; no `torch` under `backend/engine/` |
+| `mlx-torch` | No `torch` or leftover `*_cuda` imports under engine (MLX-only) |
+| `layout` | No forbidden family subtrees; no `*_cuda.py`; `common/` subpackage layout; ≤8 logical units |
 | `primitives` | No duplicate SelfAttention/RMSNorm classes in families |
 | `attention` | Prefer `common/ops/attention` over raw `ctx.attention` |
 | `sdpa` / `rope` / `modulation` | Centralized helpers in `common/ops` |
@@ -262,10 +264,9 @@ User-visible failures: HTTP/CLI error + task log/SSE + i18n in `default_config/l
 | Item | Notes |
 |------|-------|
 | Registry audit CLI | Profile inheritance / duplicate params report |
-| TE convergence | Go-style triplets under `common/codecs/text_encoders/` |
+| TE convergence | Go-style pairs under `common/codecs/text_encoders/` (`stem.py` + `stem_mlx.py`) |
 | Reuse metrics | `make check-engine-governance --report reuse` (common + inference import counts) |
 | `register_image_family()` | `scripts/register_image_family.py` — wiring checklist after scaffold |
-| Qwen CUDA parity | Ongoing layout/timestep alignment |
 
 **Landed (2026-06):** Flux2 VAE encode → `vae_codec_registry`; `require_entry_family()`; FIBO edit hook `_IMAGE_EDIT_EXTRA_COND`; Hunyuan CFG batch encode; `codecs.py` used from `image_pipeline`; Wan UMT5 → `create_video_t5_encoder()`; LTX distilled timesteps → `video_apply_ltx_distilled_scheduler_timesteps()`; video upscale → `video_upscale_registry` + `VideoUpscaleSession`; PIL→MP4 → `common/codecs/vae/video_io.save_pil_frames_to_mp4`; LTX mlx-forge weight restore → `prepare_video_transformer_weights()`; SeedVR2 upscale load → `upscale_job_registry.get_upscale_pipeline_loader()`.
 
@@ -285,7 +286,7 @@ User-visible failures: HTTP/CLI error + task log/SSE + i18n in `default_config/l
 | **Codecs + ops** | `common/codecs/`, `common/ops/` | Shared TE/VAE/math reuse pool |
 | **Image ops** | `pipelines/image_run_common.py` | Resolve / encode / schedule / VAE / preview (`ImagePipeline` is ctx holder only) |
 | **Video ops** | `pipelines/video_run_common.py` | Resolve / encode / schedule / VAE / two-stage (`VideoPipeline` is ctx holder only) |
-| **Platform** | `engine/platform/`, `engine/runtime/` | Device session, kernel factories (`*_mlx` / `*_cuda` only) |
+| **Platform** | `engine/platform/`, `engine/runtime/` | Device session, kernel factories (`*_mlx` only; Metal / mlx[cuda]) |
 | **Catalog** | `backend/catalog/` | On-disk schema v3 ≠ `GET /api/registry` DTO (`CatalogResponse`) |
 | **Observability** | `backend/observability/` | `RunTrace`, SSE `trace`, `GET /graph`, `POST /diagnose`; dev `GET /diagnostic` |
 
@@ -425,7 +426,7 @@ TE/VAE (optional): `resolve_component_inference_weight_mode()`; local `convert_m
 quantize `text_encoder/` / `vae/` when registry sets `quantization.<component>.bits` (reference:
 `flux2-klein-4b` derived `int4`/`int8`); Qwen3/Flux2 TE loads affine weights via registry +
 `build_zimage_mlx_encoder`; VAE decode releases after `vae_forward_to_pil` when
-`vae_release_after_decode` (default true). CUDA int4/int8 versions fail loud (Phase 5 placeholder).
+`vae_release_after_decode` (default true). Quantized DiT is MLX-only (Metal / mlx[cuda]).
 Design and rollout status:
 [`docs/plans/quantized-inference-memory.md`](plans/quantized-inference-memory.md).
 
@@ -434,8 +435,7 @@ Design and rollout status:
 | Item | Status |
 |------|--------|
 | Registry audit CLI | §9 backlog |
-| TE Go-style triplets under `common/codecs/text_encoders/` | §9 backlog |
-| Qwen CUDA parity | §9 backlog |
-| Flux1 ControlNet CUDA | Registry `backends: ["mlx"]` on Fill/ControlNet rows; CUDA TBD |
+| TE Go-style pairs under `common/codecs/text_encoders/` | §9 backlog |
+| Flux1 ControlNet | Registry `backends: ["mlx"]` on Fill/ControlNet rows |
 | Engine net LOC reduction pass | Dedicated refactor PR (merge phases helpers where safe) |
 | Qwen VAE file consolidation | Optional; high risk — keep subtree until remap tooling exists |

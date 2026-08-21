@@ -2,7 +2,7 @@
 
 Language: [English](README.md) | **中文**
 
-本地 **图像 / 视频 / 音频** 创作工作室，支持 **MLX**（Apple Silicon）与 **CUDA**（NVIDIA）。技术栈：FastAPI + Vue 3 SPA + CLI + SQLite，界面双语，错误 **显式失败**（不静默降级）。
+本地 **图像 / 视频 / 音频** 创作工作室，基于 **MLX**（Apple Silicon Metal；Linux **mlx[cuda]**）。技术栈：FastAPI + Vue 3 SPA + CLI + SQLite，界面双语，错误 **显式失败**（不静默降级）。**Windows 暂不支持。**
 
 产品名：**Danmo Make**。引擎 / CLI / sidecar 技术标识仍为 `danqing-*` / `DanQing*Engine`（见 [AGENTS.md](AGENTS.md) → Naming boundary）。
 
@@ -18,15 +18,15 @@ Language: [English](README.md) | **中文**
 
 ## 特性
 
-- **双运行时** — Apple Silicon 用 `MLXContext`；有 PyTorch CUDA 时用 `CudaContext`（以注册表 `backends` 为准）。
+- **MLX 运行时** — 单一 `MLXContext`：Apple Silicon 用 Metal，Linux NVIDIA 用 **mlx[cuda]**（注册表 `backends: ["mlx"]`）。
 - **模型即插件** — 新模型 = 注册表 JSON + `model_configs` + `families/<family>/` + `_transformer_registry`；Pipeline 不写 `family` 业务分支。
 - **契约化 API / CLI** — 只经 contracts + `IImageEngine` / `IVideoEngine` / `IAudioEngine`。
 - **全局单队列** — 图像 / 视频 / 音频串行；SSE 进度、优先级、日志落库。
 - **Studio UI** — Vue 3 + Vite + TypeScript + `@danqing/dq-ui`；创作 / 图库 / 模型 / 设置。
 - **无限画布** — 网格与画布共用资产库；会话、谱系、落点、创作器绑定。
-- **音频** — ACE-Step 文生音乐（`danqing-audio`，MLX + CUDA）。
+- **音频** — ACE-Step 文生音乐（`danqing-audio`，MLX）。
 - **MCP（给 Agent）** — `/mcp/` streamable HTTP；可与 **Danmo Work** 内置 `danmo-make` 专家（仅绑定，非 Ambient）配合。
-- **桌面发布** — macOS MLX `.dmg`；Windows **便携 zip**（CUDA thin，首跑安装依赖）；Linux CUDA **服务端** tar.gz。
+- **桌面发布** — macOS MLX `.dmg`；Linux mlx[cuda] 桌面 / **服务端** tar.gz。Windows 打包暂不支持。
 
 ---
 
@@ -34,8 +34,9 @@ Language: [English](README.md) | **中文**
 
 | 平台 | 说明 |
 |------|------|
-| **macOS（Apple Silicon）** | 主目标；MLX / Metal |
-| **Linux / Windows + NVIDIA** | CUDA thin；首次启动在本地 runtime-venv 安装 torch |
+| **macOS（Apple Silicon）** | 主目标；MLX / Metal — `pip install -r requirements-macos.txt` |
+| **Linux + NVIDIA** | MLX / **mlx[cuda]** — `pip install -r requirements-linux.txt` |
+| **Windows** | 暂不支持 |
 | **Python** | 3.11+（Web/开发用仓库根 `.venv/`） |
 | **内存** | 大模型建议 32 GB+ |
 | **Node.js** | 前端与桌面打包 |
@@ -54,8 +55,11 @@ git clone https://github.com/danmo-ai/danmo-make.git
 cd danmo-make
 
 python3.11 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+source .venv/bin/activate
+# macOS Apple Silicon：
+pip install -r requirements-macos.txt
+# Linux（NVIDIA / mlx[cuda]）：
+# pip install -r requirements-linux.txt
 ```
 
 ### 运行（Web）
@@ -82,12 +86,12 @@ make dev      # uvicorn --reload (:7800) + Vite HMR (:5800)
 ### 桌面打包
 
 ```bash
-make pack-macos-desktop    # .app / .dmg（MLX sidecar）
-make pack-windows-desktop  # *-portable.zip（CUDA thin；须在 Windows 上构建）
-make pack-linux-server     # CUDA thin 服务端 tar.gz
+make pack-macos-desktop    # .app / .dmg（MLX Metal sidecar）
+make pack-linux-desktop    # AppImage / .deb（mlx[cuda]）
+make pack-linux-server     # Linux MLX thin 服务端 tar.gz
 ```
 
-Windows：**用便携版 zip**，解压到短路径（如 `C:\DanmoMake`）后运行 exe，不是 NSIS 安装包。首次启动走运行时向导（zip 内不含 torch）。
+Windows 暂不支持。
 
 详见 [desktop/README.md](desktop/README.md)。
 
@@ -109,7 +113,7 @@ CLI ↔ REST：[AGENTS.md](AGENTS.md#cli-vs-rest-api)。
 
 | 路径 | 作用 |
 |------|------|
-| `~/.danmo-make/` | 控制面：工作区指针、应用配置、日志、`api.port`、CUDA `runtime-venv` |
+| `~/.danmo-make/` | 控制面：工作区指针、应用配置、日志、`api.port`、可选 Linux `runtime-venv` |
 | `{workspace}/config/` | 运行时注册表 / 预设（从 `default_config/` 种子） |
 | `{workspace}/models/` | 权重 / LoRA |
 | `{workspace}/outputs/` | 生成物 |
@@ -175,7 +179,7 @@ API / MCP：`create`→`generate`，rewrite/retouch/extend→`edit`。
 
 ### ControlNet（FLUX.1）
 
-`flux1*` 文生图结构引导（Canny / Depth / Redux）；Fill 用于重绘/扩图。当前偏 MLX；未实现的 CUDA 路径显式失败。详见 [AGENTS.md](AGENTS.md) → Gotchas。
+`flux1*` 文生图结构引导（Canny / Depth / Redux）；Fill 用于重绘/扩图。仅 MLX 栈。详见 [AGENTS.md](AGENTS.md) → Gotchas。
 
 ---
 
@@ -213,7 +217,7 @@ TaskScheduler  (全局单队列)
         ↓
 DanQingImageEngine / DanQingVideoEngine / DanQingAudioEngine
         ↓
-Pipelines + FamilyPlugin + RuntimeContext (MLX | CUDA)
+Pipelines + FamilyPlugin + RuntimeContext (MLX)
         ↓
 V3TaskStore + SQLiteAssetStore
 ```
@@ -228,17 +232,17 @@ V3TaskStore + SQLiteAssetStore
 
 | 平台 | 产物 |
 |------|------|
-| macOS Apple Silicon | MLX `.dmg` / `.app` |
-| Windows x64 | CUDA thin **`*-portable.zip`** |
-| Linux x64 | CUDA thin **服务端** `.tar.gz` |
+| macOS Apple Silicon | MLX `.dmg` / `.app`（Metal） |
+| Linux x64 | MLX（**mlx[cuda]**）桌面 / **服务端** `.tar.gz` |
+| Windows | 暂不支持 |
 
 ```bash
 make pack-macos-desktop
-make pack-windows-desktop    # 在 Windows 上
+make pack-linux-desktop
 make pack-linux-server
 ```
 
-禁止在同一包内混装 MLX 与 CUDA。
+全平台统一 MLX 栈（Metal 或 mlx[cuda]），无独立 torch CUDA 引擎。
 
 ---
 

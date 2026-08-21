@@ -1,4 +1,4 @@
-"""FIBO Transformer — 对外入口（MLX / CUDA dispatch）。"""
+"""FIBO Transformer — 对外入口（MLX dispatch）。"""
 from __future__ import annotations
 
 from typing import Any
@@ -7,7 +7,7 @@ from backend.engine.common.model.dit_stem import DelegatingDiTStem
 
 
 class FIBOTransformer(DelegatingDiTStem):
-    """FIBO DiT — selects MLX or CUDA implementation from ``RuntimeContext``."""
+    """FIBO DiT — MLX DiT via ``DelegatingDiTStem``."""
 
     def __init__(self, config: Any, ctx: Any):
         from .transformer_mlx import FIBODiTMLX as _MLX
@@ -16,5 +16,4 @@ class FIBOTransformer(DelegatingDiTStem):
             config,
             ctx,
             mlx_cls=_MLX,
-            unavailable_product="FIBO",
         )

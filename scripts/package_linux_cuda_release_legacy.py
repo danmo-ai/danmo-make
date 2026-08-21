@@ -59,7 +59,7 @@ def package(*, version: str | None = None) -> Path:
     dist_root = op.OUT_ROOT / "dist"
     dist_root.mkdir(parents=True, exist_ok=True)
 
-    bundle_name = f"danmo-make-linux-cuda-x86_64-{ver}-legacy-sidecar"
+    bundle_name = f"danmo-make-linux-mlx-x86_64-{ver}-legacy-sidecar"
     staging = dist_root / bundle_name
     sidecar = op.SIDECAR_DIR
 

@@ -68,15 +68,3 @@ class UpscalePluginBackbone:
         raise RuntimeError(
             f"UpscalePluginBackbone({self.spec.family_id!r}): forward delegates to job runner"
         )
-
-    def prepare_conditioning(self, request: Any, bundle: Any) -> dict[str, Any]:
-        return {}
-
-    def before_denoise(
-        self,
-        latents: Any,
-        timesteps: Any,
-        sigmas: Any | None,
-        **cond: Any,
-    ) -> Any:
-        return latents

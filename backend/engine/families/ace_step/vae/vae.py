@@ -1,11 +1,13 @@
 """
-ACE-Step VAE — common interface dispatching to MLX or CUDA backend.
+ACE-Step VAE — MLX audio VAE wrapper.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import Any
+
+from backend.engine.common.model.dit_stem import require_mlx_ctx
 
 
 def _vae_kwargs_from_bundle(vae_dir: str) -> dict[str, Any]:
@@ -32,40 +34,33 @@ def _vae_kwargs_from_bundle(vae_dir: str) -> dict[str, Any]:
 
 
 class AceStepVAE:
-    """Audio VAE wrapper that dispatches to the appropriate backend."""
+    """Audio VAE wrapper (MLX-only)."""
 
     def __init__(self, ctx: Any, **kwargs):
-        backend = getattr(ctx, "backend", "mlx")
+        require_mlx_ctx(ctx, feature="ACE-Step VAE")
         vae_dir = kwargs.get("vae_dir", "")
-        self._backend = backend
+        self._backend = "mlx"
 
-        if backend == "mlx":
-            from .vae_mlx import AceStepVAEMLX, load_vae_weights_from_bundle
+        from .vae_mlx import AceStepVAEMLX, load_vae_weights_from_bundle
 
-            mlx_kwargs = _vae_kwargs_from_bundle(vae_dir) if vae_dir else {}
-            for k in (
-                "encoder_hidden_size",
-                "downsampling_ratios",
-                "channel_multiples",
-                "decoder_channels",
-                "decoder_input_channels",
-                "audio_channels",
-            ):
-                if k in kwargs:
-                    mlx_kwargs[k] = kwargs[k]
-            self._vae = AceStepVAEMLX(**mlx_kwargs)
-            if vae_dir:
-                eval_fn = getattr(ctx, "eval", None)
-                array_fn = getattr(ctx, "array", None)
-                load_vae_weights_from_bundle(
-                    vae_dir, self._vae, eval_fn=eval_fn, array_fn=array_fn
-                )
-        elif backend == "cuda":
-            from .vae_cuda import AceStepVAECuda
-
-            self._vae = AceStepVAECuda(vae_dir)
-        else:
-            raise RuntimeError(f"Unsupported backend: {backend}")
+        mlx_kwargs = _vae_kwargs_from_bundle(vae_dir) if vae_dir else {}
+        for k in (
+            "encoder_hidden_size",
+            "downsampling_ratios",
+            "channel_multiples",
+            "decoder_channels",
+            "decoder_input_channels",
+            "audio_channels",
+        ):
+            if k in kwargs:
+                mlx_kwargs[k] = kwargs[k]
+        self._vae = AceStepVAEMLX(**mlx_kwargs)
+        if vae_dir:
+            eval_fn = getattr(ctx, "eval", None)
+            array_fn = getattr(ctx, "array", None)
+            load_vae_weights_from_bundle(
+                vae_dir, self._vae, eval_fn=eval_fn, array_fn=array_fn
+            )
 
     def encode(self, audio) -> Any:
         return self._vae.encode(audio)

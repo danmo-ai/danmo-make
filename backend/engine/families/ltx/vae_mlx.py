@@ -2920,8 +2920,6 @@ def _save_waveform(waveform: mx.array, path: str, sample_rate: int = 48000) -> N
 
 
 def mux_video_audio_mp4(ctx: RuntimeContext, video_latent: mx.array, audio_latent: mx.array, output_path: str, bundle_root: Path, *, frame_rate: float = 24.0, on_log: Callable[[str], None] | None = None) -> str:
-    if getattr(ctx, "backend", None) != "mlx":
-        raise RuntimeError(f"LTX 2.3 mux requires MLX (got {getattr(ctx, 'backend', None)!r})")
     load_fn = getattr(ctx, "load_weights", None)
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         audio_path = tmp.name
@@ -2934,8 +2932,6 @@ def mux_video_audio_mp4(ctx: RuntimeContext, video_latent: mx.array, audio_laten
 
 
 def decode_latents_ncthw(ctx: RuntimeContext, latents_bcthw: mx.array, bundle_root: Path, on_stage: Callable[[float], None] | None = None, on_log: Callable[[str], None] | None = None) -> mx.array:
-    if getattr(ctx, "backend", None) != "mlx":
-        raise RuntimeError(f"LTX 2.3 VAE decode requires MLX (got {getattr(ctx, 'backend', None)!r})")
     if on_log:
         on_log(f"LTX 2.3 VAE decode start (latent shape {tuple(latents_bcthw.shape)})")
     if on_stage:

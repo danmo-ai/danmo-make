@@ -89,12 +89,6 @@ class Step1XEditMlxGenerator:
         self._size_level = int(getattr(config, "step1x_size_level", 512) or 512)
 
     def load(self) -> None:
-        backend = getattr(self._ctx, "backend", "mlx")
-        if backend != "mlx":
-            raise RuntimeError(
-                f"Step1X-Edit MLX path requires MLX runtime (got {backend!r}). "
-                "Select an MLX backend model version on Apple Silicon."
-            )
         dit_name = getattr(self._config, "step1x_dit_filename", None)
         ae_path, dit_path, qwen_path = _resolve_step1x_paths(
             self._bundle_root,

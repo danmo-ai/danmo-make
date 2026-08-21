@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Protocol
 
+from backend.engine.common.model.dit_stem import require_mlx_ctx
 from backend.engine.config.model_configs import HiDreamO1Config
 from backend.engine.families.hidream_o1.generation_mlx import (
     HiDreamO1MlxGenerator,
@@ -50,12 +51,7 @@ def create_hidream_o1_generator(
     entry: Any | None = None,
     version_key: str | None = None,
 ) -> HiDreamO1GeneratorProto:
-    backend = getattr(ctx, "backend", "mlx")
-    if backend != "mlx":
-        raise RuntimeError(
-            f"HiDream-O1-Image requires MLX runtime (got {backend!r}). "
-            "Select an MLX backend model version on Apple Silicon."
-        )
+    require_mlx_ctx(ctx, feature="HiDream-O1-Image")
     if not bundle_root.is_dir():
         raise RuntimeError(f"HiDream-O1 bundle directory not found: {bundle_root}")
     return HiDreamO1MlxGenerator(

@@ -792,11 +792,6 @@ class LTX23MlxGenerator:
         on_log: Callable[[str, str], None] | None,
         on_progress: Callable[..., None] | None = None,
     ) -> str:
-        if getattr(self.ctx, "backend", None) != "mlx":
-            raise RuntimeError(
-                f"LTX 2.3 requires MLX runtime (got {getattr(self.ctx, 'backend', None)!r})"
-            )
-
         stage2_steps = int(getattr(self.config, "ltx_stage2_steps", 3) or 3)
         stage1_steps = (
             _resolve_distilled_stage1_steps(steps, on_log=on_log)

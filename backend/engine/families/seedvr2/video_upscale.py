@@ -38,9 +38,10 @@ def run_seedvr2_video_upscale(
     on_log: Callable | None = None,
 ) -> tuple[str, dict[str, Any]] | None:
     """Decode source video → SeedVR2 3D VAE chunks → mux MP4 (audio preserved when present)."""
-    _ = ctx, model_registry
-    if getattr(ctx, "backend", None) != "mlx":
-        raise RuntimeError("SeedVR2 video upscale requires MLX backend")
+    from backend.engine.common.model.dit_stem import require_mlx_ctx
+
+    require_mlx_ctx(ctx, feature="SeedVR2 video upscale")
+    _ = model_registry
 
     require_entry_family(entry, model_id=model_key)
     bundle_root = local_bundle_root(project_root, entry, version_key)

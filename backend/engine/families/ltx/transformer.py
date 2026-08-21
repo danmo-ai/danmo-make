@@ -1,4 +1,4 @@
-"""LTX 2.3 Video Transformer — public entry (MLX only; CUDA fails loud)."""
+"""LTX 2.3 Video Transformer — public entry (MLX)."""
 from __future__ import annotations
 
 from typing import Any
@@ -16,7 +16,5 @@ class LTXTransformer(DelegatingDiTStem):
             config,
             ctx,
             mlx_cls=LTX23Transformer,
-            cuda_cls=None,
-            unavailable_product="LTX 2.3 Video",
             num_frames=num_frames,
         )

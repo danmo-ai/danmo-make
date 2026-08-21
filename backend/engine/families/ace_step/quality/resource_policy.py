@@ -86,7 +86,7 @@ def _tier_for_memory_gb(memory_gb: float) -> str:
     return "unlimited"
 
 
-def detect_memory_gb(*, backend: str = "mlx") -> float:
+def detect_memory_gb() -> float:
     """Best-effort unified / GPU memory estimate."""
     debug = os.environ.get("DANQING_ACESTEP_DEBUG_MEMORY_GB")
     if debug:
@@ -94,13 +94,6 @@ def detect_memory_gb(*, backend: str = "mlx") -> float:
             return float(debug)
         except ValueError:
             pass
-
-    if backend == "cuda":
-        from backend.engine.families.ace_step.quality.resource_policy_cuda import detect_cuda_memory_gb
-
-        cuda_gb = detect_cuda_memory_gb()
-        if cuda_gb is not None:
-            return cuda_gb
 
     if platform.system() == "Darwin":
         try:
@@ -126,8 +119,8 @@ def detect_memory_gb(*, backend: str = "mlx") -> float:
     return 16.0
 
 
-def resolve_resource_policy(*, backend: str = "mlx") -> AceStepResourcePolicy:
-    memory_gb = detect_memory_gb(backend=backend)
+def resolve_resource_policy() -> AceStepResourcePolicy:
+    memory_gb = detect_memory_gb()
     tier = _tier_for_memory_gb(memory_gb)
     row = _TIER_TABLE[tier]
     return AceStepResourcePolicy(

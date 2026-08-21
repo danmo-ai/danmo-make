@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Protocol
 
+from backend.engine.common.model.dit_stem import require_mlx_ctx
 from backend.engine.config.model_configs import LongCatAvatarConfig
 from backend.engine.families.longcat_avatar.generation_mlx import LongCatAvatarMlxGenerator
 
@@ -38,12 +39,7 @@ def create_longcat_avatar_generator(
     entry: Any | None = None,
     version_key: str | None = None,
 ) -> LongCatAvatarGeneratorProto:
-    backend = getattr(ctx, "backend", "mlx")
-    if backend != "mlx":
-        raise RuntimeError(
-            f"LongCat-Avatar requires MLX runtime (got {backend!r}). "
-            "Select an MLX backend model version on Apple Silicon."
-        )
+    require_mlx_ctx(ctx, feature="LongCat-Avatar")
     if not bundle_root.is_dir():
         raise RuntimeError(f"LongCat-Avatar bundle directory not found: {bundle_root}")
     return LongCatAvatarMlxGenerator(

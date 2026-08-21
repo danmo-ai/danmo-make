@@ -12,13 +12,9 @@ from typing import Any, Callable
 from backend.engine.runtime._base import RuntimeContext
 
 
-# NCHW ↔ NHWC 转换（MLX Conv2d/GroupNorm 工作在 NHWC；CUDA 使用标准 NCHW）
+# NCHW ↔ NHWC（MLX Conv2d/GroupNorm 工作在 NHWC）
 def _to_nhwc(ctx, x): return ctx.permute(x, (0, 2, 3, 1))
 def _to_nchw(ctx, x): return ctx.permute(x, (0, 3, 1, 2))
-
-
-def _vae_cuda_nchw(ctx: RuntimeContext) -> bool:
-    return getattr(ctx, "backend", None) == "cuda"
 
 
 class ResnetBlock:
@@ -46,24 +42,6 @@ class ResnetBlock:
 
     def forward(self, x):
         ctx = self.ctx
-        if _vae_cuda_nchw(ctx):
-            if self.norm_input_fp32:
-                torch = importlib.import_module("torch")
-                x_norm = x.to(dtype=torch.float32)
-            else:
-                x_norm = x
-            h = self.norm1(x_norm)
-            h = ctx.silu(h)
-            h = self.conv1(h)
-            if self.norm_input_fp32:
-                torch = importlib.import_module("torch")
-                h = h.to(dtype=torch.float32)
-            h = self.norm2(h)
-            h = ctx.silu(h)
-            h = self.conv2(h)
-            if self.conv_shortcut is not None:
-                return self.conv_shortcut(x) + h
-            return x + h
         h = _to_nhwc(ctx, x)
         if self.norm_input_fp32:
             h = h.astype(importlib.import_module("mlx.core").float32)
@@ -107,27 +85,6 @@ class SpatialAttention:
 
     def forward(self, x):
         ctx = self.ctx
-        if _vae_cuda_nchw(ctx):
-            if self.norm_input_fp32:
-                torch = importlib.import_module("torch")
-                h = self.norm(x.to(dtype=torch.float32))
-            else:
-                h = self.norm(x)
-            B, C, H, W = h.shape
-            h_bhwc = ctx.permute(h, (0, 2, 3, 1))
-            scale = C ** -0.5
-            q = ctx.reshape(self.to_q(h_bhwc), (B, H * W, 1, C))
-            k = ctx.reshape(self.to_k(h_bhwc), (B, H * W, 1, C))
-            v = ctx.reshape(self.to_v(h_bhwc), (B, H * W, 1, C))
-            q = ctx.permute(q, (0, 2, 1, 3))
-            k = ctx.permute(k, (0, 2, 1, 3))
-            v = ctx.permute(v, (0, 2, 1, 3))
-            out = ctx.attention(q, k, v, scale=scale)
-            out = ctx.permute(out, (0, 2, 1, 3))
-            out = ctx.reshape(out, (B, H, W, C))
-            out = self.to_out(out)
-            out = ctx.permute(out, (0, 3, 1, 2))
-            return x + out
         # x: NCHW → NHWC for norm and linear (MLX)
         h = _to_nhwc(ctx, x)
         B, H, W, C = h.shape
@@ -161,10 +118,6 @@ class Upsample:
 
     def forward(self, x):
         ctx = self.ctx
-        if _vae_cuda_nchw(ctx):
-            F = importlib.import_module("torch.nn.functional")
-            x_up = F.interpolate(x, scale_factor=2.0, mode="nearest")
-            return self.conv(x_up)
         B, C, H, W = x.shape
         h = _to_nhwc(ctx, x)  # [B, H, W, C]
         # 沿 H 重复: [B, H, W, C] → [B, H, 1, W, C] → concat → [B, H*2, W, C]
@@ -318,12 +271,9 @@ class VAEDecoder:
         # Apply scaling (matching diffusers/reference VAE)
         if self.scaling_factor != 1.0 or self.shift_factor != 0.0:
             latents = (latents / self.scaling_factor) + self.shift_factor
-        if _vae_cuda_nchw(ctx):
-            x = self.conv_in(latents)
-        else:
-            x = _to_nhwc(ctx, latents)
-            x = self.conv_in(x)
-            x = _to_nchw(ctx, x)
+        x = _to_nhwc(ctx, latents)
+        x = self.conv_in(x)
+        x = _to_nchw(ctx, x)
 
         x = self.mid_resnet1.forward(x)
         if self.mid_attn is not None:
@@ -336,16 +286,11 @@ class VAEDecoder:
             if ups is not None:
                 x = ups.forward(x)
 
-        if _vae_cuda_nchw(ctx):
-            x = self.norm_out(x)
-            x = ctx.silu(x)
-            x = self.conv_out(x)
-        else:
-            x = _to_nhwc(ctx, x)
-            x = self.norm_out(x)
-            x = ctx.silu(x)
-            x = self.conv_out(x)
-            x = _to_nchw(ctx, x)
+        x = _to_nhwc(ctx, x)
+        x = self.norm_out(x)
+        x = ctx.silu(x)
+        x = self.conv_out(x)
+        x = _to_nchw(ctx, x)
         return x
 
 

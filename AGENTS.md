@@ -6,7 +6,7 @@ Operational guide for contributors and coding agents. User-facing overview: [REA
 
 ## What this is
 
-Danmo Make — plugin-style **image / video** generation on **MLX** (Apple Silicon) and **CUDA** (NVIDIA). Split stack: FastAPI + Vue 3 SPA + CLI + SQLite. Models are declared in JSON and implemented under `backend/engine/families/`.
+Danmo Make — plugin-style **image / video** generation on **MLX** (Apple Silicon Metal; Linux **mlx[cuda]**). Split stack: FastAPI + Vue 3 SPA + CLI + SQLite. Models are declared in JSON and implemented under `backend/engine/families/`. **Windows is temporarily unsupported.**
 
 **Naming boundary:** product / UI / release artifacts use **Danmo Make** / `danmo-make-*`. Runtime and code identifiers stay **`danqing-*`** for upgrade compatibility — e.g. Bundle ID `com.danqing.studio.desktop`, env `DANQING_*`, sidecar `danqing-api`, registry engines `danqing-image|video|audio`, CLI `bin/danqing-*`, classes `DanQing*Engine`, frontend storage `dq-studio.*.v4`, design packages `@danqing/dq-*`. Do not rename those without a migration plan.
 
@@ -41,7 +41,7 @@ Danmo Make — plugin-style **image / video** generation on **MLX** (Apple Silic
 | LLM assistant (engine) | `backend/engine/llm/` — sanitize / vision; not generation inference |
 | Catalog `families` → FamilySpec | `backend/catalog/family_spec_loader.py` |
 | Asset lineage | `backend/engine/lineage.py` |
-| Runtime | `backend/engine/runtime/` (`MLXContext`, `CudaContext`, `mlx_runtime`, `mlx_dtype`) |
+| Runtime | `backend/engine/runtime/` (`MLXContext`, `mlx_runtime`, `mlx_dtype`) |
 | Task kinds | `backend/core/task_kinds.py` (do not hardcode kind strings) |
 | Cursor rules | `.cursor/rules/model-migration.mdc`, `.cursor/rules/no-silent-degrade.mdc`, `.cursor/rules/models-registry-maintain.mdc` |
 | Engine architecture (single doc) | `docs/engine_architecture.md` |
@@ -49,13 +49,13 @@ Danmo Make — plugin-style **image / video** generation on **MLX** (Apple Silic
 | Pipeline progress + graph step logs | `backend/engine/pipelines/pipeline_progress.py` |
 | Registry profiles (expand / shrink) | `backend/core/registry_profiles.py` |
 | Bundle manifest + family contracts | `backend/core/bundle_manifest.py` |
-| Desktop | `desktop/`, `make dev-desktop`, `make pack-macos-desktop` / `pack-linux-desktop` / `pack-windows-desktop` |
+| Desktop | `desktop/`, `make dev-desktop`, `make pack-macos-desktop` / `pack-linux-desktop` / `pack-linux-server` |
 | MCP (Agent) | `backend/mcp/` — streamable-http at `/mcp`; stdio `bin/danqing-mcp` / `python -m backend.mcp` (proxies REST; port via `DANQING_MCP_BASE_URL` / `api.port`) |
 | Remote auth | Loopback skips auth; non-loopback needs separate HTTP/MCP API keys (`backend/api/access_auth.py`). Stored as salted HMAC `v1:<salt>:<hmac>`; plaintext shown once at create. Env: `DANQING_HTTP_API_KEY` / `DANQING_MCP_API_KEY` |
 
 ### Hardcoded paths
 
-- Control plane: `~/.danmo-make/` (pointer, `config/.app_config.json`, logs, `api.pid`, CUDA `runtime-venv`)
+- Control plane: `~/.danmo-make/` (pointer, `config/.app_config.json`, logs, `api.pid`, optional Linux `runtime-venv` for mlx[cuda])
 - Media workspace (default = control plane; or user-chosen via Settings): `config/` (registry/presets/user_loras), `db/`, `models/`, `outputs/`
 - Dev (`make dev`, no pointer): media root stays the repo (`./models`, `./outputs`, …); control plane still `~/.danmo-make`
 - Factory templates: `default_config/` (`models_registry.json`, `presets.json`, locales) — read-only seed into workspace `config/`
@@ -64,9 +64,10 @@ Danmo Make — plugin-style **image / video** generation on **MLX** (Apple Silic
 ### Environment
 
 - **Python** 3.11+, venv at `.venv/`
-- **Key packages**: `fastapi`, `uvicorn`, `mlx`, `Pillow`, `transformers`, `safetensors` (+ `torch` when using CUDA)
+- **Install**: macOS → `pip install -r requirements-macos.txt`; Linux → `pip install -r requirements-linux.txt` (common deps via `requirements.txt`; Windows unsupported)
+- **Key packages**: `fastapi`, `uvicorn`, `mlx` (Metal or `mlx[cuda]`), `Pillow`, `transformers`, `safetensors`
 - **Benchmark venv**: `tests/benchmark/venv/` via `make bench-setup` (isolated from app venv)
-- **Platform detect**: `backend/engine/platform.py` — `["mlx"]` on darwin arm64 with mlx; `["cuda"]` when `torch.cuda.is_available()`; **fail loud** if a model’s `backends` entry is not satisfied
+- **Platform detect**: `backend/engine/platform/` — `["mlx"]` on **darwin arm64** (Metal) or **linux** with mlx / mlx[cuda]; **fail loud** if a model’s `backends` entry is not satisfied
 - **Remote API keys** (optional plaintext env): `DANQING_HTTP_API_KEY`, `DANQING_MCP_API_KEY` — see Quick reference → Remote auth; Settings UI preferred for durable salted hashes
 
 ---
@@ -77,14 +78,14 @@ Three product-level constraints (also in `.cursor/rules/*.mdc`):
 
 1. **Layering / plugin model** — Reuse `backend/engine/common/`; new models = registry + `model_configs` + `families/<family>/` + `_transformer_registry`. **No** `family == …` branches in `ImagePipeline` / `VideoPipeline` for business logic.
 2. **Contract API + CLI** — Routes/CLI only through contracts + `IImageEngine` / `IVideoEngine`. Per-model behavior via registry `actions` / `parameters` and Transformer polymorphism + Hooks — **not** `model_id` switches in `backend/api/routes/` or `backend/cli/`.
-3. **RuntimeContext** — Hot paths use `ctx.*`; literal `import mlx` only in `backend/engine/runtime/` or `*_mlx.py` / `*_cuda.py`; literal `import torch` only in `*_cuda.py` (plus `runtime/cuda.py`). **MLX hot path (`*_mlx.py`) must not import torch or `*_cuda` modules** — native MLX or fail loud (`make check-engine-governance --rule mlx-torch`). Missing backend → **explicit error**, no silent fallback.
+3. **RuntimeContext** — Hot paths use `ctx.*` (`MLXContext` only). Literal `import mlx` only in `backend/engine/runtime/` or `*_mlx.py`. **`import torch` is forbidden under `backend/engine/`** (`make check-engine-governance --rule imports` / `--rule mlx-torch`). Same MLX API on Metal (macOS) and mlx[cuda] (Linux). Missing backend → **explicit error**, no silent fallback.
 
 | Dimension | Acceptance |
 |-----------|------------|
 | Plugin | New image family: JSON + `model_configs` + `families/<family>/` + registry; no new Pipeline `family` branches |
-| Family size | `families/<family>/` ≤ **8 logical units**; `stem.py` + `stem_mlx.py` + `stem_cuda.py` = **1** unit |
+| Family size | `families/<family>/` ≤ **8 logical units**; `stem.py` + `stem_mlx.py` = **1** unit (do not add `stem_cuda.py`) |
 | API/CLI | Extend contracts + route/CLI first; REST and CLI stay aligned |
-| Dual platform | Multi-`backends` models must run on each declared runtime or fail loud; MLX hot path no torch |
+| MLX stack | Declared `backends: ["mlx"]` must run on Metal or mlx[cuda], or fail loud; no torch under engine |
 | Engine LOC | Refactors under `backend/engine/` should be **net delete or neutral** (bugfix exceptions documented in PR); no new `vae_codecs/` / `video_codecs/` wrapper trees — use `vae_codec_registry.py` / `video_codec_registry.py` only |
 
 ### Fail loud (default)
@@ -122,7 +123,7 @@ V3TaskStore + SQLiteAssetStore
 | `backend/engine/sessions/` | Orchestration + `engine_dispatch.py` |
 | `backend/engine/pipelines/` | Phased helpers + pipeline helper objects (ctx/registry bundle) |
 | `backend/engine/families/<family>/` | Per-family transformer, weights, `plugin.py` |
-| `backend/engine/runtime/` | MLX / CUDA contexts |
+| `backend/engine/runtime/` | `MLXContext` |
 | `backend/engine/common/` | Subpackages: ops, model, bundle, codecs (root = facade only) |
 | `backend/engine/cache.py` | ModelCache (LRU + TTL) |
 | `backend/engine/lineage.py` | Asset lineage helpers |
@@ -132,7 +133,7 @@ V3TaskStore + SQLiteAssetStore
 
 ### Replaceable components
 
-- **RuntimeContext** — `MLXContext` / `CudaContext`
+- **RuntimeContext** — `MLXContext`
 - **Scheduler** — `FlowMatchEulerScheduler`, `LinearScheduler`, …
 - **VAEDecoder** — `scaling_factor`, `shift_factor`, `pytorch_compatible`
 - **TextEncoder** — T5, Qwen3, CLIP, … (by `config.encoder_type`)
@@ -175,7 +176,7 @@ Every DiT on `ImagePipeline` / `VideoPipeline` **extends `TransformerBase`** (`b
 
 ### Family layout (migration)
 
-Default per family: `transformer.py`, `text_encoder.py` (if needed), `weights.py`. Dual platform: Go-style `stem.py` / `stem_mlx.py` / `stem_cuda.py` (one logical unit). See `.cursor/rules/model-migration.mdc`.
+Default per family: `transformer.py`, `text_encoder.py` (if needed), `weights.py`. Go-style: `stem.py` / `stem_mlx.py` (one logical unit; same MLX API on Metal and mlx[cuda]). Do **not** add `stem_cuda.py` / torch CUDA. See `.cursor/rules/model-migration.mdc`.
 
 **Weights**: Implement `remap_<family>_weights` in `weights.py` and override `sanitize()` on the DiT (stem or inner impl) to call it before `load_weights` applies tensors. VAE may use long tables. MLX nested `parameters()` → explicit flat `_param_map` matching remap keys.
 
@@ -195,7 +196,7 @@ Extended execution checklist: `docs/engine_architecture.md` §5–§6.
 4. **`backend/engine/families/<family>/weights.py`** — `remap_<family>_weights` (if needed); wire via DiT `sanitize()`
 5. **`backend/engine/_transformer_registry.py`** — `_TRANSFORMER`, `_TEXT_ENCODER`, optional `_IMAGE_LORA_MERGE` (image/video DiT)
 
-**Audio (ACE-Step)** — no `ImagePipeline` / `_TRANSFORMER` row: use `MusicPipeline` + `backend/engine/families/ace_step/generation.py` (public entry; MLX/CUDA dispatch inside family). Register `AceStepConfig` in `model_configs.py`; map registry `actions.create` → `task_kinds.AUDIO_GENERATION` via `task_kind_for_registry_action()`.
+**Audio (ACE-Step)** — no `ImagePipeline` / `_TRANSFORMER` row: use `MusicPipeline` + `backend/engine/families/ace_step/generation.py` (public entry; MLX dispatch inside family). Register `AceStepConfig` in `model_configs.py`; map registry `actions.create` → `task_kinds.AUDIO_GENERATION` via `task_kind_for_registry_action()`.
 
 **Verify**
 
@@ -292,12 +293,12 @@ Engines: `ModelRegistry` + `EngineRegistry` → `DanQingImageEngine` / `DanQingV
 - `GET /api/models/{id}` | `POST …/install` | `POST /api/models/install-batch` | `DELETE …/versions/{version_key}`
 - `GET /api/presets` (read); writes via `/api/settings/presets`
 - `GET /api/adapters` — LoRA index; `for_model` filter
-- `GET /api/system/health` — `mlx` / `cuda` probe, GPU memory
+- `GET /api/system/health` — `mlx` probe (Metal / mlx[cuda]), GPU memory
 - `GET /api/system/metrics` | `GET /api/settings/system`
 
 ### Audio
 
-- `POST /api/audios/generations` — `AUDIO_GENERATION` → `DanQingAudioEngine` → `MusicPipeline` (ACE-Step `ace-step-xl-sft`, MLX + CUDA)
+- `POST /api/audios/generations` — `AUDIO_GENERATION` → `DanQingAudioEngine` → `MusicPipeline` (ACE-Step `ace-step-xl-sft`, MLX)
 - `POST /api/audios/edits` — `AUDIO_EDIT` (registry actions `cover` / `repaint`; engine must declare support)
 
 Route sources: `backend/api/routes/*.py`. Live docs: `http://localhost:7800/docs`.
@@ -314,11 +315,12 @@ make frontend-dev        # :5800 → proxy /api to :7800 (if running backend sep
 make frontend-build      # → out/frontend/dist/
 
 make dev-desktop         # Tauri + Vite HMR (SKIP_BACKEND=1 for external API)
-make pack-macos-desktop  # macOS MLX .app/.dmg
-make pack-linux-desktop  # Linux CUDA AppImage/.deb
-make pack-windows-desktop # Windows CUDA portable zip (on Windows)
-make pack-linux-server   # Linux CUDA server tar.gz (headless)
+make pack-macos-desktop  # macOS MLX .app/.dmg (Metal)
+make pack-linux-desktop  # Linux MLX (mlx[cuda]) AppImage/.deb
+make pack-linux-server   # Linux MLX thin server tar.gz (headless)
 ```
+
+Windows desktop/server packs are **temporarily unsupported**.
 
 ---
 
@@ -333,7 +335,7 @@ make pack-linux-server   # Linux CUDA server tar.gz (headless)
 | `check-consistency` | registry/routes/i18n |
 | `check-engine-rules` | unified engine governance (`check_engine_governance.py`) |
 | `check-engine-imports` | alias: `--rule imports` |
-| `check-engine-mlx-torch` | alias: `--rule mlx-torch` — `*_mlx.py` must not depend on torch / `*_cuda` |
+| `check-engine-mlx-torch` | alias: `--rule mlx-torch` — no torch / leftover `*_cuda` under `backend/engine/` |
 | `check-models-registry-contracts` | alias: `--rule registry` |
 | `check-engine-governance` | engine rules + consistency |
 | `verify-engine-stack` | governance + unit tests |
@@ -341,14 +343,12 @@ make pack-linux-server   # Linux CUDA server tar.gz (headless)
 | `lint` | Python syntax |
 | `frontend-install` / `frontend-dev` / `frontend-build` / `frontend-typecheck` / `frontend-canvas-unit` | frontend |
 | `dev-desktop` | Tauri desktop dev (FastAPI + Vite HMR; aligned with danmo-work/inbox) |
-| `pack-macos-desktop` | macOS Tauri `.app` / `.dmg` (MLX sidecar) |
-| `pack-linux-desktop` | Linux Tauri AppImage / `.deb` (CUDA; thin runtime preferred) |
-| `pack-windows-desktop` | Windows CUDA thin portable zip (no torch in zip; first-run install) |
-| `pack-linux-server` | Linux CUDA thin `danmo-make-linux-cuda-*.tar.gz` (console bootstrap on first `run.sh`) |
-| `pack-windows-server` | Windows CUDA thin server zip (`run.bat` auto-bootstrap) |
+| `pack-macos-desktop` | macOS Tauri `.app` / `.dmg` (MLX Metal sidecar) |
+| `pack-linux-desktop` | Linux Tauri AppImage / `.deb` (mlx[cuda]; thin runtime preferred) |
+| `pack-linux-server` | Linux MLX thin `danmo-make-linux-mlx-*.tar.gz` (console bootstrap on first `run.sh`) |
 | `clean` | `scripts/clean_build.py` |
 
-Makefile pattern: `pack-<platform>-desktop` (Tauri) or `pack-<platform>-server` (archives). Steps: `venv` \| `sidecar` \| `shell` \| `archive`. Legacy aliases (`pack-windows-desktop-release`, `desktop-bundle`, …) remain.
+Makefile pattern: `pack-<platform>-desktop` (Tauri) or `pack-<platform>-server` (archives). Steps: `venv` \| `sidecar` \| `shell` \| `archive`. Windows pack targets are not supported product paths for now.
 
 ---
 
@@ -404,14 +404,14 @@ Workflow: import → select node → Composer fills params → generate lands in
 ## Desktop packaging
 
 - Dev: `make dev-desktop` (`scripts/start_desktop.sh`; Vite via Tauri `beforeDevCommand`)
-- Release: `make pack-macos-desktop` \| `pack-linux-desktop` \| `pack-windows-desktop`  
-  (scripts: `pack_desktop_macos.sh` / `pack_desktop_linux.sh` / `pack_desktop_windows.sh` — same names as danmo-work/inbox)
+- Release: `make pack-macos-desktop` \| `pack-linux-desktop` \| `pack-linux-server`  
+  (scripts: `pack_desktop_macos.sh` / `pack_desktop_linux.sh`)
 - Artifacts: `out/frontend/dist/`, `out/sidecar/danqing-api/`, `out/desktop/bundle/`, `out/dist/*.tar.gz` (Linux server)
-- macOS: `DANQING_PYINSTALLER_PROFILE=mlx` (no torch / `*_cuda`)
-- Linux/Windows desktop: `DANQING_PYINSTALLER_PROFILE=cuda` (no MLX / `*_mlx`)
-- Headless CUDA thin archives: `make pack-linux-server` / `pack-windows-server` → `out/dist/danmo-make-*-cuda-*` (no torch; first start installs via `scripts/runtime_bootstrap.py`)
+- macOS / Linux: single **MLX** PyInstaller profile (`DANQING_PYINSTALLER_PROFILE=mlx`); no torch / `*_cuda`
+- Headless Linux thin archives: `make pack-linux-server` → `out/dist/danmo-make-*-mlx-*` (first start may bootstrap via `scripts/runtime_bootstrap.py`)
+- **Windows**: temporarily unsupported (no product pack / torch CUDA thin)
 - Repair/reinstall: desktop Settings → Runtime; server `./run.sh --repair-runtime` / `bin/danqing-runtime-setup`
-- CI: `.github/workflows/release.yml` (macOS dmg + Linux/Windows CUDA thin packs; Linux desktop omitted for now)
+- CI: `.github/workflows/release.yml` (macOS dmg + Linux mlx packs; Windows omitted)
 - Sidecar env: `DANQING_HTTP_HOST`, `DANQING_HTTP_PORT`, `DANQING_USER_DATA_DIR`
 - New engine modules must be reachable from `scripts/build_sidecar.py` / PyInstaller hooks
 
@@ -427,7 +427,7 @@ Workflow: import → select node → Composer fills params → generate lands in
 - **Contributors** — run `make verify-engine-stack` before PR
 - **Structural guide (FLUX.1 create)** — `ImageGenerationRequest.structural_guide` only on `flux1*` + text-to-image; Canny/Depth/Redux preprocess in pipeline; companion LoRA auto-injected for Canny/Depth. UI: `useStructuralGuide.ts` + Composer advanced; not combinable with reference img2img.
 - **FLUX Fill (retouch/extend)** — `flux-fill-controlnet` only; `ImagePipeline._run_flux1_fill_edit` (384-dim patch concat). Retouch needs `mask_asset_id`; extend uses `ExtendSpec`. CLI: `danqing-edit --operation retouch|extend` with `--mask-image` / `--extend-directions`.
-- **ControlNet CUDA** — structural guide + Fill are **MLX-only** today (`backend/engine/families/flux1/structural.py`; registry `backends: ["mlx"]` on controlnet rows). CUDA paths are **placeholders** until a unified batch (`families/flux1/transformer_cuda.py` + pipeline hooks). Fail loud on `CudaContext`; do not silent-fallback.
+- **ControlNet / Fill** — structural guide + Fill are **MLX-only** (`backend/engine/families/flux1/structural.py`; registry `backends: ["mlx"]`). Fail loud if unsupported; do not silent-fallback.
 
 ---
 

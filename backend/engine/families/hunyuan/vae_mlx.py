@@ -1001,11 +1001,6 @@ def decode_latents_ncthw(
     When ``temporal_chunk_size > 0`` and ``T`` exceeds it, decode in causal temporal chunks
     to reduce peak unified memory (overlap = 1 latent frame for 3×3×3 causal conv).
     """
-    if getattr(ctx, "backend", None) != "mlx":
-        raise RuntimeError(
-            f"HunyuanVideo 3D VAE decode is implemented for MLX only; got backend={getattr(ctx, 'backend', None)!r}."
-        )
-
     vae_cfg = _read_vae_config(bundle_root)
     scaling_factor = float(vae_cfg.get("scaling_factor", 1.03682))
     latents = latents_bcthw / scaling_factor
@@ -1072,11 +1067,6 @@ def encode_video_ncthw(
     on_log: Callable[[str], None] | None = None,
 ) -> mx.array:
     """Encode RGB video ``[B,C,T,H,W]`` float ``[-1,1]`` to latents ``[B,C,T,H,W]`` (Gaussian mode × scaling)."""
-    if getattr(ctx, "backend", None) != "mlx":
-        raise RuntimeError(
-            f"HunyuanVideo 3D VAE encode is implemented for MLX only; got backend={getattr(ctx, 'backend', None)!r}."
-        )
-
     vae_cfg = _read_vae_config(bundle_root)
     scaling_factor = float(vae_cfg.get("scaling_factor", 1.03682))
 

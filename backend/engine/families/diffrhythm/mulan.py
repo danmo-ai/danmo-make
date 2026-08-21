@@ -1,28 +1,23 @@
 """
-DiffRhythm 2 MuQ-MuLan style encoder — backend dispatch (MLX / CUDA).
+DiffRhythm 2 MuQ-MuLan style encoder — MLX-only.
 """
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
+from backend.engine.common.model.dit_stem import require_mlx_ctx
+
 
 class MuQStyleEncoder:
-    """Text style encoder for DiffRhythm 2 (MLX preferred on ``mlx`` backend)."""
+    """Text style encoder for DiffRhythm 2 (MLX)."""
 
     def __init__(self, ctx: Any, cache_dir: Path, mulan_repo_id: str):
+        require_mlx_ctx(ctx, feature="MuQ style encoder")
         self._ctx = ctx
-        backend = getattr(ctx, "backend", "mlx")
-        if backend == "mlx":
-            from .mulan_mlx import MuQStyleEncoderMLX
+        from .mulan_mlx import MuQStyleEncoderMLX
 
-            self._enc = MuQStyleEncoderMLX(cache_dir, mulan_repo_id, ctx)
-        elif backend == "cuda":
-            from .mulan_cuda import MuQStyleEncoderTorch
-
-            self._enc = MuQStyleEncoderTorch(cache_dir, mulan_repo_id)
-        else:
-            raise RuntimeError(f"Unsupported MuQ style encoder backend: {backend!r}")
+        self._enc = MuQStyleEncoderMLX(cache_dir, mulan_repo_id, ctx)
 
     def load(self) -> None:
         self._enc.load()

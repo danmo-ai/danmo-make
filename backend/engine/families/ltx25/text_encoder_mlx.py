@@ -472,10 +472,6 @@ class LTX25PromptEncoder:
         return int(gcfg.get("tokenizer_max_length", _DEFAULT_MAX_LENGTH))
 
     def load(self, on_log: Callable[[str, str], None] | None = None) -> None:
-        if getattr(self.ctx, "backend", None) != "mlx":
-            raise RuntimeError(
-                f"LTX 2.5 Gemma encoder requires MLX runtime (got {getattr(self.ctx, 'backend', None)!r})"
-            )
         if self._loaded:
             return
         _ = on_log

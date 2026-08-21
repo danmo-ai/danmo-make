@@ -1,7 +1,7 @@
 # Common dependencies (platform-agnostic).
-# MLX builds:  pip install -r requirements-mlx.txt
-# CUDA builds: install torch first (see requirements-torch-cuda.txt), then:
-#   pip install -r requirements-cuda.txt
+# macOS (Apple Silicon):  pip install -r requirements-macos.txt
+# Linux (NVIDIA / mlx[cuda]):  pip install -r requirements-linux.txt
+# Windows is temporarily unsupported.
 
 # ── Web framework ──
 fastapi>=0.104.0

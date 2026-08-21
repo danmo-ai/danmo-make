@@ -1,38 +1,27 @@
 """
-DiffRhythm 2 decoder — public entry; MLX / CUDA in ``vae_mlx`` / ``vae_cuda``.
+DiffRhythm 2 decoder — public MLX entry (``vae_mlx``).
 
 DiffRhythm 2 uses a Music VAE latent (5 Hz, mel_dim=64) decoded by BigVGAN to 48 kHz.
-Legacy conv VAE stubs remain until BigVGAN integration lands.
 """
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
+from backend.engine.common.model.dit_stem import require_mlx_ctx
+
 
 class DiffRhythmVAE:
-    """DiffRhythm VAE — dual-backend dispatcher.
-
-    Provides encode() and decode() for latent audio compression.
-    """
+    """DiffRhythm VAE — MLX-only."""
 
     def __init__(self, ctx: Any, vae_dir: str):
+        require_mlx_ctx(ctx, feature="DiffRhythm VAE")
         self._ctx = ctx
         self._vae_dir = Path(vae_dir)
-        backend = getattr(ctx, "backend", "mlx")
+        from .vae_mlx import DiffRhythmVAEMLX
 
-        if backend == "mlx":
-            from .vae_mlx import DiffRhythmVAEMLX
-
-            self._vae = DiffRhythmVAEMLX(ctx, vae_dir=str(vae_dir))
-        elif backend == "cuda":
-            from .vae_cuda import DiffRhythmVAECuda
-
-            self._vae = DiffRhythmVAECuda(ctx, vae_dir=str(vae_dir))
-        else:
-            raise RuntimeError(f"Unsupported backend: {backend}")
-
-        self._backend = backend
+        self._vae = DiffRhythmVAEMLX(ctx, vae_dir=str(vae_dir))
+        self._backend = "mlx"
 
     def encode(self, audio: Any) -> Any:
         """Encode audio [B, T, C] to latents [B, L, latent_dim]."""

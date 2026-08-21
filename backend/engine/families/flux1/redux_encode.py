@@ -1,4 +1,4 @@
-"""FLUX.1 Redux — dispatch (MLX native / CUDA torch)."""
+"""FLUX.1 Redux — MLX native encode."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -13,18 +13,11 @@ def encode_redux_context_tokens(
     *,
     redux_bundle_root: Path,
     on_log: Any = None,
-    backend: str = "mlx",
 ) -> np.ndarray:
     """Return ``[1, seq, 4096]`` float32 tokens to concat after T5 ``txt_embeds``."""
-    if backend == "mlx":
-        from backend.engine.families.flux1.redux_encode_mlx import encode_redux_context_tokens_mlx
+    from backend.engine.families.flux1.redux_encode_mlx import encode_redux_context_tokens_mlx
 
-        return encode_redux_context_tokens_mlx(
-            pil, redux_bundle_root=redux_bundle_root, on_log=on_log
-        )
-    from backend.engine.families.flux1.redux_encode_cuda import encode_redux_context_tokens_cuda
-
-    return encode_redux_context_tokens_cuda(
+    return encode_redux_context_tokens_mlx(
         pil, redux_bundle_root=redux_bundle_root, on_log=on_log
     )
 

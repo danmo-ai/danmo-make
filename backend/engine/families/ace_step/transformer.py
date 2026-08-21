@@ -1,35 +1,25 @@
 """
-ACE-Step Transformer — 对外入口；MLX / CUDA 实现分别见 ``transformer_mlx`` / ``transformer_cuda``。
+ACE-Step Transformer — public entry; MLX implementation in ``transformer_mlx``.
 """
 from __future__ import annotations
 
 from typing import Any, Optional, Tuple
 
 from backend.engine.common.model.base import TransformerBase
+from backend.engine.common.model.dit_stem import require_mlx_ctx
 
 
 class AceStepTransformer(TransformerBase):
-    """ACE-Step DiT decoder — dual-backend dispatcher via RuntimeContext.
-
-    Constructed by ``AudioPipeline`` / ``AudioSession`` with the current ``RuntimeContext``
-    so that the appropriate MLX or CUDA implementation is selected.
-    """
+    """ACE-Step DiT decoder — MLX via RuntimeContext."""
 
     def __init__(self, ctx: Any, **config: Any):
         super().__init__()
         self._ctx = ctx
-        backend = getattr(ctx, "backend", "mlx")
+        require_mlx_ctx(ctx, feature="ACE-Step DiT")
+        from .transformer_mlx import AceStepDiTMLX
 
-        if backend == "mlx":
-            from .transformer_mlx import AceStepDiTMLX
-            self._model = AceStepDiTMLX(**config)
-        elif backend == "cuda":
-            from .transformer_cuda import AceStepDiTCuda
-            self._model = AceStepDiTCuda(**config)
-        else:
-            raise RuntimeError(f"Unsupported backend: {backend}")
-
-        self._backend = backend
+        self._model = AceStepDiTMLX(**config)
+        self._backend = "mlx"
         self._build_param_map()
 
     # ------------------------------------------------------------------
@@ -71,14 +61,9 @@ class AceStepTransformer(TransformerBase):
         return remapped
 
     def _build_param_map(self):
-        self._param_map = {}
-        if self._backend == "mlx":
-            from .transformer_mlx import collect_ace_step_dit_param_map
+        from .transformer_mlx import collect_ace_step_dit_param_map
 
-            self._param_map = collect_ace_step_dit_param_map(self._model)
-            return
-        for name, param in self._model.named_parameters():
-            self._param_map[name] = param
+        self._param_map = collect_ace_step_dit_param_map(self._model)
 
     def load_weights(
         self,

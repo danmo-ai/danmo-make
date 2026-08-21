@@ -1,4 +1,4 @@
-"""HunyuanVideo-1.5 transformer — 对外入口（MLX / CUDA dispatch）。"""
+"""HunyuanVideo-1.5 transformer — 对外入口（MLX dispatch）。"""
 from __future__ import annotations
 
 from typing import Any
@@ -7,7 +7,7 @@ from backend.engine.common.model.dit_stem import DelegatingDiTStem
 
 
 class HunyuanVideoTransformer(DelegatingDiTStem):
-    """Hunyuan Video DiT — selects MLX or CUDA implementation from ``RuntimeContext``."""
+    """Hunyuan Video DiT — MLX DiT via ``DelegatingDiTStem``."""
 
     def __init__(self, config: Any, ctx: Any):
         from .transformer_mlx import HunyuanVideoDiTMLX as _MLX
@@ -16,7 +16,6 @@ class HunyuanVideoTransformer(DelegatingDiTStem):
             config,
             ctx,
             mlx_cls=_MLX,
-            unavailable_product="Hunyuan Video",
         )
 
 

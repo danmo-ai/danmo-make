@@ -1633,7 +1633,7 @@
     "integrations": "集成",
     "integrationsDesc": "第三方平台访问令牌",
     "runtime": "运行时环境",
-    "runtimeDesc": "CUDA 依赖安装、镜像与修复/重装",
+    "runtimeDesc": "MLX（mlx[cuda]）依赖安装、镜像与修复/重装",
     "maintenance": "维护",
     "maintenanceDesc": "恢复出厂配置与数据重置",
     "systeminfo": "系统信息",
@@ -1909,14 +1909,14 @@
   },
   "runtimeSetup": {
     "title": "运行时环境",
-    "desc": "CUDA 桌面首次安装与修复/重装 Python 依赖（含 PyTorch）。",
+    "desc": "Linux 桌面首次安装与修复/重装 Python 依赖（mlx[cuda]）。",
     "status": "状态",
     "mirror": "软件源镜像",
     "actions": "操作",
     "install": "安装环境",
     "repair": "修复环境",
     "reinstall": "重装环境",
-    "reinstallHint": "重装将删除 runtime-venv 并重新下载约 1.5GB+ 依赖。",
+    "reinstallHint": "重装将删除 runtime-venv 并重新下载 mlx[cuda] 依赖。",
     "cancel": "取消",
     "ready": "环境已就绪",
     "notReady": "尚未安装或需更新",
@@ -1924,7 +1924,7 @@
     "notDesktop": "当前不是桌面壳环境",
     "notApplicable": "当前构建无需引导安装（例如 macOS MLX 一体包）。",
     "mirrors": {
-      "official": "官方 (PyPI / pytorch.org)",
+      "official": "官方 (PyPI)",
       "tuna": "清华 Tuna",
       "aliyun": "阿里云"
     }

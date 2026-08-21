@@ -1,10 +1,11 @@
-"""Boogu-Image generation — family_generator entry (MLX + CUDA)."""
+"""Boogu-Image generation — family_generator entry (MLX)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Protocol
 
+from backend.engine.common.model.dit_stem import require_mlx_ctx
 from backend.engine.config.model_configs import BooguImageConfig
 
 
@@ -39,30 +40,15 @@ def create_boogu_image_generator(
 ) -> BooguImageGeneratorProto:
     if not bundle_root.is_dir():
         raise RuntimeError(f"Boogu-Image bundle directory not found: {bundle_root}")
-    backend = getattr(ctx, "backend", "mlx")
-    if backend == "mlx":
-        from backend.engine.families.boogu.generation_mlx import BooguImageMlxGenerator
+    require_mlx_ctx(ctx, feature="Boogu-Image")
+    from backend.engine.families.boogu.generation_mlx import BooguImageMlxGenerator
 
-        return BooguImageMlxGenerator(
-            ctx,
-            bundle_root,
-            config=config,
-            entry=entry,
-            version_key=version_key,
-        )
-    if backend == "cuda":
-        from backend.engine.families.boogu.generation_cuda import BooguImageCudaGenerator
-
-        return BooguImageCudaGenerator(
-            ctx,
-            bundle_root,
-            config=config,
-            entry=entry,
-            version_key=version_key,
-        )
-    raise RuntimeError(
-        f"Boogu-Image requires mlx or cuda runtime (got {backend!r}). "
-        "Select a compatible backend model version."
+    return BooguImageMlxGenerator(
+        ctx,
+        bundle_root,
+        config=config,
+        entry=entry,
+        version_key=version_key,
     )
 
 

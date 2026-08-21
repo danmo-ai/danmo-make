@@ -1,4 +1,4 @@
-"""GPU backend detection (MLX / CUDA)."""
+"""GPU backend detection (MLX only: Metal on macOS, mlx[cuda] on Linux)."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ import sys
 
 
 class PlatformInfo:
-    """GPU 后端自动检测。"""
+    """GPU 后端自动检测（仅 MLX）。"""
 
     @staticmethod
     def detect() -> list[str]:
-        """返回可用的后端列表: ["mlx"] / ["cuda"] / ["mlx", "cuda"]。"""
+        """返回可用的后端列表: ["mlx"] 或 []。"""
         backends: list[str] = []
 
         if sys.platform == "darwin" and platform.machine() == "arm64":
@@ -21,13 +21,12 @@ class PlatformInfo:
                 backends.append("mlx")
             except ImportError:
                 pass
-
-        try:
-            torch = importlib.import_module("torch")
-            if torch.cuda.is_available():
-                backends.append("cuda")
-        except ImportError:
-            pass
+        elif sys.platform.startswith("linux"):
+            try:
+                importlib.import_module("mlx.core")
+                backends.append("mlx")
+            except ImportError:
+                pass
 
         return backends
 
@@ -36,7 +35,10 @@ class PlatformInfo:
         """返回最佳可用后端名，无可用的则抛异常。"""
         backends = PlatformInfo.detect()
         if not backends:
-            raise RuntimeError("No GPU backend available (need MLX on Apple Silicon or CUDA on NVIDIA)")
+            raise RuntimeError(
+                "No MLX backend available "
+                "(need mlx on Apple Silicon, or mlx[cuda] on Linux with NVIDIA)"
+            )
         return backends[0]
 
     @staticmethod
@@ -44,12 +46,8 @@ class PlatformInfo:
         return sys.platform == "darwin" and platform.machine() == "arm64"
 
     @staticmethod
-    def is_cuda_available() -> bool:
-        try:
-            torch = importlib.import_module("torch")
-            return bool(torch.cuda.is_available())
-        except ImportError:
-            return False
+    def is_linux() -> bool:
+        return sys.platform.startswith("linux")
 
     @staticmethod
     def get_mlx_memory_stats() -> dict:

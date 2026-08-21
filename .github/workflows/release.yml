@@ -1,6 +1,6 @@
-# macOS MLX desktop + Linux CUDA thin server tar.gz + Windows CUDA thin desktop zip.
+# macOS MLX desktop + Linux MLX (mlx[cuda]) thin server tar.gz.
 # Linux desktop (AppImage/deb) temporarily omitted from CI (local: make pack-linux-desktop).
-# Win/Linux CUDA thin packs omit torch; first run downloads wheels (console/UI progress).
+# Windows temporarily unsupported. Linux thin pack omits mlx wheels; first run installs via bootstrap.
 name: Build Release Artifacts
 
 on:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release version label (e.g. 0.2.0). Used for desktop semver and Linux/Windows archive names.
+        description: Release version label (e.g. 0.2.0). Used for desktop semver and Linux archive names.
         required: false
         type: string
 
@@ -59,7 +59,7 @@ jobs:
           python3 -m venv .venv
           source .venv/bin/activate
           pip install --upgrade pip
-          pip install -r requirements-mlx.txt
+          pip install -r requirements-macos.txt
           pip install pyinstaller
 
       - name: Set release version
@@ -107,8 +107,8 @@ jobs:
             danmo-make/out/desktop/bundle/macos/*.app
           if-no-files-found: error
 
-  build-linux-cuda:
-    name: Linux CUDA server (tar.gz)
+  build-linux-mlx:
+    name: Linux MLX server (tar.gz)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -156,7 +156,7 @@ jobs:
           source .venv/bin/activate
           python -m pip install --upgrade pip
 
-      - name: Build Linux CUDA thin tar.gz
+      - name: Build Linux MLX thin tar.gz
         working-directory: danmo-make
         env:
           RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
@@ -168,138 +168,19 @@ jobs:
         working-directory: danmo-make
         run: |
           ls -la out/dist/
-          test -f "out/dist/danmo-make-linux-cuda-x86_64-${RELEASE_VERSION}.tar.gz"
+          test -f "out/dist/danmo-make-linux-mlx-x86_64-${RELEASE_VERSION}.tar.gz"
 
-      - name: Upload Linux CUDA artifact
+      - name: Upload Linux MLX artifact
         uses: actions/upload-artifact@v6
         with:
-          name: danqing-linux-cuda
-          path: danmo-make/out/dist/danmo-make-linux-cuda-x86_64-*.tar.gz
+          name: danqing-linux-mlx
+          path: danmo-make/out/dist/danmo-make-linux-mlx-x86_64-*.tar.gz
           if-no-files-found: error
-
-  build-windows-desktop:
-    name: Windows desktop (CUDA)
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          path: danmo-make
-
-      - name: Checkout dq-ui
-        uses: actions/checkout@v6
-        with:
-          repository: danmo-ai/dq-ui
-          path: dq-ui
-
-      - name: Setup Python
-        id: setup-python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - name: Install and build dq-ui
-        run: |
-          npm install --no-audit --no-fund
-          npm run build
-        working-directory: ${{ github.workspace }}/dq-ui
-
-      - name: Verify dq-ui checkout
-        run: test -f dq-ui/packages/ui/package.json
-
-      - name: Set release version
-        working-directory: danmo-make
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-          elif [[ -n "${{ inputs.version }}" ]]; then
-            echo "RELEASE_VERSION=${{ inputs.version }}" >> "$GITHUB_ENV"
-          else
-            echo "RELEASE_VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
-          fi
-
-      # Git Bash breaks bare `pip install --upgrade pip`; use python -m pip (pwsh).
-      - name: Create Python venv
-        working-directory: danmo-make
-        shell: pwsh
-        run: |
-          & "${{ steps.setup-python.outputs.python-path }}" -m venv .venv
-          .\.venv\Scripts\python.exe -V
-
-      - name: Install build tooling (thin pack — no torch)
-        working-directory: danmo-make
-        shell: pwsh
-        run: |
-          .\.venv\Scripts\Activate.ps1
-          python -m pip install --upgrade pip
-
-      - name: Set desktop version from tag
-        if: startsWith(github.ref, 'refs/tags/')
-        working-directory: danmo-make
-        shell: pwsh
-        run: |
-          .\.venv\Scripts\Activate.ps1
-          python scripts/set_desktop_version.py "$($env:GITHUB_REF_NAME.TrimStart('v'))"
-
-      - name: Set desktop version (manual dispatch)
-        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
-        working-directory: danmo-make
-        shell: pwsh
-        run: |
-          .\.venv\Scripts\Activate.ps1
-          python scripts/set_desktop_version.py "${{ inputs.version }}"
-
-      - name: Build frontend
-        working-directory: danmo-make/frontend
-        shell: pwsh
-        run: |
-          npm install --no-audit --no-fund
-          npm run build
-
-      - name: Build Windows desktop (thin CUDA runtime + portable zip)
-        working-directory: danmo-make
-        env:
-          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
-        shell: pwsh
-        run: |
-          .\.venv\Scripts\Activate.ps1
-          python scripts/tauri_build.py --platform windows
-
-      - name: Verify portable zip was produced
-        working-directory: danmo-make
-        shell: pwsh
-        run: |
-          Get-ChildItem out/desktop/bundle/zip -ErrorAction SilentlyContinue | Format-Table Name,Length
-          $zip = Get-ChildItem out/desktop/bundle/zip -Filter '*-portable.zip' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $zip) { throw 'No *-portable.zip under out/desktop/bundle/zip' }
-          Write-Host "Found portable zip: $($zip.FullName) ($([math]::Round($zip.Length/1GB, 2)) GiB)"
-
-      - name: Upload Windows desktop artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: danqing-desktop-windows
-          path: |
-            danmo-make/out/desktop/bundle/zip/*-portable.zip
-          if-no-files-found: error
-          compression-level: 0
 
   publish-release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build-desktop, build-linux-cuda, build-windows-desktop]
+    needs: [build-desktop, build-linux-mlx]
     runs-on: ubuntu-latest
     steps:
       - name: Download macOS artifact
@@ -308,17 +189,11 @@ jobs:
           name: danqing-desktop-macos
           path: release-assets/macos
 
-      - name: Download Linux CUDA server artifact
+      - name: Download Linux MLX server artifact
         uses: actions/download-artifact@v6
         with:
-          name: danqing-linux-cuda
+          name: danqing-linux-mlx
           path: release-assets/linux-server
-
-      - name: Download Windows desktop artifact
-        uses: actions/download-artifact@v6
-        with:
-          name: danqing-desktop-windows
-          path: release-assets/windows
 
       - name: Attach assets to GitHub Release
         uses: softprops/action-gh-release@v2
@@ -326,5 +201,4 @@ jobs:
           files: |
             release-assets/macos/**/*.dmg
             release-assets/linux-server/**/*.tar.gz
-            release-assets/windows/**/*-portable.zip
           fail_on_unmatched_files: true

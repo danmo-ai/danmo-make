@@ -300,45 +300,36 @@ def build_qwen_image_edit_context(
         emit_phase(on_progress, phase="encoding", progress=0.02, n_steps=steps)
         pipeline_graph_step("encode_prompt", on_log)
         neg_prompt = (request.negative_prompt or "").strip()
-        if getattr(pipeline.ctx, "backend", None) == "cuda":
-            from backend.engine.families.qwen.text_encoder_cuda import encode_qwen_edit_prompts_cuda
+        if getattr(pipeline.ctx, "backend", None) != "mlx":
+            raise RuntimeError(
+                f"Qwen edit prompt encode requires MLX backend "
+                f"(got {getattr(pipeline.ctx, 'backend', None)!r})"
+            )
+        from backend.engine.families.qwen.edit_encoder_mlx import (
+            build_qwen_edit_vl_tokenizer,
+            encode_qwen_edit_prompts_mlx,
+            load_qwen_edit_vl_encoder,
+        )
 
-            device = getattr(pipeline.ctx, "_device", "cuda")
-            txt_embeds, txt_attn_mask, neg_embeds, neg_attn_mask = encode_qwen_edit_prompts_cuda(
-                bundle_root=bundle_root,
-                device=device,
-                prompt=request.prompt,
-                negative_prompt=neg_prompt,
-                sources=ref_images,
-                use_picture_prefix=use_picture_prefix,
-            )
-            pooled_embeds = neg_pooled_embeds = None
-        else:
-            from backend.engine.families.qwen.edit_encoder_mlx import (
-                build_qwen_edit_vl_tokenizer,
-                encode_qwen_edit_prompts_mlx,
-                load_qwen_edit_vl_encoder,
-            )
-
-            tok_root = bundle_root / "tokenizer"
-            if not tok_root.is_dir():
-                tok_root = bundle_root / "text_encoder"
-            vl_encoder = load_qwen_edit_vl_encoder(bundle_root, pipeline.ctx)
-            vl_tokenizer = build_qwen_edit_vl_tokenizer(
-                tok_root,
-                use_picture_prefix=use_picture_prefix,
-            )
-            txt_embeds, txt_attn_mask, neg_embeds, neg_attn_mask = encode_qwen_edit_prompts_mlx(
-                vl_encoder=vl_encoder,
-                vl_tokenizer=vl_tokenizer,
-                ctx=pipeline.ctx,
-                prompt=request.prompt,
-                negative_prompt=neg_prompt,
-                sources=ref_images,
-                vl_width=vl_w,
-                vl_height=vl_h,
-            )
-            pooled_embeds = neg_pooled_embeds = None
+        tok_root = bundle_root / "tokenizer"
+        if not tok_root.is_dir():
+            tok_root = bundle_root / "text_encoder"
+        vl_encoder = load_qwen_edit_vl_encoder(bundle_root, pipeline.ctx)
+        vl_tokenizer = build_qwen_edit_vl_tokenizer(
+            tok_root,
+            use_picture_prefix=use_picture_prefix,
+        )
+        txt_embeds, txt_attn_mask, neg_embeds, neg_attn_mask = encode_qwen_edit_prompts_mlx(
+            vl_encoder=vl_encoder,
+            vl_tokenizer=vl_tokenizer,
+            ctx=pipeline.ctx,
+            prompt=request.prompt,
+            negative_prompt=neg_prompt,
+            sources=ref_images,
+            vl_width=vl_w,
+            vl_height=vl_h,
+        )
+        pooled_embeds = neg_pooled_embeds = None
         encoder_type = getattr(config, "encoder_type", "qwen_image")
 
         if ctx_exec.cancel_token.is_cancelled():

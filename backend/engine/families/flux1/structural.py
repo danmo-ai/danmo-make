@@ -54,15 +54,12 @@ def require_controlnet_runtime(ctx: RuntimeContext, *, feature: str) -> None:
     if not controlnet_runtime_available():
         raise RuntimeError(
             f"FLUX ControlNet ({feature}) requires host backends {CONTROLNET_DECLARED_BACKENDS}; "
-            f"detected={detected}. "
-            "CUDA support is planned in a unified engine batch "
-            "(see backend/engine/families/flux1/structural.py)."
+            f"detected={detected}."
         )
     if not isinstance(ctx, MLXContext):
         raise RuntimeError(
-            f"FLUX ControlNet ({feature}) is MLX-only until the unified CUDA batch; "
-            f"current runtime={type(ctx).__name__}. "
-            "Placeholder: backend/engine/families/flux1/transformer_cuda.py + CudaContext paths."
+            f"FLUX ControlNet ({feature}) is MLX-only; "
+            f"current runtime={type(ctx).__name__}."
         )
 
 
@@ -78,22 +75,11 @@ def estimate_depth_rgb01(
     height: int,
     depth_bundle_root: Path,
     on_log: Any = None,
-    backend: str = "mlx",
 ) -> np.ndarray:
     """Return float01 RGB depth visualization ``[H,W,3]`` (BFL DepthImageEncoder style)."""
-    if backend == "mlx":
-        from backend.engine.families.flux1.depth_encode_mlx import estimate_depth_rgb01_mlx
+    from backend.engine.families.flux1.depth_encode_mlx import estimate_depth_rgb01_mlx
 
-        return estimate_depth_rgb01_mlx(
-            pil,
-            width=width,
-            height=height,
-            depth_bundle_root=depth_bundle_root,
-            on_log=on_log,
-        )
-    from backend.engine.families.flux1.depth_encode_cuda import estimate_depth_rgb01_cuda
-
-    return estimate_depth_rgb01_cuda(
+    return estimate_depth_rgb01_mlx(
         pil,
         width=width,
         height=height,
@@ -150,7 +136,6 @@ def preprocess_structural_rgb(
     registry: Any,
     project_root: Path,
     on_log: Any = None,
-    backend: str = "mlx",
 ) -> np.ndarray:
     """Return float01 RGB ``[H,W,3]`` ready for VAE encode (linear 0..1)."""
     if pil.mode != "RGB":
@@ -169,7 +154,6 @@ def preprocess_structural_rgb(
             height=height,
             depth_bundle_root=depth_root,
             on_log=on_log,
-            backend=backend,
         )
     raise RuntimeError(f"preprocess_structural_rgb does not handle guide_type={guide_type!r}")
 
@@ -280,7 +264,6 @@ def attach_structural_conditioning(
             "not text-to-image structural_guide"
         )
     guide_type = getattr(guide, "type", None) or infer_guide_type(controlnet_id)
-    backend = getattr(pipeline.ctx, "backend", "mlx")
 
     src_path = ctx_exec.asset_store.get_file_path(guide.asset_id)
     pil = Image.open(str(src_path))
@@ -298,7 +281,6 @@ def attach_structural_conditioning(
             pil,
             redux_bundle_root=redux_root,
             on_log=on_log,
-            backend=backend,
         )
         w = float(guide.weight)
         if w <= 0.0:
@@ -328,7 +310,6 @@ def attach_structural_conditioning(
         registry=pipeline._registry,
         project_root=pipeline._project_root,
         on_log=on_log,
-        backend=backend,
     )
     arr = rgb[None, ...]
     image_nchw = pipeline.ctx.array(arr)

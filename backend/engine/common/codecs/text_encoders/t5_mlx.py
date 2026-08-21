@@ -1,4 +1,4 @@
-"""T5-XXL 文本编码器 — MLX 前向；PyTorch 见 ``t5_cuda``。"""
+"""T5-XXL 文本编码器 — MLX 前向。"""
 from __future__ import annotations
 import importlib
 from typing import Any

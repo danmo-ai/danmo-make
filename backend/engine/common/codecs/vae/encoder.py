@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib
 from typing import Any
 from backend.engine.runtime._base import RuntimeContext
-from .decoder import ResnetBlock, SpatialAttention, _to_nchw, _to_nhwc, _vae_cuda_nchw
+from .decoder import ResnetBlock, SpatialAttention, _to_nchw, _to_nhwc
 from .weight_remap import vae_conv_weight_for_runtime
 
 
@@ -22,12 +22,6 @@ class Downsample:
 
     def forward(self, x):
         ctx = self.ctx
-        if _vae_cuda_nchw(ctx):
-            torch_f = importlib.import_module("torch.nn.functional")
-
-            x = torch_f.pad(x, (0, 1, 0, 1))  # NCHW: pad W then H (left, right, top, bottom)
-            return self.conv(x)
-
         mx = importlib.import_module("mlx.core")
 
         x = mx.pad(x, ((0, 0), (0, 0), (0, 1), (0, 1)))

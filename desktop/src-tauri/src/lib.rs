@@ -393,7 +393,7 @@ fn fail_if_exited_immediately(
     log_path: &Path,
 ) -> Result<(), String> {
     // Fail fast if the process exits immediately (common under App Translocation /
-    // missing CUDA deps / broken venv).
+    // missing mlx[cuda] deps / broken venv).
     thread::sleep(Duration::from_millis(400));
     match child.try_wait() {
         Ok(Some(status)) => {

@@ -1618,10 +1618,6 @@ _vae_cache: dict[str, Wan22VAE] = {}
 
 
 def load_wan_vae(ctx: RuntimeContext, bundle_root: Path | str) -> Wan22VAE:
-    if getattr(ctx, "backend", None) != "mlx":
-        raise RuntimeError(
-            f"Wan VAE is implemented for MLX only; got backend={getattr(ctx, 'backend', None)!r}."
-        )
     root = Path(bundle_root)
     if not root.is_dir():
         raise RuntimeError(f"Wan VAE bundle directory missing: {root}")

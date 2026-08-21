@@ -4,6 +4,7 @@ MLX Runtime — Reference implementation.
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 import mlx.core as mx
@@ -46,7 +47,9 @@ class MLXContext(RuntimeContext):
     backend = "mlx"
 
     def __init__(self, memory_limit_gb: int = 120):
-        os.environ.setdefault("MLX_METAL_DEVICE_ONLY", "1")
+        # Metal-only flag is macOS-specific; Linux mlx[cuda] must not set it.
+        if sys.platform == "darwin":
+            os.environ.setdefault("MLX_METAL_DEVICE_ONLY", "1")
         os.environ.setdefault("HF_ENDPOINT", "https://huggingface.co")
         os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
         from backend.engine.memory_policy import clamp_mlx_memory_limit_gb

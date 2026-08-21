@@ -250,6 +250,15 @@ class LongCatVideoTransformer3DModel(nn.Module):
         assert backend in valid, (
             f"unknown BSA backend: {backend!r}. Choose from {valid}"
         )
+        import sys
+
+        if sys.platform != "darwin":
+            if str(backend).startswith("metal"):
+                raise RuntimeError(
+                    f"BSA metal* backends require Darwin/Apple Silicon (got {backend!r}); "
+                    "use tier_a on non-macOS hosts"
+                )
+            backend = "tier_a"
         for block in self.blocks:
             block.attn.enable_bsa = True
             block.attn.bsa_sparsity = self._bsa_sparsity

@@ -88,12 +88,6 @@ class HiDreamO1MlxGenerator:
         self._hidream_cfg = HiDreamConfig()
 
     def load(self) -> None:
-        backend = getattr(self._ctx, "backend", "mlx")
-        if backend != "mlx":
-            raise RuntimeError(
-                f"HiDream-O1-Image requires MLX runtime (got {backend!r}). "
-                "Select an MLX model version on Apple Silicon."
-            )
         try:
             from mlx_vlm import load as mlx_vlm_load
         except ImportError as exc:

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * In-app CUDA runtime setup / repair surface (Tauri thin builds).
+ * In-app MLX (mlx[cuda]) runtime setup / repair surface (Tauri thin builds).
  * First-run also uses desktop/loader/runtime-setup.html before the API is up.
  */
 import { onMounted, onUnmounted, ref } from 'vue';

@@ -6,7 +6,7 @@ Output: ``out/sidecar/danqing-api/`` (bundled by Tauri; see ``desktop/src-tauri/
 
 Usage:
     python scripts/build_sidecar.py
-    make pack-macos-desktop-sidecar  # or pack-linux-server-sidecar / pack-windows-sidecar
+    make pack-macos-desktop-sidecar  # or pack-linux-desktop-sidecar
 """
 
 from __future__ import annotations
@@ -23,6 +23,9 @@ import pyinstaller_common as pc  # noqa: E402
 
 
 def build(*, clean: bool = True) -> Path:
+    if sys.platform == "win32":
+        raise SystemExit("Windows is temporarily unsupported")
+
     try:
         import PyInstaller.__main__
     except ImportError as e:
@@ -54,13 +57,13 @@ def build(*, clean: bool = True) -> Path:
             cmd.extend(["--target-architecture", "arm64"])
 
     profile = pc.packaging_profile()
-    if sys.platform == "darwin" and profile != "mlx":
+    if profile != "mlx":
         raise SystemExit(
-            "macOS release must use DANQING_PYINSTALLER_PROFILE=mlx (MLX-only bundle)."
+            f"Only DANQING_PYINSTALLER_PROFILE=mlx is supported (got {profile!r})."
         )
-    if sys.platform != "darwin" and profile == "mlx":
+    if sys.platform not in ("darwin", "linux"):
         raise SystemExit(
-            "Linux/Windows release must use DANQING_PYINSTALLER_PROFILE=cuda (CUDA-only bundle)."
+            f"Sidecar packaging is only supported on darwin/linux (got {sys.platform})."
         )
     print(f"Packaging profile: {profile}")
 
@@ -85,7 +88,7 @@ def build(*, clean: bool = True) -> Path:
     cmd.extend(["--workpath", str(op.PYINSTALLER_WORK)])
     cmd.extend(["--specpath", str(op.PYINSTALLER_SPEC)])
 
-    if sys.platform == "darwin" and profile == "mlx":
+    if sys.platform == "darwin":
         cmd.append("--strip")
 
     print("Building sidecar:", name)
@@ -95,20 +98,13 @@ def build(*, clean: bool = True) -> Path:
     if not out.exists():
         print("Warning: expected output missing:", out)
     else:
-        if profile == "mlx":
-            import prune_sidecar as prune  # noqa: E402
+        import prune_sidecar as prune  # noqa: E402
 
-            removed, placed = prune.finalize_mlx_sidecar(out)
-            if removed:
-                print(f"Pruned sidecar ({len(removed)} entries)")
-            if placed:
-                print(f"MLX layout: {', '.join(placed)} next to danqing-api")
-        elif pc.is_cuda_profile(profile):
-            import prune_sidecar_cuda as prune_cuda  # noqa: E402
-
-            removed = prune_cuda.finalize_cuda_sidecar(out)
-            if removed:
-                print(f"Pruned CUDA sidecar ({len(removed)} entries)")
+        removed, placed = prune.finalize_mlx_sidecar(out)
+        if removed:
+            print(f"Pruned sidecar ({len(removed)} entries)")
+        if placed:
+            print(f"MLX layout: {', '.join(placed)} next to danqing-api")
         print("Sidecar bundle:", out)
     return out
 

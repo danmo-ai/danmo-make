@@ -3,11 +3,15 @@
 # Paths are repo-relative. Prefix matching for layout/primitives/attention.
 
 # --- imports ---
-# mlx/torch top-level import exemptions (exact path per line).
-# torch: prefer *_cuda.py; entries below are legacy bridges pending migration.
+# mlx top-level import exemptions (exact path per line).
+# torch is forbidden under backend/engine/ (MLX-only); do not grow this section for torch.
 
 # --- mlx-torch ---
-# No *_mlx.py imports of torch or *_cuda modules (empty = fully compliant).
+# No torch / leftover *_cuda imports under engine/ (empty = fully compliant).
+# Transitional: torch bridges in shared ops / safetensors loader — shrink to zero.
+backend/engine/common/bundle/weights/__init__.py
+backend/engine/common/ops/attention.py
+backend/engine/common/ops/norm.py
 
 # --- bundle-python ---
 # Runtime sys.path / exec_module of bundle Python — only under model download dirs.

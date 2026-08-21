@@ -1,4 +1,4 @@
-"""Flux.1 Transformer — 对外入口（MLX / CUDA dispatch）。"""
+"""Flux.1 Transformer — 对外入口（MLX dispatch）。"""
 from __future__ import annotations
 
 from typing import Any
@@ -7,7 +7,7 @@ from backend.engine.common.model.dit_stem import DelegatingDiTStem
 
 
 class Flux1Transformer(DelegatingDiTStem):
-    """Flux.1 DiT — selects MLX or CUDA implementation from ``RuntimeContext``."""
+    """Flux.1 DiT — MLX DiT via ``DelegatingDiTStem``."""
 
     def __init__(self, config: Any, ctx: Any):
         from .transformer_mlx import Flux1DiTMLX as _MLX
@@ -16,5 +16,4 @@ class Flux1Transformer(DelegatingDiTStem):
             config,
             ctx,
             mlx_cls=_MLX,
-            unavailable_product="Flux.1",
         )

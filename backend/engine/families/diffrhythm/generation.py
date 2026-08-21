@@ -16,6 +16,7 @@ from typing import Any, List, Optional, Protocol, Tuple
 import numpy as np
 
 from backend.core.contracts import AudioGenerationRequest
+from backend.engine.common.model.dit_stem import require_mlx_ctx
 from backend.engine.config.model_configs import DiffRhythmConfig
 
 SAMPLE_RATE = 48_000
@@ -217,18 +218,10 @@ class DiffRhythmPreparedRequest:
 
 
 def create_diffrhythm_generator(ctx: Any, bundle_root: Path) -> _DiffRhythmGeneratorProto:
-    backend = getattr(ctx, "backend", "mlx")
-    if backend == "mlx":
-        from backend.engine.families.diffrhythm.generation_mlx import DiffRhythmMlxGenerator
+    require_mlx_ctx(ctx, feature="DiffRhythm 2")
+    from backend.engine.families.diffrhythm.generation_mlx import DiffRhythmMlxGenerator
 
-        return DiffRhythmMlxGenerator(ctx, bundle_root)
-    if backend == "cuda":
-        from backend.engine.families.diffrhythm.generation_cuda import DiffRhythmCudaGenerator
-
-        return DiffRhythmCudaGenerator(ctx, bundle_root)
-    raise RuntimeError(
-        f"DiffRhythm 2 requires mlx or cuda runtime (got {backend!r})"
-    )
+    return DiffRhythmMlxGenerator(ctx, bundle_root)
 
 
 def prepare_music_request(
@@ -238,13 +231,9 @@ def prepare_music_request(
     *,
     backend: str = "mlx",
 ) -> DiffRhythmPreparedRequest:
-    """Resolve lyrics/style/steps for DiffRhythm 2 (MLX or CUDA)."""
+    """Resolve lyrics/style/steps for DiffRhythm 2 (MLX)."""
+    _ = backend
     events: List[Tuple[str, str]] = []
-
-    if backend not in ("mlx", "cuda"):
-        raise RuntimeError(
-            f"DiffRhythm 2 prepare_music_request requires mlx or cuda backend (got {backend!r})"
-        )
 
     assert_diffrhythm2_bundle(bundle_root)
 

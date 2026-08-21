@@ -1,0 +1,8 @@
+# macOS Apple Silicon — MLX (Metal).
+# Includes common deps + MLX stack.
+-r requirements.txt
+
+# MLX core (Metal)
+mlx>=0.21.0
+mlx-lm
+mlx-vlm

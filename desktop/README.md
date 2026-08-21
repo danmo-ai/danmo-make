@@ -6,10 +6,10 @@ Native **Tauri 2** window; business logic stays on the local **FastAPI** API.
 
 | Platform | Runtime | Artifact |
 |----------|---------|----------|
-| **macOS** (Apple Silicon) | PyInstaller `danqing-api` (MLX) | `.app` / `.dmg` |
-| **Windows x64** | CUDA **thin** `runtime/` (no torch in zip) | **`*-portable.zip`** — unzip & run |
-| **Linux x64 desktop** | CUDA thin | AppImage / `.deb` (local pack; CI may omit) |
-| **Linux/Windows server** | CUDA thin + `run.sh` / `run.bat` | `out/dist/danmo-make-*-cuda-*` |
+| **macOS** (Apple Silicon) | PyInstaller `danqing-api` (MLX Metal) | `.app` / `.dmg` |
+| **Linux x64 desktop** | MLX sidecar or thin `runtime/` (mlx[cuda]) | AppImage / `.deb` (local pack; CI may omit) |
+| **Linux server** | MLX thin + `run.sh` (first-run mlx[cuda]) | `out/dist/danmo-make-linux-mlx-*` |
+| **Windows** | Temporarily unsupported | — |
 
 Product name: Danmo Make. Technical ids remain `danqing-*` ([AGENTS.md](../AGENTS.md)).
 
@@ -21,9 +21,9 @@ Makefile / script names align with **Danmo Work** / **Danmo Inbox**.
 
 本目录提供 **Tauri 2** 原生窗口；业务由本地 **FastAPI REST** 提供。
 
-- **macOS**：PyInstaller `danqing-api` sidecar（MLX）
-- **Windows / Linux CUDA**：轻量 `runtime/`（便携 CPython + 应用码，**不含 torch**）；首次启动引导安装依赖（桌面 UI / server 控制台进度）
-- **Windows 用户请用便携 zip**，不要找 NSIS「安装版」
+- **macOS**：PyInstaller `danqing-api` sidecar（MLX Metal）
+- **Linux**：MLX（mlx[cuda]）；桌面可走 sidecar 或轻量 `runtime/`（首跑引导安装依赖）
+- **Windows**：暂时不支持
 
 产品名为 Danmo Make；技术 id 仍为 `danqing-*`（见仓库根 [AGENTS.md](../AGENTS.md) → Naming boundary）。
 
@@ -36,9 +36,9 @@ Makefile / 脚本命名与 **Danmo Work** / **Danmo Inbox** 对齐（本地 sibl
 | 路径 | 内容 |
 |------|------|
 | `out/frontend/dist/` | Vite 生产构建 |
-| `out/sidecar/danqing-api/` | PyInstaller sidecar（macOS MLX / 可选 legacy CUDA） |
-| `out/runtime/` | CUDA thin：便携 Python + `app/`（无 torch） |
-| `out/desktop/bundle/` | 平台安装包（`.dmg` / AppImage / `.deb` / Windows portable zip） |
+| `out/sidecar/danqing-api/` | PyInstaller sidecar（macOS / Linux MLX） |
+| `out/runtime/` | Linux thin：便携 Python + `app/`（无 mlx 轮子；首跑安装） |
+| `out/desktop/bundle/` | 平台安装包（`.dmg` / AppImage / `.deb`） |
 | `out/desktop/cargo/` | Cargo 中间产物（可清理） |
 
 清理：`make clean` 或 `python scripts/clean_build.py`
@@ -66,9 +66,10 @@ make dev-desktop
 ## 发布构建
 
 ```bash
-make pack-macos-desktop      # Darwin arm64 · MLX · .app/.dmg
-make pack-linux-desktop      # Linux x86_64 · CUDA · AppImage/.deb（本地）
-make pack-windows-desktop    # Windows x86_64 · CUDA · portable zip（须在 Windows 上跑）
+make pack-macos-desktop      # Darwin arm64 · MLX Metal · .app/.dmg
+make pack-linux-desktop      # Linux x86_64 · MLX (mlx[cuda]) · AppImage/.deb（本地）
+make pack-linux-server       # Linux thin server · danmo-make-linux-mlx-*.tar.gz
+# pack-windows-*             # Windows temporarily unsupported
 ```
 
 等价脚本（与 work/inbox 同名）：
@@ -77,27 +78,28 @@ make pack-windows-desktop    # Windows x86_64 · CUDA · portable zip（须在 W
 |------|-----------|
 | `scripts/pack_desktop_macos.sh` | `pack-macos-desktop` |
 | `scripts/pack_desktop_linux.sh` | `pack-linux-desktop` |
-| `scripts/pack_desktop_windows.sh` | `pack-windows-desktop` |
+| `scripts/pack_desktop_windows.sh` | （立即失败：Windows temporarily unsupported） |
 
 顺序：
 
 - macOS：`out/frontend/dist` → PyInstaller sidecar → Tauri → `out/desktop/bundle/`
-- Win/Linux CUDA：`out/frontend/dist` → `out/runtime/` → Tauri shell → thin zip/tar
+- Linux desktop：`out/frontend/dist` → PyInstaller MLX sidecar → Tauri
+- Linux server：`out/frontend/dist` → `out/runtime/` → thin tar.gz
 
 | 平台 | 运行时 | 产物 |
 |------|--------|------|
 | macOS Apple Silicon | **MLX** sidecar（无 torch） | `.app` / `.dmg` |
-| Linux x86_64 desktop | **CUDA thin**（首跑装 torch） | AppImage / `.deb`（本地） |
-| Windows x64 desktop | **CUDA thin** | portable `*-portable.zip` |
-| Linux/Windows server | **CUDA thin** + `run.sh`/`run.bat` | `out/dist/danmo-make-*-cuda-*` |
+| Linux x86_64 desktop | **MLX**（mlx[cuda]） | AppImage / `.deb`（本地） |
+| Linux server | **MLX thin**（首跑装 mlx[cuda]） | `out/dist/danmo-make-linux-mlx-*` |
+| Windows | 暂时不支持 | — |
 
 修复/重装：桌面 Settings → 运行时环境；server：`./run.sh --repair-runtime` / `bin/danqing-runtime-setup`。
 
-镜像：`DANQING_PIP_MIRROR=official|tuna|aliyun`。
+镜像：`DANQING_PIP_MIRROR=official|tuna|aliyun`（PyPI 镜像；不再使用 torch index）。
 
-`DANQING_PYINSTALLER_PROFILE`：macOS 仍用 `mlx`。禁止在同一发布包中混装 MLX + CUDA。
+`DANQING_PYINSTALLER_PROFILE=mlx`（darwin / linux）。`cuda` / `full` profile 已移除。
 
-CI（`.github/workflows/release.yml`）在打 `v*` tag 时并行构建：macOS `.dmg`、Linux CUDA thin server、Windows thin portable zip。
+CI（`.github/workflows/release.yml`）在打 `v*` tag 时并行构建：macOS `.dmg`、Linux MLX thin server。
 
 ## 运行时环境变量
 
@@ -106,7 +108,7 @@ CI（`.github/workflows/release.yml`）在打 `v*` tag 时并行构建：macOS `
 | `DANQING_HTTP_HOST` | 默认 `0.0.0.0`；Tauri 设为 `127.0.0.1` |
 | `DANQING_HTTP_PORT` | Tauri 选空闲端口并注入 |
 | `DANQING_USER_DATA_DIR` | 控制面根目录，默认 `~/.danmo-make`（pointer、`.app_config.json`、logs、runtime-venv；未自定义工作区时也是媒体根） |
-| `DANQING_PIP_MIRROR` | CUDA thin：`official` / `tuna` / `aliyun` |
+| `DANQING_PIP_MIRROR` | Linux thin：`official` / `tuna` / `aliyun` |
 | `DANQING_RUNTIME_SKIP_AUTO_SETUP` | server：设为 `1` 时未就绪则拒绝启动 |
 
 ## 安装后提示「已损坏，无法打开」

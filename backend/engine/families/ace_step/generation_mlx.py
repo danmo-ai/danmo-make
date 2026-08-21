@@ -219,7 +219,7 @@ class AceStepMlxGenerator:
         from backend.engine.families.ace_step.lm.lm_format_mlx import AceStepLmFormatterMlx
         from backend.engine.families.ace_step.quality.resource_policy import resolve_lm_dir_for_policy, resolve_resource_policy
 
-        policy = resolve_resource_policy(backend="mlx")
+        policy = resolve_resource_policy()
         resolved_dir = lm_dir or resolve_lm_dir_for_policy(self._bundle_root, policy)
         fmt = AceStepLmFormatterMlx.from_bundle(
             self._bundle_root,

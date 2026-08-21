@@ -62,10 +62,6 @@ class BooguImageMlxGenerator:
         self._shift = 0.1159
 
     def load(self) -> None:
-        if getattr(self._ctx, "backend", "mlx") != "mlx":
-            raise RuntimeError(
-                f"Boogu-Image MLX path requires MLX runtime (got {self._ctx.backend!r})."
-            )
         dirs = resolve_boogu_bundle_dirs(self._bundle_root)
         tcfg = json.loads((dirs["transformer"] / "config.json").read_text())
         scfg = json.loads((dirs["scheduler"] / "scheduler_config.json").read_text())

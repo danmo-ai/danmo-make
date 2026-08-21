@@ -2,11 +2,10 @@
 RuntimeContext — backend-agnostic tensor operation context.
 
 **窄契约（治理）**：此处只承载「模块工厂 + 张量/内存 API + 权重 I/O」等跨后端共性。
-新增算子/算法能力**默认不进**本 ABC；若 MLX/CUDA 分叉过大，用各组件的
-``xxx_mlx.py`` / ``xxx_cuda.py``（见 ``docs/engine_architecture.md`` §4）承载平台实现，
-``xxx.py`` 保留基于 ``RuntimeContext`` 的公共路径或对外接口 + dispatch。
+新增算子/算法能力**默认不进**本 ABC；平台实现见各组件 ``xxx_mlx.py``
+（``docs/engine_architecture.md`` §4），``xxx.py`` 保留公共路径或对外接口。
 
-``backend/engine/runtime/mlx.py`` 绑定 ``mlx``；``cuda.py`` 绑定 ``torch``（``torch``  elsewhere 仅 ``*_cuda.py``）。
+``backend/engine/runtime/mlx.py`` 绑定 ``mlx``。
 """
 from __future__ import annotations
 
