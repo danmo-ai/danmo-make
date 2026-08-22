@@ -20,7 +20,7 @@ MINIMAX_H3_MAX_PIXELS = 768 * 1344
 MINIMAX_H3_CANVAS_MULTIPLE = 32
 MINIMAX_H3_MIN_ASPECT_RATIO = 1 / 4
 MINIMAX_H3_MAX_ASPECT_RATIO = 4
-MINIMAX_H3_MIN_DURATION = 4.0
+MINIMAX_H3_MIN_DURATION = 5.0
 MINIMAX_H3_MAX_DURATION = 15.0
 
 MINIMAX_H3_FRAMES_PER_CHUNK = 17
@@ -109,24 +109,27 @@ def validate_duration(num_frames: int) -> None:
 
 
 def _spatial_position_grid(dim: int, patch: int, sqrt_area: float) -> np.ndarray:
-    coords = (np.arange(dim // patch, dtype=np.float64) + 0.5) * patch
-    return coords / sqrt_area * _ROPE_SPATIAL_SCALE
+    ratio = dim / sqrt_area
+    left = (1.0 - ratio) / 2.0
+    return np.linspace(left, left + ratio, dim // patch, endpoint=False) * _ROPE_SPATIAL_SCALE
 
 
 def _temporal_position_span(num_latent_frames: int) -> float:
-    span = 0.0
-    for i in range(num_latent_frames):
-        span += _ROPE_FRAME_RESCALE * _ROPE_FRAMES_PER_LATENT[i % len(_ROPE_FRAMES_PER_LATENT)]
-    return span
+    spans = np.ones(num_latent_frames, dtype=np.float64) * _ROPE_FRAME_RESCALE
+    for i in range(len(_ROPE_FRAMES_PER_LATENT)):
+        spans[i :: len(_ROPE_FRAMES_PER_LATENT)] *= _ROPE_FRAMES_PER_LATENT[i]
+    return float(spans.sum())
 
 
 def _temporal_position_grid(num_latent_frames: int, origin: float) -> np.ndarray:
-    times = np.empty(num_latent_frames, dtype=np.float64)
-    t = origin
-    for i in range(num_latent_frames):
-        times[i] = t
-        t += _ROPE_FRAME_RESCALE * _ROPE_FRAMES_PER_LATENT[i % len(_ROPE_FRAMES_PER_LATENT)]
-    return times
+    spans = np.array(
+        [
+            _ROPE_FRAME_RESCALE * _ROPE_FRAMES_PER_LATENT[i % len(_ROPE_FRAMES_PER_LATENT)]
+            for i in range(num_latent_frames)
+        ],
+        dtype=np.float64,
+    )
+    return origin + np.concatenate([np.zeros(1, dtype=np.float64), np.cumsum(spans[:-1])])
 
 
 def patchify_video_latents(latents: np.ndarray, patch_size: tuple[int, int, int] = PATCH_SIZE) -> np.ndarray:
@@ -266,21 +269,15 @@ def build_row_timesteps(
     row_timesteps[gen_audio] = audio_timestep
     if layout.num_condition_audio_rows:
         row_timesteps[layout.audio_indices[: layout.num_condition_audio_rows]] = condition_audio_timestep
-    unique, inverse = np.unique(row_timesteps, return_inverse=True)
-    order = np.argsort(unique)
-    unique_sorted = unique[order]
-    remap = np.empty_like(order)
-    remap[order] = np.arange(len(order))
-    return unique_sorted.astype(np.float32), remap[inverse].astype(np.int32)
+    distinct, inverse = np.unique(row_timesteps, return_inverse=True)
+    return distinct.astype(np.float32), inverse.astype(np.int32)
 
 
 def flow_match_sigmas(num_inference_steps: int, *, shift: float) -> np.ndarray:
-    """Build descending sigma grid in ``(0, 1]`` including terminal 0 (``num_inference_steps`` points)."""
-    if num_inference_steps < 2:
-        raise ValueError(f"num_inference_steps must be >= 2, got {num_inference_steps}")
-    # num_inference_steps counts sigma points including terminal 0 → one fewer model eval.
-    n = num_inference_steps
-    t = np.linspace(1.0, 0.0, n, dtype=np.float64)
-    if shift != 1.0:
-        t = shift * t / (1.0 + (shift - 1.0) * t)
-    return t.astype(np.float32)
+    """Deprecated: prefer ``MiniMaxH3Scheduler.set_timesteps``."""
+    from backend.engine.families.minimax_h3.scheduler_mlx import MiniMaxH3Scheduler
+
+    sched = MiniMaxH3Scheduler(shift=shift)
+    sched.set_timesteps(num_inference_steps)
+    assert sched.sigmas is not None
+    return np.array(sched.sigmas, dtype=np.float32)

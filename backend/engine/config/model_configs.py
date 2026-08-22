@@ -691,6 +691,15 @@ class MinimaxH3Config:
     supports_long_video: bool = False
     geometry_check: str = "generic"
     license_territorial_notice: bool = True
+    h3_low_memory: bool = True
+    h3_stream_decode: bool = True
+    h3_denoiser_reuse: int = 1
+    h3_active_layers: int = 50
+    h3_internal_canvas: str = "off"
+    h3_turbo: bool = False
+    h3_block_streaming: bool = False
+    h3_token_reduction: bool = False
+    teacache_mode: str = "none"
 
 
 @dataclass

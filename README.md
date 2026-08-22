@@ -206,6 +206,8 @@ API / MCP surface maps `create`→`generate`, rewrite/retouch/extend→`edit`.
 | Text-to-video | `create` | `POST /api/videos/generations` |
 | Image-to-video | `animate` | `POST /api/videos/edits` |
 
+**MiniMax H3 (`minimax-h3-fl2va`)** — joint audio+video FL2VA on MLX (Metal / mlx[cuda]). Correctness aligned with [PipeNetwork/minimax-h3-mlx](https://github.com/PipeNetwork/minimax-h3-mlx) (scheduler `t=1−σ`, aspect-normalized RoPE, keyframe posterior sample). Generation is **compute-bound**; mlx-q4/q8 mainly reduces footprint. Registry: `h3_quality_preset`, `h3_turbo`, `h3_low_memory`, `h3_denoiser_reuse`, `h3_active_layers`, `h3_internal_canvas`. Tests: `make test-h3-parity`; smoke benchmark (installed bundle): `make bench-h3-smoke`.
+
 ### Audio
 
 | Action | API |

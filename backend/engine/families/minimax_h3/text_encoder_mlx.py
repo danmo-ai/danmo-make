@@ -4,7 +4,7 @@ Neural net / vision merge / MRoPE / deepstack: **mlx-vlm** ``qwen3_vl.Model``.
 Local code is only what mlx-vlm cannot do for this product path:
 
 - load ddalcu flat affine ``text_encoder.safetensors`` (not an mlx-vlm repo layout)
-- MiniMax FL2VA presentation (``<Picture i>:`` + vision tags)
+- MiniMax FL2VA presentation (`": "` + vision tags; PipeNetwork / diffusers parity)
 - read unnormalized ``hidden_states[50]`` (mlx-vlm forward always applies final RMSNorm)
 
 ddalcu keeps the first 50 decoder layers and drops final norm / lm_head; after those
@@ -327,8 +327,7 @@ class MiniMaxH3TextEncoderMLX:
         """Return ``(prompt_embeds [1,L,H], text_token_tags [L])``.
 
         Presentation matches Diffusers ``MiniMaxH3TextEncoderStep``: verbatim prompt;
-        each keyframe prepends ``\"<Picture i>: \"`` + vision block. Vision-block rows
-        are tagged as video (AdaLN modality 0).
+        each keyframe prepends ``": "`` + vision block. Vision-block rows are tagged as video.
         """
         if not isinstance(prompt, str):
             raise ValueError(
@@ -364,7 +363,7 @@ class MiniMaxH3TextEncoderMLX:
                         f"MiniMax-H3 keyframe {index} produced {num_image_tokens} vision tokens "
                         f"(grid={tuple(grid_np[index].tolist())}, merge={merge_size})."
                     )
-                label_ids = tok(f"<Picture {index + 1}>: ", add_special_tokens=False)["input_ids"]
+                label_ids = tok(": ", add_special_tokens=False)["input_ids"]
                 vision_ids = (
                     [_VISION_START_TOKEN_ID]
                     + [_IMAGE_TOKEN_ID] * num_image_tokens

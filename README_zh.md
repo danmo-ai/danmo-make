@@ -206,6 +206,8 @@ API / MCP：`create`→`generate`，rewrite/retouch/extend→`edit`。
 | 文生视频 | `create` | `POST /api/videos/generations` |
 | 图生视频 | `animate` | `POST /api/videos/edits` |
 
+**MiniMax H3（`minimax-h3-fl2va`）** — MLX 音视频联合 FL2VA（Metal / mlx[cuda]）。正确性对标 [PipeNetwork/minimax-h3-mlx](https://github.com/PipeNetwork/minimax-h3-mlx)（scheduler `t=1−σ`、宽高比归一 RoPE、关键帧 posterior 采样）。生成 **算力瓶颈**；mlx-q4/q8 主要省显存/内存。注册表：`h3_quality_preset`、`h3_turbo`、`h3_low_memory`、`h3_denoiser_reuse` 等。测试：`make test-h3-parity`；冒烟基准（需已安装 bundle）：`make bench-h3-smoke`。
+
 ### 音频
 
 | Action | API |

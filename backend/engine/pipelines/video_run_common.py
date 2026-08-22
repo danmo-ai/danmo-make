@@ -193,6 +193,33 @@ def snap_wan_pixel_dims_if_needed(pipeline,
 ) -> tuple[int, int]:
     return video_snap_pixel_dims_if_needed(config, w, h, on_log=on_log)
 
+def _apply_minimax_h3_quality_preset(config: Any, preset: str) -> None:
+    """Map registry ``h3_quality_preset`` to runtime config fields."""
+    key = str(preset or "balanced").strip().lower()
+    if key == "draft":
+        config.h3_turbo = True
+        config.h3_denoiser_reuse = 1
+        config.h3_active_layers = 45
+        config.h3_internal_canvas = "384"
+        config.h3_low_memory = True
+        config.teacache_mode = "none"
+    elif key == "balanced":
+        config.h3_turbo = False
+        config.h3_denoiser_reuse = 2
+        config.h3_active_layers = 50
+        config.h3_internal_canvas = "off"
+    elif key == "quality":
+        config.h3_turbo = False
+        config.h3_denoiser_reuse = 1
+        config.h3_active_layers = 50
+        config.h3_internal_canvas = "off"
+    elif key == "oracle":
+        config.h3_turbo = False
+        config.h3_denoiser_reuse = 1
+        config.h3_active_layers = 50
+        config.h3_internal_canvas = "off"
+
+
 def apply_video_registry_config_overrides(pipeline, entry: Any, config: Any) -> None:
     for param_key in (
         "vae_scale",
@@ -240,6 +267,27 @@ def apply_video_registry_config_overrides(pipeline, entry: Any, config: Any) -> 
     usre = _registry_scalar_default_fn(entry, "use_src_id_rotary_emb", None)
     if usre is not None:
         config.use_src_id_rotary_emb = bool(usre)
+    for param_key in (
+        "h3_quality_preset",
+        "h3_denoiser_reuse",
+        "h3_active_layers",
+        "h3_internal_canvas",
+        "h3_turbo",
+        "h3_low_memory",
+        "h3_stream_decode",
+        "h3_token_reduction",
+        "teacache_mode",
+        "scheduler_shift",
+        "audio_scheduler_shift",
+    ):
+        if not hasattr(config, param_key):
+            continue
+        val = _registry_scalar_default_fn(entry, param_key, None)
+        if val is not None:
+            setattr(config, param_key, val)
+    preset = getattr(config, "h3_quality_preset", None)
+    if preset and hasattr(config, "h3_denoiser_reuse"):
+        _apply_minimax_h3_quality_preset(config, str(preset))
     if getattr(config, "inject_text_encoder_paths", False):
         configure_hunyuan_text_encoder_paths(pipeline, entry, config)
         configure_ltx_text_encoder_paths(pipeline, entry, config)
@@ -308,6 +356,35 @@ def prepare_video_bundle_and_schedule(pipeline,
     _distill_hook = _adapter_distill_hooks.get(family)
     if _distill_hook is not None and adapters:
         lightning_distill = _distill_hook()
+
+    if family == "minimax_h3":
+        from backend.catalog.lora_meta import lora_compose_overrides
+        from backend.engine.common.bundle.lora_mlx import adapter_id_weight as _adapter_id_weight
+        from backend.engine.families.minimax_h3.lora_mlx import (
+            H3_TURBO_LORA_ID,
+            adapters_include_h3_turbo,
+        )
+
+        if adapters_include_h3_turbo(adapters, pipeline._registry):
+            config.h3_turbo = True
+            for item in adapters:
+                lora_id, _ = _adapter_id_weight(item)
+                mid, _ = parse_model_version(lora_id)
+                if mid != H3_TURBO_LORA_ID:
+                    continue
+                try:
+                    lora_entry = pipeline._registry.require(mid)
+                except KeyError:
+                    continue
+                overrides = lora_compose_overrides(lora_entry)
+                if overrides.get("steps") is not None:
+                    steps_default = int(overrides["steps"])
+                if on_log is not None:
+                    on_log(
+                        "info",
+                        "MiniMax-H3 Turbo LoRA: 4–8 step distill (CFG=1; use 6–8 steps for quality)",
+                    )
+                break
 
     steps = int(request.steps) if request.steps is not None else int(steps_default)
     if lightning_distill:
@@ -704,6 +781,8 @@ def execute_family_video_generator(pipeline,
         "entry": entry,
         "version_key": version_key,
         "project_root": pipeline._project_root,
+        "registry": pipeline._registry,
+        "adapters": list(getattr(request, "adapters", None) or []),
     }
     import inspect
 

@@ -251,6 +251,12 @@ verify-engine-stack: check-engine-governance test-engine-unit calibrate-teacache
 test-engine-unit:
 	PYTHONPATH=. $(PYTHON) scripts/test_engine_unit.py
 
+test-h3-parity:
+	PYTHONPATH=. $(PYTHON) -m unittest tests.minimax_h3_parity_unit -v
+
+bench-h3-smoke:
+	PYTHONPATH=. $(PYTHON) scripts/bench_h3_smoke.py
+
 lint:
 	$(PYTHON) scripts/make_lint.py
 	@echo "Lint OK"

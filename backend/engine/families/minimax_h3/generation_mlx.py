@@ -11,15 +11,13 @@ from PIL import Image
 from backend.engine.config.model_configs import MinimaxH3Config
 from backend.engine.families.minimax_h3 import packing as P
 from backend.engine.families.minimax_h3.bundle_load_mlx import load_minimax_h3_components
+from backend.engine.families.minimax_h3.scheduler_mlx import MiniMaxH3Scheduler
 from backend.engine.families.minimax_h3.vae_mlx import mux_video_audio_mp4
 from backend.engine.pipelines.pipeline_progress import emit_denoise_progress, emit_post_progress
 from backend.engine.runtime.mlx_runtime import run_eval
 
 
-def _euler_flow_step(x: mx.array, velocity: mx.array, sigma: float, sigma_next: float) -> mx.array:
-    """Flow-matching Euler: ``x' = x + (σ' - σ) * v`` with descending σ ∈ (0, 1]."""
-    dt = float(sigma_next) - float(sigma)
-    return x + velocity * dt
+_PROMPT_EMBED_CACHE: dict[str, tuple[Any, np.ndarray]] = {}
 
 
 class MinimaxH3MlxGenerator:
@@ -42,6 +40,9 @@ class MinimaxH3MlxGenerator:
         self._text_encoder = None
         self._dit = None
         self._bundle_cfg: dict[str, Any] | None = None
+        self._project_root: Path | None = None
+        self._registry: Any | None = None
+        self._adapters: list[Any] | None = None
 
     @staticmethod
     def _log(on_log: Callable[[str, str], None] | None, level: str, msg: str) -> None:
@@ -74,7 +75,6 @@ class MinimaxH3MlxGenerator:
         )
 
     def _resolve_canvas(self, width: int, height: int) -> tuple[int, int]:
-        # Prefer registry/request size when already on the H3 canvas grid; else resolve from ratio.
         if (
             width % P.MINIMAX_H3_CANVAS_MULTIPLE == 0
             and height % P.MINIMAX_H3_CANVAS_MULTIPLE == 0
@@ -83,6 +83,21 @@ class MinimaxH3MlxGenerator:
         ):
             return height, width
         return P.resolve_canvas_size(float(width), float(height))
+
+    def _internal_canvas(self, canvas_h: int, canvas_w: int) -> tuple[int, int]:
+        preset = str(getattr(self.config, "h3_internal_canvas", "off") or "off").strip().lower()
+        if preset in ("", "off", "none"):
+            return canvas_h, canvas_w
+        try:
+            edge = int(preset)
+        except ValueError:
+            return canvas_h, canvas_w
+        if edge <= 0:
+            return canvas_h, canvas_w
+        ratio = canvas_w / canvas_h
+        if ratio >= 1.0:
+            return edge, max(P.MINIMAX_H3_CANVAS_MULTIPLE, round(edge * ratio / P.MINIMAX_H3_CANVAS_MULTIPLE) * P.MINIMAX_H3_CANVAS_MULTIPLE)
+        return max(P.MINIMAX_H3_CANVAS_MULTIPLE, round(edge / ratio / P.MINIMAX_H3_CANVAS_MULTIPLE) * P.MINIMAX_H3_CANVAS_MULTIPLE), edge
 
     def _prepare_keyframe(self, path: str, height: int, width: int, *, stretch: bool) -> Image.Image:
         img = Image.open(path).convert("RGB")
@@ -104,24 +119,92 @@ class MinimaxH3MlxGenerator:
         return resized.crop((left, top, left + width, top + height))
 
     def _encode_keyframe_latent(self, image: Image.Image) -> mx.array:
-        """Encode one RGB keyframe → ``(1, 24, 1, H/16, W/16)`` normalized latent."""
         arr = np.asarray(image, dtype=np.float32) / 255.0
         mean = np.array(P.MINIMAX_H3_PIXEL_MEAN, dtype=np.float32).reshape(1, 3, 1, 1)
         std = np.array(P.MINIMAX_H3_PIXEL_STD, dtype=np.float32).reshape(1, 3, 1, 1)
-        chw = np.transpose(arr, (2, 0, 1))[None, ...]  # 1,3,H,W
+        chw = np.transpose(arr, (2, 0, 1))[None, ...]
         chw = (chw - mean) / std
-        # Video VAE expects NCTHW; single frame → T=1 then pad? Diffusers uses clip encode.
-        x = mx.array(chw[:, :, None, :, :])  # 1,3,1,H,W
+        x = mx.array(chw[:, :, None, :, :])
         assert self._video_vae is not None
-        # Prefer encode_mode / encode_clip if present.
-        if hasattr(self._video_vae, "encode_mode"):
+        if hasattr(self._video_vae, "encode_sample"):
+            z = self._video_vae.encode_sample(x, normalize=True)
+        elif hasattr(self._video_vae, "encode_mode"):
             z = self._video_vae.encode_mode(x, normalize=True)
-        elif hasattr(self._video_vae, "encode_clip"):
-            z = self._video_vae.encode_clip(x)
         else:
-            raise RuntimeError("MiniMax-H3 video VAE missing encode_mode/encode_clip for keyframes")
+            raise RuntimeError("MiniMax-H3 video VAE missing encode_sample/encode_mode for keyframes")
         run_eval(getattr(self.ctx, "eval", None), z)
         return z
+
+    def _encode_keyframe_rows(self, keyframes: list[Image.Image], patch: tuple[int, int, int]) -> np.ndarray:
+        mx.random.seed(P.MINIMAX_H3_KEYFRAME_ENCODE_SEED)
+        rows: list[np.ndarray] = []
+        for kf in keyframes:
+            z = self._encode_keyframe_latent(kf)
+            rows.append(P.patchify_video_latents(np.array(z.astype(mx.float32)), patch)[0])
+        return np.concatenate(rows, axis=0)
+
+    def _release_dit_after_denoise(self) -> None:
+        if not bool(getattr(self.config, "h3_low_memory", True)):
+            return
+        self._dit = None
+        self._text_encoder = None
+        clear = getattr(self.ctx, "clear_cache", None)
+        if callable(clear):
+            clear()
+        eval_fn = getattr(self.ctx, "eval", None)
+        if callable(eval_fn):
+            eval_fn()
+
+    def _validate_inference_plan(
+        self, steps: int, on_log: Callable[[str, str], None] | None
+    ) -> None:
+        from backend.engine.inference.optimization_plan import resolve_video_inference_plan
+
+        plan = resolve_video_inference_plan(
+            family="minimax_h3",
+            config=self.config,
+            ctx=self.ctx,
+            num_steps=max(2, int(steps)),
+        )
+        if bool(getattr(self.config, "h3_turbo", False)) and plan.step_cache_enabled:
+            raise RuntimeError(
+                "MiniMax-H3 h3_turbo is incompatible with TeaCache/step-cache; "
+                "set teacache_mode=none."
+            )
+        if plan.step_cache_enabled:
+            raise RuntimeError(
+                "MiniMax-H3 TeaCache is not implemented on the family_generator path; "
+                "set teacache_mode=none."
+            )
+        if plan.use_mlx_compile:
+            self._log(
+                on_log,
+                "warning",
+                "mlx.compile is not applied to MiniMax-H3 DiT in this path (use h3_denoiser_reuse / turbo instead).",
+            )
+
+    def _apply_turbo_lora(self, on_log: Callable[[str, str], None] | None) -> None:
+        from backend.engine.families.minimax_h3.lora_mlx import apply_minimax_h3_turbo_lora
+
+        assert self._dit is not None
+        if self._project_root is None or self._registry is None:
+            if bool(getattr(self.config, "h3_turbo", False)):
+                raise RuntimeError(
+                    "MiniMax-H3 turbo LoRA requires project registry context; "
+                    "use h3_turbo via the video pipeline or install "
+                    "minimax-h3-turbo-lora and select it as an adapter."
+                )
+            return
+        apply_minimax_h3_turbo_lora(
+            self._dit,
+            bundle_root=self.bundle_root,
+            config=self.config,
+            adapters=self._adapters,
+            project_root=self._project_root,
+            registry=self._registry,
+            ctx=self.ctx,
+            on_log=on_log,
+        )
 
     def generate_and_save(
         self,
@@ -148,16 +231,28 @@ class MinimaxH3MlxGenerator:
                 "MiniMax-H3 FL2VA is CFG-distilled and does not accept a negative prompt."
             )
         if float(fps) != float(P.MINIMAX_H3_FPS):
+            raise RuntimeError(f"MiniMax-H3 requires fps={P.MINIMAX_H3_FPS}, got {fps}")
+        if bool(getattr(self.config, "h3_block_streaming", False)):
             raise RuntimeError(
-                f"MiniMax-H3 requires fps={P.MINIMAX_H3_FPS}, got {fps}"
+                "h3_block_streaming is not implemented yet; disable the flag to run."
             )
+        if bool(getattr(self.config, "h3_token_reduction", False)):
+            raise RuntimeError(
+                "h3_token_reduction is experimental and not implemented; disable the flag to run."
+            )
+        self._validate_inference_plan(steps, on_log)
 
         self._license_notice(on_log)
         self._ensure_loaded(on_log)
         assert self._dit is not None and self._text_encoder is not None
         assert self._video_vae is not None and self._audio_vae is not None
 
+        self._apply_turbo_lora(on_log)
+
         canvas_h, canvas_w = self._resolve_canvas(width, height)
+        out_h, out_w = canvas_h, canvas_w
+        canvas_h, canvas_w = self._internal_canvas(canvas_h, canvas_w)
+
         aligned_frames = P.align_num_frames(int(num_frames))
         if aligned_frames != num_frames:
             self._log(
@@ -166,6 +261,9 @@ class MinimaxH3MlxGenerator:
                 f"MiniMax-H3 snapped num_frames {num_frames} → {aligned_frames} (17n+5)",
             )
         P.validate_duration(aligned_frames)
+
+        if bool(getattr(self.config, "h3_turbo", False)):
+            steps = min(int(steps), 8)
 
         keyframes: list[Image.Image] = []
         anchors: list[str] = []
@@ -189,10 +287,20 @@ class MinimaxH3MlxGenerator:
             f"MiniMax-H3 encoding prompt"
             + (f" + {len(keyframes)} keyframe(s) via Qwen3-VL vision…" if keyframes else "…"),
         )
-        prompt_embeds, text_token_tags = self._text_encoder.encode_prompt(
-            prompt,
-            images=keyframes or None,
-        )
+        cache_key = f"{hash(prompt)}:{len(keyframes)}:{canvas_h}x{canvas_w}"
+        cached = _PROMPT_EMBED_CACHE.get(cache_key)
+        if cached is not None:
+            prompt_embeds, tags_np = cached
+            prompt_embeds = mx.array(prompt_embeds) if not isinstance(prompt_embeds, mx.array) else prompt_embeds
+        else:
+            prompt_embeds, text_token_tags = self._text_encoder.encode_prompt(
+                prompt,
+                images=keyframes or None,
+            )
+            tags_np = np.array(text_token_tags, dtype=np.int64)
+            if isinstance(text_token_tags, mx.array):
+                tags_np = np.array(text_token_tags)
+            _PROMPT_EMBED_CACHE[cache_key] = (prompt_embeds, tags_np)
         run_eval(getattr(self.ctx, "eval", None), prompt_embeds)
 
         num_latent_frames = P.video_latent_num_frames(aligned_frames)
@@ -201,9 +309,7 @@ class MinimaxH3MlxGenerator:
         num_audio = P.audio_latent_num_frames(aligned_frames)
         patch = tuple(getattr(self.config, "patch_size", P.PATCH_SIZE))
 
-        tags_np = np.array(text_token_tags, dtype=np.int64)
-        if isinstance(text_token_tags, mx.array):
-            tags_np = np.array(text_token_tags)
+        tags_np = np.array(tags_np, dtype=np.int64)
         layout = P.build_packed_sequence(
             tags_np,
             num_latent_frames=num_latent_frames,
@@ -214,7 +320,6 @@ class MinimaxH3MlxGenerator:
             keyframe_anchors=tuple(anchors),
         )
 
-        rng = np.random.default_rng(int(seed))
         video_channels = int(getattr(self.config, "latent_channels", 24))
         audio_channels = int(getattr(self.config, "audio_latent_channels", 32))
         pt, ph, pw = patch
@@ -224,23 +329,36 @@ class MinimaxH3MlxGenerator:
         num_cond_rows = layout.num_condition_video_rows
         num_audio_rows = num_audio * P.MINIMAX_H3_AUDIO_CHANNELS
 
-        # Conditioning keyframe latents (noised to KEYFRAME_NOISE_AUG).
-        cond_rows_list: list[np.ndarray] = []
+        cond_video = np.zeros((0, patch_dim), dtype=np.float32)
         if keyframes:
-            for kf in keyframes:
-                z = self._encode_keyframe_latent(kf)  # 1,C,1,h,w
-                z_np = np.array(z.astype(mx.float32))
-                noise = rng.standard_normal(z_np.shape).astype(np.float32)
-                t_aug = P.MINIMAX_H3_KEYFRAME_NOISE_AUG
-                z_noisy = (1.0 - t_aug) * z_np + t_aug * noise
-                cond_rows_list.append(P.patchify_video_latents(z_noisy, patch)[0])
-            cond_video = np.concatenate(cond_rows_list, axis=0)
-        else:
-            cond_video = np.zeros((0, patch_dim), dtype=np.float32)
+            cond_video = self._encode_keyframe_rows(keyframes, patch)
 
-        target_video = rng.standard_normal((num_target_video_rows, patch_dim)).astype(np.float32)
+        mx.random.seed(int(seed))
+        if cond_video.size:
+            cond_noise = np.array(
+                mx.random.normal(cond_video.shape).astype(mx.float32),
+                dtype=np.float32,
+            )
+            video_sched_tmp = MiniMaxH3Scheduler(
+                shift=float(getattr(self.config, "scheduler_shift", 12.0))
+            )
+            cond_video = np.array(
+                video_sched_tmp.scale_noise(
+                    mx.array(cond_video),
+                    P.MINIMAX_H3_KEYFRAME_NOISE_AUG,
+                    mx.array(cond_noise),
+                ).astype(mx.float32)
+            )
+
+        target_video = np.array(
+            mx.random.normal((num_target_video_rows, patch_dim)).astype(mx.float32),
+            dtype=np.float32,
+        )
         video_rows = np.concatenate([cond_video, target_video], axis=0)
-        audio_rows = rng.standard_normal((num_audio_rows, audio_channels)).astype(np.float32)
+        audio_rows = np.array(
+            mx.random.normal((num_audio_rows, audio_channels)).astype(mx.float32),
+            dtype=np.float32,
+        )
 
         video_shift = float(
             (self._bundle_cfg or {}).get("sigma_shift_scales", {}).get("video")
@@ -251,10 +369,19 @@ class MinimaxH3MlxGenerator:
             or getattr(self.config, "audio_scheduler_shift", 3.0)
         )
         n_steps = max(2, int(steps))
-        video_sigmas = P.flow_match_sigmas(n_steps, shift=video_shift)
-        audio_sigmas = P.flow_match_sigmas(n_steps, shift=audio_shift)
-        # Model evals = len(sigmas) - 1
-        num_evals = len(video_sigmas) - 1
+        video_sched = MiniMaxH3Scheduler(shift=video_shift)
+        audio_sched = MiniMaxH3Scheduler(shift=audio_shift)
+        video_sched.set_timesteps(n_steps)
+        audio_sched.set_timesteps(n_steps)
+        num_evals = int(video_sched.num_inference_steps or 0)
+
+        reuse = max(1, int(getattr(self.config, "h3_denoiser_reuse", 1) or 1))
+        active_layers = int(getattr(self.config, "h3_active_layers", 50) or 50)
+        eval_indices = set(range(num_evals))
+        if reuse > 1 and num_evals > 2:
+            interval = reuse
+            eval_indices = {0, num_evals - 1}
+            eval_indices.update(range(0, num_evals, interval))
 
         position_ids = mx.array(layout.position_ids.astype(np.float32))
         token_tags = mx.array(layout.token_tags.astype(np.int32))
@@ -264,54 +391,68 @@ class MinimaxH3MlxGenerator:
 
         latents = mx.array(video_rows)
         audio_latents = mx.array(audio_rows)
+        last_v_pred: mx.array | None = None
+        last_a_pred: mx.array | None = None
 
         self._log(
             on_log,
             "info",
-            f"MiniMax-H3 denoise {num_evals} steps @ {canvas_w}x{canvas_h}, "
-            f"{aligned_frames} frames, seed={seed}",
+            f"MiniMax-H3 denoise {num_evals} steps @ {canvas_w}x{canvas_h}"
+            + (f" (internal; output {out_w}x{out_h})" if (out_w, out_h) != (canvas_w, canvas_h) else "")
+            + f", {aligned_frames} frames, seed={seed}",
         )
 
         for i in range(num_evals):
-            v_t = float(video_sigmas[i])
-            a_t = float(audio_sigmas[i])
-            v_next = float(video_sigmas[i + 1])
-            a_next = float(audio_sigmas[i + 1])
+            v_t = float(video_sched.timesteps[i].item())
+            a_t = float(audio_sched.timesteps[i].item())
+            cond_v_t = max(v_t, P.MINIMAX_H3_KEYFRAME_NOISE_AUG)
             unique_t, t_idx = P.build_row_timesteps(
                 layout,
                 video_timestep=v_t,
                 audio_timestep=a_t,
-                condition_video_timestep=P.MINIMAX_H3_KEYFRAME_NOISE_AUG,
-                condition_audio_timestep=P.MINIMAX_H3_KEYFRAME_NOISE_AUG,
+                condition_video_timestep=cond_v_t,
+                condition_audio_timestep=1.0,
             )
-            out = self._dit(
-                hidden_states=latents[None],
-                audio_hidden_states=audio_latents[None],
-                encoder_hidden_states=prompt_embeds,
-                timestep=mx.array(unique_t),
-                timestep_indices=mx.array(t_idx),
-                token_tags=token_tags,
-                position_ids=position_ids,
-                video_indices=video_indices,
-                audio_indices=audio_indices,
-                text_indices=text_indices,
-                return_dict=False,
-            )
-            noise_pred, audio_noise_pred = out
-            run_eval(getattr(self.ctx, "eval", None), noise_pred, audio_noise_pred)
+            if i in eval_indices or last_v_pred is None:
+                dit_kwargs: dict[str, Any] = dict(
+                    hidden_states=latents[None],
+                    audio_hidden_states=audio_latents[None],
+                    encoder_hidden_states=prompt_embeds,
+                    timestep=mx.array(unique_t),
+                    timestep_indices=mx.array(t_idx),
+                    token_tags=token_tags,
+                    position_ids=position_ids,
+                    video_indices=video_indices,
+                    audio_indices=audio_indices,
+                    text_indices=text_indices,
+                    return_dict=False,
+                )
+                if active_layers < 50 and hasattr(self._dit, "set_active_layers"):
+                    self._dit.set_active_layers(active_layers)
+                out = self._dit(**dit_kwargs)
+                noise_pred, audio_noise_pred = out
+                run_eval(getattr(self.ctx, "eval", None), noise_pred, audio_noise_pred)
+                last_v_pred = noise_pred[0]
+                last_a_pred = audio_noise_pred[0]
+            else:
+                assert last_v_pred is not None and last_a_pred is not None
+                noise_pred = last_v_pred[None]
+                audio_noise_pred = last_a_pred[None]
 
-            # Step only generated rows; conditioning rows stay pinned.
             if num_cond_rows:
                 gen_v = latents[num_cond_rows:]
-                gen_v = _euler_flow_step(gen_v, noise_pred[0, num_cond_rows:], v_t, v_next)
-                latents = mx.concatenate([latents[:num_cond_rows], gen_v], axis=0)
+                stepped_v = video_sched.step(
+                    noise_pred[0, num_cond_rows:].astype(mx.float32), v_t, gen_v
+                )
+                latents = mx.concatenate([latents[:num_cond_rows], stepped_v], axis=0)
             else:
-                latents = _euler_flow_step(latents, noise_pred[0], v_t, v_next)
-            audio_latents = _euler_flow_step(audio_latents, audio_noise_pred[0], a_t, a_next)
+                latents = video_sched.step(noise_pred[0].astype(mx.float32), v_t, latents)
+            audio_latents = audio_sched.step(
+                audio_noise_pred[0].astype(mx.float32), a_t, audio_latents
+            )
             run_eval(getattr(self.ctx, "eval", None), latents, audio_latents)
             emit_denoise_progress(on_progress, i + 1, num_evals)
 
-        # Unpack target video / audio latents for decode.
         target_tokens = latents[num_cond_rows:]
         video_latent = mx.array(
             P.unpatchify_video_tokens(
@@ -323,14 +464,15 @@ class MinimaxH3MlxGenerator:
                 patch_size=patch,
             )
         )
-        # Audio: channel-major rows → [2, 32, T]
         audio_np = np.array(audio_latents.astype(mx.float32))
-        left = audio_np[:num_audio].T  # 32, T
+        left = audio_np[:num_audio].T
         right = audio_np[num_audio:].T
-        audio_latent = mx.array(np.stack([left, right], axis=0))  # 2, 32, T
+        audio_latent = mx.array(np.stack([left, right], axis=0))
 
+        self._release_dit_after_denoise()
         emit_post_progress(on_progress, n_steps=num_evals, within_post=0.2)
         self._log(on_log, "info", f"MiniMax-H3 decode+mux → {output_path}")
+        stream_decode = bool(getattr(self.config, "h3_stream_decode", True))
         result = mux_video_audio_mp4(
             self.ctx,
             video_latent,
@@ -338,6 +480,10 @@ class MinimaxH3MlxGenerator:
             output_path,
             self.bundle_root,
             frame_rate=float(P.MINIMAX_H3_FPS),
+            video_vae=self._video_vae,
+            audio_vae=self._audio_vae,
+            stream_frames=stream_decode,
+            upscale_to=(out_h, out_w) if (out_h, out_w) != (canvas_h, canvas_w) else None,
             on_log=(lambda m: self._log(on_log, "info", m)) if on_log else None,
         )
         emit_post_progress(on_progress, n_steps=num_evals, within_post=1.0)

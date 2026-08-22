@@ -69,6 +69,7 @@ _AUDIO_LORA_MERGE = {
 
 _VIDEO_LORA_MERGE = {
     "wan": ("backend.engine.families.wan.lora_mlx", "merge_wan_lora_adapters"),
+    "minimax_h3": ("backend.engine.families.minimax_h3.lora_mlx", "merge_minimax_h3_lora_adapters"),
 }
 
 _IMAGE_EDIT_EXTRA_COND = {

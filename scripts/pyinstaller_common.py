@@ -158,6 +158,8 @@ _MLX_ONLY_HIDDEN_IMPORTS: tuple[str, ...] = (
     "backend.engine.families.minimax_h3.vae_mlx",
     "backend.engine.families.minimax_h3.text_encoder_mlx",
     "backend.engine.families.minimax_h3.packing",
+    "backend.engine.families.minimax_h3.lora_mlx",
+    "backend.engine.families.minimax_h3.lora_weights",
     "mlx_vlm",
     "mlx_vlm.models.qwen3_vl",
     "mlx_vlm.models.qwen3_vl.qwen3_vl",

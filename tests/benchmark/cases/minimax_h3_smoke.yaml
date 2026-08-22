@@ -1,0 +1,13 @@
+# MiniMax H3 smoke benchmark (requires installed mlx-q4/q8 bundle + GPU).
+id: minimax-h3-fl2va:fox-smoke:create
+model: minimax-h3-fl2va
+version: mlx-q4
+action: create
+prompt: "A red fox walks through fresh snow in a pine forest."
+width: 512
+height: 512
+num_frames: 22
+steps: 8
+seed: 42
+profile: smoke
+notes: "512² 22f 8-step smoke after PipeNetwork parity fixes"

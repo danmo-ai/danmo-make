@@ -38,9 +38,13 @@ def _catalog_lora_meta(entry: Any) -> dict[str, Any]:
 
 
 def lora_video_step_distill(entry: Any) -> bool:
-    """LoRA requests step-distill video schedule when merged (Lightning, etc.)."""
+    """LoRA requests step-distill video schedule when merged (Lightning, H3 Turbo, etc.)."""
     params = _entry_params(entry)
-    return bool(params.get("video_step_distill") or params.get("wan_lightning_distill"))
+    return bool(
+        params.get("video_step_distill")
+        or params.get("wan_lightning_distill")
+        or params.get("h3_turbo_distill")
+    )
 
 
 def lora_z_image_distill_patch(entry: Any) -> bool:

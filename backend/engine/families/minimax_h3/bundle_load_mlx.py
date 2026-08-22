@@ -177,9 +177,9 @@ def load_minimax_h3_components(
     # Prefer ctx.load_weights if available (handles quantized tensors).
     if load_fn is not None:
         weights = load_fn(str(root / "transformer.safetensors"))
-        dit.load_weights(list(weights.items()) if isinstance(weights, dict) else weights, strict=False)
+        dit.load_weights(list(weights.items()) if isinstance(weights, dict) else weights, strict=True)
     else:
-        dit.load_weights(str(root / "transformer.safetensors"), strict=False)
+        dit.load_weights(str(root / "transformer.safetensors"), strict=True)
 
     mx.eval(video_vae.parameters(), audio_vae.parameters(), text_encoder.model.parameters(), dit.parameters())
     return video_vae, audio_vae, text_encoder, dit, cfg

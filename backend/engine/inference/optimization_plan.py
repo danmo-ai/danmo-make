@@ -236,7 +236,7 @@ def plan_from_extra_cond(
     existing = extra_cond.get(INFERENCE_PLAN_KEY)
     if isinstance(existing, (ImageInferencePlan, VideoInferencePlan)):
         return existing
-    if str(family) in ("wan", "ltx", "hunyuan", "seedvr2"):
+    if str(family) in ("wan", "ltx", "hunyuan", "seedvr2", "minimax_h3"):
         return resolve_video_inference_plan(
             family=family,
             config=config,

@@ -40,17 +40,27 @@ def create_minimax_h3_generator(
     config: MinimaxH3Config | None = None,
     entry: Any | None = None,
     version_key: str | None = None,
+    project_root: Path | None = None,
+    registry: Any | None = None,
+    adapters: list[Any] | None = None,
 ) -> MinimaxH3GeneratorProto:
     require_mlx_ctx(ctx, feature="MiniMax-H3")
     if not bundle_root.is_dir():
         raise RuntimeError(f"MiniMax-H3 bundle directory not found: {bundle_root}")
-    return MinimaxH3MlxGenerator(
+    gen = MinimaxH3MlxGenerator(
         ctx,
         bundle_root,
         config=config,
         entry=entry,
         version_key=version_key,
     )
+    if project_root is not None:
+        gen._project_root = Path(project_root)
+    if registry is not None:
+        gen._registry = registry
+    if adapters:
+        gen._adapters = list(adapters)
+    return gen
 
 
 def validate_video_generation_params(

@@ -404,6 +404,7 @@ class MiniMaxH3DiTMLX(nn.Module):
             )
             for _ in range(num_layers)
         ]
+        self._active_layers = num_layers
         self.norm_out = MiniMaxH3AdaLayerNormOut(
             hidden_size=hidden_size, time_embed_dim=time_embed_dim, eps=final_norm_eps,
         )
@@ -435,6 +436,14 @@ class MiniMaxH3DiTMLX(nn.Module):
             qk_norm_eps=float(cfg.get("qk_norm_eps", 1e-5)),
             final_norm_eps=float(cfg.get("final_norm_eps", 1e-5)),
         )
+
+    def set_active_layers(self, count: int) -> None:
+        count = int(count)
+        if count < 1 or count > len(self.transformer_blocks):
+            raise ValueError(
+                f"h3_active_layers must be in [1, {len(self.transformer_blocks)}], got {count}"
+            )
+        self._active_layers = count
 
     def _padding_attention_mask(self, token_tags: mx.array, dtype: mx.Dtype) -> mx.array | None:
         is_pad = token_tags < 0
@@ -492,7 +501,7 @@ class MiniMaxH3DiTMLX(nn.Module):
         adaln_indices = timestep_indices * MINIMAX_H3_MODALITY_NUM + mx.maximum(token_tags, mx.zeros_like(token_tags))
         attention_mask = self._padding_attention_mask(token_tags, packed.dtype)
 
-        for block in self.transformer_blocks:
+        for block in self.transformer_blocks[: self._active_layers]:
             packed = block(packed, temb, adaln_indices, rotary_emb, attention_mask)
 
         packed = self.norm_out(packed, temb, timestep_indices).astype(self.proj_out.weight.dtype)

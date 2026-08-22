@@ -643,6 +643,18 @@ class AutoencoderKLMiniMaxH3MLX(nn.Module):
         h = self.encoder(x)
         return self._conv3d_ncthw(self.quant_conv, h)
 
+    def encode_sample(self, x: mx.array, *, normalize: bool = True) -> mx.array:
+        """Posterior sample + float16 round-trip (PipeNetwork / diffusers keyframe path)."""
+        moments = self.encode_clip(x)
+        mean, logvar = mx.split(moments, 2, axis=1)
+        logvar = mx.clip(logvar, -30.0, 20.0)
+        std = mx.exp(0.5 * logvar)
+        latent = mean + std * mx.random.normal(mean.shape)
+        latent = latent.astype(mx.float16).astype(mx.float32)
+        if normalize:
+            latent = self.normalize_latents(latent)
+        return latent
+
     def encode_mode(self, x: mx.array, *, normalize: bool = True) -> mx.array:
         """Encode pixels → latent mode, optionally normalized with ``latents_mean/std``."""
         moments = self.encode_clip(x)
@@ -1382,18 +1394,34 @@ def mux_video_audio_mp4(
     bundle_root: Path,
     *,
     frame_rate: float = 24.0,
+    video_vae: Any | None = None,
+    audio_vae: Any | None = None,
+    stream_frames: bool = True,
+    upscale_to: tuple[int, int] | None = None,
     on_log: Callable[[str], None] | None = None,
 ) -> str:
     """Decode video+audio latents and mux with ffmpeg (stereo wav + raw RGB frames)."""
     ffmpeg = require_ffmpeg()
     load_fn = getattr(ctx, "load_weights", None)
-    video_vae = load_video_vae(bundle_root, load_fn=load_fn)
-    audio_vae = load_audio_vae(bundle_root, load_fn=load_fn)
+    if video_vae is None:
+        video_vae = load_video_vae(bundle_root, load_fn=load_fn)
+    if audio_vae is None:
+        audio_vae = load_audio_vae(bundle_root, load_fn=load_fn)
     pixels = video_vae.decode(video_latent, denormalize=True)
     wav = audio_vae.decode(audio_latent, denormalize=True)
     _eval(pixels)
     _eval(wav)
     frames = _imagenet_to_uint8_frames(pixels)
+    if upscale_to is not None:
+        target_h, target_w = upscale_to
+        from PIL import Image
+
+        upscaled = np.empty((frames.shape[0], target_h, target_w, 3), dtype=np.uint8)
+        for i in range(frames.shape[0]):
+            upscaled[i] = np.array(
+                Image.fromarray(frames[i]).resize((target_w, target_h), Image.Resampling.LANCZOS)
+            )
+        frames = upscaled
     t, h, w, _c = frames.shape
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         audio_path = tmp.name
@@ -1413,7 +1441,11 @@ def mux_video_audio_mp4(
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     assert proc.stdin is not None
     try:
-        proc.stdin.write(frames.tobytes())
+        if stream_frames:
+            for i in range(t):
+                proc.stdin.write(frames[i].tobytes())
+        else:
+            proc.stdin.write(frames.tobytes())
         proc.stdin.close()
     except BrokenPipeError as exc:
         err = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
