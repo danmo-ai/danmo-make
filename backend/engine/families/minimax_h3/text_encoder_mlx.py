@@ -3,11 +3,11 @@
 Neural net / vision merge / MRoPE / deepstack: **mlx-vlm** ``qwen3_vl.Model``.
 Local code is only what mlx-vlm cannot do for this product path:
 
-- load ddalcu flat affine ``text_encoder.safetensors`` (not an mlx-vlm repo layout)
+- load MiniMax ``FL2VA/text_encoder`` safetensors (sharded or single file)
 - MiniMax FL2VA presentation (`": "` + vision tags; PipeNetwork / diffusers parity)
 - read unnormalized ``hidden_states[50]`` (mlx-vlm forward always applies final RMSNorm)
 
-ddalcu keeps the first 50 decoder layers and drops final norm / lm_head; after those
+Upstream keeps the first 50 decoder layers and drops final norm / lm_head; after those
 layers the activation is the HS[50] MiniMax-H3 expects.
 """
 from __future__ import annotations
@@ -25,6 +25,7 @@ from backend.engine.common.model.quantized_load_mlx import (
 )
 from backend.engine.runtime.mlx_runtime import load_weights_dict, run_eval
 
+from .bundle_paths_mlx import minimax_h3_aux_root, minimax_h3_tokenizer_root
 from .packing import (
     MINIMAX_H3_TEXT_ENCODER_LAYER,
     MINIMAX_H3_TEXT_TAG,
@@ -64,7 +65,7 @@ _VISION_END_TOKEN_ID = 151653
 
 
 def _remap_te_weight_key(key: str) -> str | None:
-    """Map ddalcu / HF TE keys onto mlx-vlm ``Model`` parameter paths."""
+    """Map MiniMax / HF text-encoder keys onto mlx-vlm ``Model`` parameter paths."""
     if key.startswith("visual."):
         return "vision_tower." + key[len("visual.") :]
     if key.startswith("model.visual."):
@@ -74,7 +75,6 @@ def _remap_te_weight_key(key: str) -> str | None:
     if key.startswith("language_model."):
         return key if key.startswith("language_model.model.") else "language_model.model." + key[len("language_model.") :]
     if key.startswith("model."):
-        # ddalcu flat pack: language tower is ``model.layers.*`` / ``model.embed_tokens.*``
         rest = key[len("model.") :]
         if rest.startswith("visual."):
             return "vision_tower." + rest[len("visual.") :]
@@ -101,15 +101,17 @@ class MiniMaxH3TextEncoderMLX:
     ):
         self.ctx = ctx
         self.model_path = Path(model_path)
-        self.tokenizer_path = Path(tokenizer_path) if tokenizer_path else self.model_path
+        self.tokenizer_path = minimax_h3_tokenizer_root(Path(tokenizer_path or model_path))
         self.quant_cfg = dict(quant_cfg) if quant_cfg else None
 
         text_cfg = dict(_DEFAULT_TEXT)
         vis_cfg = dict(_DEFAULT_VISION)
-        cfg_path = self.model_path / "config.json"
+        cfg_path = minimax_h3_aux_root(self.model_path) / "text_encoder" / "config.json"
+        if not cfg_path.is_file():
+            cfg_path = self.model_path / "config.json"
         if cfg_path.is_file():
             raw = json.loads(cfg_path.read_text(encoding="utf-8"))
-            # Full Qwen3-VL config (official MiniMax subfolder) or ddalcu abbreviated.
+            # Full Qwen3-VL config (official MiniMax subfolder).
             nested_text = raw.get("text_config") or raw.get("llm_config")
             if isinstance(nested_text, dict):
                 text_cfg.update({k: nested_text[k] for k in _DEFAULT_TEXT if k in nested_text})
@@ -143,7 +145,10 @@ class MiniMaxH3TextEncoderMLX:
             return
         weight_path = self._resolve_weight_file()
         load_fn = getattr(self.ctx, "load_weights", None)
-        raw = load_weights_dict(load_fn, str(weight_path))
+        if weight_path.is_dir():
+            raw = self._load_te_weights(weight_path)
+        else:
+            raw = load_weights_dict(load_fn, str(weight_path))
         weights: dict[str, mx.array] = {}
         vision_keys = 0
         for k, v in raw.items():
@@ -204,28 +209,35 @@ class MiniMaxH3TextEncoderMLX:
         self._loaded = True
 
     def _resolve_weight_file(self) -> Path:
-        candidates = [
-            self.model_path / "text_encoder.safetensors",
-            self.model_path / "text_encoder" / "model.safetensors",
-        ]
-        for path in candidates:
-            if path.is_file():
-                return path
-        # HF-style sharded text_encoder/
-        te_dir = self.model_path / "text_encoder"
+        aux = minimax_h3_aux_root(self.model_path)
+        te_dir = aux / "text_encoder"
         if te_dir.is_dir():
-            shards = sorted(te_dir.glob("*.safetensors"))
-            if len(shards) == 1:
-                return shards[0]
-            if shards:
-                raise RuntimeError(
-                    f"MiniMax-H3 text encoder under {te_dir} is sharded ({len(shards)} files); "
-                    "Phase1 expects a single text_encoder.safetensors (ddalcu layout)."
-                )
+            single = te_dir / "model.safetensors"
+            if single.is_file():
+                return single
+            index = te_dir / "model.safetensors.index.json"
+            if index.is_file():
+                return te_dir  # sharded directory; load via _load_te_weights
         raise RuntimeError(
-            f"MiniMax-H3 text encoder weights not found under {self.model_path} "
-            "(expected text_encoder.safetensors)."
+            f"MiniMax-H3 text encoder weights not found under {te_dir} "
+            "(expected model.safetensors or sharded model-*-of-*.safetensors)."
         )
+
+    def _load_te_weights(self, source: Path) -> dict[str, Any]:
+        load_fn = getattr(self.ctx, "load_weights", None)
+        if source.is_file():
+            return load_weights_dict(load_fn, str(source))
+        index = source / "model.safetensors.index.json"
+        if not index.is_file():
+            raise RuntimeError(f"MiniMax-H3 text encoder index missing: {index}")
+        weight_map = json.loads(index.read_text(encoding="utf-8")).get("weight_map") or {}
+        shard_names = sorted(set(weight_map.values()))
+        merged: dict[str, Any] = {}
+        for name in shard_names:
+            shard_path = source / name
+            part = load_weights_dict(load_fn, str(shard_path))
+            merged.update(part)
+        return merged
 
     def _tokenizer_fast(self):
         if self._tokenizer is not None:

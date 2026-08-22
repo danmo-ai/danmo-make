@@ -104,17 +104,30 @@ class MiniMaxH3SchedulerParityTests(unittest.TestCase):
         )
 
 
+class MiniMaxH3DiTParityTests(unittest.TestCase):
+    def test_dit_module_key_tree(self) -> None:
+        from backend.engine.families.minimax_h3.transformer_mlx import MiniMaxH3DiTMLX, expected_dit_param_keys
+
+        dit = MiniMaxH3DiTMLX.from_config({})
+        keys = expected_dit_param_keys(dit)
+        self.assertIn("video_patch_proj.weight", keys)
+        self.assertIn("blocks.0.attn.qkv_proj.weight", keys)
+        self.assertIn("blocks.0.mlp.fc1.weight", keys)
+        self.assertIn("final_layer.video_out.weight", keys)
+        self.assertNotIn("rope.inv_freq", keys)
+
+
 class MiniMaxH3LoraParityTests(unittest.TestCase):
     def test_remap_lora_ab_pairs(self) -> None:
         from backend.engine.families.minimax_h3.lora_weights import remap_minimax_h3_lora_keys
 
         weights = {
-            "diffusion_model.transformer_blocks.0.attn.to_q.lora_A.weight": mx.zeros((4, 8)),
-            "diffusion_model.transformer_blocks.0.attn.to_q.lora_B.weight": mx.zeros((16, 4)),
+            "diffusion_model.blocks.0.attn.qkv_proj.lora_A.weight": mx.zeros((4, 8)),
+            "diffusion_model.blocks.0.attn.qkv_proj.lora_B.weight": mx.zeros((16, 4)),
         }
         groups = remap_minimax_h3_lora_keys(weights, default_alpha=128.0)
-        self.assertIn("transformer_blocks.0.attn.to_q", groups)
-        down, up, alpha = groups["transformer_blocks.0.attn.to_q"]
+        self.assertIn("blocks.0.attn.qkv_proj", groups)
+        down, up, alpha = groups["blocks.0.attn.qkv_proj"]
         self.assertEqual(tuple(down.shape), (4, 8))
         self.assertEqual(tuple(up.shape), (16, 4))
         self.assertAlmostEqual(alpha, 128.0)

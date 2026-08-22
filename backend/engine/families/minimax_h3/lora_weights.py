@@ -1,7 +1,6 @@
-"""MiniMax-H3 Turbo LoRA key remap (Diffusers / Comfy → ``MiniMaxH3DiTMLX`` flat keys)."""
+"""MiniMax-H3 Turbo LoRA key remap (Comfy / upstream → ``MiniMaxH3DiTMLX`` flat keys)."""
 from __future__ import annotations
 
-import re
 from typing import Any
 
 
@@ -34,12 +33,6 @@ def _normalize_module(module: str) -> str:
     ):
         if out.startswith(prefix):
             out = out[len(prefix) :]
-    # Comfy / upstream occasional alias → Diffusers layout used by ``transformer_mlx``.
-    out = re.sub(
-        r"^blocks\.(\d+)\.",
-        r"transformer_blocks.\1.",
-        out,
-    )
     return out
 
 

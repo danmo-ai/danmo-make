@@ -445,7 +445,7 @@ class MiniMaxH3VideoViTDecoder3d(nn.Module):
         self.rope = MiniMaxH3VideoRotaryPosEmbed(int(attention_head_dim * rope_dim_ratio), theta=rope_theta)
         self.proj_in = nn.Linear(in_channels, dim)
         self.register_tokens = mx.zeros((1, num_register_tokens, dim))
-        # Upstream ``mask_token`` (CLS-like) — ddalcu / MiniMax packs ship ``decoder.mask_token``.
+        # Upstream ``mask_token`` (CLS-like) — MiniMax packs ship ``decoder.mask_token``.
         self.mask_token = mx.zeros((1, 1, dim))
         self.transformer_blocks = [
             MiniMaxH3VideoTransformerBlock(
@@ -741,7 +741,7 @@ def _remap_video_vae_decoder_key(key: str) -> str:
 
 
 def remap_minimax_h3_video_vae_weights(weights: dict[str, Any]) -> dict[str, mx.array]:
-    """Remap MiniMax-H3 / ddalcu ``video_vae.safetensors`` keys onto ``AutoencoderKLMiniMaxH3MLX`` params.
+    """Remap MiniMax-H3 ``video_vae`` checkpoint keys onto ``AutoencoderKLMiniMaxH3MLX`` params.
 
     Upstream packs use compact names (``encoder.down.*.block`` / fused ``to_qkv`` / ``ff.w1``).
     Our MLX modules mirror Diffusers nesting (``down_blocks`` / ``resnets`` / separate ``to_q|k|v``).
@@ -1277,6 +1277,9 @@ def tree_unflatten_params(flat: dict[str, mx.array]) -> Any:
     return tree_unflatten(list(flat.items()))
 
 
+from backend.engine.families.minimax_h3.bundle_paths_mlx import minimax_h3_aux_root
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise RuntimeError(f"Missing config: {path}")
@@ -1284,46 +1287,29 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def load_video_vae(bundle_root: Path, *, load_fn: Any | None = None) -> AutoencoderKLMiniMaxH3MLX:
-    root = Path(bundle_root)
-    cfg_path = root / "vae" / "config.json"
-    if not cfg_path.is_file():
-        cfg_path = root / "video_vae" / "config.json"
-    if not cfg_path.is_file():
-        cfg_path = root / "config.json"
+    aux = minimax_h3_aux_root(Path(bundle_root))
+    cfg_path = aux / "video_vae" / "config.json"
     weight_candidates = [
-        root / "video_vae.safetensors",
-        root / "vae" / "diffusion_pytorch_model.safetensors",
-        root / "video_vae" / "model.safetensors",
+        aux / "video_vae" / "source" / "model.safetensors",
+        aux / "video_vae" / "model.safetensors",
     ]
     weight_path = next((p for p in weight_candidates if p.is_file()), None)
     if weight_path is None:
-        cands = list((root / "vae").glob("*.safetensors")) if (root / "vae").is_dir() else []
-        cands += list(root.glob("video_vae*.safetensors"))
-        if not cands:
-            raise RuntimeError(f"MiniMax-H3 video VAE weights not found under {root}")
-        weight_path = cands[0]
+        raise RuntimeError(f"MiniMax-H3 video VAE weights not found under {aux / 'video_vae'}")
     model = AutoencoderKLMiniMaxH3MLX.from_config(_load_json(cfg_path) if cfg_path.is_file() else {})
     model.load_weights(weight_path, load_fn=load_fn)
     return model
 
 
 def load_audio_vae(bundle_root: Path, *, load_fn: Any | None = None) -> AutoencoderKLMiniMaxH3AudioMLX:
-    root = Path(bundle_root)
-    cfg_path = root / "audio_vae" / "config.json"
-    if not cfg_path.is_file():
-        cfg_path = root / "config.json"
+    aux = minimax_h3_aux_root(Path(bundle_root))
+    cfg_path = aux / "audio_vae" / "config.json"
     weight_candidates = [
-        root / "audio_vae.safetensors",
-        root / "audio_vae" / "diffusion_pytorch_model.safetensors",
-        root / "audio_vae" / "model.safetensors",
+        aux / "audio_vae" / "model.safetensors",
     ]
     weight_path = next((p for p in weight_candidates if p.is_file()), None)
     if weight_path is None:
-        cands = list((root / "audio_vae").glob("*.safetensors")) if (root / "audio_vae").is_dir() else []
-        cands += list(root.glob("audio_vae*.safetensors"))
-        if not cands:
-            raise RuntimeError(f"MiniMax-H3 audio VAE weights not found under {root}")
-        weight_path = cands[0]
+        raise RuntimeError(f"MiniMax-H3 audio VAE weights not found under {aux / 'audio_vae'}")
     model = AutoencoderKLMiniMaxH3AudioMLX.from_config(_load_json(cfg_path) if cfg_path.is_file() else {})
     model.load_weights(weight_path, load_fn=load_fn)
     return model

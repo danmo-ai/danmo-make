@@ -9375,39 +9375,83 @@
         "versions": {
           "mlx-q4": {
             "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
+              "zh": "4-bit 量化版 (PipeNetwork)",
+              "en": "4-bit Quantized (PipeNetwork)"
             },
-            "size": "40GB",
+            "size": "100GB",
             "min_unified_memory_gb": 64,
             "default": true,
             "source": "huggingface",
-            "repo_id": "ddalcu/MiniMax-H3-FL2VA-MLX-Serve-4bit",
-            "local_path": "models/Video/minimax-h3-fl2va-mlx-q4",
             "source_type": "prequantized",
             "quantization": {
               "bits": 4,
               "scheme": "mlx_affine",
               "group_size": 64
-            }
+            },
+            "bundle_repos": [
+              {
+                "repo_id": "pipenetwork/MiniMax-H3-MLX-4bit",
+                "local_path": "models/Video/minimax-h3-fl2va-mlx-q4",
+                "allow_patterns": [
+                  "*.safetensors",
+                  "model.safetensors.index.json",
+                  "quant_config.json",
+                  "config.json"
+                ]
+              },
+              {
+                "repo_id": "MiniMaxAI/MiniMax-H3",
+                "local_path": "models/Video/minimax-h3-fl2va-mlx-q4",
+                "name": "FL2VA aux",
+                "allow_patterns": [
+                  "FL2VA/text_encoder/**",
+                  "FL2VA/video_vae/**",
+                  "FL2VA/audio_vae/**",
+                  "FL2VA/processor/**",
+                  "FL2VA/model_index.json"
+                ]
+              }
+            ]
           },
           "mlx-q8": {
             "name": {
-              "zh": "8-bit 量化版",
-              "en": "8-bit Quantized"
+              "zh": "8-bit 量化版 (PipeNetwork)",
+              "en": "8-bit Quantized (PipeNetwork)"
             },
-            "size": "69GB",
+            "size": "110GB",
             "min_unified_memory_gb": 96,
             "default": false,
             "source": "huggingface",
-            "repo_id": "ddalcu/MiniMax-H3-FL2VA-MLX-Serve-8bit",
-            "local_path": "models/Video/minimax-h3-fl2va-mlx-q8",
             "source_type": "prequantized",
             "quantization": {
               "bits": 8,
               "scheme": "mlx_affine",
               "group_size": 64
-            }
+            },
+            "bundle_repos": [
+              {
+                "repo_id": "pipenetwork/MiniMax-H3-MLX-8bit",
+                "local_path": "models/Video/minimax-h3-fl2va-mlx-q8",
+                "allow_patterns": [
+                  "*.safetensors",
+                  "model.safetensors.index.json",
+                  "quant_config.json",
+                  "config.json"
+                ]
+              },
+              {
+                "repo_id": "MiniMaxAI/MiniMax-H3",
+                "local_path": "models/Video/minimax-h3-fl2va-mlx-q8",
+                "name": "FL2VA aux",
+                "allow_patterns": [
+                  "FL2VA/text_encoder/**",
+                  "FL2VA/video_vae/**",
+                  "FL2VA/audio_vae/**",
+                  "FL2VA/processor/**",
+                  "FL2VA/model_index.json"
+                ]
+              }
+            ]
           }
         }
       }

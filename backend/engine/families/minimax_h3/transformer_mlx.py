@@ -1,7 +1,10 @@
-"""MLX port of Diffusers ``MiniMaxH3Transformer3DModel``.
+"""MLX MiniMax-H3 DiT — PipeNetwork / upstream checkpoint key tree (1:1 load).
 
-Parameter names mirror the Diffusers checkpoint (``proj_in``, ``adaln_proj.linear``,
-``ff.net.0.proj``, …) so safetensors load with only Conv/layout remaps at the caller.
+Module names match released safetensors (``video_patch_proj``, ``blocks.*.attn.qkv_proj``,
+``mlp.fc1`` fused SwiGLU, ``final_layer.video_out``, …). Layout quirks handled in forward:
+
+* ``qkv_proj`` rows are per-head interleaved ``[h0: q,k,v][h1: q,k,v]…``
+* ``mlp.fc1`` is fused ``[gate; value]`` SwiGLU (``fc2(silu(gate) * value)``)
 """
 from __future__ import annotations
 
@@ -17,15 +20,23 @@ from backend.engine.runtime.mlx import MLXContext
 
 _MLX_CTX = MLXContext()
 
-# Per-row modality tags address AdaLN: 0=video, 1=text, 2=audio (padding uses -1).
 MINIMAX_H3_MODALITY_NUM = 3
+
+_FP32_KEY_PREFIXES = (
+    "video_patch_proj.",
+    "audio_patch_proj.",
+    "time_embedder.",
+    "final_layer.video_out.",
+    "final_layer.audio_out.",
+)
+
+
+def _param_dtype(layer: nn.Module) -> mx.Dtype:
+    scales = getattr(layer, "scales", None)
+    return scales.dtype if scales is not None else layer.weight.dtype
 
 
 def _apply_rotary_emb(hidden_states: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
-    """Rotate leading ``rotary_dim`` channels; pass the rest through.
-
-    ``hidden_states``: ``(B, S, H, D)``; ``cos``/``sin``: ``(S, rotary_dim)``.
-    """
     rotary_dim = int(cos.shape[-1])
     rotary = hidden_states[..., :rotary_dim]
     passthrough = hidden_states[..., rotary_dim:]
@@ -42,7 +53,6 @@ def _index_select_axis1(x: mx.array, indices: mx.array) -> mx.array:
 
 
 def _index_copy_axis1(buf: mx.array, indices: mx.array, values: mx.array) -> mx.array:
-    """Scatter ``values`` ``[B, N, C]`` into ``buf`` ``[B, S, C]`` at ``indices`` ``[N]``."""
     b, _s, c = buf.shape
     n = int(indices.shape[0])
     idx = mx.broadcast_to(indices.astype(mx.int32).reshape(1, n, 1), (b, n, c))
@@ -50,129 +60,40 @@ def _index_copy_axis1(buf: mx.array, indices: mx.array, values: mx.array) -> mx.
 
 
 def _index_select_rows(table: mx.array, indices: mx.array) -> mx.array:
-    """``table[indices]`` for ``table`` ``[R, C]`` and ``indices`` ``[S]`` → ``[S, C]``."""
     return mx.take(table, indices.astype(mx.int32), axis=0)
 
 
-class MiniMaxH3Timesteps(nn.Module):
-    """Diffusers ``Timesteps`` — sinusoidal projection of unscaled ``[0, 1]`` timesteps."""
-
-    def __init__(self, num_channels: int = 256, flip_sin_to_cos: bool = True, downscale_freq_shift: float = 0.0):
-        super().__init__()
-        self.num_channels = num_channels
-        self.flip_sin_to_cos = flip_sin_to_cos
-        self.downscale_freq_shift = downscale_freq_shift
-
-    def __call__(self, timesteps: mx.array) -> mx.array:
-        return sinusoidal_timestep_proj(
-            _MLX_CTX,
-            timesteps,
-            self.num_channels,
-            sin_first=True,
-            flip_sin_to_cos=self.flip_sin_to_cos,
-            downscale_freq_shift=self.downscale_freq_shift,
-        )
-
-
-class MiniMaxH3TimestepEmbedding(nn.Module):
-    """Diffusers ``TimestepEmbedding`` with optional ``out_dim`` (keys ``linear_1`` / ``linear_2``)."""
-
-    def __init__(self, in_channels: int, time_embed_dim: int, out_dim: int | None = None):
-        super().__init__()
-        self.linear_1 = nn.Linear(in_channels, time_embed_dim, bias=True)
-        out = out_dim if out_dim is not None else time_embed_dim
-        self.linear_2 = nn.Linear(time_embed_dim, out, bias=True)
-
-    def __call__(self, sample: mx.array) -> mx.array:
-        return self.linear_2(nn.silu(self.linear_1(sample)))
-
-
-class MiniMaxH3RotaryPosEmbed(nn.Module):
-    """3-axis RoPE over packed ``(t, h, w)`` coordinates."""
+class MiniMaxH3RotaryPosEmbed3D:
+    """3-axis RoPE; ``inv_freq`` is recomputed (not loaded from checkpoint)."""
 
     def __init__(self, rope_freq_dim: int = 16, rope_theta: float = 10000.0):
-        super().__init__()
-        self.rope_freq_dim = rope_freq_dim
-        inv_freq = 1.0 / (
-            rope_theta
-            ** (mx.arange(0, 2 * rope_freq_dim, 2, dtype=mx.float32) / (2 * rope_freq_dim))
+        n = rope_freq_dim
+        self.inv_freq = 1.0 / (
+            rope_theta ** (mx.arange(0, 2 * n, 2, dtype=mx.float32) / (2 * n))
         )
-        self.inv_freq = inv_freq
 
     def __call__(self, position_ids: mx.array) -> tuple[mx.array, mx.array]:
-        # position_ids: (S, 3) -> cos/sin: (S, 2 * 3 * rope_freq_dim)
-        position_ids = position_ids.astype(mx.float32)
-        freqs = position_ids[:, :, None] * self.inv_freq.reshape(1, 1, -1)
-        freqs_t, freqs_h, freqs_w = freqs[:, 0, :], freqs[:, 1, :], freqs[:, 2, :]
-        freqs = mx.concatenate((freqs_t, freqs_h, freqs_w), axis=-1)
-        freqs = mx.concatenate((freqs, freqs), axis=-1)
+        pos = position_ids.astype(mx.float32)
+        freqs = pos[..., None] * self.inv_freq.reshape(1, 1, -1)
+        freqs = mx.concatenate([freqs[:, 0], freqs[:, 1], freqs[:, 2]], axis=-1)
+        freqs = mx.concatenate([freqs, freqs], axis=-1)
         return mx.cos(freqs), mx.sin(freqs)
 
 
-class MiniMaxH3AdaLayerNormModulation(nn.Module):
-    """Block-level AdaLN projection (checkpoint key ``adaln_proj.linear``)."""
+class MiniMaxH3TimestepEmbedder(nn.Module):
+    """Timestep MLP — checkpoint keys ``time_embedder.proj_in`` / ``proj_out``."""
 
-    def __init__(self, time_embed_dim: int, hidden_size: int):
+    def __init__(self, in_channels: int, hidden_dim: int, out_dim: int):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.linear = nn.Linear(time_embed_dim, 6 * hidden_size * MINIMAX_H3_MODALITY_NUM, bias=True)
+        self.proj_in = nn.Linear(in_channels, hidden_dim, bias=True)
+        self.proj_out = nn.Linear(hidden_dim, out_dim, bias=True)
 
-    def __call__(self, temb: mx.array) -> tuple[mx.array, ...]:
-        w_dtype = self.linear.weight.dtype
-        temb = self.linear(nn.silu(temb).astype(w_dtype))
-        temb = temb.reshape(-1, 6 * self.hidden_size)
-        return tuple(mx.split(temb, 6, axis=-1))
-
-
-class MiniMaxH3AdaLayerNormOut(nn.Module):
-    """Final packed-sequence norm (``norm`` + ``linear`` → shift then scale)."""
-
-    def __init__(self, hidden_size: int, time_embed_dim: int, eps: float):
-        super().__init__()
-        self.norm = nn.RMSNorm(hidden_size, eps=eps)
-        self.linear = nn.Linear(time_embed_dim, 2 * hidden_size, bias=True)
-
-    def __call__(self, hidden_states: mx.array, temb: mx.array, timestep_indices: mx.array) -> mx.array:
-        w_dtype = self.linear.weight.dtype
-        shift, scale = mx.split(self.linear(nn.silu(temb).astype(w_dtype)), 2, axis=-1)
-        hidden_states = self.norm(hidden_states)
-        scale_rows = _index_select_rows(scale, timestep_indices)
-        shift_rows = _index_select_rows(shift, timestep_indices)
-        return hidden_states * (1.0 + scale_rows) + shift_rows
-
-
-class _SwiGLU(nn.Module):
-    """Diffusers ``SwiGLU`` — fused ``proj`` to ``2 * dim_out`` (value || gate)."""
-
-    def __init__(self, dim_in: int, dim_out: int, bias: bool = False):
-        super().__init__()
-        self.proj = nn.Linear(dim_in, dim_out * 2, bias=bias)
-
-    def __call__(self, hidden_states: mx.array) -> mx.array:
-        hidden_states = self.proj(hidden_states)
-        value, gate = mx.split(hidden_states, 2, axis=-1)
-        return value * nn.silu(gate)
-
-
-class MiniMaxH3FeedForward(nn.Module):
-    """Diffusers ``FeedForward(..., activation_fn='swiglu')`` — keys ``net.0.proj`` / ``net.2``."""
-
-    def __init__(self, dim: int, inner_dim: int, bias: bool = False):
-        super().__init__()
-        self.net = [
-            _SwiGLU(dim, inner_dim, bias=bias),
-            nn.Identity(),
-            nn.Linear(inner_dim, dim, bias=bias),
-        ]
-
-    def __call__(self, hidden_states: mx.array) -> mx.array:
-        for module in self.net:
-            hidden_states = module(hidden_states)
-        return hidden_states
+    def __call__(self, sinusoid: mx.array) -> mx.array:
+        return self.proj_out(nn.silu(self.proj_in(sinusoid)))
 
 
 class MiniMaxH3Attention(nn.Module):
-    """Full self-attention with RMSNorm Q/K (no cross-attention in MiniMax-H3)."""
+    """Fused QKV with per-head interleaved layout."""
 
     def __init__(
         self,
@@ -186,12 +107,10 @@ class MiniMaxH3Attention(nn.Module):
         self.head_dim = dim_head
         self.inner_dim = heads * dim_head
         self.scale = dim_head**-0.5
-        self.to_q = nn.Linear(hidden_size, self.inner_dim, bias=False)
-        self.to_k = nn.Linear(hidden_size, self.inner_dim, bias=False)
-        self.to_v = nn.Linear(hidden_size, self.inner_dim, bias=False)
-        self.norm_q = nn.RMSNorm(dim_head, eps=qk_norm_eps)
-        self.norm_k = nn.RMSNorm(dim_head, eps=qk_norm_eps)
-        self.to_out = [nn.Linear(self.inner_dim, hidden_size, bias=False), nn.Identity()]
+        self.qkv_proj = nn.Linear(hidden_size, 3 * self.inner_dim, bias=False)
+        self.q_norm = nn.RMSNorm(dim_head, eps=qk_norm_eps)
+        self.k_norm = nn.RMSNorm(dim_head, eps=qk_norm_eps)
+        self.out_proj = nn.Linear(self.inner_dim, hidden_size, bias=False)
 
     def __call__(
         self,
@@ -200,36 +119,62 @@ class MiniMaxH3Attention(nn.Module):
         attention_mask: mx.array | None = None,
     ) -> mx.array:
         b, s, _ = hidden_states.shape
-        query = self.to_q(hidden_states).reshape(b, s, self.heads, self.head_dim)
-        key = self.to_k(hidden_states).reshape(b, s, self.heads, self.head_dim)
-        value = self.to_v(hidden_states).reshape(b, s, self.heads, self.head_dim)
-        query = self.norm_q(query)
-        key = self.norm_k(key)
+        qkv = self.qkv_proj(hidden_states).reshape(b, s, self.heads, 3, self.head_dim)
+        query = qkv[:, :, :, 0]
+        key = qkv[:, :, :, 1]
+        value = qkv[:, :, :, 2]
+
+        query = self.q_norm(query).transpose(0, 2, 1, 3)
+        key = self.k_norm(key).transpose(0, 2, 1, 3)
+        value = value.transpose(0, 2, 1, 3)
+
         if rotary_emb is not None:
             query = _apply_rotary_emb(query, *rotary_emb)
             key = _apply_rotary_emb(key, *rotary_emb)
-        # SDPA wants [B, H, S, D]
-        q = mx.transpose(query, (0, 2, 1, 3))
-        k = mx.transpose(key, (0, 2, 1, 3))
-        v = mx.transpose(value, (0, 2, 1, 3))
+
         out = scaled_dot_product_attention_bhsd_mx(
-            mx, q, k, v, scale=self.scale, mask=attention_mask,
+            mx, query, key, value, scale=self.scale, mask=attention_mask,
         )
-        out = mx.transpose(out, (0, 2, 1, 3)).reshape(b, s, self.inner_dim)
-        out = self.to_out[0](out)
-        out = self.to_out[1](out)
-        return out
+        out = out.transpose(0, 2, 1, 3).reshape(b, s, self.inner_dim)
+        return self.out_proj(out.astype(hidden_states.dtype))
+
+
+class MiniMaxH3FeedForward(nn.Module):
+    """SwiGLU — ``fc1`` is fused ``[gate; value]`` (upstream checkpoint layout)."""
+
+    def __init__(self, hidden_size: int, ffn_hidden_size: int):
+        super().__init__()
+        self.fc1 = nn.Linear(hidden_size, 2 * ffn_hidden_size, bias=False)
+        self.fc2 = nn.Linear(ffn_hidden_size, hidden_size, bias=False)
+        self._ffn = ffn_hidden_size
+
+    def __call__(self, hidden_states: mx.array) -> mx.array:
+        fused = self.fc1(hidden_states)
+        gate, value = fused[..., : self._ffn], fused[..., self._ffn :]
+        return self.fc2(nn.silu(gate) * value)
+
+
+class MiniMaxH3AdaLayerNormModulation(nn.Module):
+    def __init__(self, time_embed_dim: int, hidden_size: int):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.linear = nn.Linear(
+            time_embed_dim, 6 * hidden_size * MINIMAX_H3_MODALITY_NUM, bias=True,
+        )
+
+    def __call__(self, temb: mx.array) -> tuple[mx.array, ...]:
+        h = nn.silu(temb).astype(_param_dtype(self.linear))
+        h = self.linear(h).reshape(-1, 6 * self.hidden_size)
+        return tuple(mx.split(h, 6, axis=-1))
 
 
 class MiniMaxH3TokenRefinerBlock(nn.Module):
-    """Pre-norm transformer block for the text stream (no AdaLN / RoPE)."""
-
     def __init__(
         self,
         hidden_size: int,
         num_attention_heads: int,
         attention_head_dim: int,
-        ffn_dim: int,
+        ffn_hidden_size: int,
         norm_eps: float,
         qk_norm_eps: float,
     ):
@@ -242,12 +187,11 @@ class MiniMaxH3TokenRefinerBlock(nn.Module):
             qk_norm_eps=qk_norm_eps,
         )
         self.norm2 = nn.RMSNorm(hidden_size, eps=norm_eps)
-        self.ff = MiniMaxH3FeedForward(hidden_size, inner_dim=ffn_dim, bias=False)
+        self.mlp = MiniMaxH3FeedForward(hidden_size, ffn_hidden_size)
 
     def __call__(self, hidden_states: mx.array) -> mx.array:
         hidden_states = hidden_states + self.attn(self.norm1(hidden_states))
-        hidden_states = hidden_states + self.ff(self.norm2(hidden_states))
-        return hidden_states
+        return hidden_states + self.mlp(self.norm2(hidden_states))
 
 
 class MiniMaxH3TokenRefiner(nn.Module):
@@ -256,19 +200,19 @@ class MiniMaxH3TokenRefiner(nn.Module):
         hidden_size: int,
         num_attention_heads: int,
         attention_head_dim: int,
-        ffn_dim: int,
+        ffn_hidden_size: int,
         num_layers: int,
         norm_eps: float,
         qk_norm_eps: float,
         final_norm_eps: float,
     ):
         super().__init__()
-        self.refiner_blocks = [
+        self.blocks = [
             MiniMaxH3TokenRefinerBlock(
                 hidden_size=hidden_size,
                 num_attention_heads=num_attention_heads,
                 attention_head_dim=attention_head_dim,
-                ffn_dim=ffn_dim,
+                ffn_hidden_size=ffn_hidden_size,
                 norm_eps=norm_eps,
                 qk_norm_eps=qk_norm_eps,
             )
@@ -277,20 +221,18 @@ class MiniMaxH3TokenRefiner(nn.Module):
         self.final_norm = nn.RMSNorm(hidden_size, eps=final_norm_eps)
 
     def __call__(self, hidden_states: mx.array) -> mx.array:
-        for block in self.refiner_blocks:
+        for block in self.blocks:
             hidden_states = block(hidden_states)
         return self.final_norm(hidden_states)
 
 
 class MiniMaxH3TransformerBlock(nn.Module):
-    """AdaLN-modulated pre-norm self-attention + SwiGLU FFN."""
-
     def __init__(
         self,
         hidden_size: int,
         num_attention_heads: int,
         attention_head_dim: int,
-        ffn_dim: int,
+        ffn_hidden_size: int,
         time_embed_dim: int,
         norm_eps: float,
         qk_norm_eps: float,
@@ -304,7 +246,7 @@ class MiniMaxH3TransformerBlock(nn.Module):
             qk_norm_eps=qk_norm_eps,
         )
         self.norm2 = nn.RMSNorm(hidden_size, eps=norm_eps)
-        self.ff = MiniMaxH3FeedForward(hidden_size, inner_dim=ffn_dim, bias=False)
+        self.mlp = MiniMaxH3FeedForward(hidden_size, ffn_hidden_size)
         self.adaln_proj = MiniMaxH3AdaLayerNormModulation(
             time_embed_dim=time_embed_dim, hidden_size=hidden_size,
         )
@@ -312,33 +254,48 @@ class MiniMaxH3TransformerBlock(nn.Module):
     def __call__(
         self,
         hidden_states: mx.array,
-        temb: mx.array,
+        modulation: tuple[mx.array, ...],
         adaln_indices: mx.array,
         rotary_emb: tuple[mx.array, mx.array],
         attention_mask: mx.array | None = None,
     ) -> mx.array:
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln_proj(temb)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = modulation
 
-        residual = hidden_states
-        norm_hs = self.norm1(hidden_states)
-        norm_hs = norm_hs * (1.0 + _index_select_rows(scale_msa, adaln_indices)) + _index_select_rows(
-            shift_msa, adaln_indices
+        h = self.norm1(hidden_states)
+        h = h * (1.0 + _index_select_rows(scale_msa, adaln_indices)) + _index_select_rows(
+            shift_msa, adaln_indices,
         )
-        attn_out = self.attn(norm_hs, rotary_emb, attention_mask)
-        hidden_states = residual + _index_select_rows(gate_msa, adaln_indices) * attn_out
+        hidden_states = hidden_states + _index_select_rows(gate_msa, adaln_indices) * self.attn(
+            h, rotary_emb, attention_mask,
+        )
 
-        residual = hidden_states
-        norm_hs = self.norm2(hidden_states)
-        norm_hs = norm_hs * (1.0 + _index_select_rows(scale_mlp, adaln_indices)) + _index_select_rows(
-            shift_mlp, adaln_indices
+        h = self.norm2(hidden_states)
+        h = h * (1.0 + _index_select_rows(scale_mlp, adaln_indices)) + _index_select_rows(
+            shift_mlp, adaln_indices,
         )
-        ff_out = self.ff(norm_hs)
-        hidden_states = residual + _index_select_rows(gate_mlp, adaln_indices) * ff_out
-        return hidden_states
+        return hidden_states + _index_select_rows(gate_mlp, adaln_indices) * self.mlp(h)
+
+
+class MiniMaxH3FinalLayer(nn.Module):
+    def __init__(self, hidden_size: int, time_embed_dim: int, video_patch_dim: int, audio_dim: int, eps: float):
+        super().__init__()
+        self.norm = nn.RMSNorm(hidden_size, eps=eps)
+        self.adaln_proj = nn.Linear(time_embed_dim, 2 * hidden_size, bias=True)
+        self.video_out = nn.Linear(hidden_size, video_patch_dim, bias=True)
+        self.audio_out = nn.Linear(hidden_size, audio_dim, bias=True)
+        self.hidden_size = hidden_size
+
+    def norm_out(self, hidden_states: mx.array, temb: mx.array, timestep_indices: mx.array) -> mx.array:
+        h = self.adaln_proj(nn.silu(temb).astype(_param_dtype(self.adaln_proj)))
+        shift, scale = mx.split(h, 2, axis=-1)
+        hidden_states = self.norm(hidden_states)
+        return hidden_states * (1.0 + _index_select_rows(scale, timestep_indices)) + _index_select_rows(
+            shift, timestep_indices,
+        )
 
 
 class MiniMaxH3DiTMLX(nn.Module):
-    """MLX MiniMax-H3 joint video+audio DiT (Diffusers ``MiniMaxH3Transformer3DModel``)."""
+    """MLX MiniMax-H3 joint video+audio DiT (PipeNetwork / upstream keys)."""
 
     def __init__(
         self,
@@ -371,33 +328,32 @@ class MiniMaxH3DiTMLX(nn.Module):
         self.hidden_size = hidden_size
         video_patch_dim = in_channels * patch[0] * patch[1] * patch[2]
 
-        self.proj_in = nn.Linear(video_patch_dim, hidden_size, bias=True)
-        self.audio_proj_in = nn.Linear(audio_in_channels, hidden_size, bias=True)
-        self.context_embedder = nn.Linear(text_dim, hidden_size, bias=True)
+        self.video_patch_proj = nn.Linear(video_patch_dim, hidden_size, bias=True)
+        self.audio_patch_proj = nn.Linear(audio_in_channels, hidden_size, bias=True)
+        self.condition_proj = nn.Linear(text_dim, hidden_size, bias=True)
 
-        self.time_proj = MiniMaxH3Timesteps(
-            num_channels=freq_dim, flip_sin_to_cos=True, downscale_freq_shift=0.0,
+        self.time_embedder = MiniMaxH3TimestepEmbedder(
+            in_channels=freq_dim,
+            hidden_dim=time_embed_hidden_dim,
+            out_dim=time_embed_dim,
         )
-        self.time_embedder = MiniMaxH3TimestepEmbedding(
-            in_channels=freq_dim, time_embed_dim=time_embed_hidden_dim, out_dim=time_embed_dim,
-        )
-        self.rope = MiniMaxH3RotaryPosEmbed(rope_freq_dim=rope_freq_dim, rope_theta=rope_theta)
+        self.rope = MiniMaxH3RotaryPosEmbed3D(rope_freq_dim=rope_freq_dim, rope_theta=rope_theta)
         self.token_refiner = MiniMaxH3TokenRefiner(
             hidden_size=hidden_size,
             num_attention_heads=num_attention_heads,
             attention_head_dim=attention_head_dim,
-            ffn_dim=ffn_dim,
+            ffn_hidden_size=ffn_dim,
             num_layers=num_refiner_layers,
             norm_eps=norm_eps,
             qk_norm_eps=qk_norm_eps,
             final_norm_eps=final_norm_eps,
         )
-        self.transformer_blocks = [
+        self.blocks = [
             MiniMaxH3TransformerBlock(
                 hidden_size=hidden_size,
                 num_attention_heads=num_attention_heads,
                 attention_head_dim=attention_head_dim,
-                ffn_dim=ffn_dim,
+                ffn_hidden_size=ffn_dim,
                 time_embed_dim=time_embed_dim,
                 norm_eps=norm_eps,
                 qk_norm_eps=qk_norm_eps,
@@ -405,11 +361,13 @@ class MiniMaxH3DiTMLX(nn.Module):
             for _ in range(num_layers)
         ]
         self._active_layers = num_layers
-        self.norm_out = MiniMaxH3AdaLayerNormOut(
-            hidden_size=hidden_size, time_embed_dim=time_embed_dim, eps=final_norm_eps,
+        self.final_layer = MiniMaxH3FinalLayer(
+            hidden_size=hidden_size,
+            time_embed_dim=time_embed_dim,
+            video_patch_dim=video_patch_dim,
+            audio_dim=audio_in_channels,
+            eps=final_norm_eps,
         )
-        self.proj_out = nn.Linear(hidden_size, video_patch_dim, bias=True)
-        self.audio_proj_out = nn.Linear(hidden_size, audio_in_channels, bias=True)
 
     @classmethod
     def from_config(cls, cfg: dict[str, Any]) -> "MiniMaxH3DiTMLX":
@@ -421,16 +379,22 @@ class MiniMaxH3DiTMLX(nn.Module):
             attention_head_dim=int(cfg.get("attention_head_dim", 128)),
             hidden_size=int(cfg.get("hidden_size", 5376)),
             num_layers=int(cfg.get("num_layers", 50)),
-            num_refiner_layers=int(cfg.get("num_refiner_layers", 2)),
-            ffn_dim=int(cfg.get("ffn_dim", 14336)),
-            in_channels=int(cfg.get("in_channels", 24)),
-            audio_in_channels=int(cfg.get("audio_in_channels", 32)),
+            num_refiner_layers=int(
+                cfg.get("num_refiner_layers", cfg.get("token_refiner_num_layers", 2)),
+            ),
+            ffn_dim=int(cfg.get("ffn_dim", cfg.get("ffn_hidden_size", 14336))),
+            in_channels=int(cfg.get("in_channels", cfg.get("latents_dim", 24))),
+            audio_in_channels=int(
+                cfg.get("audio_in_channels", cfg.get("audio_latents_dim", 32)),
+            ),
             patch_size=tuple(int(x) for x in patch),
             text_dim=int(cfg.get("text_dim", 5120)),
-            freq_dim=int(cfg.get("freq_dim", 256)),
-            time_embed_hidden_dim=int(cfg.get("time_embed_hidden_dim", 5376)),
+            freq_dim=int(cfg.get("freq_dim", cfg.get("timestep_input_dim", 256))),
+            time_embed_hidden_dim=int(
+                cfg.get("time_embed_hidden_dim", cfg.get("time_embed_hidden_size", 5376)),
+            ),
             time_embed_dim=int(cfg.get("time_embed_dim", 2688)),
-            rope_freq_dim=int(cfg.get("rope_freq_dim", 16)),
+            rope_freq_dim=int(cfg.get("rope_freq_dim", cfg.get("rope_inv_freq_len", 16))),
             rope_theta=float(cfg.get("rope_theta", 10000.0)),
             norm_eps=float(cfg.get("norm_eps", 1e-5)),
             qk_norm_eps=float(cfg.get("qk_norm_eps", 1e-5)),
@@ -439,9 +403,9 @@ class MiniMaxH3DiTMLX(nn.Module):
 
     def set_active_layers(self, count: int) -> None:
         count = int(count)
-        if count < 1 or count > len(self.transformer_blocks):
+        if count < 1 or count > len(self.blocks):
             raise ValueError(
-                f"h3_active_layers must be in [1, {len(self.transformer_blocks)}], got {count}"
+                f"h3_active_layers must be in [1, {len(self.blocks)}], got {count}",
             )
         self._active_layers = count
 
@@ -449,11 +413,10 @@ class MiniMaxH3DiTMLX(nn.Module):
         is_pad = token_tags < 0
         if not bool(mx.any(is_pad).item()):
             return None
-        # Live↔live and pad↔pad attend; cross groups are blocked (additive -inf).
-        same = is_pad[None, :] == is_pad[:, None]  # [S, S]
+        same = is_pad[None, :] == is_pad[:, None]
         neg = mx.full(same.shape, -math.inf, dtype=dtype)
         mask = mx.where(same, mx.zeros(same.shape, dtype=dtype), neg)
-        return mask[None, None, :, :]  # [1, 1, S, S]
+        return mask[None, None, :, :]
 
     def __call__(
         self,
@@ -470,7 +433,7 @@ class MiniMaxH3DiTMLX(nn.Module):
         attention_kwargs: dict[str, Any] | None = None,
         return_dict: bool = True,
     ) -> dict[str, mx.array] | tuple[mx.array, mx.array]:
-        del attention_kwargs  # LoRA scale hook reserved for callers
+        del attention_kwargs
         if position_ids.ndim != 2 or int(position_ids.shape[-1]) != 3:
             raise ValueError(f"`position_ids` must be (seq_len, 3), got {tuple(position_ids.shape)}")
         sequence_length = int(position_ids.shape[0])
@@ -482,9 +445,15 @@ class MiniMaxH3DiTMLX(nn.Module):
 
         rotary_emb = self.rope(position_ids)
 
-        video_embeds = self.proj_in(hidden_states.astype(self.proj_in.weight.dtype))
-        audio_embeds = self.audio_proj_in(audio_hidden_states.astype(self.audio_proj_in.weight.dtype))
-        text_embeds = self.context_embedder(encoder_hidden_states.astype(self.context_embedder.weight.dtype))
+        video_embeds = self.video_patch_proj(
+            hidden_states.astype(_param_dtype(self.video_patch_proj)),
+        )
+        audio_embeds = self.audio_patch_proj(
+            audio_hidden_states.astype(_param_dtype(self.audio_patch_proj)),
+        )
+        text_embeds = self.condition_proj(
+            encoder_hidden_states.astype(_param_dtype(self.condition_proj)),
+        )
         text_embeds = self.token_refiner(text_embeds)
 
         packed = mx.zeros(
@@ -495,23 +464,48 @@ class MiniMaxH3DiTMLX(nn.Module):
         packed = _index_copy_axis1(packed, video_indices, video_embeds.astype(text_embeds.dtype))
         packed = _index_copy_axis1(packed, audio_indices, audio_embeds.astype(text_embeds.dtype))
 
-        temb = self.time_proj(timestep)
-        temb = self.time_embedder(temb.astype(self.time_embedder.linear_1.weight.dtype))
+        temb_input = sinusoidal_timestep_proj(
+            _MLX_CTX,
+            timestep,
+            self.time_embedder.proj_in.weight.shape[1],
+            sin_first=True,
+            flip_sin_to_cos=True,
+            downscale_freq_shift=0.0,
+        )
+        temb = self.time_embedder(temb_input.astype(_param_dtype(self.time_embedder.proj_in)))
 
-        adaln_indices = timestep_indices * MINIMAX_H3_MODALITY_NUM + mx.maximum(token_tags, mx.zeros_like(token_tags))
+        adaln_indices = timestep_indices * MINIMAX_H3_MODALITY_NUM + mx.maximum(
+            token_tags, mx.zeros_like(token_tags),
+        )
         attention_mask = self._padding_attention_mask(token_tags, packed.dtype)
 
-        for block in self.transformer_blocks[: self._active_layers]:
-            packed = block(packed, temb, adaln_indices, rotary_emb, attention_mask)
+        for block in self.blocks[: self._active_layers]:
+            modulation = block.adaln_proj(temb)
+            packed = block(packed, modulation, adaln_indices, rotary_emb, attention_mask)
 
-        packed = self.norm_out(packed, temb, timestep_indices).astype(self.proj_out.weight.dtype)
-        video_output = _index_select_axis1(self.proj_out(packed), video_indices)
-        audio_output = _index_select_axis1(self.audio_proj_out(packed), audio_indices)
+        packed = self.final_layer.norm_out(packed, temb, timestep_indices)
+        video_output = _index_select_axis1(
+            self.final_layer.video_out(packed.astype(_param_dtype(self.final_layer.video_out))),
+            video_indices,
+        )
+        audio_output = _index_select_axis1(
+            self.final_layer.audio_out(packed.astype(_param_dtype(self.final_layer.audio_out))),
+            audio_indices,
+        )
 
         if not return_dict:
             return (video_output, audio_output)
         return {"sample": video_output, "audio_sample": audio_output}
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
-        """Diffusers-style alias for ``__call__``."""
         return self(*args, **kwargs)
+
+
+def is_fp32_dit_key(key: str) -> bool:
+    return key.startswith(_FP32_KEY_PREFIXES)
+
+
+def expected_dit_param_keys(model: MiniMaxH3DiTMLX) -> set[str]:
+    from mlx.utils import tree_flatten
+
+    return {key for key, _ in tree_flatten(model.parameters())}

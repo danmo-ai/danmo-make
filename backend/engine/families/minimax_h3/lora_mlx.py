@@ -219,7 +219,7 @@ def merge_minimax_h3_turbo_lora(
         raise RuntimeError(
             f"MiniMax-H3 Turbo LoRA {weight_path.name} matched 0 DiT parameters "
             f"({len(groups)} A/B groups, {len(dense)} dense keys). "
-            "Check LoRA checkpoint layout vs ddalcu Diffusers DiT keys."
+            "Check LoRA checkpoint layout vs PipeNetwork/upstream DiT keys (blocks.*.qkv_proj)."
         )
     run_eval(getattr(ctx, "eval", None), dit.parameters())
     if on_log:
