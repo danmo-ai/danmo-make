@@ -4897,6 +4897,7 @@
             "default": true,
             "repo_id": "numz/SeedVR2_comfyUI",
             "local_path": "models/Upscaler/seedvr2-3b-fp16",
+            "source": "modelscope",
             "source_type": "full",
             "allow_patterns": [
               "seedvr2_ema_3b_fp16.safetensors",
@@ -4961,6 +4962,7 @@
             "default": true,
             "repo_id": "numz/SeedVR2_comfyUI",
             "local_path": "models/Upscaler/seedvr2-7b-fp16",
+            "source": "modelscope",
             "source_type": "full",
             "allow_patterns": [
               "seedvr2_ema_7b_fp16.safetensors",
@@ -5091,6 +5093,7 @@
             "default": true,
             "repo_id": "numz/SeedVR2_comfyUI",
             "local_path": "models/Upscaler/seedvr2-7b-fp16",
+            "source": "modelscope",
             "source_type": "full",
             "allow_patterns": [
               "seedvr2_ema_7b_fp16.safetensors",
@@ -5154,6 +5157,7 @@
             "default": true,
             "repo_id": "numz/SeedVR2_comfyUI",
             "local_path": "models/Upscaler/seedvr2-3b-fp16",
+            "source": "modelscope",
             "source_type": "full",
             "allow_patterns": [
               "seedvr2_ema_3b_fp16.safetensors",
@@ -7357,32 +7361,36 @@
             "type": "float"
           },
           "width": {
-            "default": 768,
+            "default": 1024,
             "options": [
               512,
               640,
+              704,
               768,
               896,
               1024,
               1152,
-              1280
+              1280,
+              1920
             ],
             "type": "enum",
-            "note": "须为 64 的倍数（两阶段：Stage1 半分辨率须为 32 的倍数）"
+            "note": "须为 64 的倍数（两阶段：Stage1 半分辨率须为 32 的倍数）。标准 1280×720 / 1920×1080 不可用，请用 1280×704 / 1920×1088 等对齐组合。"
           },
           "height": {
             "default": 768,
             "options": [
               512,
               640,
+              704,
               768,
               896,
               1024,
+              1088,
               1152,
               1280
             ],
             "type": "enum",
-            "note": "须为 64 的倍数（两阶段：Stage1 半分辨率须为 32 的倍数）"
+            "note": "须为 64 的倍数（两阶段：Stage1 半分辨率须为 32 的倍数）。标准 720p/1080p 高度须对齐为 704 / 1088。"
           },
           "num_frames": {
             "default": 121,
@@ -7405,17 +7413,24 @@
           "long_video_support": false,
           "default_scheduler": "flow_match_euler",
           "resolution_presets": {
-            "default": "768x768",
+            "default": "1024x768",
             "options": [
-              "512x512",
-              "768x768",
+              "640x640",
               "1024x768",
               "768x1024",
               "1152x640",
               "640x1152",
+              "1280x704",
+              "704x1280",
               "1280x768",
-              "768x1280"
-            ]
+              "768x1280",
+              "1920x1088",
+              "1088x1920"
+            ],
+            "note": {
+              "zh": "宽高须均为 64 的倍数。1280×704≈720p 横屏，1920×1088≈1080p（显存压力大，建议 64GB+）。勿用 1280×720 / 1920×1080。",
+              "en": "Width and height must be multiples of 64. 1280×704≈720p landscape; 1920×1088≈1080p (heavy VRAM, 64GB+). Do not use 1280×720 or 1920×1080."
+            }
           },
           "memory_note": {
             "zh": "22B DiT + Gemma 4 12B 编码器；4-bit 版约需 32GB 统一内存（推荐 64GB+），8 步约需数分钟/条。",
@@ -9466,7 +9481,7 @@
         "category": "video_models",
         "commercial_use_allowed": true,
         "type": "video",
-        "source": "huggingface",
+        "source": "modelscope",
         "name": {
           "zh": "LongCat Avatar 1.5",
           "en": "LongCat Avatar 1.5"
@@ -9554,7 +9569,7 @@
             "size": "43GB",
             "min_unified_memory_gb": 64,
             "default": true,
-            "source": "huggingface",
+            "source": "modelscope",
             "repo_id": "mlx-community/LongCat-Video-Avatar-1.5-bf16-dmd-merged",
             "local_path": "models/Video/longcat-avatar-1.5-mlx-bf16-dmd",
             "source_type": "prequantized",
@@ -9574,7 +9589,7 @@
             "size": "30GB",
             "min_unified_memory_gb": 32,
             "default": false,
-            "source": "huggingface",
+            "source": "modelscope",
             "repo_id": "mlx-community/LongCat-Video-Avatar-1.5-q8-dmd-merged",
             "local_path": "models/Video/longcat-avatar-1.5-mlx-q8-dmd",
             "source_type": "prequantized",
@@ -9599,7 +9614,7 @@
             "size": "23GB",
             "min_unified_memory_gb": 24,
             "default": false,
-            "source": "huggingface",
+            "source": "modelscope",
             "repo_id": "mlx-community/LongCat-Video-Avatar-1.5-q4-dmd-merged",
             "local_path": "models/Video/longcat-avatar-1.5-mlx-q4-dmd",
             "source_type": "prequantized",
@@ -9736,6 +9751,7 @@
             "default": true,
             "repo_id": "Wan-AI/Wan2.2-TI2V-5B",
             "local_path": "models/Video/wan-2.2-ti2v-5b-fp16",
+            "source": "modelscope",
             "source_type": "full"
           },
           "int8": {
