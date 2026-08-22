@@ -1,4 +1,4 @@
-"""Isolated subprocess worker for VLM batch audits (keeps API process off the Metal crash path)."""
+"""Isolated subprocess worker for VLM batch audits (HTTP to backend_llm sidecar)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,14 @@ from pathlib import Path
 from typing import Any
 
 
+def _load_settings():
+    from backend.persistence.stores import JsonConfigStore
+    from backend.utils.path_utils import PathResolver
+
+    root = Path(__file__).resolve().parents[3]
+    return JsonConfigStore(PathResolver(root)).load()
+
+
 def run_job(job: dict[str, Any]) -> dict[str, Any]:
     mode = str(job.get("mode") or "audit").strip().lower()
     image_paths = [Path(p) for p in job.get("image_paths") or []]
@@ -17,6 +25,9 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
     model_dir = Path(str(job.get("model_dir") or ""))
     if not model_dir.is_dir():
         raise RuntimeError(f"VLM model_dir not found: {model_dir}")
+
+    settings = _load_settings()
+    registry_model_id = str(job.get("registry_model_id") or settings.default_model_vlm)
 
     if mode == "lora_caption":
         from backend.engine.training.lora_auto_caption import caption_dataset_images_batch
@@ -29,7 +40,7 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
         )
         return {"captions": captions}
 
-    from backend.engine.llm.vision_mlx import analyze_image_files_batch
+    from backend.engine.llm.vlm_http import analyze_image_files_batch
 
     instruction = str(job.get("instruction") or "").strip()
     if not instruction:
@@ -42,6 +53,8 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
         instruction=instruction,
         max_tokens=max_tokens,
         temperature=temperature,
+        settings=settings,
+        registry_model_id=registry_model_id,
     )
     return {"texts": texts}
 

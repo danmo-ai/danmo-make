@@ -18,11 +18,9 @@ from backend.core.contracts import (
     EnhanceResponse,
 )
 from backend.engine.llm import LLMService
-from backend.engine.llm.chat_vision import run_vision_chat_completion
-from backend.engine.llm.message_content import (
-    flatten_messages_for_text_llm,
-    messages_have_images,
-)
+from backend.engine.llm.asset_messages import cleanup_temp_paths, prepare_messages_for_sidecar
+from backend.engine.llm.chat_vision import run_chat_completion
+from backend.engine.llm.message_content import messages_have_images
 from backend.core.i18n import resolve_locale
 from backend.persistence.asset_store import SQLiteAssetStore
 
@@ -60,11 +58,9 @@ async def enhance_prompt(
     service: LLMService = Depends(get_llm_service),
 ):
     """Polish a creative brief for image, video, or audio generation."""
-    if not service.is_available():
-        raise HTTPException(
-            status_code=503,
-            detail="LLM model not installed. Install via Models page.",
-        )
+    block = service.builtin_assistant_block_reason()
+    if block:
+        raise HTTPException(status_code=503, detail=block)
     try:
         return await asyncio.to_thread(service.enhance_prompt, request)
     except Exception as exc:
@@ -78,43 +74,44 @@ async def chat_completions(
     service: LLMService = Depends(get_llm_service),
     store: SQLiteAssetStore = Depends(get_asset_store),
 ):
-    """OpenAI-compatible chat completions (text and multimodal vision via ``messages``)."""
+    """OpenAI-compatible chat completions (text and multimodal via backend_llm sidecar)."""
+    block = service.builtin_assistant_block_reason()
+    if block and not messages_have_images(request.messages):
+        raise HTTPException(status_code=503, detail=block)
     if messages_have_images(request.messages):
-        if request.stream:
-            raise HTTPException(
-                status_code=400,
-                detail="Streaming is not supported for vision (image_url) messages",
-            )
-        if not service.is_vision_available():
-            raise HTTPException(
-                status_code=503,
-                detail="Vision model not available. Install a VLM from Models page.",
-            )
-        try:
-            result = await asyncio.to_thread(run_vision_chat_completion, service, store, request)
-        except Exception as exc:
-            raise _http_error_from_task(exc) from exc
-        if result.object != "chat.completion":
-            result = result.model_copy(update={"object": "chat.completion"})
-        return result
-
-    if not service.is_available():
-        raise HTTPException(
-            status_code=503,
-            detail="LLM model not installed. Install via Models page.",
-        )
-
-    text_request = request.model_copy(
-        update={"messages": flatten_messages_for_text_llm(request.messages)},
-    )
+        vision_block = service.builtin_assistant_block_reason()
+        if vision_block:
+            raise HTTPException(status_code=503, detail=vision_block)
 
     if request.stream:
+        if messages_have_images(request.messages):
+            prepared, temp_paths = prepare_messages_for_sidecar(store, request.messages)
+            stream_request = request.model_copy(update={"messages": prepared, "stream": True})
+
+            async def _vision_stream():
+                try:
+                    async for chunk in service.chat_completion_stream(stream_request):
+                        yield chunk
+                finally:
+                    cleanup_temp_paths(temp_paths)
+
+            return StreamingResponse(_vision_stream(), media_type="text/event-stream")
+
+        if not service.is_available():
+            block = service.builtin_assistant_block_reason()
+            raise HTTPException(
+                status_code=503,
+                detail=block or "LLM model not available.",
+            )
         return StreamingResponse(
-            service.chat_completion_stream(text_request),
+            service.chat_completion_stream(request),
             media_type="text/event-stream",
         )
 
-    result = await asyncio.to_thread(service.chat_completion, text_request)
+    try:
+        result = await asyncio.to_thread(run_chat_completion, service, store, request)
+    except Exception as exc:
+        raise _http_error_from_task(exc) from exc
     if result.object != "chat.completion":
         result = result.model_copy(update={"object": "chat.completion"})
     return result
@@ -130,8 +127,3 @@ def get_llm_model_info(service: LLMService = Depends(get_llm_service)):
 def get_vision_model_info(service: LLMService = Depends(get_llm_service)):
     """Current default VLM model."""
     return service.get_vision_model_info()
-
-
-
-
-

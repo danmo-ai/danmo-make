@@ -52,7 +52,8 @@ from backend.services.download_service import DownloadService
 from backend.scheduler.task_scheduler import TaskScheduler
 
 from backend.engine.llm import LLMService
-from backend.engine.llm.service_mlx import normalize_app_llm_settings, resolve_llm_model_id, resolve_vlm_model_id
+from backend.engine.llm.llm_settings import normalize_app_llm_settings, resolve_assistant_model_id
+from backend.engine.llm.sidecar_manager import LlmSidecarManager
 
 from backend.api.routes import (
     adapters, assets, audios, download, gallery, images, loras,
@@ -94,8 +95,30 @@ async def lifespan(app: FastAPI):
             import asyncio
             cache.start_cleanup(asyncio.get_event_loop())
 
+        sidecar = c.try_resolve(LlmSidecarManager)
+        llm_service = c.try_resolve(LLMService)
+        if llm_service:
+            llm_service.start_idle_cleanup()
+        settings_service = c.try_resolve(SettingsService)
+        if sidecar and settings_service and sidecar.should_manage_sidecar(settings_service.get_settings()):
+            import asyncio
+
+            try:
+                settings = settings_service.get_settings()
+                await asyncio.to_thread(
+                    sidecar.ensure_running,
+                    host=(settings.llm_builtin_host or "127.0.0.1").strip(),
+                    port=max(1, int(settings.llm_builtin_port or 7801)),
+                )
+            except Exception as exc:
+                _logger.warning("LLM sidecar failed to start: %s", exc)
+
         yield
 
+        if sidecar and settings_service and sidecar.should_manage_sidecar(settings_service.get_settings()):
+            sidecar.stop()
+        if llm_service:
+            llm_service.stop_idle_cleanup()
         if cache:
             cache.stop_cleanup()
         if sched:
@@ -221,15 +244,22 @@ def _setup_dependencies():
         path_resolver, model_registry, runtimes,
     )
 
-    # LLM service (standalone, reuses registry for model path resolution)
+    # LLM sidecar + HTTP client service
+    sidecar_manager = LlmSidecarManager()
+    assistant_model_id = resolve_assistant_model_id(app_settings, model_registry)
     llm_service = LLMService(
         model_registry=model_registry,
         path_resolver=path_resolver,
-        default_model_id=resolve_llm_model_id(app_settings, model_registry),
-        vision_model_id=resolve_vlm_model_id(app_settings, model_registry),
+        default_model_id=assistant_model_id,
+        vision_model_id=assistant_model_id,
         llm_think_enabled=app_settings.default_model_llm_think,
+        llm_cache_ttl_minutes=app_settings.llm_cache_ttl_minutes,
+        unload_each_request=app_settings.llm_unload_each_request,
+        settings_provider=config_store.load,
+        sidecar_manager=sidecar_manager,
     )
     container = get_container()
+    container.register_instance(LlmSidecarManager, sidecar_manager)
     container.register_instance(LLMService, llm_service)
 
     engine_registry = EngineRegistry(model_registry)

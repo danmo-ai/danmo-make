@@ -80,6 +80,8 @@ def api_action_frozenset(actions: Any, *, media: str) -> FrozenSet[str]:
             s.add("chat")
         if actions.get("enhance") is not None:
             s.add("enhance")
+        if actions.get("describe") is not None:
+            s.add("describe")
         return frozenset(s)
     s = set()
     if actions.get("create") is not None:

@@ -41,7 +41,8 @@
     "workspace_not_empty": "Target directory must be empty: {path}",
     "workspace_use_apply_endpoint": "Change the workspace via the apply-workspace flow (Settings saves migrate automatically)",
     "setup_workspace_not_configured": "Complete workspace setup first",
-    "lora_search_failed": "LoRA search failed: {msg}"
+    "lora_search_failed": "LoRA search failed: {msg}",
+    "llm_assistant_not_multimodal": "Assistant model '{model}' is not multimodal. The LLM sidecar loads one model; choose a VLM with vision support."
   },
   "avatar": {
     "ttsBackendNotImplemented": "TTS backend is not implemented yet."

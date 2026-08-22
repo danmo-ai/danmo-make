@@ -67,7 +67,7 @@ class AppSettings:
     default_model_image: str = ""
     default_model_video: str = ""
     default_model_audio: str = ""
-    default_model_llm: str = "qwen3.5-4b"
+    default_model_llm: str = "qwen3-vl-4b-instruct"
     default_model_vlm: str = "qwen3-vl-4b-instruct"
     default_model_llm_think: bool = False
     auto_save_prompts: bool = True
@@ -84,9 +84,20 @@ class AppSettings:
     mcp_api_key_hint: str = ""
     mlx_memory_limit: int = 120
     model_cache_ttl_minutes: int = 30
+    llm_cache_ttl_minutes: int = 30
     queue_image_first: bool = False
     quick_setup_completed: bool = False
     custom_workspace_dir: str = ""
+    llm_unload_each_request: bool = False
+    llm_cache_ttl_minutes: int = 30
+    llm_inference_provider: str = "builtin"
+    llm_inference_base_url: str = ""
+    llm_inference_api_key: str = ""
+    llm_inference_api_key_hint: str = ""
+    llm_inference_cloud_model: str = ""
+    llm_builtin_host: str = "127.0.0.1"
+    llm_builtin_port: int = 7801
+    llm_quantize_activations: bool = False
 
 
 # ===== Task persistence interfaces =====

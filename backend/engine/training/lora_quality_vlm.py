@@ -6,7 +6,29 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from backend.engine.llm.vision_mlx import analyze_image_file
+from backend.engine.llm.vlm_http import analyze_image_file as _http_analyze_image_file
+
+
+def _load_settings():
+    from backend.persistence.stores import JsonConfigStore
+    from backend.utils.path_utils import PathResolver
+
+    root = Path(__file__).resolve().parents[3]
+    return JsonConfigStore(PathResolver(root)).load()
+
+
+def _default_analyze(path: Path, model_dir: Path, *, instruction: str, max_tokens: int, temperature: float) -> str:
+    from backend.engine.llm.llm_settings import DEFAULT_VLM_MODEL_ID
+
+    return _http_analyze_image_file(
+        path,
+        model_dir,
+        instruction=instruction,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        settings=_load_settings(),
+        registry_model_id=DEFAULT_VLM_MODEL_ID,
+    )
 
 Severity = Literal["info", "warning", "error"]
 AuditKind = Literal["concept", "style"]
@@ -318,7 +340,7 @@ def audit_dataset_images_with_vlm(
 ) -> dict[str, Any]:
     """Run VLM portrait audit on a spread of dataset images."""
     analyze = analyze_fn or (
-        lambda path, instruction: analyze_image_file(
+        lambda path, instruction: _default_analyze(
             path, model_dir, instruction=instruction, max_tokens=200, temperature=0.2
         )
     )
@@ -435,7 +457,7 @@ def audit_progress_previews_with_vlm(
 ) -> dict[str, Any]:
     """Audit first/last training progress preview images."""
     analyze = analyze_fn or (
-        lambda path, instruction: analyze_image_file(
+        lambda path, instruction: _default_analyze(
             path, model_dir, instruction=instruction, max_tokens=200, temperature=0.2
         )
     )

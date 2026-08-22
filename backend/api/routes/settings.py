@@ -10,7 +10,7 @@ from backend.api.deps import get_model_registry as get_typed_model_registry
 from backend.core.container import get_container
 from backend.core.interfaces import ISettingsService, AppSettings, ModelConfig, IPresetStore, IPathResolver
 from backend.core.i18n import t, resolve_locale
-from backend.engine.llm.service_mlx import normalize_app_llm_settings
+from backend.engine.llm.llm_settings import normalize_app_llm_settings
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -27,13 +27,15 @@ class SettingsResponse(BaseModel):
     default_model_image: str = ""
     default_model_video: str = ""
     default_model_audio: str = ""
-    default_model_llm: str = "qwen3.5-4b"
+    default_model_llm: str = "qwen3-vl-4b-instruct"
     default_model_vlm: str = "qwen3-vl-4b-instruct"
     default_model_llm_think: bool = False
     auto_save_prompts: bool
     output_format: str
     mlx_memory_limit: int
     model_cache_ttl_minutes: int = 30
+    llm_cache_ttl_minutes: int = 30
+    llm_unload_each_request: bool = False
     queue_image_first: bool = False
     quick_setup_completed: bool = False
     civitai_token: str = ""
@@ -47,6 +49,13 @@ class SettingsResponse(BaseModel):
     mcp_api_key_hint: str = ""
     mcp_api_key_from_env: bool = False
     custom_workspace_dir: str = ""
+    llm_inference_provider: str = "builtin"
+    llm_inference_base_url: str = ""
+    llm_inference_cloud_model: str = ""
+    llm_builtin_port: int = 7801
+    llm_inference_api_key_configured: bool = False
+    llm_inference_api_key_hint: str = ""
+    llm_inference_api_key_from_env: bool = False
 
 
 class ApplyWorkspaceRequest(BaseModel):
@@ -73,12 +82,21 @@ class SettingsUpdateRequest(BaseModel):
     output_format: Optional[str] = None
     mlx_memory_limit: Optional[int] = None
     model_cache_ttl_minutes: Optional[int] = None
+    llm_cache_ttl_minutes: Optional[int] = None
+    llm_unload_each_request: Optional[bool] = None
     queue_image_first: Optional[bool] = None
     quick_setup_completed: Optional[bool] = None
     civitai_token: Optional[str] = None
     huggingface_token: Optional[str] = None
     nsfw_enabled: Optional[bool] = None
     custom_workspace_dir: Optional[str] = None
+    llm_inference_provider: Optional[str] = None
+    llm_inference_base_url: Optional[str] = None
+    llm_inference_api_key: Optional[str] = None
+    llm_inference_cloud_model: Optional[str] = None
+    llm_builtin_host: Optional[str] = None
+    llm_builtin_port: Optional[int] = None
+    llm_quantize_activations: Optional[bool] = None
 
 
 class ModelResponse(BaseModel):
@@ -119,6 +137,7 @@ class AccessKeyKindRequest(BaseModel):
 
 def _settings_response(settings: AppSettings) -> SettingsResponse:
     from backend.api.access_auth import access_key_public_view
+    import os
 
     data = {
         k: v
@@ -132,9 +151,22 @@ def _settings_response(settings: AppSettings) -> SettingsResponse:
             "mcp_api_key_configured",
             "mcp_api_key_hint",
             "mcp_api_key_from_env",
+            "llm_inference_api_key_configured",
+            "llm_inference_api_key_hint",
+            "llm_inference_api_key_from_env",
         )
     }
     data.update(access_key_public_view(settings))
+    key = (settings.llm_inference_api_key or "").strip()
+    data["llm_inference_api_key_configured"] = bool(
+        os.environ.get("DANQING_LLM_INFERENCE_API_KEY", "").strip() or key
+    )
+    data["llm_inference_api_key_hint"] = getattr(settings, "llm_inference_api_key_hint", "") or (
+        key[:4] + "…" if len(key) > 8 and not key.startswith("v1:") else ""
+    )
+    data["llm_inference_api_key_from_env"] = bool(
+        os.environ.get("DANQING_LLM_INFERENCE_API_KEY", "").strip()
+    )
     return SettingsResponse(**data)
 
 
@@ -222,12 +254,41 @@ def update_settings(request: SettingsUpdateRequest, req: Request):
     if "quick_setup_completed" in payload:
         payload.pop("quick_setup_completed")
 
+    if "llm_inference_api_key" in payload:
+        key = (payload.pop("llm_inference_api_key") or "").strip()
+        if key:
+            settings.llm_inference_api_key = key
+            settings.llm_inference_api_key_hint = key[:4] + "…" if len(key) > 8 else "****"
+        else:
+            settings.llm_inference_api_key = ""
+            settings.llm_inference_api_key_hint = ""
+
     for key, value in payload.items():
         if value is not None:
             setattr(settings, key, value)
 
     registry = get_typed_model_registry()
+    if "default_model_llm" in payload or "default_model_vlm" in payload:
+        if payload.get("default_model_llm") is not None:
+            settings.default_model_vlm = settings.default_model_llm
+        elif payload.get("default_model_vlm") is not None:
+            settings.default_model_llm = settings.default_model_vlm
     normalize_app_llm_settings(settings, registry)
+
+    if settings.llm_inference_provider == "builtin":
+        from backend.engine.llm.llm_settings import require_multimodal_assistant_model
+
+        try:
+            require_multimodal_assistant_model(settings.default_model_llm, registry)
+        except RuntimeError:
+            raise HTTPException(
+                status_code=400,
+                detail=t(
+                    "error.llm_assistant_not_multimodal",
+                    locale,
+                    model=settings.default_model_llm,
+                ),
+            ) from None
 
     service.update_settings(settings)
 
@@ -241,7 +302,18 @@ def update_settings(request: SettingsUpdateRequest, req: Request):
         apply_memory_settings_from_container(settings)
         unload_model_cache_if_present()
 
-    llm_keys = {"default_model_llm", "default_model_vlm", "default_model_llm_think"}
+    llm_keys = {
+        "default_model_llm",
+        "default_model_vlm",
+        "default_model_llm_think",
+        "llm_inference_provider",
+        "llm_inference_base_url",
+        "llm_inference_cloud_model",
+        "llm_builtin_host",
+        "llm_builtin_port",
+        "llm_quantize_activations",
+    }
+    memory_policy_keys = {"llm_cache_ttl_minutes", "llm_unload_each_request"}
     if llm_keys.intersection(payload.keys()):
         from backend.core.container import get_container
         from backend.engine.llm import LLMService
@@ -249,9 +321,37 @@ def update_settings(request: SettingsUpdateRequest, req: Request):
         llm_service = get_container().resolve(LLMService)
         llm_service.apply_model_settings(
             default_model_id=settings.default_model_llm,
-            vision_model_id=settings.default_model_vlm,
             llm_think_enabled=settings.default_model_llm_think,
         )
+
+    if memory_policy_keys.intersection(payload.keys()):
+        from backend.core.container import get_container
+        from backend.engine.llm import LLMService
+
+        llm_service = get_container().resolve(LLMService)
+        llm_service.set_memory_policy(
+            llm_cache_ttl_minutes=settings.llm_cache_ttl_minutes,
+            unload_each_request=settings.llm_unload_each_request,
+        )
+
+    inference_keys = {
+        "llm_inference_provider",
+        "llm_inference_base_url",
+        "llm_builtin_host",
+        "llm_builtin_port",
+    }
+    if inference_keys.intersection(payload.keys()) and settings.llm_inference_provider == "builtin":
+        from backend.core.container import get_container
+        from backend.engine.llm.sidecar_manager import LlmSidecarManager
+
+        sidecar = get_container().resolve(LlmSidecarManager)
+        try:
+            sidecar.ensure_running(
+                host=(settings.llm_builtin_host or "127.0.0.1").strip(),
+                port=max(1, int(settings.llm_builtin_port or 7801)),
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     return {"success": True, "restart_required": False}
 

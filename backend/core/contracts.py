@@ -331,6 +331,7 @@ ChatMessageContent = str | list[ChatContentPartText | ChatContentPartImageUrl]
 class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant"]
     content: ChatMessageContent
+    reasoning: Optional[str] = None
 
 
 class ChatCompletionRequest(BaseModel):
@@ -360,6 +361,7 @@ class ChatCompletionResponse(BaseModel):
 class DeltaMessage(BaseModel):
     role: Optional[str] = None
     content: Optional[str] = None
+    reasoning: Optional[str] = None
 
 
 class ChatDeltaChoice(BaseModel):

@@ -236,7 +236,13 @@ def _default_batch_analyze(
     max_tokens: int = 128,
     temperature: float = 0.2,
 ) -> list[str]:
-    from backend.engine.llm.vision_mlx import analyze_image_files_batch_messages
+    from backend.persistence.stores import JsonConfigStore
+    from backend.utils.path_utils import PathResolver
+    from backend.engine.llm.vlm_http import analyze_image_files_batch_messages
+
+    root = Path(__file__).resolve().parents[3]
+    settings = JsonConfigStore(PathResolver(root)).load()
+    from backend.engine.llm.llm_settings import DEFAULT_VLM_MODEL_ID
 
     return analyze_image_files_batch_messages(
         image_paths,
@@ -244,6 +250,8 @@ def _default_batch_analyze(
         messages=messages,
         max_tokens=max_tokens,
         temperature=temperature,
+        settings=settings,
+        registry_model_id=DEFAULT_VLM_MODEL_ID,
     )
 
 

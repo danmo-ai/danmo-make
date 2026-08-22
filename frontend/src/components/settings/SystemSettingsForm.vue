@@ -200,36 +200,31 @@ function llmSupportsThink(modelId: unknown): boolean {
 
 const llmThinkSupported = computed(() => llmSupportsThink(props.settings.default_model_llm));
 
+const assistantModelOptions = computed(() => {
+  const models = registryStore.registry?.models || {};
+  return Object.entries(models)
+    .filter(
+      ([, cfg]) =>
+        cfg.media === 'llm' &&
+        isVlmCategory(cfg.category) &&
+        hasVlmDescribeAction(cfg.actions),
+    )
+    .map(([id, cfg]) => ({
+      value: id,
+      label: $mn(cfg, id),
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+});
+
 watch(
   () => props.settings.default_model_llm,
   (modelId) => {
+    props.settings.default_model_vlm = modelId;
     if (!llmSupportsThink(modelId)) {
       props.settings.default_model_llm_think = false;
     }
   },
 );
-
-const llmModelOptions = computed(() => {
-  const models = registryStore.registry?.models || {};
-  return Object.entries(models)
-    .filter(([, cfg]) => cfg.media === 'llm' && isLlmCategory(cfg.category) && hasLlmChatAction(cfg.actions))
-    .map(([id, cfg]) => ({
-      value: id,
-      label: $mn(cfg, id),
-    }))
-    .sort((a, b) => a.label.localeCompare(b.label));
-});
-
-const vlmModelOptions = computed(() => {
-  const models = registryStore.registry?.models || {};
-  return Object.entries(models)
-    .filter(([, cfg]) => cfg.media === 'llm' && isVlmCategory(cfg.category) && hasVlmDescribeAction(cfg.actions))
-    .map(([id, cfg]) => ({
-      value: id,
-      label: $mn(cfg, id),
-    }))
-    .sort((a, b) => a.label.localeCompare(b.label));
-});
 </script>
 
 <template>
@@ -274,19 +269,24 @@ const vlmModelOptions = computed(() => {
             </DqSelect>
           </DqPrefRow>
 
-          <DqPrefRow :label="$t('settings.defaultLlmModel')">
-            <DqSelect
-              v-model="settings.default_model_llm"
-              class="settings-mac-value-control"
-              :placeholder="$t('settings.defaultLlmModelPlaceholder')"
-            >
-              <DqOption
-                v-for="opt in llmModelOptions"
-                :key="opt.value"
-                :label="opt.label"
-                :value="opt.value"
-              />
-            </DqSelect>
+          <DqPrefRow :label="$t('settings.defaultAssistantModel')" stacked>
+            <div class="settings-stacked-control">
+              <DqSelect
+                v-model="settings.default_model_llm"
+                class="settings-mac-value-control"
+                :placeholder="$t('settings.defaultAssistantModelPlaceholder')"
+              >
+                <DqOption
+                  v-for="opt in assistantModelOptions"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </DqSelect>
+              <p class="settings-form-hint settings-form-hint--below-control">
+                {{ $t('settings.defaultAssistantModelDesc') }}
+              </p>
+            </div>
           </DqPrefRow>
 
           <DqPrefRow
@@ -300,21 +300,6 @@ const vlmModelOptions = computed(() => {
                 {{ $t('settings.defaultLlmThinkDesc') }}
               </p>
             </div>
-          </DqPrefRow>
-
-          <DqPrefRow :label="$t('settings.defaultVlmModel')">
-            <DqSelect
-              v-model="settings.default_model_vlm"
-              class="settings-mac-value-control"
-              :placeholder="$t('settings.defaultVlmModelPlaceholder')"
-            >
-              <DqOption
-                v-for="opt in vlmModelOptions"
-                :key="opt.value"
-                :label="opt.label"
-                :value="opt.value"
-              />
-            </DqSelect>
           </DqPrefRow>
         </DqPrefPane>
       </section>
@@ -345,6 +330,29 @@ const vlmModelOptions = computed(() => {
               </div>
               <p class="settings-form-hint settings-form-hint--below-control">
                 {{ $t('settings.modelCacheTtlDesc') }}
+              </p>
+            </div>
+          </DqPrefRow>
+
+          <DqPrefRow :label="$t('settings.llmCacheTtl')" stacked>
+            <div class="settings-stacked-control">
+              <div class="param-control-row settings-pref-slider-row">
+                <div class="param-slider">
+                  <DqSlider v-model="settings.llm_cache_ttl_minutes" :min="5" :max="120" :step="5" />
+                </div>
+                <span class="settings-slider-suffix">{{ settings.llm_cache_ttl_minutes }} min</span>
+              </div>
+              <p class="settings-form-hint settings-form-hint--below-control">
+                {{ $t('settings.llmCacheTtlDesc') }}
+              </p>
+            </div>
+          </DqPrefRow>
+
+          <DqPrefRow :label="$t('settings.llmUnloadEachRequest')" stacked>
+            <div class="settings-stacked-control">
+              <DqSwitch v-model="settings.llm_unload_each_request" />
+              <p class="settings-form-hint settings-form-hint--below-control">
+                {{ $t('settings.llmUnloadEachRequestDesc') }}
               </p>
             </div>
           </DqPrefRow>

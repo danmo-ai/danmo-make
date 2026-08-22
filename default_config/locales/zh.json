@@ -41,7 +41,8 @@
     "workspace_not_empty": "目标目录必须为空：{path}",
     "workspace_use_apply_endpoint": "请通过「应用工作区」流程更换目录（设置页保存时会自动迁移）",
     "setup_workspace_not_configured": "请先完成工作区设置",
-    "lora_search_failed": "LoRA 搜索失败: {msg}"
+    "lora_search_failed": "LoRA 搜索失败: {msg}",
+    "llm_assistant_not_multimodal": "助手模型「{model}」不是多模态模型。LLM sidecar 同时只能加载一个模型，请选择支持视觉的 VLM。"
   },
   "avatar": {
     "ttsBackendNotImplemented": "TTS 后端尚未实现，敬请期待。"

@@ -5175,7 +5175,7 @@ class LLMServiceTests(unittest.TestCase):
             default_model_vlm="qwen2.5-vl-7b-instruct",
         )
         self.assertTrue(normalize_app_llm_settings(settings, registry))
-        self.assertEqual(settings.default_model_llm, "qwen3.5-4b")
+        self.assertEqual(settings.default_model_llm, "qwen3-vl-4b-instruct")
         self.assertEqual(settings.default_model_vlm, "qwen3-vl-4b-instruct")
         self.assertEqual(resolve_llm_model_id(settings, registry), settings.default_model_llm)
         self.assertEqual(resolve_vlm_model_id(settings, registry), settings.default_model_vlm)
