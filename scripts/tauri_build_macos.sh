@@ -157,6 +157,10 @@ FIX_EOF
 
   # Create DMG
   DMG_DIR="$BUNDLE_DIR/dmg"
+  TAURI_DMG_FALLBACK=""
+  if [[ -d "$DMG_DIR" ]]; then
+    TAURI_DMG_FALLBACK=$(find "$DMG_DIR" -maxdepth 1 -name '*.dmg' -print -quit)
+  fi
   rm -rf "$DMG_DIR"
   mkdir -p "$DMG_DIR"
   APP_VERSION=$(plutil -extract CFBundleShortVersionString raw "$DMG_STAGING/$APP_NAME/Contents/Info.plist" 2>/dev/null || echo "0.0.0")
@@ -165,16 +169,25 @@ FIX_EOF
   DMG_PATH="$DMG_DIR/$DMG_NAME"
   echo "==> Creating DMG: $DMG_NAME"
 
-  # Detach any leftover mounts from previous failed runs
+  # Detach Tauri/custom DMG mounts (CI often leaves /Volumes/Danmo Make busy).
+  if [[ -d "/Volumes/Danmo Make" ]]; then
+    hdiutil detach "/Volumes/Danmo Make" -force 2>/dev/null || true
+  fi
   while IFS= read -r old_dmg; do
     [[ -n "$old_dmg" ]] && hdiutil detach "$old_dmg" -force 2>/dev/null || true
   done < <(
     hdiutil info 2>/dev/null | awk '/Danmo Make/ { found=1 } found && /^image-path/ { sub(/^image-path[[:space:]]*:[[:space:]]*/, ""); print; found=0 }'
   )
+  cleanup_dmg_artifacts
 
-  hdiutil create -volname "Danmo Make" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH" \
-    && echo "==> DMG created: $DMG_PATH" \
-    || echo "WARNING: DMG creation failed"
+  if hdiutil create -volname "Danmo Make" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH"; then
+    echo "==> DMG created: $DMG_PATH"
+  elif [[ -n "$TAURI_DMG_FALLBACK" && -f "$TAURI_DMG_FALLBACK" ]]; then
+    cp "$TAURI_DMG_FALLBACK" "$DMG_DIR/$(basename "$TAURI_DMG_FALLBACK")"
+    echo "WARNING: custom DMG creation failed; restored Tauri DMG: $(basename "$TAURI_DMG_FALLBACK")" >&2
+  else
+    echo "WARNING: DMG creation failed" >&2
+  fi
 
   # Remove quarantine on the DMG file itself so macOS doesn't flag it as damaged
   xattr -cr "$DMG_PATH" 2>/dev/null && echo "==> Removed quarantine on DMG" || true
