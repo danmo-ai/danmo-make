@@ -101,7 +101,7 @@ const layoutStyle = computed(() => {
         : tall
           ? COMPOSER_SCRIM_CSS_EXPANDED
           : COMPOSER_SCRIM_CSS_EXPANDED,
-    '--dq-composer-reserve-px': `${composerReservePx(vh, collapsed, tall, drawerMode)}px`,
+    '--dq-composer-reserve-px': `${composerReservePx(vh, collapsed, drawerMode)}px`,
   };
 });
 
