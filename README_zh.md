@@ -46,7 +46,49 @@ Language: [English](README.md) | **中文**
 
 ---
 
-## 快速开始
+## 安装发布包（推荐）
+
+从 [GitHub Releases](https://github.com/danmo-ai/danmo-make/releases) 下载。Windows 包暂不提供。
+
+### macOS（Apple Silicon）— `.dmg`
+
+1. 打开 DMG，将 **Danmo Make.app** 拖入「应用程序」。
+2. 首次打开可能被拦截（未公证 / 隔离属性）。可用 **按住 Control 点按 → 打开**，或：
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Danmo Make.app"
+```
+
+更多说明见 [desktop/README.md](desktop/README.md) →「已损坏，无法打开」。
+
+### Linux（x86_64 + NVIDIA）— thin 服务端 `.tar.gz`
+
+CI 产物为 **`danmo-make-linux-mlx-x86_64-<version>.tar.gz`**（内置 API + 前端静态资源）。需要 NVIDIA 驱动；**首次** `./run.sh` 会把 **mlx[cuda]** 装到 `~/.danmo-make/runtime-venv`（控制台进度）。无 CPU 回退。
+
+```bash
+tar -xzf danmo-make-linux-mlx-x86_64-*.tar.gz
+cd danmo-make-linux-mlx-x86_64-*
+
+# 可选：
+# export DANQING_USER_DATA_DIR=$HOME/.danmo-make
+# export DANQING_PIP_MIRROR=tuna    # official | tuna | aliyun
+# export DANQING_HTTP_HOST=0.0.0.0
+# export DANQING_HTTP_PORT=7800
+
+./run.sh
+```
+
+- 界面 / API：**http://127.0.0.1:7800** · 文档 **/docs** · MCP **/mcp/**
+- 修复：`./run.sh --repair-runtime` · 重装：`./run.sh --reinstall-runtime` · 状态：`./run.sh --status-runtime`
+- 包内另有 `README.txt`、`danqing-runtime-setup`
+
+Linux **桌面包**（AppImage / `.deb`）可本地打包（`make pack-linux-desktop`），**当前 CI 不挂载**。
+
+---
+
+## 快速开始（源码）
+
+贡献者 / 本地开发用。普通用户请看上方 **安装发布包**。
 
 ### 安装（Web / CLI）
 
@@ -83,17 +125,15 @@ make dev      # uvicorn --reload (:7800) + Vite HMR (:5800)
 
 可用 `DQ_BACKEND_PORT` / `DQ_FRONTEND_PORT` 覆盖。
 
-### 桌面打包
+### 从源码打包桌面 / 服务端
 
 ```bash
 make pack-macos-desktop    # .app / .dmg（MLX Metal sidecar）
-make pack-linux-desktop    # AppImage / .deb（mlx[cuda]）
+make pack-linux-desktop    # AppImage / .deb（mlx[cuda]；本地）
 make pack-linux-server     # Linux MLX thin 服务端 tar.gz
 ```
 
-Windows 暂不支持。
-
-详见 [desktop/README.md](desktop/README.md)。
+Windows 暂不支持。详见 [desktop/README.md](desktop/README.md)。
 
 ### CLI
 
@@ -228,17 +268,19 @@ V3TaskStore + SQLiteAssetStore
 
 ## 发版产物（CI）
 
-打 `v*` tag → [`.github/workflows/release.yml`](.github/workflows/release.yml)：
+打 `v*` tag → [`.github/workflows/release.yml`](.github/workflows/release.yml)。**安装步骤见** [安装发布包](#安装发布包推荐)。
 
-| 平台 | 产物 |
-|------|------|
-| macOS Apple Silicon | MLX `.dmg` / `.app`（Metal） |
-| Linux x64 | MLX（**mlx[cuda]**）桌面 / **服务端** `.tar.gz` |
+| 平台 | CI 产物 |
+|------|---------|
+| macOS Apple Silicon | MLX `.dmg`（Metal） |
+| Linux x86_64 | **`danmo-make-linux-mlx-x86_64-*.tar.gz`**（thin 服务端；首次 `./run.sh` 装 mlx[cuda]） |
 | Windows | 暂不支持 |
+
+本地打包（并非全部由 CI 挂载）：
 
 ```bash
 make pack-macos-desktop
-make pack-linux-desktop
+make pack-linux-desktop    # AppImage / .deb — 目前仅本地
 make pack-linux-server
 ```
 

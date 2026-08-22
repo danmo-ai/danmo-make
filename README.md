@@ -46,7 +46,49 @@ Missing backends or unsupported actions **fail loudly** — no silent CLI/model 
 
 ---
 
-## Quick start
+## Install from release (recommended)
+
+Download from [GitHub Releases](https://github.com/danmo-ai/danmo-make/releases). Windows packs are temporarily unsupported.
+
+### macOS (Apple Silicon) — `.dmg`
+
+1. Open the DMG and drag **Danmo Make.app** into Applications.
+2. First launch may be blocked (unsigned / quarantine). Prefer **Control-click → Open**, or:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Danmo Make.app"
+```
+
+More detail: [desktop/README.md](desktop/README.md) → quarantine tip.
+
+### Linux (x86_64 + NVIDIA) — thin server `.tar.gz`
+
+CI ships **`danmo-make-linux-mlx-x86_64-<version>.tar.gz`** (headless API + built UI). Needs an NVIDIA driver; first start downloads **mlx[cuda]** into `~/.danmo-make/runtime-venv` (console progress). No CPU fallback.
+
+```bash
+tar -xzf danmo-make-linux-mlx-x86_64-*.tar.gz
+cd danmo-make-linux-mlx-x86_64-*
+
+# optional:
+# export DANQING_USER_DATA_DIR=$HOME/.danmo-make
+# export DANQING_PIP_MIRROR=tuna    # official | tuna | aliyun
+# export DANQING_HTTP_HOST=0.0.0.0
+# export DANQING_HTTP_PORT=7800
+
+./run.sh
+```
+
+- UI / API: **http://127.0.0.1:7800** · docs **/docs** · MCP **/mcp/**
+- Repair: `./run.sh --repair-runtime` · reinstall: `./run.sh --reinstall-runtime` · status: `./run.sh --status-runtime`
+- Bundle also includes `README.txt` and `danqing-runtime-setup`
+
+Linux **desktop** (AppImage / `.deb`) is packable locally (`make pack-linux-desktop`) but **not** attached by current CI.
+
+---
+
+## Quick start (from source)
+
+For contributors / local development. End users: use **Install from release** above.
 
 ### Install (web / CLI)
 
@@ -83,17 +125,15 @@ make dev      # uvicorn --reload (:7800) + Vite HMR (:5800)
 
 Override: `DQ_BACKEND_PORT`, `DQ_FRONTEND_PORT`.
 
-### Desktop
+### Pack desktop / server (from source)
 
 ```bash
 make pack-macos-desktop    # .app / .dmg (MLX Metal sidecar)
-make pack-linux-desktop    # AppImage / .deb (mlx[cuda])
+make pack-linux-desktop    # AppImage / .deb (mlx[cuda]; local)
 make pack-linux-server     # Linux MLX thin server tar.gz
 ```
 
-Windows is temporarily unsupported.
-
-Details: [desktop/README.md](desktop/README.md).
+Windows is temporarily unsupported. Details: [desktop/README.md](desktop/README.md).
 
 ### CLI
 
@@ -228,21 +268,23 @@ Add a model: registry → `model_configs` → `families/<family>/` → `weights.
 
 ## Release artifacts (CI)
 
-Tag `v*` → [`.github/workflows/release.yml`](.github/workflows/release.yml):
+Tag `v*` → [`.github/workflows/release.yml`](.github/workflows/release.yml). **Install steps:** [Install from release](#install-from-release-recommended).
 
-| Platform | Artifact |
-|----------|----------|
-| macOS Apple Silicon | MLX `.dmg` / `.app` (Metal) |
-| Linux x64 | MLX (**mlx[cuda]**) desktop / **server** `.tar.gz` |
+| Platform | CI artifact |
+|----------|-------------|
+| macOS Apple Silicon | MLX `.dmg` (Metal) |
+| Linux x86_64 | **`danmo-make-linux-mlx-x86_64-*.tar.gz`** (thin server; mlx[cuda] on first `./run.sh`) |
 | Windows | Temporarily unsupported |
+
+Local pack (not all attached by CI):
 
 ```bash
 make pack-macos-desktop
-make pack-linux-desktop
+make pack-linux-desktop    # AppImage / .deb — local only for now
 make pack-linux-server
 ```
 
-Single MLX stack on all supported platforms (Metal or mlx[cuda]) — no separate torch CUDA engine.
+Single MLX stack (Metal or mlx[cuda]) — no separate torch CUDA engine.
 
 ---
 
