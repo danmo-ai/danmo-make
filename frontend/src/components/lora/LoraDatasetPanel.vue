@@ -200,6 +200,13 @@
           <span class="lora-dataset-panel__vlm-legend-item is-poor">{{ $t('loraTrain.quality.vlmMarkPoor') }}</span>
         </div>
 
+        <div v-if="hasFaceMarks" class="lora-dataset-panel__vlm-legend">
+          <span class="lora-dataset-panel__vlm-legend-label">{{ $t('loraTrain.quality.faceMarkLegend') }}</span>
+          <span class="lora-dataset-panel__vlm-legend-item is-face-crop">{{ $t('loraTrain.quality.faceMarkCrop') }}</span>
+          <span class="lora-dataset-panel__vlm-legend-item is-face-none">{{ $t('loraTrain.quality.faceMarkNone') }}</span>
+          <span class="lora-dataset-panel__vlm-legend-item is-face-multi">{{ $t('loraTrain.quality.faceMarkMulti') }}</span>
+        </div>
+
         <div v-if="selectedDataset?.images?.length" class="lora-dataset-panel__grid">
           <div
             v-for="img in selectedDataset.images"
@@ -223,6 +230,20 @@
                 :title="vlmMarkTitle(img.file)"
               >
                 {{ vlmMark(img.file)!.scoreText }}
+              </span>
+              <span
+                v-if="faceCropBox(img.file)"
+                class="lora-dataset-panel__face-window"
+                :style="faceCropBox(img.file)!"
+                aria-hidden="true"
+              />
+              <span
+                v-if="faceMark(img.file)"
+                class="lora-dataset-panel__face-mark"
+                :class="`is-${faceMark(img.file)!.kind}`"
+                :title="faceMark(img.file)!.title"
+              >
+                {{ faceMark(img.file)!.label }}
               </span>
               <DqIconButton
                 type="text"
@@ -334,9 +355,11 @@ import { api } from '@/utils/api';
 import { toast, confirm } from '@/utils/feedback';
 import AssetPicker from '@/components/asset/AssetPicker.vue';
 import LoraQualityHints from '@/components/lora/LoraQualityHints.vue';
-import type { LoraDatasetHealthReport, VlmImageSample } from '@/utils/loraQuality';
+import type { FaceAuditRow, LoraDatasetHealthReport, VlmImageSample } from '@/utils/loraQuality';
 import {
+  buildFaceRowMap,
   buildVlmSampleMap,
+  faceCropOverlay,
   lookupVlmSample,
   vlmScoreLevel,
 } from '@/utils/loraQuality';
@@ -440,6 +463,70 @@ function vlmMediaClass(file: string): Record<string, boolean> {
     'is-vlm-fair': mark.level === 'fair',
     'is-vlm-poor': mark.level === 'poor',
   };
+}
+
+const faceRowMap = computed(() => buildFaceRowMap(props.datasetHealth?.faces));
+
+const hasFaceMarks = computed(() => {
+  if (!faceRowMap.value.size) return false;
+  for (const row of faceRowMap.value.values()) {
+    if (row.action !== 'keep' || row.multi) return true;
+  }
+  return false;
+});
+
+function faceRow(file: string): FaceAuditRow | undefined {
+  const key = (file || '').trim();
+  if (!key) return undefined;
+  return faceRowMap.value.get(key) ?? faceRowMap.value.get(key.split('/').pop() || '');
+}
+
+function faceCropBox(file: string): Record<string, string> | null {
+  const row = faceRow(file);
+  if (!row || row.action !== 'crop') return null;
+  const box = faceCropOverlay(row);
+  if (!box) return null;
+  return {
+    left: `${box.left}%`,
+    top: `${box.top}%`,
+    width: `${box.width}%`,
+    height: `${box.height}%`,
+  };
+}
+
+function faceMark(file: string): { kind: 'crop' | 'none' | 'tiny' | 'multi'; label: string; title: string } | null {
+  const row = faceRow(file);
+  if (!row) return null;
+  if (row.multi) {
+    return {
+      kind: 'multi',
+      label: t('loraTrain.quality.faceMarkMulti'),
+      title: t('loraTrain.quality.faceMarkMultiTitle', { count: row.faces }),
+    };
+  }
+  if (row.action === 'none' || row.action === 'error') {
+    return {
+      kind: 'none',
+      label: t('loraTrain.quality.faceMarkNone'),
+      title: t('loraTrain.quality.faceMarkNoneTitle'),
+    };
+  }
+  if (row.action === 'tiny') {
+    return {
+      kind: 'tiny',
+      label: t('loraTrain.quality.faceMarkTiny'),
+      title: t('loraTrain.quality.faceMarkTinyTitle', { px: row.face_px ?? 0 }),
+    };
+  }
+  if (row.action === 'crop') {
+    const pct = Math.round((row.face_frac ?? 0) * 100);
+    return {
+      kind: 'crop',
+      label: t('loraTrain.quality.faceMarkCrop'),
+      title: t('loraTrain.quality.faceMarkCropTitle', { px: row.face_px ?? 0, pct }),
+    };
+  }
+  return null;
 }
 
 const filteredDatasets = computed(() => {
@@ -1125,6 +1212,61 @@ defineExpose({
 
 .lora-dataset-panel__vlm-mark.is-poor {
   background: color-mix(in srgb, var(--dq-danger) 90%, #000);
+}
+
+.lora-dataset-panel__cell-media {
+  overflow: hidden;
+  border-radius: var(--dq-radius-group);
+}
+
+.lora-dataset-panel__face-window {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px dashed color-mix(in srgb, var(--dq-primary) 85%, #fff);
+  box-shadow: 0 0 0 9999px color-mix(in srgb, var(--dq-bg-base) 45%, transparent);
+  pointer-events: none;
+}
+
+.lora-dataset-panel__face-mark {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  padding: 2px 6px;
+  border-radius: var(--dq-radius-control-sm);
+  font-size: var(--dq-font-size-caption);
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--dq-color-white);
+  pointer-events: none;
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--dq-bg-base) 35%, transparent);
+}
+
+.lora-dataset-panel__face-mark.is-crop {
+  background: color-mix(in srgb, var(--dq-primary) 88%, #000);
+}
+
+.lora-dataset-panel__face-mark.is-none,
+.lora-dataset-panel__face-mark.is-tiny {
+  background: color-mix(in srgb, var(--dq-danger) 90%, #000);
+}
+
+.lora-dataset-panel__face-mark.is-multi {
+  background: color-mix(in srgb, var(--dq-warning) 92%, #000);
+}
+
+.lora-dataset-panel__vlm-legend-item.is-face-crop {
+  border-color: color-mix(in srgb, var(--dq-primary) 45%, transparent);
+  color: var(--dq-primary);
+}
+
+.lora-dataset-panel__vlm-legend-item.is-face-none {
+  border-color: color-mix(in srgb, var(--dq-danger) 45%, transparent);
+  color: var(--dq-danger);
+}
+
+.lora-dataset-panel__vlm-legend-item.is-face-multi {
+  border-color: color-mix(in srgb, var(--dq-warning) 45%, transparent);
+  color: var(--dq-warning, var(--dq-label-primary));
 }
 
 .lora-dataset-panel__vlm-legend {

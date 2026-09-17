@@ -55,16 +55,77 @@ export function lookupVlmSample(
   return map.get(key) ?? map.get(key.split('/').pop() || '');
 }
 
+export type FaceAuditAction = 'crop' | 'keep' | 'tiny' | 'none' | 'error';
+
+export type FaceAuditRow = {
+  file: string;
+  width?: number;
+  height?: number;
+  faces: number;
+  face_px?: number;
+  face_frac?: number;
+  multi?: boolean;
+  action: FaceAuditAction;
+  /** Training crop window `[left, top, width, height]` in source pixels (when re-framed). */
+  window?: number[] | null;
+  error?: string;
+};
+
+export type FaceAuditReport = {
+  available: boolean;
+  reason?: string;
+  resolution?: number[];
+  rows: FaceAuditRow[];
+};
+
 export type LoraDatasetHealthReport = {
   level: LoraQualityLevel;
   score: number;
+  kind?: 'concept' | 'style';
+  caption_mode_auto?: 'unified' | 'per_image';
   stats: Record<string, number>;
   hints: LoraQualityHint[];
+  faces?: FaceAuditReport;
   vision_available?: boolean;
   vlm_audited?: boolean;
   audit_kind?: 'concept' | 'style';
   vlm?: LoraVlmSummary;
 };
+
+export function buildFaceRowMap(report: FaceAuditReport | undefined | null): Map<string, FaceAuditRow> {
+  const map = new Map<string, FaceAuditRow>();
+  if (!report?.available || !report.rows?.length) return map;
+  for (const row of report.rows) {
+    const file = String(row.file || '').trim();
+    if (!file) continue;
+    map.set(file, row);
+    const base = file.split('/').pop();
+    if (base && base !== file) map.set(base, row);
+  }
+  return map;
+}
+
+export type FaceCropOverlay = { left: number; top: number; width: number; height: number };
+
+/**
+ * Map a source-pixel crop window onto a square `object-fit: cover` thumbnail (centre crop of
+ * the short edge). Values are percentages of the thumbnail box; may extend beyond 0–100 when
+ * the training window reaches into the part of a tall/wide image the thumbnail does not show.
+ */
+export function faceCropOverlay(row: FaceAuditRow | undefined): FaceCropOverlay | null {
+  if (!row?.window || row.window.length !== 4 || !row.width || !row.height) return null;
+  const [l, t, w, h] = row.window.map(Number);
+  if (!(w > 0) || !(h > 0)) return null;
+  const side = Math.min(row.width, row.height);
+  const ox = (row.width - side) / 2;
+  const oy = (row.height - side) / 2;
+  return {
+    left: ((l - ox) / side) * 100,
+    top: ((t - oy) / side) * 100,
+    width: (w / side) * 100,
+    height: (h / side) * 100,
+  };
+}
 
 export type LoraTrainingQualityReport = {
   level: LoraQualityLevel;
