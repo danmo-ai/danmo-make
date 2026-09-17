@@ -22,6 +22,7 @@ from backend.engine.training.crop import (
     training_allows_flip,
 )
 from backend.engine.training.dataset_store import _dataset_meta, load_training_pairs_unified
+from backend.engine.training.face_crop import face_crop_cache_key, plan_training_face_crops
 from backend.engine.training.flux_dreambooth_mlx import _log, _progress, _save_adapter
 from backend.engine.training.lora_layers_mlx import (
     apply_lora_to_qwen_dit,
@@ -112,6 +113,8 @@ def _encode_dataset_to_cache(
     class_prompt: str | None,
     caption_mode: str = "",
     allow_flip: bool = True,
+    crop_windows: dict[Path, tuple[int, int, int, int] | None] | None = None,
+    crop_policy: str = "",
 ) -> int:
     w, h = resolution[0], resolution[1]
     total_samples = len(pairs) * num_augmentations
@@ -123,6 +126,7 @@ def _encode_dataset_to_cache(
         family="qwen_image",
         tensor_keys=["latent", "txt", "txt_mask"],
         caption_mode=caption_mode,
+        crop_policy=crop_policy,
     )
     _log(exec_ctx, "info", f"Encoding {len(pairs)} images × {num_augmentations} augmentations …")
     sample_idx = 0
@@ -137,6 +141,7 @@ def _encode_dataset_to_cache(
                 preset=preset,
                 augmentation_index=aug_i,
                 allow_flip=allow_flip,
+                crop_window=(crop_windows or {}).get(img_path),
             )
             nchw = mx.array(arr.transpose(2, 0, 1)[None].astype("float32"))
             n11 = nchw * 2.0 - 1.0
@@ -467,6 +472,16 @@ def run_qwen_image_dreambooth_training(
     )
     latent_cache = LatentCache(work_dir)
     class_prompt = train_runtime.class_prompt
+    face_plans = plan_training_face_crops(
+        pairs,
+        project_root=project_root,
+        resolution=resolution,
+        mode=train_runtime.face_crop,
+        dataset_meta=dataset_meta,
+        on_log=lambda level, msg: _log(exec_ctx, level, msg),
+    )
+    crop_windows = {p: plan.window for p, plan in face_plans.items()}
+    crop_policy = face_crop_cache_key(face_plans)
     if latent_cache.is_valid(
         dataset_id=request.dataset_id,
         n_pairs=len(pairs),
@@ -475,6 +490,7 @@ def run_qwen_image_dreambooth_training(
         family="qwen_image",
         n_samples=len(pairs) * train_runtime.num_augmentations,
         caption_mode=resolved_caption_mode,
+        crop_policy=crop_policy,
     ):
         _log(exec_ctx, "info", "Reusing cached latents from work_dir/latent_cache …")
         n_samples = len(pairs) * train_runtime.num_augmentations
@@ -496,6 +512,8 @@ def run_qwen_image_dreambooth_training(
             class_prompt=class_prompt if train_runtime.prior_loss_weight > 0 else None,
             caption_mode=resolved_caption_mode,
             allow_flip=training_allows_flip(dataset_meta),
+            crop_windows=crop_windows,
+            crop_policy=crop_policy,
         )
     text_encoder.release_weights()
     ctx.clear_cache()
