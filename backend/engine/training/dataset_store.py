@@ -567,6 +567,40 @@ def resolve_per_image_captions(
     return out
 
 
+# Below this many images, per-image captions add caption noise faster than they add
+# outfit/background disentanglement; unified trigger-only captions win.
+CONCEPT_PER_IMAGE_MIN_IMAGES = 15
+
+
+def concept_caption_stats(
+    pairs: list[tuple[Path, str]],
+    *,
+    trigger: str,
+) -> dict[str, Any]:
+    """Summarise how per-image captions of a concept dataset relate to the trigger word."""
+    from backend.engine.training.lora_auto_caption import is_trigger_anchored_short_caption
+
+    captions = [str(p or "").strip() for _, p in pairs]
+    non_empty = [c for c in captions if c]
+    trig = (trigger or "").strip()
+    anchored_short = sum(1 for c in non_empty if is_trigger_anchored_short_caption(c, trig))
+    missing_trigger = sum(1 for c in non_empty if trig and not _caption_contains_trigger(c, trig))
+    long_count = sum(
+        1
+        for c in non_empty
+        if trig and _caption_contains_trigger(c, trig) and not is_trigger_anchored_short_caption(c, trig)
+    )
+    return {
+        "total": len(captions),
+        "non_empty": len(non_empty),
+        "empty": len(captions) - len(non_empty),
+        "unique": len(set(non_empty)),
+        "anchored_short": anchored_short,
+        "missing_trigger": missing_trigger,
+        "long": long_count,
+    }
+
+
 def detect_caption_mode(
     pairs: list[tuple[Path, str]],
     *,
@@ -574,14 +608,25 @@ def detect_caption_mode(
 ) -> str:
     """Auto-detect caption mode when the training request leaves ``caption_mode`` on auto.
 
-    **Concept / face LoRA** (``kind=concept``): always ``unified`` — bind identity to the
-    trigger / ``progress_prompt`` only. VLM per-image captions (outfit, background, pose)
-    dilute the trigger in Qwen3 embeddings and prevent face memorization.
+    **Concept / face LoRA** (``kind=concept``): ``per_image`` only when the dataset is large
+    enough (``CONCEPT_PER_IMAGE_MIN_IMAGES``) and *every* caption is trigger-anchored and short
+    (``<trigger>, outfit, pose, background`` — no identity description); this lets the LoRA
+    disentangle outfit / background from the face. Otherwise ``unified`` — bind identity to the
+    trigger / ``progress_prompt`` only, since long VLM captions dilute the trigger in Qwen3
+    embeddings and prevent face memorization.
 
     **Style / other kinds**: ``per_image`` when most captions differ (typical VLM output).
     """
     kind = str((dataset_meta or {}).get("kind") or "concept").strip().lower()
     if kind == "concept":
+        trigger = str((dataset_meta or {}).get("trigger_word") or "").strip()
+        if not trigger or len(pairs) < CONCEPT_PER_IMAGE_MIN_IMAGES:
+            return "unified"
+        stats = concept_caption_stats(pairs, trigger=trigger)
+        if stats["empty"] or stats["missing_trigger"] or stats["long"]:
+            return "unified"
+        if stats["unique"] > max(1, stats["non_empty"] * 0.5):
+            return "per_image"
         return "unified"
     if len(pairs) < 2:
         return "unified"

@@ -42,6 +42,162 @@ _BANNED_BEAUTY_TEXTURE_TERMS = (
     "waxy skin",
 )
 
+# Identity attributes the trigger word must learn; a phrase mentioning any of these is dropped
+# from concept captions so the caption cannot "explain away" the face.
+_IDENTITY_TERMS_EN = (
+    "eye",
+    "eyes",
+    "eyebrow",
+    "eyebrows",
+    "nose",
+    "lip",
+    "lips",
+    "mouth",
+    "chin",
+    "jaw",
+    "jawline",
+    "cheek",
+    "cheeks",
+    "cheekbones",
+    "teeth",
+    "face shape",
+    "oval face",
+    "round face",
+    "square face",
+    "heart-shaped face",
+    "young",
+    "youthful",
+    "teen",
+    "teenage",
+    "middle-aged",
+    "elderly",
+    "old man",
+    "old woman",
+    "years old",
+    "in her 20s",
+    "in his 20s",
+    "in her 30s",
+    "in his 30s",
+    "asian",
+    "east asian",
+    "chinese",
+    "japanese",
+    "korean",
+    "caucasian",
+    "white woman",
+    "white man",
+    "black woman",
+    "black man",
+    "african",
+    "european",
+    "latina",
+    "latino",
+    "hispanic",
+    "ethnicity",
+    "skin tone",
+    "fair skin",
+    "pale skin",
+    "light skin",
+    "dark skin",
+    "tan skin",
+    "tanned skin",
+    "olive skin",
+    "slender",
+    "petite",
+    "curvy",
+    "chubby",
+    "overweight",
+    "muscular",
+    "black hair",
+    "dark hair",
+    "brown hair",
+    "blonde hair",
+    "blond hair",
+    "red hair",
+    "grey hair",
+    "gray hair",
+    "white hair",
+    "long hair",
+    "short hair",
+    "medium-length hair",
+    "shoulder-length hair",
+    "freckles",
+    "mole",
+    "moles",
+    "acne",
+    "wrinkles",
+    "double eyelid",
+    "monolid",
+)
+_IDENTITY_TERMS_CJK = (
+    "眼睛",
+    "双眼",
+    "眼神",
+    "眉毛",
+    "鼻子",
+    "鼻梁",
+    "嘴唇",
+    "嘴巴",
+    "下巴",
+    "下颌",
+    "脸型",
+    "脸颊",
+    "颧骨",
+    "牙齿",
+    "五官",
+    "年轻",
+    "年龄",
+    "中年",
+    "老年",
+    "少女",
+    "少年",
+    "岁",
+    "亚洲",
+    "东亚",
+    "中国人",
+    "日本人",
+    "韩国人",
+    "欧美",
+    "白人",
+    "黑人",
+    "肤色",
+    "白皮肤",
+    "皮肤白",
+    "小麦色",
+    "黝黑",
+    "身材",
+    "苗条",
+    "纤细",
+    "丰满",
+    "微胖",
+    "高挑",
+    "黑发",
+    "黑色头发",
+    "棕发",
+    "棕色头发",
+    "金发",
+    "红发",
+    "白发",
+    "长发",
+    "短发",
+    "中长发",
+    "齐肩",
+    "雀斑",
+    "痣",
+    "痘",
+    "皱纹",
+    "双眼皮",
+    "单眼皮",
+)
+_IDENTITY_TERMS_EN_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(term) for term in _IDENTITY_TERMS_EN) + r")\b",
+    flags=re.IGNORECASE,
+)
+
+# Concept captions must stay short so the trigger dominates the Qwen3 embedding.
+MAX_CONCEPT_CAPTION_PHRASES = 8
+MAX_CONCEPT_CAPTION_CHARS = 160
+
 VisionAnalyzeFn = Callable[[Path, list[ChatMessage]], str]
 VisionBatchAnalyzeFn = Callable[..., list[str]]
 
@@ -192,8 +348,67 @@ def _drop_banned_beauty_texture_phrases(text: str) -> str:
     return sep.join(kept)
 
 
-def normalize_scene_caption(raw: str, *, subject_name: str = "") -> str:
-    """Clean VLM output and reject punctuation-only / garbage captions."""
+def _split_caption_phrases(text: str) -> list[str]:
+    return [p.strip() for p in re.split(r"[，,、;；。]+", text or "") if p.strip()]
+
+
+def _join_caption_phrases(phrases: list[str], like: str) -> str:
+    sep = "，" if _has_cjk(like) else ", "
+    return sep.join(phrases)
+
+
+def _mentions_identity(phrase: str) -> bool:
+    low = phrase.lower()
+    if _IDENTITY_TERMS_EN_RE.search(low):
+        return True
+    return any(term in phrase for term in _IDENTITY_TERMS_CJK)
+
+
+def drop_identity_phrases(text: str) -> str:
+    """Remove phrases describing the person's identity (face, age, ethnicity, hair colour, build).
+
+    Concept LoRA captions should only carry what varies between photos; identity phrases teach the
+    text encoder to explain the face away instead of binding it to the trigger word.
+    """
+    phrases = _split_caption_phrases(text)
+    if not phrases:
+        return text
+    kept = [p for p in phrases if not _mentions_identity(p)]
+    return _join_caption_phrases(kept, text)
+
+
+def cap_caption_phrases(text: str, *, max_phrases: int = MAX_CONCEPT_CAPTION_PHRASES, max_chars: int = MAX_CONCEPT_CAPTION_CHARS) -> str:
+    phrases = _split_caption_phrases(text)
+    if not phrases:
+        return text
+    kept: list[str] = []
+    total = 0
+    for phrase in phrases[:max_phrases]:
+        extra = len(phrase) + (2 if kept else 0)
+        if kept and total + extra > max_chars:
+            break
+        kept.append(phrase)
+        total += extra
+    return _join_caption_phrases(kept, text)
+
+
+def is_trigger_anchored_short_caption(caption: str, trigger: str) -> bool:
+    """True when ``caption`` starts with (or contains) ``trigger`` and stays within the concept budget."""
+    text = (caption or "").strip()
+    trig = (trigger or "").strip()
+    if not text or not trig or trig.lower() not in text.lower():
+        return False
+    body = re.sub(re.escape(trig), "", text, count=1, flags=re.IGNORECASE)
+    phrases = _split_caption_phrases(body)
+    return len(phrases) <= MAX_CONCEPT_CAPTION_PHRASES and len(body) <= MAX_CONCEPT_CAPTION_CHARS + 8
+
+
+def normalize_scene_caption(raw: str, *, subject_name: str = "", concept: bool | None = None) -> str:
+    """Clean VLM output and reject punctuation-only / garbage captions.
+
+    ``concept`` (defaults to ``bool(subject_name)``) additionally strips identity / beauty-texture
+    phrases and caps the phrase count so the trigger word dominates the embedding.
+    """
     text = clean_scene_caption(raw, subject_name=subject_name)
     if not text:
         return ""
@@ -201,12 +416,16 @@ def normalize_scene_caption(raw: str, *, subject_name: str = "") -> str:
     text = re.sub(r"[\s!！?？.。,，、…\-_=~#@*]+$", "", text)
     text = re.sub(r"([!！?？.。,，、])\1{2,}", r"\1", text)
     text = text.strip()
-    if (subject_name or "").strip():
+    is_concept = bool((subject_name or "").strip()) if concept is None else bool(concept)
+    if is_concept:
         text = _drop_banned_beauty_texture_phrases(text).strip()
+        text = drop_identity_phrases(text).strip()
         if not text:
             return ""
     if not is_usable_scene_caption(text):
         return ""
+    if is_concept:
+        text = cap_caption_phrases(text)
     if len(text) > 200:
         for sep in ("，", ","):
             if sep in text[:200]:
@@ -219,7 +438,7 @@ def normalize_scene_caption(raw: str, *, subject_name: str = "") -> str:
 
 def compose_person_caption(subject_name: str, scene: str) -> str:
     subject = (subject_name or "").strip()
-    scene = normalize_scene_caption(scene, subject_name=subject)
+    scene = normalize_scene_caption(scene, subject_name=subject, concept=True)
     if not subject:
         return scene
     if not scene:
@@ -280,10 +499,10 @@ def caption_dataset_image(
 
         subject = (subject_name or "").strip()
         raw = _analyze(path, build_concept_caption_messages(subject))
-        scene = normalize_scene_caption(raw, subject_name=subject)
+        scene = normalize_scene_caption(raw, subject_name=subject, concept=True)
         if not scene:
             raw_retry = _analyze(path, build_concept_caption_retry_messages())
-            scene = normalize_scene_caption(raw_retry, subject_name=subject)
+            scene = normalize_scene_caption(raw_retry, subject_name=subject, concept=True)
         return compose_person_caption(subject, scene)
 
     caps = caption_dataset_images_batch(
@@ -366,7 +585,7 @@ def caption_dataset_images_batch(
     retry_indices: list[int] = []
 
     for idx, raw in enumerate(raw_list):
-        scene = normalize_scene_caption(raw, subject_name=subject)
+        scene = normalize_scene_caption(raw, subject_name=subject, concept=True)
         if scene:
             captions[idx] = compose_person_caption(subject, scene)
         else:
