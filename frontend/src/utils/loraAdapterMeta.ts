@@ -8,7 +8,20 @@ export type CompatibleLoraRow = {
   tags?: string[];
   compose_overrides?: Record<string, number | string>;
   hint_key?: string;
+  /** `[min, max]` inference weight the trainer recommends (e.g. Turbo-trained LoRAs: 0.8–1.0). */
+  recommended_lora_scale?: [number, number];
 };
+
+export function loraRecommendedScale(
+  lora: CompatibleLoraRow | null | undefined,
+): [number, number] | null {
+  const rng = lora?.recommended_lora_scale;
+  if (!Array.isArray(rng) || rng.length !== 2) return null;
+  const lo = Number(rng[0]);
+  const hi = Number(rng[1]);
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo > hi) return null;
+  return [lo, hi];
+}
 
 export function findCompatibleLora(
   loras: CompatibleLoraRow[],
