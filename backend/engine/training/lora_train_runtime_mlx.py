@@ -12,6 +12,7 @@ import mlx.nn as nn
 import mlx.optimizers as optim
 from mlx.utils import tree_flatten, tree_unflatten
 
+from backend.engine.training.face_crop import normalize_face_crop_mode
 from backend.engine.training.presets import (
     FLUX1_TRAIN_MIN_MEMORY_GB,
     QWEN_IMAGE_TRAIN_MIN_MEMORY_GB,
@@ -80,6 +81,8 @@ class LoraTrainRuntimeConfig:
     # Static σ shift used when sampling training noise levels for Base DiTs (None → registry
     # ``scheduler_shift``). Presets set 3.0 for Z-Image Base; see presets.Z_IMAGE_BASE_TRAIN_SIGMA_SHIFT.
     train_sigma_shift: float | None
+    # Face-aware crop for identity datasets: auto (concept datasets, when detector available) | on | off.
+    face_crop: str
 
     @property
     def lora_scale(self) -> float:
@@ -242,6 +245,7 @@ def parse_lora_train_runtime_config(cfg: dict[str, Any], *, defaults: dict[str, 
         turbo_assistant_off_prob=float(merged.get("turbo_assistant_off_prob") or 0.0),
         scheme4_turbo_band_mix=float(merged.get("scheme4_turbo_band_mix") or 0.0),
         train_sigma_shift=train_sigma_shift,
+        face_crop=normalize_face_crop_mode(merged.get("face_crop")),
     )
 
 

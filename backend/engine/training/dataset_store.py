@@ -651,6 +651,7 @@ def resize_rgb_image(
     augmentation_index: int = 0,
     resize_mode: str = "cover",
     allow_flip: bool = True,
+    crop_window: tuple[int, int, int, int] | None = None,
 ) -> Any:
     """Resize for LoRA training.
 
@@ -661,6 +662,9 @@ def resize_rgb_image(
     ``allow_flip=False`` disables horizontal mirroring for every aspect ratio (faces are not
     symmetric; concept / identity datasets pass False — the portrait heuristic alone missed
     the common 1:1 face crop).
+    ``crop_window`` ``(left, top, w, h)`` in source pixels (from ``face_crop.plan_face_crop``)
+    replaces the cover crop: the window is jittered slightly per augmentation, cropped, then
+    scaled to ``resolution``.
     """
     import math
     import random
@@ -671,6 +675,13 @@ def resize_rgb_image(
     mode = (resize_mode or "cover").strip().lower()
     img = open_rgb_image(path)
     src_w, src_h = img.size
+
+    if crop_window is not None and mode == "cover":
+        img = _crop_source_window(img, crop_window, augmentation_index, path)
+        img = img.resize((target_w, target_h), Image.LANCZOS)
+        if augmentation_index > 0:
+            img = _photometric_jitter(img, _augmentation_rng(path, augmentation_index))
+        return np.array(img).astype("float32") / 255.0
 
     if mode == "stretch":
         img = img.resize((target_w, target_h), Image.LANCZOS)
@@ -719,10 +730,37 @@ def resize_rgb_image(
         # ratios are always spared; identity datasets disable it entirely via allow_flip.
         if allow_flip and not portrait and aug_rng.random() < 0.5:
             img = img.transpose(Image.FLIP_LEFT_RIGHT)
-        from PIL import ImageEnhance
-
-        brightness = 1.0 + (aug_rng.random() - 0.5) * 0.2
-        contrast = 1.0 + (aug_rng.random() - 0.5) * 0.2
-        img = ImageEnhance.Brightness(img).enhance(brightness)
-        img = ImageEnhance.Contrast(img).enhance(contrast)
+        img = _photometric_jitter(img, aug_rng)
     return np.array(img).astype("float32") / 255.0
+
+
+def _photometric_jitter(img: Any, rng: "random.Random") -> Any:
+    from PIL import ImageEnhance
+
+    brightness = 1.0 + (rng.random() - 0.5) * 0.2
+    contrast = 1.0 + (rng.random() - 0.5) * 0.2
+    img = ImageEnhance.Brightness(img).enhance(brightness)
+    return ImageEnhance.Contrast(img).enhance(contrast)
+
+
+_FACE_WINDOW_JITTER = 0.06
+
+
+def _crop_source_window(
+    img: Any,
+    window: tuple[int, int, int, int],
+    augmentation_index: int,
+    path: Path,
+) -> Any:
+    """Crop ``window`` from the source image; augmentations shift it by up to 6% (in bounds)."""
+    src_w, src_h = img.size
+    left, top, w, h = (int(v) for v in window)
+    w = max(1, min(w, src_w))
+    h = max(1, min(h, src_h))
+    if augmentation_index > 0:
+        rng = _augmentation_rng(path, augmentation_index)
+        left += int(round((rng.random() - 0.5) * 2 * _FACE_WINDOW_JITTER * w))
+        top += int(round((rng.random() - 0.5) * 2 * _FACE_WINDOW_JITTER * h))
+    left = min(max(0, left), src_w - w)
+    top = min(max(0, top), src_h - h)
+    return img.crop((left, top, left + w, top + h))
