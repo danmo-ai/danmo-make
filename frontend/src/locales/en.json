@@ -45,6 +45,11 @@
     "qlora4": "4-bit (lowest memory)",
     "qlora8": "8-bit (better quality)",
     "qloraHint": "Quantizes frozen DiT weights only; LoRA adapters stay full precision.",
+    "faceCrop": "Face-aware crop",
+    "faceCropAuto": "Auto (concept datasets)",
+    "faceCropOn": "Always (requires detector)",
+    "faceCropOff": "Off",
+    "faceCropHint": "Re-frames full-body / waist-up photos around the detected face so it fills ~1/3 of the 512² crop instead of a few dozen pixels. Uses OpenCV YuNet (230 KB, downloaded once). Auto skips non-concept datasets and falls back to the portrait-biased crop when OpenCV is unavailable (packaged desktop builds).",
     "gradCheckpoint": "Gradient checkpointing",
     "gradCheckpointHint": "Trades compute for lower peak memory (on by default in Quick preset).",
     "compileStep": "Compile training step (experimental)",
@@ -557,9 +562,12 @@
     "restoreDefaults": "Restore Defaults",
     "loraLabel": "LoRA",
     "noLora": "No LoRA",
+    "loraRecommendedScale": "Recommended LoRA weight {min}–{max}",
+    "loraScaleOutsideRange": "Current weight {value} is outside the recommended {min}–{max} range.",
     "loraHint": {
       "videoStepDistillMoe": "This LoRA uses high/low noise shards merged per step; composer values follow registry compose_overrides.",
-      "zImageDistillPatch": "Scheme 4: auto-loaded with Base-trained LoRAs on Turbo to restore official 8-step acceleration (cfg_scale=1)."
+      "zImageDistillPatch": "Scheme 4: auto-loaded with Base-trained LoRAs on Turbo to restore official 8-step acceleration (cfg_scale=1).",
+      "zImageTurboTrained": "Trained on Z-Image-Turbo: linear scheduler, 9 steps, CFG 0. LoRA weight 0.8–1.0 (0.9 default) — lower fades the subject, higher over-bakes textures."
     },
     "myLoraTag": "My LoRA",
     "pickLoraToAdd": "Select LoRA to add…",
@@ -873,7 +881,8 @@
     "noLora": "No LoRA",
     "loraHint": {
       "videoStepDistillMoe": "This LoRA uses high/low noise shards merged per step; composer values follow registry compose_overrides.",
-      "zImageDistillPatch": "Scheme 4: auto-loaded with Base-trained LoRAs on Turbo to restore official 8-step acceleration (cfg_scale=1)."
+      "zImageDistillPatch": "Scheme 4: auto-loaded with Base-trained LoRAs on Turbo to restore official 8-step acceleration (cfg_scale=1).",
+      "zImageTurboTrained": "Trained on Z-Image-Turbo: linear scheduler, 9 steps, CFG 0. LoRA weight 0.8–1.0 (0.9 default) — lower fades the subject, higher over-bakes textures."
     },
     "myLoraTag": "My LoRA",
     "pickLoraToAdd": "Select LoRA to add…",
