@@ -287,7 +287,7 @@
     "confirmIntro": "确认以下配置后将加入全局任务队列，训练期间可继续浏览其他页面。",
     "summaryOutput": "LoRA 名称",
     "presetDesc": {
-      "scheme4": "官方 Scheme 4：Base SFT + 混合 Turbo σ 带（rank32、全层、1200 步）；推理 Turbo + DistillPatch（8 步加速）",
+      "scheme4": "官方 Scheme 4：Base SFT + 混合 Turbo σ 带（rank32、全层、2500 步）；推理 Turbo + DistillPatch（8 步加速）",
       "quick": "约 300–400 步，适合快速验证数据集与 caption",
       "standard": "推荐默认，平衡质量与耗时",
       "quality": "更多步数，适合最终产出",

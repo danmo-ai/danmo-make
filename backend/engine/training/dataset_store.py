@@ -635,12 +635,22 @@ def load_training_pairs_unified(
     return pairs, preview_caption
 
 
+def _augmentation_rng(path: Path, augmentation_index: int) -> "random.Random":
+    """Deterministic per-image jitter RNG (``hash(str)`` is salted per process; crc32 is not)."""
+    import random
+    import zlib
+
+    salt = zlib.crc32(str(path.resolve()).encode("utf-8")) % 100_000
+    return random.Random(augmentation_index * 7919 + salt)
+
+
 def resize_rgb_image(
     path: Path,
     resolution: tuple[int, int],
     *,
     augmentation_index: int = 0,
     resize_mode: str = "cover",
+    allow_flip: bool = True,
 ) -> Any:
     """Resize for LoRA training.
 
@@ -648,6 +658,9 @@ def resize_rgb_image(
     (face-first) instead of center crop, which often removed faces in the previous build.
     Augmentations > 0 apply a small random crop jitter on the scaled image.
     ``stretch``: legacy fit — squish to target (distorts but keeps full frame).
+    ``allow_flip=False`` disables horizontal mirroring for every aspect ratio (faces are not
+    symmetric; concept / identity datasets pass False — the portrait heuristic alone missed
+    the common 1:1 face crop).
     """
     import math
     import random
@@ -685,7 +698,7 @@ def resize_rgb_image(
 
     aug_rng: random.Random | None = None
     if augmentation_index > 0 and (max_left > 0 or max_top > 0):
-        aug_rng = random.Random(augmentation_index * 7919 + hash(str(path.resolve())) % 100_000)
+        aug_rng = _augmentation_rng(path, augmentation_index)
         if portrait:
             top = aug_rng.randint(0, max(max_top // 3, 0))
         else:
@@ -701,10 +714,10 @@ def resize_rgb_image(
     img = img.crop((left, top, left + target_w, top + target_h))
     if augmentation_index > 0:
         if aug_rng is None:
-            aug_rng = random.Random(augmentation_index * 7919 + hash(str(path.resolve())) % 100_000)
-        # Horizontal flip harms face memorization (faces are not symmetric),
-        # so skip it for portrait images which likely contain a face.
-        if not portrait and aug_rng.random() < 0.5:
+            aug_rng = _augmentation_rng(path, augmentation_index)
+        # Horizontal flip harms face memorization (faces are not symmetric). Portrait aspect
+        # ratios are always spared; identity datasets disable it entirely via allow_flip.
+        if allow_flip and not portrait and aug_rng.random() < 0.5:
             img = img.transpose(Image.FLIP_LEFT_RIGHT)
         from PIL import ImageEnhance
 

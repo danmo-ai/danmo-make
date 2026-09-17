@@ -72,6 +72,7 @@ def prepare_training_rgb_image(
     *,
     preset: str | None = None,
     augmentation_index: int = 0,
+    allow_flip: bool = True,
 ) -> tuple[Any, tuple[int, int]]:
     """Cover-crop (face-biased for portraits) to model training size."""
     resolution = resolve_training_resolution(base_model_id, cfg, preset=preset)
@@ -82,9 +83,16 @@ def prepare_training_rgb_image(
             resolution,
             augmentation_index=augmentation_index,
             resize_mode=resize_mode,
+            allow_flip=allow_flip,
         ),
         resolution,
     )
+
+
+def training_allows_flip(dataset_meta: dict[str, Any] | None) -> bool:
+    """Mirror augmentation only for non-identity datasets (``kind`` other than ``concept``)."""
+    kind = str((dataset_meta or {}).get("kind") or "concept").strip().lower()
+    return kind != "concept"
 
 
 def presets_with_training_resolution(

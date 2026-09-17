@@ -114,23 +114,62 @@ def turbo_training_sigmas(
     return sched._sigmas[:-1]
 
 
-def _sample_turbo_band_indices(
-    batch: int,
-    band_size: int,
+def turbo_sigma_shift_mu(width: int, height: int) -> float:
+    """Resolution-dependent μ used by ``LinearScheduler(requires_sigma_shift=True)``."""
+    sigma_max_shift, sigma_base_shift = 1.15, 0.5
+    sigma_max_seq_len, sigma_base_seq_len = 4096, 256
+    m = (sigma_max_shift - sigma_base_shift) / (sigma_max_seq_len - sigma_base_seq_len)
+    b = sigma_base_shift - m * sigma_base_seq_len
+    return float(m * int(width) * int(height) / 256 + b)
+
+
+def turbo_band_unshifted_range(
     *,
-    bias: str,
+    infer_steps: int,
+    timestep_low: int,
+    timestep_high: int,
+) -> tuple[float, float]:
+    """Continuous unshifted ``u`` range covered by inference steps ``[low, high]`` (1-indexed).
+
+    ``LinearScheduler`` step ``i`` starts at ``s_i = 1 - (i-1)/N`` and denoises to ``s_{i+1}``,
+    so the band spans ``[1 - high/N, 1 - (low-1)/N]``; ``[1, N]`` covers the whole ``(0, 1]``.
+    """
+    n = max(1, int(infer_steps))
+    lo_step = max(1, min(int(timestep_low), n))
+    hi_step = max(lo_step, min(int(timestep_high), n))
+    u_lo = 1.0 - hi_step / n
+    u_hi = 1.0 - (lo_step - 1) / n
+    return float(u_lo), float(u_hi)
+
+
+def sample_turbo_sigmas(
+    ctx: Any,
+    batch: int,
+    *,
+    infer_steps: int,
+    timestep_low: int,
+    timestep_high: int,
+    width: int,
+    height: int,
+    timestep_bias: str = "uniform",
 ) -> mx.array:
-    """Pick indices into a sigma band; low bias favors final (low-σ) denoise steps."""
-    if band_size <= 1:
-        return mx.zeros((batch,), dtype=mx.int32)
-    u = mx.random.uniform(shape=(batch,))
-    mode = (bias or "uniform").strip().lower()
-    if mode == "low":
-        u = mx.sqrt(u)
-    elif mode == "high":
-        u = mx.square(u)
-    idx = mx.floor(u * float(band_size)).astype(mx.int32)
-    return mx.clip(idx, 0, band_size - 1)
+    """Continuous σ over the Turbo inference band, shifted like the inference schedule.
+
+    Training on the handful of discrete inference σ values (and only the low-σ half of them)
+    leaves the high-σ steps that fix global layout / identity untrained, so faces are never
+    memorized. Sampling the whole band continuously matches the ``weighted`` timestep
+    distribution used by reference Turbo trainers and generalizes across resolutions.
+    """
+    u_lo, u_hi = turbo_band_unshifted_range(
+        infer_steps=infer_steps, timestep_low=timestep_low, timestep_high=timestep_high
+    )
+    v = mx.random.uniform(shape=(int(batch),), dtype=ctx.float32())
+    v = _apply_sigma_uniform_bias(v, timestep_bias)
+    u = u_lo + v * (u_hi - u_lo)
+    u = mx.clip(u, 1e-3, 1.0)
+    mu = turbo_sigma_shift_mu(width, height)
+    exp_mu = mx.exp(mx.array(mu, dtype=ctx.float32()))
+    return exp_mu / (exp_mu + (1.0 / u - 1.0))
 
 
 def sample_noisy_latent_turbo(
@@ -144,20 +183,18 @@ def sample_noisy_latent_turbo(
     height: int,
     timestep_bias: str = "uniform",
 ) -> tuple[mx.array, mx.array, mx.array]:
-    """Sample noise levels within the Turbo inference step band (mflux-style)."""
-    sigmas = turbo_training_sigmas(
+    """Flow-match noising with σ drawn continuously from the Turbo inference band."""
+    b = x0.shape[0]
+    t = sample_turbo_sigmas(
         ctx,
+        b,
         infer_steps=infer_steps,
+        timestep_low=timestep_low,
+        timestep_high=timestep_high,
         width=width,
         height=height,
+        timestep_bias=timestep_bias,
     )
-    n = int(sigmas.shape[0])
-    lo = max(0, min(int(timestep_low) - 1, n - 1))
-    hi = max(lo, min(int(timestep_high) - 1, n - 1))
-    band = sigmas[lo : hi + 1]
-    b = x0.shape[0]
-    idx = _sample_turbo_band_indices(b, int(band.shape[0]), bias=timestep_bias)
-    t = band[idx]
     eps = mx.random.normal(x0.shape, dtype=ctx.bfloat16())
     sigma = mx.reshape(t, (b,) + (1,) * (x0.ndim - 1)).astype(ctx.bfloat16())
     x_t = (1.0 - sigma) * x0 + sigma * eps

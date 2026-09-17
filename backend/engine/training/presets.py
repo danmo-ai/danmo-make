@@ -57,32 +57,52 @@ Z_IMAGE_SCHEME4_INFERENCE: dict[str, Any] = {
     "lora_weight": 0.8,
 }
 
-# Portrait/concept tuning on top of official SFT defaults (rank 32, all blocks, 3k steps).
-# scheme4_turbo_band_mix: fraction of steps that sample Turbo's 8-step σ band on Base DiT so
-# identity survives Base→Turbo inference (DistillPatch alone only restores acceleration).
-Z_IMAGE_SCHEME4_CORE: dict[str, Any] = {
-    "iterations": 1200,
-    "lora_rank": 32,
-    "lora_blocks": -1,
-    "lora_module_keys": ["to_q", "to_k", "to_v", "to_out.0", "w1", "w2", "w3"],
-    "grad_accumulate": 4,
-    "progress_every": 400,
-    "checkpoint_every": 400,
+# Base training σ: sample uniform u, apply the SD3-style static shift ``train_sigma_shift``.
+# Inference uses shift 6, but training with 6 (let alone 6 + a high bias) puts >60% of samples at
+# σ>0.9 where the input is nearly pure noise and only ~7% in the 0.3–0.7 band that decides facial
+# structure — LoRAs then never bind identity. Shift 3 keeps the inference-like high-σ emphasis
+# while leaving ~30% of supervision in the identity band.
+Z_IMAGE_BASE_TRAIN_SIGMA_SHIFT = 3.0
+
+# Iteration counts below are with batch 1; ``iterations // grad_accumulate`` optimizer updates.
+# Reference Z-Image LoRA baselines (AI-Toolkit / DiffSynth) use 2000–3000 updates at batch 1,
+# so presets keep grad_accumulate small instead of dividing a short run into 4–8× fewer updates.
+_Z_IMAGE_BASE_COMMON: dict[str, Any] = {
     "learning_rate": 1e-4,
     "guidance": 5.0,
     "progress_steps": 28,
-    "sigma_bias": "high",
+    "sigma_bias": "uniform",
+    "train_sigma_shift": Z_IMAGE_BASE_TRAIN_SIGMA_SHIFT,
+    "optimizer": "adamw",
+    # Plain flow-match (no min-SNR ε weighting); keeps high-σ identity + low-σ detail bands.
+    "min_snr_gamma": 0.0,
+    "prior_loss_weight": 0.0,
+    # Concept / face datasets are tiny; holding out an image costs identity coverage and a
+    # 1-image val loss is too noisy to pick checkpoints. Opt in explicitly via val_split.
+    "val_split": 0.0,
+    "val_every": 100,
+}
+
+# Portrait/concept tuning on top of official SFT defaults (rank 32, all blocks, ~3k steps).
+# scheme4_turbo_band_mix: fraction of steps that sample Turbo's 8-step σ band on Base DiT so
+# identity survives Base→Turbo inference (DistillPatch alone only restores acceleration).
+Z_IMAGE_SCHEME4_CORE: dict[str, Any] = {
+    **_Z_IMAGE_BASE_COMMON,
+    "iterations": 2500,
+    "lora_rank": 32,
+    "lora_blocks": -1,
+    # MLX attribute is ``to_out`` (sanitize drops diffusers' ``to_out.0``); the matcher also
+    # accepts the ``.0`` spelling, but keep the canonical name so all 7 linears get LoRA.
+    "lora_module_keys": ["to_q", "to_k", "to_v", "to_out", "w1", "w2", "w3"],
+    "grad_accumulate": 1,
+    "progress_every": 500,
+    "checkpoint_every": 500,
     "scheme4_turbo_band_mix": 0.45,
     "turbo_infer_steps": 8,
     "timestep_low": 1,
     "timestep_high": 8,
     "timestep_bias": "uniform",
-    "optimizer": "adamw",
     "grad_checkpoint": True,
-    "min_snr_gamma": 0.0,
-    "prior_loss_weight": 0.0,
-    "val_split": 0.1,
-    "val_every": 100,
 }
 
 Z_IMAGE_PRESETS: dict[str, dict[str, Any]] = {
@@ -90,57 +110,34 @@ Z_IMAGE_PRESETS: dict[str, dict[str, Any]] = {
         **Z_IMAGE_SCHEME4_CORE,
     },
     "quick": {
-        "iterations": 600,
+        **_Z_IMAGE_BASE_COMMON,
+        "iterations": 1000,
         "lora_rank": 16,
-        "lora_blocks": 12,
-        "grad_accumulate": 4,
-        "progress_every": 200,
-        "checkpoint_every": 200,
-        "learning_rate": 1e-4,
-        "guidance": 5.0,
-        "progress_steps": 28,
-        "sigma_bias": "high",
-        "optimizer": "adamw",
-        # Plain flow-match (no min-SNR ε weighting); keeps high-σ identity + low-σ detail bands.
-        "min_snr_gamma": 0.0,
-        "prior_loss_weight": 0.0,
-        "val_split": 0.1,
-        "val_every": 100,
+        "lora_blocks": 16,
+        "grad_accumulate": 1,
+        "progress_every": 250,
+        "checkpoint_every": 250,
     },
     "standard": {
-        "iterations": 1200,
-        "lora_rank": 16,
-        "lora_blocks": 24,
-        "grad_accumulate": 4,
-        "progress_every": 400,
-        "checkpoint_every": 400,
-        "learning_rate": 1e-4,
-        "guidance": 5.0,
-        "progress_steps": 28,
-        "sigma_bias": "high",
-        "optimizer": "adamw",
-        "grad_checkpoint": True,
-        "min_snr_gamma": 0.0,
-        "prior_loss_weight": 0.0,
-        "val_split": 0.1,
-        "val_every": 100,
-    },
-    "quality": {
+        **_Z_IMAGE_BASE_COMMON,
         "iterations": 2000,
         "lora_rank": 16,
+        "lora_blocks": 24,
+        "grad_accumulate": 1,
+        "progress_every": 500,
+        "checkpoint_every": 500,
+        "grad_checkpoint": True,
+    },
+    "quality": {
+        **_Z_IMAGE_BASE_COMMON,
+        "iterations": 3000,
+        "lora_rank": 16,
         "lora_blocks": -1,
-        "grad_accumulate": 8,
+        "grad_accumulate": 2,
         "progress_every": 500,
         "checkpoint_every": 500,
         "learning_rate": 5e-5,
-        "guidance": 5.0,
-        "progress_steps": 28,
-        "sigma_bias": "high",
         "grad_checkpoint": True,
-        "min_snr_gamma": 0.0,
-        "prior_loss_weight": 0.0,
-        "val_split": 0.1,
-        "val_every": 100,
     },
 }
 
@@ -191,48 +188,50 @@ Z_IMAGE_TURBO_MFLUX_CORE: dict[str, Any] = {
     # Match inference default steps (registry z-image-turbo steps=9) so train σ band aligns with denoise.
     "progress_steps": 9,
     "turbo_infer_steps": 9,
-    "timestep_low": 4,
+    # Cover the whole 9-step band continuously. Restricting training to steps 4–9 (σ ≤ 0.79)
+    # with a low bias never showed the LoRA the first three steps (σ ≈ 1.0 / 0.94 / 0.87) where
+    # global layout and facial identity are decided, so faces were not memorized.
+    "timestep_low": 1,
     "timestep_high": 9,
-    # Favor the low-σ end of the turbo band (skin pores / fine detail); uniform under-trains texture.
-    "timestep_bias": "low",
-    # Train with Ostris assistant OFF part of the time so LoRA fits inference (assistant off) path.
-    "turbo_assistant_off_prob": 0.5,
+    "timestep_bias": "uniform",
+    # The Ostris de-distill assistant stays ON for every training step (AI-Toolkit merges it
+    # into the base weights). Training part-time on the raw distilled model makes the LoRA
+    # spend capacity re-distilling instead of learning the subject.
+    "turbo_assistant_off_prob": 0.0,
     "optimizer": "adamw",
-    # Turbo trains only inside the low/mid-σ inference band. min-SNR-γ uses the ε-prediction
-    # weighting, which disproportionately suppresses the low-σ (high-SNR) end of that band —
-    # exactly where skin texture / high-frequency detail is learned — producing over-smoothed
-    # ("磨皮") skin. Keep the plain flow-match objective (matches mflux/AI-Toolkit turbo).
+    # min-SNR-γ uses the ε-prediction weighting, which disproportionately suppresses the low-σ
+    # (high-SNR) end — exactly where skin texture / high-frequency detail is learned — producing
+    # over-smoothed ("磨皮") skin. Keep the plain flow-match objective (matches mflux/AI-Toolkit).
     "min_snr_gamma": 0.0,
     "prior_loss_weight": 0.0,
+    # See _Z_IMAGE_BASE_COMMON: no held-out face image / noisy 1-image val by default.
+    "val_split": 0.0,
+    "val_every": 100,
 }
 
 Z_IMAGE_TURBO_PRESETS: dict[str, dict[str, Any]] = {
     "quick": {
         **Z_IMAGE_TURBO_MFLUX_CORE,
-        "iterations": 800,
-        "grad_accumulate": 4,
-        "progress_every": 200,
-        "checkpoint_every": 200,
-        "val_split": 0.1,
-        "val_every": 100,
+        "iterations": 1000,
+        "grad_accumulate": 1,
+        "progress_every": 250,
+        "checkpoint_every": 250,
     },
     "standard": {
         **Z_IMAGE_TURBO_MFLUX_CORE,
-        "iterations": 1200,
-        "grad_accumulate": 4,
-        "progress_every": 400,
-        "checkpoint_every": 400,
-        "val_split": 0.1,
-        "val_every": 100,
+        "iterations": 2000,
+        "lora_blocks": 24,
+        "grad_accumulate": 1,
+        "progress_every": 500,
+        "checkpoint_every": 500,
     },
     "quality": {
         **Z_IMAGE_TURBO_MFLUX_CORE,
-        "iterations": 2000,
-        "grad_accumulate": 8,
+        "iterations": 3000,
+        "lora_blocks": -1,
+        "grad_accumulate": 2,
         "progress_every": 500,
         "checkpoint_every": 500,
-        "val_split": 0.1,
-        "val_every": 100,
     },
 }
 

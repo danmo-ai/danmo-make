@@ -7687,10 +7687,11 @@ class LoraTrainRuntimeTests(unittest.TestCase):
         self.assertEqual(preset["iterations"], Z_IMAGE_SCHEME4_CORE["iterations"])
         self.assertEqual(preset["lora_rank"], 32)
         self.assertEqual(preset["lora_blocks"], -1)
-        self.assertEqual(preset["sigma_bias"], "high")
+        self.assertEqual(preset["sigma_bias"], "uniform")
+        self.assertEqual(preset["train_sigma_shift"], 3.0)
         self.assertEqual(
             preset["lora_module_keys"],
-            ["to_q", "to_k", "to_v", "to_out.0", "w1", "w2", "w3"],
+            ["to_q", "to_k", "to_v", "to_out", "w1", "w2", "w3"],
         )
         self.assertEqual(preset["scheme4_turbo_band_mix"], 0.45)
         self.assertEqual(preset["turbo_infer_steps"], 8)
@@ -7933,20 +7934,30 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         self.assertEqual(zimg["lora_blocks"], 24)
         self.assertTrue(zimg["grad_checkpoint"])
         self.assertEqual(zimg["progress_steps"], 28)
-        self.assertEqual(zimg["sigma_bias"], "high")
+        self.assertEqual(zimg["sigma_bias"], "uniform")
+        self.assertEqual(zimg["train_sigma_shift"], 3.0)
+        self.assertEqual(zimg["val_split"], 0.0)
         self.assertEqual(zturbo["lora_rank"], 16)
         self.assertEqual(zturbo["guidance"], 0.0)
-        self.assertEqual(zturbo["timestep_low"], 4)
+        # Whole 9-step band, no low-σ bias, assistant always on (see presets.py rationale).
+        self.assertEqual(zturbo["timestep_low"], 1)
         self.assertEqual(zturbo["timestep_high"], 9)
-        self.assertEqual(zturbo["timestep_bias"], "low")
-        self.assertEqual(zturbo["turbo_assistant_off_prob"], 0.5)
+        self.assertEqual(zturbo["timestep_bias"], "uniform")
+        self.assertEqual(zturbo["turbo_assistant_off_prob"], 0.0)
         self.assertEqual(zturbo["min_snr_gamma"], 0.0)
         self.assertEqual(zturbo["turbo_infer_steps"], 9)
         self.assertEqual(zturbo["progress_steps"], 9)
         self.assertNotIn("lora_module_keys", zturbo)
-        self.assertEqual(zturbo["val_split"], 0.1)
+        self.assertEqual(zturbo["val_split"], 0.0)
         self.assertEqual(zturbo["val_every"], 100)
         self.assertEqual(zturbo["prior_loss_weight"], 0.0)
+        # Optimizer updates (iterations // grad_accumulate) stay in the reference 1k–3k range.
+        for name, table in (("z-image", zimg), ("z-image-turbo", zturbo)):
+            for preset_name in ("quick", "standard", "quality"):
+                p = resolve_preset(preset_name, base_model=name)
+                updates = p["iterations"] // p["grad_accumulate"]
+                self.assertGreaterEqual(updates, 1000, msg=f"{name}/{preset_name}")
+                self.assertLessEqual(updates, 3000, msg=f"{name}/{preset_name}")
         self.assertEqual(qwen["lora_rank"], 16)
         self.assertEqual(
             resolve_training_resolution("z-image-turbo", zturbo, preset="standard"),
@@ -7967,7 +7978,7 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         turbo = resolve_preset("standard", base_model="z-image-turbo")
         self.assertEqual(turbo["lora_rank"], 16)
         self.assertNotIn("lora_module_keys", turbo)
-        self.assertEqual(turbo["timestep_low"], 4)
+        self.assertEqual(turbo["timestep_low"], 1)
         self.assertEqual(turbo["learning_rate"], 1e-4)
         self.assertEqual(resolve_preset("mflux", base_model="z-image-turbo"), turbo)
 
@@ -7984,7 +7995,7 @@ class LoraTrainingPresetsTests(unittest.TestCase):
             preset="quick",
         )
         cfg = merge_training_request_config(req, preset)
-        self.assertEqual(cfg["iterations"], 600)
+        self.assertEqual(cfg["iterations"], preset["iterations"])
         self.assertEqual(cfg["lora_rank"], 16)
         self.assertEqual(
             resolve_training_resolution("z-image", cfg, preset="quick"),
@@ -8052,6 +8063,94 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         )
         self.assertLess(float(mx.mean(t_low)), float(mx.mean(t_uni)))
 
+    def test_turbo_full_band_is_continuous_and_reaches_high_sigma(self) -> None:
+        import mlx.core as mx
+        import numpy as np
+
+        from backend.engine.runtime.mlx import MLXContext
+        from backend.engine.training.dit_training_loss_mlx import (
+            sample_turbo_sigmas,
+            turbo_band_unshifted_range,
+            turbo_training_sigmas,
+        )
+
+        ctx = MLXContext()
+        self.assertEqual(
+            turbo_band_unshifted_range(infer_steps=9, timestep_low=1, timestep_high=9), (0.0, 1.0)
+        )
+        lo, hi = turbo_band_unshifted_range(infer_steps=9, timestep_low=4, timestep_high=9)
+        self.assertAlmostEqual(lo, 0.0)
+        self.assertAlmostEqual(hi, 1.0 - 3.0 / 9.0)
+
+        s = sample_turbo_sigmas(
+            ctx, 4096, infer_steps=9, timestep_low=1, timestep_high=9,
+            width=512, height=512, timestep_bias="uniform",
+        )
+        mx.eval(s)
+        arr = np.asarray(s)
+        # Continuous (not a handful of discrete inference σ values) …
+        self.assertGreater(len(np.unique(np.round(arr, 4))), 500)
+        # … and the first inference steps (σ ≈ 1.0 / 0.94 / 0.87) are actually trained.
+        infer = np.asarray(turbo_training_sigmas(ctx, infer_steps=9, width=512, height=512))
+        self.assertGreater(float((arr >= infer[2]).mean()), 0.15)
+        self.assertLessEqual(float(arr.max()), 1.0)
+        self.assertGreater(float(arr.min()), 0.0)
+
+    def test_deterministic_val_loss_restores_rng(self) -> None:
+        import mlx.core as mx
+
+        from backend.engine.training.lora_train_loop_mlx import _deterministic_val_loss
+
+        calls: list[float] = []
+
+        def loss_fn(x):
+            v = mx.random.uniform()
+            calls.append(float(v))
+            return v
+
+        def sample_batch(idx):
+            return (mx.zeros((1,)),)
+
+        mx.random.seed(123)
+        a = _deterministic_val_loss(loss_fn, sample_batch, [0, 1], mlx_ctx=None)
+        after_first = float(mx.random.uniform())
+        mx.random.seed(123)
+        b = _deterministic_val_loss(loss_fn, sample_batch, [0, 1], mlx_ctx=None)
+        after_second = float(mx.random.uniform())
+        self.assertEqual(a, b)
+        self.assertEqual(calls[:2], calls[2:])
+        # Training RNG stream after validation is a deterministic function of the training seed.
+        self.assertEqual(after_first, after_second)
+        # Different val indices → different fixed σ/ε, so val rounds are comparable but not degenerate.
+        mx.random.seed(123)
+        c = _deterministic_val_loss(loss_fn, sample_batch, [5, 6], mlx_ctx=None)
+        self.assertNotEqual(a, c)
+
+    def test_lora_module_key_accepts_diffusers_to_out_0(self) -> None:
+        from backend.engine.training.lora_layers_mlx import _match_lora_module_key
+
+        keys = ["to_q", "to_out.0"]
+        self.assertTrue(_match_lora_module_key("to_out", keys))
+        self.assertTrue(_match_lora_module_key("to_q", keys))
+        self.assertFalse(_match_lora_module_key("to_k", keys))
+        self.assertFalse(_match_lora_module_key("w1", ["to_out.0"]))
+
+    def test_runtime_config_validates_sigma_fields(self) -> None:
+        from backend.engine.training.lora_train_runtime_mlx import parse_lora_train_runtime_config
+
+        cfg = parse_lora_train_runtime_config({}, defaults={})
+        self.assertEqual((cfg.timestep_low, cfg.timestep_high), (1, 9))
+        self.assertEqual(cfg.timestep_bias, "uniform")
+        self.assertIsNone(cfg.train_sigma_shift)
+        cfg = parse_lora_train_runtime_config({"train_sigma_shift": 3}, defaults={})
+        self.assertEqual(cfg.train_sigma_shift, 3.0)
+        with self.assertRaises(RuntimeError):
+            parse_lora_train_runtime_config({"timestep_low": 5, "timestep_high": 3}, defaults={})
+        with self.assertRaises(RuntimeError):
+            parse_lora_train_runtime_config({"sigma_bias": "middle"}, defaults={})
+        with self.assertRaises(RuntimeError):
+            parse_lora_train_runtime_config({"train_sigma_shift": 0}, defaults={})
+
     def test_base_high_sigma_bias_prefers_high_sigma(self) -> None:
         import mlx.core as mx
 
@@ -8109,6 +8208,56 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         x = mx.random.normal((1, in_d))
         out = lora._assistant_contribution(x)
         self.assertEqual(tuple(out.shape), (1, out_d))
+
+    def test_training_assistant_is_not_trainable(self) -> None:
+        """Regression: the Ostris assistant used to be registered as trainable parameters, so
+        the optimizer wrote the subject into it and discarded it at inference (assistant off)."""
+        import mlx.core as mx
+        import mlx.nn as nn
+        from mlx.utils import tree_flatten
+
+        from backend.engine.training.lora_layers_mlx import (
+            FrozenAssistantLinear,
+            LoRALinear,
+            assert_no_trainable_assistant,
+        )
+
+        in_d, out_d, rank = 32, 48, 8
+        down = mx.random.normal((rank, in_d))
+        up = mx.random.normal((out_d, rank))
+
+        lora = LoRALinear.from_base(nn.Linear(in_d, out_d, bias=False), r=4)
+        lora.linear.freeze()
+        lora.attach_frozen_assistant(down, up, alpha=float(rank))
+        trainable = dict(tree_flatten(lora.trainable_parameters()))
+        self.assertEqual(sorted(trainable), ["lora_a", "lora_b"])
+        self.assertEqual(assert_no_trainable_assistant(lora), 4 * in_d + 4 * out_d)
+
+        plain = FrozenAssistantLinear.wrap_linear(
+            nn.Linear(in_d, out_d, bias=False), down, up, float(rank)
+        )
+        self.assertEqual(dict(tree_flatten(plain.trainable_parameters())), {})
+
+        dense = LoRALinear.from_base(nn.Linear(in_d, out_d, bias=False), r=4)
+        dense.attach_frozen_assistant_dense(mx.zeros((out_d, in_d)))
+        self.assertNotIn("assistant_dense", dict(tree_flatten(dense.trainable_parameters())))
+
+        # No gradient flows into the assistant even if it is (wrongly) in the trainable set.
+        x = mx.random.normal((2, in_d))
+
+        def loss(m):
+            return mx.mean(m(x) ** 2)
+
+        grads = nn.value_and_grad(lora, loss)(lora)[1]
+        flat = dict(tree_flatten(grads))
+        self.assertIn("lora_b", flat)
+        self.assertNotIn("assistant_lora_a", flat)
+
+        leaked = LoRALinear.from_base(nn.Linear(in_d, out_d, bias=False), r=4)
+        leaked.attach_frozen_assistant(down, up, alpha=float(rank))
+        leaked.unfreeze(keys=["assistant_lora_a"], recurse=False, strict=False)
+        with self.assertRaises(RuntimeError):
+            assert_no_trainable_assistant(leaked)
 
     def test_training_assistant_does_not_mutate_base_weight(self) -> None:
         import mlx.core as mx
@@ -8218,6 +8367,49 @@ class LoraTrainingCropTests(unittest.TestCase):
             self.assertEqual(arr.shape[:2], (512, 512))
             red_rows = sum(1 for y in range(512) if arr[y, 256, 0] > 0.5)
             self.assertGreater(red_rows, 80, "portrait crop should retain upper (face) region")
+
+    def test_allow_flip_false_never_mirrors_square_images(self) -> None:
+        """Square face crops used to be mirrored ~50% of augmentations (only portraits were spared)."""
+        import tempfile
+
+        import numpy as np
+        from PIL import Image
+
+        from backend.engine.training.crop import training_allows_flip
+        from backend.engine.training.dataset_store import resize_rgb_image
+
+        self.assertFalse(training_allows_flip({"kind": "concept"}))
+        self.assertFalse(training_allows_flip({}))
+        self.assertTrue(training_allows_flip({"kind": "style"}))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "square.png"
+            img = Image.new("RGB", (600, 600), color=(0, 0, 255))
+            for y in range(600):
+                for x in range(300):
+                    img.putpixel((x, y), (255, 0, 0))
+            img.save(path)
+            for aug in range(1, 12):
+                arr = resize_rgb_image(path, (256, 256), augmentation_index=aug, allow_flip=False)
+                left_red = float(np.mean(arr[:, :64, 0]))
+                right_red = float(np.mean(arr[:, -64:, 0]))
+                self.assertGreater(left_red, right_red, msg=f"aug {aug} was mirrored")
+            # Deterministic across calls (crc32 seed, not the per-process salted hash()).
+            a = resize_rgb_image(path, (256, 256), augmentation_index=3, allow_flip=True)
+            b = resize_rgb_image(path, (256, 256), augmentation_index=3, allow_flip=True)
+            self.assertTrue(np.array_equal(a, b))
+
+    def test_grad_checkpoint_skips_plain_python_blocks(self) -> None:
+        import mlx.nn as nn
+
+        from backend.engine.training.lora_layers_mlx import enable_grad_checkpointing_on_blocks
+
+        class PlainBlock:
+            def forward(self, x):
+                return x
+
+        self.assertEqual(enable_grad_checkpointing_on_blocks([PlainBlock(), PlainBlock()]), 0)
+        self.assertEqual(enable_grad_checkpointing_on_blocks([nn.Linear(4, 4)]), 1)
 
     def test_resolve_dreambooth_caption_prefers_progress_prompt(self) -> None:
         from backend.engine.training.dataset_store import resolve_dreambooth_caption

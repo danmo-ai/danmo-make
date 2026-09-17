@@ -41,6 +41,19 @@ def _frozen_assistant_lora_factors(
     return lora_a, lora_b, scale
 
 
+_ASSISTANT_PARAM_KEYS = ("assistant_lora_a", "assistant_lora_b", "assistant_dense")
+
+
+def _freeze_assistant_params(module: nn.Module) -> None:
+    """Keep the turbo training assistant out of ``trainable_parameters()``.
+
+    The assistant tensors are plain ``mx.array`` attributes, so MLX registers them as
+    parameters. Without this, AdamW trains the (much larger) assistant instead of the
+    exported LoRA and the learned subject is discarded at inference (assistant off).
+    """
+    module.freeze(keys=list(_ASSISTANT_PARAM_KEYS), recurse=False, strict=False)
+
+
 class LoRALinear(nn.Module):
     """Low-rank adapter wrapping a frozen ``nn.Linear``."""
 
@@ -114,6 +127,7 @@ class LoRALinear(nn.Module):
         self.assistant_dense = None
         self.assistant_scale = scale
         self.assistant_enabled = True
+        _freeze_assistant_params(self)
 
     def attach_frozen_assistant_dense(self, delta: mx.array, *, strength: float = 1.0) -> None:
         """Attach a frozen full-rank delta (``delta @ x``) without mutating ``linear.weight``."""
@@ -129,13 +143,17 @@ class LoRALinear(nn.Module):
         self.assistant_lora_b = None
         self.assistant_scale = 1.0
         self.assistant_enabled = True
+        _freeze_assistant_params(self)
 
     def _assistant_contribution(self, x: mx.array) -> mx.array:
         if self.assistant_dense is not None:
-            return x @ self.assistant_dense.T.astype(x.dtype)
+            dense = mx.stop_gradient(self.assistant_dense)
+            return x @ dense.T.astype(x.dtype)
         if self.assistant_lora_a is None or self.assistant_lora_b is None:
             raise RuntimeError("Frozen assistant LoRA tensors are missing")
-        z = (x @ self.assistant_lora_a) @ self.assistant_lora_b
+        a = mx.stop_gradient(self.assistant_lora_a)
+        b = mx.stop_gradient(self.assistant_lora_b)
+        z = (x @ a) @ b
         return (self.assistant_scale * z).astype(x.dtype)
 
     def __call__(self, x: mx.array) -> mx.array:
@@ -187,6 +205,7 @@ class FrozenAssistantLinear(nn.Module):
         wrapped.assistant_dense = None
         wrapped.assistant_scale = scale
         wrapped.assistant_enabled = True
+        _freeze_assistant_params(wrapped)
         return wrapped
 
     @staticmethod
@@ -204,14 +223,18 @@ class FrozenAssistantLinear(nn.Module):
         wrapped.assistant_lora_b = None
         wrapped.assistant_scale = 1.0
         wrapped.assistant_enabled = True
+        _freeze_assistant_params(wrapped)
         return wrapped
 
     def _assistant_contribution(self, x: mx.array) -> mx.array:
         if self.assistant_dense is not None:
-            return x @ self.assistant_dense.T.astype(x.dtype)
+            dense = mx.stop_gradient(self.assistant_dense)
+            return x @ dense.T.astype(x.dtype)
         if self.assistant_lora_a is None or self.assistant_lora_b is None:
             raise RuntimeError("Frozen assistant LoRA tensors are missing")
-        z = (x @ self.assistant_lora_a) @ self.assistant_lora_b
+        a = mx.stop_gradient(self.assistant_lora_a)
+        b = mx.stop_gradient(self.assistant_lora_b)
+        z = (x @ a) @ b
         return (self.assistant_scale * z).astype(x.dtype)
 
     def __call__(self, x: mx.array) -> mx.array:
@@ -293,10 +316,39 @@ def _is_leaf_linear(module: Any) -> bool:
     return _is_adapter_linear(module) or _is_frozen_assistant_linear(module) or isinstance(module, nn.Linear)
 
 
+def _normalize_lora_module_key(key: str) -> str:
+    """Accept diffusers-style ``to_out.0`` for MLX attribute ``to_out`` (sanitize drops the ``.0``)."""
+    k = (key or "").strip().strip(".")
+    if k.endswith(".0"):
+        k = k[:-2]
+    return k
+
+
 def _match_lora_module_key(attr_name: str, module_keys: list[str] | None) -> bool:
     if not module_keys:
         return True
-    return any(attr_name == k or attr_name.endswith(f".{k}") for k in module_keys)
+    for raw in module_keys:
+        k = _normalize_lora_module_key(raw)
+        if not k:
+            continue
+        if attr_name == k or attr_name.endswith(f".{k}"):
+            return True
+    return False
+
+
+def assert_no_trainable_assistant(train_module: Any) -> int:
+    """Fail loud if turbo assistant tensors leaked into the trainable set; return LoRA param count."""
+    from mlx.utils import tree_flatten
+
+    flat = dict(tree_flatten(train_module.trainable_parameters()))
+    leaked = sorted(k for k in flat if any(k.endswith(s) for s in _ASSISTANT_PARAM_KEYS))
+    if leaked:
+        raise RuntimeError(
+            "Turbo training assistant tensors are trainable "
+            f"({len(leaked)} entries, e.g. {leaked[0]!r}); the assistant must stay frozen or the "
+            "learned subject is written into it and discarded at inference."
+        )
+    return int(sum(int(v.size) for v in flat.values()))
 
 
 def _is_trainable_base_linear(module: Any) -> bool:
@@ -580,14 +632,25 @@ def grad_checkpoint(layer: Any) -> None:
     layer_cls.__call__ = checkpointed_fn
 
 
-def enable_grad_checkpointing_on_blocks(blocks: list[Any]) -> None:
+def enable_grad_checkpointing_on_blocks(blocks: list[Any]) -> int:
+    """Patch ``nn.Module`` block classes for checkpointing; return how many classes were patched.
+
+    Plain-Python DiT blocks (e.g. Z-Image ``ZImageTransformerBlock``) are invoked via ``.forward``
+    and have no ``trainable_parameters`` / ``update``; patching ``__call__`` would be a silent
+    no-op, so they are skipped and the caller logs that grad_checkpoint is inactive.
+    """
     seen: set[type] = set()
+    patched = 0
     for block in blocks:
         cls = type(block)
         if cls in seen:
             continue
         seen.add(cls)
+        if not isinstance(block, nn.Module):
+            continue
         grad_checkpoint(block)
+        patched += 1
+    return patched
 
 
 def list_flux1_lora_blocks(model: Any, *, lora_blocks: int) -> list[Any]:
@@ -680,7 +743,15 @@ def prepare_dit_for_lora_training(
     if grad_checkpoint:
         if list_lora_blocks_fn is None:
             raise RuntimeError("grad_checkpoint requires list_lora_blocks_fn for this DiT family")
-        enable_grad_checkpointing_on_blocks(list_lora_blocks_fn(model, lora_blocks=lora_blocks))
+        blocks = list_lora_blocks_fn(model, lora_blocks=lora_blocks)
+        if enable_grad_checkpointing_on_blocks(blocks) == 0 and blocks:
+            import logging
+
+            logging.getLogger("danqing.lora").warning(
+                "grad_checkpoint requested but %s blocks are not nn.Module (called via .forward); "
+                "checkpointing is inactive for this DiT family (memory only, results unaffected).",
+                type(blocks[0]).__name__,
+            )
     train_module = build_lora_train_module(model)
     mx.eval(train_module.parameters())
     return model, train_module

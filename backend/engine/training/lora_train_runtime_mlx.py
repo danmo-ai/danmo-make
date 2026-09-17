@@ -77,6 +77,9 @@ class LoraTrainRuntimeConfig:
     sigma_bias: str
     turbo_assistant_off_prob: float
     scheme4_turbo_band_mix: float
+    # Static σ shift used when sampling training noise levels for Base DiTs (None → registry
+    # ``scheduler_shift``). Presets set 3.0 for Z-Image Base; see presets.Z_IMAGE_BASE_TRAIN_SIGMA_SHIFT.
+    train_sigma_shift: float | None
 
     @property
     def lora_scale(self) -> float:
@@ -183,6 +186,24 @@ def parse_lora_train_runtime_config(cfg: dict[str, Any], *, defaults: dict[str, 
             "(e.g. 'a photo of a person'); set it in training params or set prior_loss_weight to 0."
         )
 
+    train_sigma_shift_raw = merged.get("train_sigma_shift")
+    train_sigma_shift: float | None = None
+    if train_sigma_shift_raw is not None:
+        train_sigma_shift = float(train_sigma_shift_raw)
+        if train_sigma_shift <= 0:
+            raise RuntimeError(f"train_sigma_shift must be > 0 (got {train_sigma_shift})")
+
+    timestep_low = int(merged.get("timestep_low") or 1)
+    timestep_high = int(merged.get("timestep_high") or 9)
+    if timestep_low < 1 or timestep_high < timestep_low:
+        raise RuntimeError(
+            f"timestep_low/timestep_high must satisfy 1 <= low <= high (got {timestep_low}, {timestep_high})"
+        )
+    for name in ("timestep_bias", "sigma_bias"):
+        val = str(merged.get(name) or "uniform").strip().lower()
+        if val not in ("uniform", "low", "high"):
+            raise RuntimeError(f"{name} must be uniform|low|high (got {val!r})")
+
     return LoraTrainRuntimeConfig(
         iterations=iterations,
         batch_size=batch_size,
@@ -214,12 +235,13 @@ def parse_lora_train_runtime_config(cfg: dict[str, Any], *, defaults: dict[str, 
         early_stop_patience=int(merged.get("early_stop_patience") or 0),
         fuse_adapters=bool(merged.get("fuse_adapters") or False),
         turbo_infer_steps=int(merged.get("turbo_infer_steps") or 9),
-        timestep_low=int(merged.get("timestep_low") or 4),
-        timestep_high=int(merged.get("timestep_high") or 9),
-        timestep_bias=str(merged.get("timestep_bias") or "low").strip().lower(),
+        timestep_low=timestep_low,
+        timestep_high=timestep_high,
+        timestep_bias=str(merged.get("timestep_bias") or "uniform").strip().lower(),
         sigma_bias=str(merged.get("sigma_bias") or "uniform").strip().lower(),
         turbo_assistant_off_prob=float(merged.get("turbo_assistant_off_prob") or 0.0),
         scheme4_turbo_band_mix=float(merged.get("scheme4_turbo_band_mix") or 0.0),
+        train_sigma_shift=train_sigma_shift,
     )
 
 

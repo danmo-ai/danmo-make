@@ -287,7 +287,7 @@
     "confirmIntro": "Review the settings below, then submit to the global queue. You can browse elsewhere while training runs.",
     "summaryOutput": "LoRA name",
     "presetDesc": {
-      "scheme4": "Official Scheme 4: Base SFT + hybrid Turbo σ band (rank 32, all blocks, 1200 steps); infer on Turbo + DistillPatch (8-step acceleration).",
+      "scheme4": "Official Scheme 4: Base SFT + hybrid Turbo σ band (rank 32, all blocks, 2500 steps); infer on Turbo + DistillPatch (8-step acceleration).",
       "quick": "~300–400 steps — good for validating dataset and captions",
       "standard": "Recommended default — balance of quality and time",
       "quality": "More steps — best for final output",

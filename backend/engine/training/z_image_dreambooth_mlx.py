@@ -19,17 +19,21 @@ from backend.engine.contracts import local_bundle_root
 from backend.engine.contracts.pipeline_registry import registry_scalar_default
 from backend.engine.families.z_image.weights import remap_zimage_lora_keys
 from backend.engine.pipelines.image_model_load import load_image_transformer
-from backend.engine.training.crop import prepare_training_rgb_image, resolve_training_resolution
+from backend.engine.training.crop import (
+    prepare_training_rgb_image,
+    resolve_training_resolution,
+    training_allows_flip,
+)
 from backend.engine.training.dataset_store import _dataset_meta, load_training_pairs_unified
 from backend.engine.training.flux_dreambooth_mlx import _load_vae_encoder, _log, _progress, _save_adapter
 from backend.engine.training.lora_layers_mlx import (
     apply_lora_to_zimage_dit,
+    assert_no_trainable_assistant,
     list_zimage_lora_blocks,
     prepare_dit_for_lora_training,
 )
 from backend.engine.training.dit_training_loss_mlx import (
     CLASS_PRIOR_LATENT_COUNT,
-    _sample_turbo_band_indices,
     apply_static_sigma_shift,
     combine_instance_prior_loss,
     flow_match_mse,
@@ -37,6 +41,7 @@ from backend.engine.training.dit_training_loss_mlx import (
     sample_noisy_latent_shifted,
     sample_noisy_latent_turbo,
     sample_prior_latent,
+    sample_turbo_sigmas,
     turbo_training_sigmas,
 )
 from backend.engine.training.latent_cache_mlx import LatentCache
@@ -61,9 +66,8 @@ from backend.engine.training.z_image_turbo_adapter_mlx import (
 
 _Z_IMAGE_TRAINABLE_IDS = frozenset({"z-image", "z-image-turbo"})
 
-# Z-Image base inference uses FlowMatchEulerScheduler with a static sigma shift (registry
-# ``scheduler_shift``, default 6.0). Training must sample σ from the same shifted distribution
-# or the high-σ structure/identity region stays under-trained and LoRAs fail to memorize faces.
+# Fallback when neither preset nor request sets ``train_sigma_shift``: the Z-Image base
+# inference shift (registry ``scheduler_shift``, default 6.0).
 _Z_IMAGE_BASE_SIGMA_SHIFT = 6.0
 
 
@@ -107,6 +111,7 @@ def _encode_dataset_to_cache(
     exec_ctx: ExecutionContext,
     class_prompt: str | None,
     caption_mode: str = "",
+    allow_flip: bool = True,
 ) -> int:
     total_samples = len(pairs) * num_augmentations
     cache.begin(
@@ -138,6 +143,7 @@ def _encode_dataset_to_cache(
                 train_cfg,
                 preset=preset,
                 augmentation_index=aug_i,
+                allow_flip=allow_flip,
             )
             nchw = mx.array(arr.transpose(2, 0, 1)[None].astype("float32"))
             n11 = nchw * 2.0 - 1.0
@@ -422,16 +428,21 @@ def _log_training_sigma_distribution(
                 width=resolution[0],
                 height=resolution[1],
             )
-            n_s = int(sigmas.shape[0])
-            lo = max(0, min(int(train_runtime.timestep_low) - 1, n_s - 1))
-            hi = max(lo, min(int(train_runtime.timestep_high) - 1, n_s - 1))
-            band = sigmas[lo : hi + 1]
-            idx = _sample_turbo_band_indices(n, int(band.shape[0]), bias=train_runtime.timestep_bias)
-            s = band[idx]
-            mx.eval(band, s)
+            s = sample_turbo_sigmas(
+                ctx,
+                n,
+                infer_steps=train_runtime.turbo_infer_steps,
+                timestep_low=train_runtime.timestep_low,
+                timestep_high=train_runtime.timestep_high,
+                width=resolution[0],
+                height=resolution[1],
+                timestep_bias=train_runtime.timestep_bias,
+            )
+            mx.eval(sigmas, s)
             header = (
-                f"turbo band[{train_runtime.timestep_low}-{train_runtime.timestep_high}] "
-                f"bias={train_runtime.timestep_bias} band_σ={_fmt_floats(band)}"
+                f"turbo continuous band[{train_runtime.timestep_low}-{train_runtime.timestep_high}] "
+                f"of {train_runtime.turbo_infer_steps} steps bias={train_runtime.timestep_bias} "
+                f"inference_σ={_fmt_floats(sigmas)}"
             )
         else:
             u = mx.random.uniform(shape=(n,), dtype=ctx.float32())
@@ -557,18 +568,21 @@ def run_z_image_dreambooth_training(
             f"Z-Image training runner expects family z_image (model {base_model_id!r} is {entry.family!r})"
         )
 
-    # Base training samples σ with the same static shift the base scheduler uses at inference
-    # (registry ``scheduler_shift``, default 6.0). Turbo aligns via its inference sigma band and
-    # keeps shift-neutral sampling here.
-    base_sigma_shift = (
-        1.0
-        if is_turbo
-        else float(registry_scalar_default(entry, "scheduler_shift", _Z_IMAGE_BASE_SIGMA_SHIFT))
-    )
-
     preset = resolve_preset(request.preset, base_model=request.base_model)
     cfg = merge_training_request_config(request, preset)
     train_runtime = parse_lora_train_runtime_config(cfg, defaults=preset)
+
+    # Base training samples σ = shift(u) with a static shift. Presets set ``train_sigma_shift``
+    # (3.0 — keeps supervision in the 0.3–0.7 identity band); without it fall back to the
+    # inference ``scheduler_shift`` from the registry. Turbo samples its own inference band.
+    if is_turbo:
+        base_sigma_shift = 1.0
+    elif train_runtime.train_sigma_shift is not None:
+        base_sigma_shift = float(train_runtime.train_sigma_shift)
+    else:
+        base_sigma_shift = float(
+            registry_scalar_default(entry, "scheduler_shift", _Z_IMAGE_BASE_SIGMA_SHIFT)
+        )
     if mid == "z-image" and (
         train_runtime.prior_loss_weight > 0 or train_runtime.class_prompt
     ):
@@ -646,6 +660,9 @@ def run_z_image_dreambooth_training(
     )
     latent_cache = LatentCache(work_dir)
     class_prompt = train_runtime.class_prompt
+    allow_flip = training_allows_flip(dataset_meta)
+    if not allow_flip:
+        _log(exec_ctx, "info", "Concept dataset: horizontal flip augmentation disabled (faces are asymmetric)")
 
     def _run_encode() -> int:
         return _encode_dataset_to_cache(
@@ -663,6 +680,7 @@ def run_z_image_dreambooth_training(
             exec_ctx=exec_ctx,
             class_prompt=class_prompt if train_runtime.prior_loss_weight > 0 else None,
             caption_mode=resolved_caption_mode,
+            allow_flip=allow_flip,
         )
 
     if latent_cache.is_valid(
@@ -731,28 +749,50 @@ def run_z_image_dreambooth_training(
             ctx,
             repair_indexed_weights=_repair_indexed_zimage_weights,
         )
+        # The assistant must not receive gradients: otherwise AdamW writes the subject into the
+        # (larger) assistant, which is switched off at inference and never exported.
+        lora_param_count = assert_no_trainable_assistant(train_module)
         _log(
             exec_ctx,
             "info",
-            f"Training assistant attached ({training_assistant.count} layers; base DiT weights unchanged)",
+            f"Training assistant attached ({training_assistant.count} layers, frozen; "
+            f"base DiT weights unchanged; trainable LoRA params={lora_param_count:,})",
         )
+        if train_runtime.turbo_assistant_off_prob > 0:
+            _log(
+                exec_ctx,
+                "warning",
+                f"turbo_assistant_off_prob={train_runtime.turbo_assistant_off_prob:g}: training part-time "
+                "on the raw distilled model spends LoRA capacity on re-distillation instead of the "
+                "subject; the reference recipe keeps the assistant on for every step.",
+            )
         _log(
             exec_ctx,
             "info",
-            "Turbo LoRA inference hint: linear scheduler, 9 steps, CFG=0, "
-            f"LoRA weight 0.7-0.85, FP16 base; training sigma band "
+            f"Turbo LoRA inference hint: linear scheduler, {train_runtime.turbo_infer_steps} steps, CFG=0, "
+            f"LoRA weight 0.8-1.0, FP16 base; training σ sampled continuously over inference steps "
             f"[{train_runtime.timestep_low}-{train_runtime.timestep_high}] "
             f"bias={train_runtime.timestep_bias} "
             f"assistant_off_prob={train_runtime.turbo_assistant_off_prob:g} "
             f"modules={train_runtime.lora_module_keys or 'all'}",
         )
     else:
+        assert_no_trainable_assistant(train_module)
         _log(
             exec_ctx,
             "info",
-            f"Base Z-Image training: shift-matched σ sampling (sigma_shift={base_sigma_shift:g}, "
-            f"sigma_bias={train_runtime.sigma_bias}) aligned to inference scheduler for identity",
+            f"Base Z-Image training: σ = shift(u) with train_sigma_shift={base_sigma_shift:g}, "
+            f"sigma_bias={train_runtime.sigma_bias} (inference scheduler_shift="
+            f"{float(registry_scalar_default(entry, 'scheduler_shift', _Z_IMAGE_BASE_SIGMA_SHIFT)):g})",
         )
+        if train_runtime.sigma_bias == "high" or base_sigma_shift >= 5.0:
+            _log(
+                exec_ctx,
+                "warning",
+                "σ sampling is concentrated near pure noise (shift>=5 and/or sigma_bias=high): most "
+                "steps land at σ>0.9 and the 0.3–0.7 band that fixes facial structure is starved; "
+                "identity LoRAs converge poorly. Prefer train_sigma_shift=3 with sigma_bias=uniform.",
+            )
         if train_runtime.scheme4_turbo_band_mix > 0:
             _log(
                 exec_ctx,
@@ -784,11 +824,14 @@ def run_z_image_dreambooth_training(
         f"modules={train_runtime.lora_module_keys or 'all'} lora_layers={lora_layer_count} "
         f"train_type={train_runtime.train_type} qlora={train_runtime.qlora_bits} "
         f"min_snr_gamma={train_runtime.min_snr_gamma:g} "
-        f"sigma_bias={train_runtime.sigma_bias} "
+        f"sigma_shift={base_sigma_shift:g} sigma_bias={train_runtime.sigma_bias} "
+        f"turbo_band=[{train_runtime.timestep_low}-{train_runtime.timestep_high}]/"
+        f"{train_runtime.turbo_infer_steps} timestep_bias={train_runtime.timestep_bias} "
         f"scheme4_turbo_mix={train_runtime.scheme4_turbo_band_mix:g} "
         f"turbo_asst_off={train_runtime.turbo_assistant_off_prob:g} "
         f"num_aug={train_runtime.num_augmentations} n_samples={n_samples} "
-        f"train/val={len([p for p in pairs])}",
+        f"images={len(pairs)} val_split={train_runtime.val_split:g} "
+        f"optimizer_updates={max(1, train_runtime.iterations // max(1, train_runtime.grad_accumulate))}",
     )
     _log_training_sigma_distribution(
         exec_ctx,

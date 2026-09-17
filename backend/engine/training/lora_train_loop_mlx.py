@@ -29,6 +29,40 @@ from backend.engine.training.lora_train_runtime_mlx import (
 )
 
 
+_VAL_SEED_BASE = 0x5EED_0A11
+
+
+def _deterministic_val_loss(
+    loss_fn: Callable[..., mx.array],
+    sample_batch: Callable[[list[int]], tuple[Any, ...]],
+    val_indices: list[int],
+    *,
+    mlx_ctx: Any | None,
+) -> float:
+    """Validation loss with fixed σ / ε per sample.
+
+    ``loss_fn`` draws the noise level and noise from the global RNG; with a handful of val
+    samples that variance dwarfs the training improvement, so picking ``best_adapters`` on it
+    is a lottery (often an early, untrained checkpoint). Seeding per sample makes rounds
+    comparable. MLX's global RNG state cannot be saved/restored, so a resume seed is drawn from
+    the training stream first and re-applied afterwards: training stays a deterministic
+    function of its initial seed whether or not validation runs.
+    """
+    resume_seed = int(mx.random.randint(0, 2**31 - 1).item())
+    try:
+        losses: list[float] = []
+        for k, vidx in enumerate(val_indices):
+            mx.random.seed(_VAL_SEED_BASE + 7919 * k + int(vidx))
+            vbatch = sample_batch([vidx])
+            vloss = loss_fn(*vbatch)
+            mx.eval(vloss)
+            losses.append(float(vloss.item()))
+            clear_mlx_training_cache(mlx_ctx)
+    finally:
+        mx.random.seed(resume_seed)
+    return sum(losses) / max(1, len(losses))
+
+
 def run_dit_lora_train_loop(
     *,
     exec_ctx: ExecutionContext,
@@ -154,38 +188,36 @@ def run_dit_lora_train_loop(
             )
             row: dict[str, float] = {"step": float(i + 1), "loss": avg}
             if val_indices and runtime.val_every > 0 and (i + 1) % runtime.val_every == 0:
-                val_losses: list[float] = []
-                for vidx in val_indices:
-                    vbatch = sample_batch([vidx])
-                    vloss = loss_fn(*vbatch)
-                    mx.eval(vloss)
-                    val_losses.append(float(vloss.item()))
-                    clear_mlx_training_cache(mlx_ctx)
-                if val_losses:
-                    val_avg = sum(val_losses) / len(val_losses)
-                    row["val_loss"] = val_avg
-                    training_log(exec_ctx, "info", f"Val loss={val_avg:.4f} ({len(val_indices)} samples)")
-                    if best_val is None or val_avg < best_val:
-                        best_val = val_avg
-                        stale_val = 0
-                        best_path = adapter_dir / "best_adapters.safetensors"
-                        meta = {
-                            "iteration": i + 1,
-                            "lora_rank": runtime.lora_rank,
-                            "base_model": base_model_id,
-                            "val_loss": val_avg,
-                            "train_type": runtime.train_type,
-                        }
-                        save_training_checkpoint(
-                            best_path,
-                            train_module,
-                            optimizer,
-                            rank=runtime.lora_rank,
-                            meta=meta,
-                        )
-                        training_log(exec_ctx, "info", f"New best val loss; saved {best_path.name}")
-                    else:
-                        stale_val += 1
+                val_avg = _deterministic_val_loss(
+                    loss_fn, sample_batch, val_indices, mlx_ctx=mlx_ctx
+                )
+                row["val_loss"] = val_avg
+                training_log(
+                    exec_ctx,
+                    "info",
+                    f"Val loss={val_avg:.4f} ({len(val_indices)} samples, fixed σ/ε)",
+                )
+                if best_val is None or val_avg < best_val:
+                    best_val = val_avg
+                    stale_val = 0
+                    best_path = adapter_dir / "best_adapters.safetensors"
+                    meta = {
+                        "iteration": i + 1,
+                        "lora_rank": runtime.lora_rank,
+                        "base_model": base_model_id,
+                        "val_loss": val_avg,
+                        "train_type": runtime.train_type,
+                    }
+                    save_training_checkpoint(
+                        best_path,
+                        train_module,
+                        optimizer,
+                        rank=runtime.lora_rank,
+                        meta=meta,
+                    )
+                    training_log(exec_ctx, "info", f"New best val loss; saved {best_path.name}")
+                else:
+                    stale_val += 1
             loss_history.append(row)
             loss_path.write_text(json.dumps(loss_history), encoding="utf-8")
             losses = []
