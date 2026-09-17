@@ -303,6 +303,15 @@
                   </DqSelect>
                   <p class="lora-train-page__field-hint">{{ $t('loraTrain.qloraHint') }}</p>
                 </div>
+                <div class="lora-train-page__field">
+                  <label class="lora-train-page__label">{{ $t('loraTrain.faceCrop') }}</label>
+                  <DqSelect v-model="form.face_crop">
+                    <DqOption :label="$t('loraTrain.faceCropAuto')" value="auto" />
+                    <DqOption :label="$t('loraTrain.faceCropOn')" value="on" />
+                    <DqOption :label="$t('loraTrain.faceCropOff')" value="off" />
+                  </DqSelect>
+                  <p class="lora-train-page__field-hint">{{ $t('loraTrain.faceCropHint') }}</p>
+                </div>
                 <div class="lora-train-page__field lora-train-page__field--switch">
                   <label class="lora-train-page__label">{{ $t('loraTrain.gradCheckpoint') }}</label>
                   <DqSwitch v-model="form.grad_checkpoint" />
@@ -605,6 +614,7 @@ const form = reactive({
   num_augmentations: null as number | null,
   grad_accumulate: null as number | null,
   qlora_bits: '' as '' | '4' | '8',
+  face_crop: 'auto' as 'auto' | 'on' | 'off',
   grad_checkpoint: false,
   compile_step: false,
   lora_blocks: null as number | null,
@@ -1007,6 +1017,7 @@ function buildTrainingBody(): Record<string, unknown> {
     }
   }
   if (form.compile_step) body.compile_step = true;
+  if (form.face_crop !== 'auto') body.face_crop = form.face_crop;
 
   if (form.preset === 'custom') {
     if (form.iterations) body.iterations = form.iterations;
@@ -1099,6 +1110,7 @@ function restoreDraft() {
     if (draft.num_augmentations != null) form.num_augmentations = Number(draft.num_augmentations);
     if (draft.grad_accumulate != null) form.grad_accumulate = Number(draft.grad_accumulate);
     if (draft.qlora_bits) form.qlora_bits = draft.qlora_bits as '' | '4' | '8';
+    if (draft.face_crop === 'auto' || draft.face_crop === 'on' || draft.face_crop === 'off') form.face_crop = draft.face_crop;
     if (typeof draft.grad_checkpoint === 'boolean') form.grad_checkpoint = draft.grad_checkpoint;
     if (typeof draft.compile_step === 'boolean') form.compile_step = draft.compile_step;
     if (draft.lora_blocks != null) form.lora_blocks = Number(draft.lora_blocks);
@@ -1145,6 +1157,7 @@ function persistDraft() {
       num_augmentations: form.num_augmentations,
       grad_accumulate: form.grad_accumulate,
       qlora_bits: form.qlora_bits,
+      face_crop: form.face_crop,
       grad_checkpoint: form.grad_checkpoint,
       compile_step: form.compile_step,
       lora_blocks: form.lora_blocks,
@@ -1311,6 +1324,7 @@ watch(
     form.num_augmentations,
     form.grad_accumulate,
     form.qlora_bits,
+    form.face_crop,
     form.grad_checkpoint,
     form.compile_step,
     form.lora_blocks,

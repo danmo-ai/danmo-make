@@ -189,8 +189,12 @@ def compile_portrait_dataset_audit(
     truncated: bool = False,
     total_images: int = 0,
     training_resolution: tuple[int, int] = (512, 512),
+    project_root: Path | None = None,
 ) -> dict[str, Any]:
-    """VLM on ``vlm_paths`` plus pixel heuristics on every ``all_paths`` (concept only)."""
+    """VLM on ``vlm_paths`` plus pixel heuristics on every ``all_paths`` (concept only).
+
+    ``project_root`` enables YuNet face geometry in the heuristics when the detector is present.
+    """
     if audit_kind != "concept":
         keys = vlm_file_keys or [p.name for p in vlm_paths]
         return compile_dataset_vlm_report(
@@ -205,7 +209,10 @@ def compile_portrait_dataset_audit(
     from backend.engine.training.portrait_lora_suitability import (
         analyze_portrait_training_image,
         merge_vlm_and_heuristic_sample,
+        resolve_face_model_for_audit,
     )
+
+    face_model_path = resolve_face_model_for_audit(project_root)
 
     all_keys = all_file_keys or [p.name for p in all_paths]
     vlm_keys = vlm_file_keys or [p.name for p in vlm_paths]
@@ -219,6 +226,7 @@ def compile_portrait_dataset_audit(
         heuristic_by_key[key] = analyze_portrait_training_image(
             path,
             training_resolution=training_resolution,
+            face_model_path=face_model_path,
         )
 
     merged_by_key: dict[str, dict[str, Any]] = {}
@@ -404,6 +412,7 @@ def _dataset_vlm_hints(
     style_error_tags = {"inconsistent_style", "off_theme", "cluttered", "noisy"}
     concept_error_tags = {
         "small_face",
+        "face_not_detected",
         "tiny_face_in_crop",
         "landscape_framing",
         "full_body",

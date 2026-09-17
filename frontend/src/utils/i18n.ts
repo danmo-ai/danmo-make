@@ -114,13 +114,3 @@ export function sendShortcutHintText(): string {
   const isApple = /Mac|iPhone|iPad|iPod/i.test(ua);
   return isApple ? $tt('studio.sendShortcutHintMac') : $tt('studio.sendShortcutHintWin');
 }
-
-/* Theme API — re-exported from stores/theme for existing imports */
-export {
-  applyTheme,
-  migrateThemeId,
-  VALID_THEME_IDS,
-  PRODUCTIVITY_THEME_IDS,
-  THEME_OPTIONS,
-  type ThemeId,
-} from '@/stores/theme';

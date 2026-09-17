@@ -355,6 +355,10 @@ class SettingsService(ISettingsService):
             if local_path:
                 bundle_dir = resolved if resolved.is_dir() else resolved.parent
                 row.update(lora_config_picklist_extras(bundle_dir))
+            if "hint_key" not in row and lora_base.split(":", 1)[0].strip() == "z-image-turbo":
+                from backend.catalog.lora_meta import z_image_turbo_trained_picklist_extras
+
+                row.update(z_image_turbo_trained_picklist_extras())
             out.insert(
                 0,
                 row,

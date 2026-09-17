@@ -73,8 +73,9 @@ def prepare_training_rgb_image(
     preset: str | None = None,
     augmentation_index: int = 0,
     allow_flip: bool = True,
+    crop_window: tuple[int, int, int, int] | None = None,
 ) -> tuple[Any, tuple[int, int]]:
-    """Cover-crop (face-biased for portraits) to model training size."""
+    """Cover-crop (face-biased for portraits, or an explicit face window) to model training size."""
     resolution = resolve_training_resolution(base_model_id, cfg, preset=preset)
     resize_mode = str(cfg.get("resize_mode") or "cover")
     return (
@@ -84,6 +85,7 @@ def prepare_training_rgb_image(
             augmentation_index=augmentation_index,
             resize_mode=resize_mode,
             allow_flip=allow_flip,
+            crop_window=crop_window,
         ),
         resolution,
     )

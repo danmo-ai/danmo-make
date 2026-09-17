@@ -25,6 +25,7 @@ from backend.engine.training.crop import (
     training_allows_flip,
 )
 from backend.engine.training.dataset_store import _dataset_meta, load_training_pairs_unified
+from backend.engine.training.face_crop import face_crop_cache_key, plan_training_face_crops
 from backend.engine.training.flux_dreambooth_mlx import _load_vae_encoder, _log, _progress, _save_adapter
 from backend.engine.training.lora_layers_mlx import (
     apply_lora_to_zimage_dit,
@@ -53,6 +54,7 @@ from backend.engine.training.lora_train_runtime_mlx import (
 )
 from backend.engine.training.presets import (
     Z_IMAGE_SCHEME4_INFERENCE,
+    Z_IMAGE_TURBO_INFERENCE,
     merge_training_request_config,
     resolve_preset,
 )
@@ -112,6 +114,8 @@ def _encode_dataset_to_cache(
     class_prompt: str | None,
     caption_mode: str = "",
     allow_flip: bool = True,
+    crop_windows: dict[Path, tuple[int, int, int, int] | None] | None = None,
+    crop_policy: str = "",
 ) -> int:
     total_samples = len(pairs) * num_augmentations
     cache.begin(
@@ -122,6 +126,7 @@ def _encode_dataset_to_cache(
         family="z_image",
         tensor_keys=["latent", "cap"],
         caption_mode=caption_mode,
+        crop_policy=crop_policy,
     )
     _log(exec_ctx, "info", f"Encoding {len(pairs)} images × {num_augmentations} augmentations …")
     _progress(
@@ -144,6 +149,7 @@ def _encode_dataset_to_cache(
                 preset=preset,
                 augmentation_index=aug_i,
                 allow_flip=allow_flip,
+                crop_window=(crop_windows or {}).get(img_path),
             )
             nchw = mx.array(arr.transpose(2, 0, 1)[None].astype("float32"))
             n11 = nchw * 2.0 - 1.0
@@ -624,13 +630,25 @@ def run_z_image_dreambooth_training(
     resolved_caption_mode = "per_image" if len(unique_caps) > 1 else "unified"
     kind = str(dataset_meta.get("kind") or "concept").strip().lower()
     if kind == "concept" and resolved_caption_mode == "per_image":
-        _log(
-            exec_ctx,
-            "warning",
-            "Concept LoRA is using per_image captions; long VLM captions dilute the trigger "
-            "and often prevent face memorization. Prefer unified caption (trigger/progress_prompt only) "
-            "or set caption_mode=unified.",
-        )
+        from backend.engine.training.dataset_store import concept_caption_stats
+
+        cap_stats = concept_caption_stats(pairs, trigger=trigger_word)
+        if cap_stats["long"] or cap_stats["missing_trigger"]:
+            _log(
+                exec_ctx,
+                "warning",
+                f"Concept LoRA is using per_image captions but {cap_stats['long'] + cap_stats['missing_trigger']}/"
+                f"{cap_stats['total']} are long or not trigger-anchored; long VLM captions dilute the trigger "
+                "and often prevent face memorization. Re-run auto-caption (concept template) or set "
+                "caption_mode=unified.",
+            )
+        else:
+            _log(
+                exec_ctx,
+                "info",
+                f"Concept LoRA per_image captions are trigger-anchored and short "
+                f"({cap_stats['anchored_short']}/{cap_stats['total']}); outfit/background stay separable from identity.",
+            )
     sample_cap = str(pairs[0][1] or "").strip() if pairs else ""
     _log(
         exec_ctx,
@@ -663,6 +681,16 @@ def run_z_image_dreambooth_training(
     allow_flip = training_allows_flip(dataset_meta)
     if not allow_flip:
         _log(exec_ctx, "info", "Concept dataset: horizontal flip augmentation disabled (faces are asymmetric)")
+    face_plans = plan_training_face_crops(
+        pairs,
+        project_root=project_root,
+        resolution=resolution,
+        mode=train_runtime.face_crop,
+        dataset_meta=dataset_meta,
+        on_log=lambda level, msg: _log(exec_ctx, level, msg),
+    )
+    crop_windows = {p: plan.window for p, plan in face_plans.items()}
+    crop_policy = face_crop_cache_key(face_plans)
 
     def _run_encode() -> int:
         return _encode_dataset_to_cache(
@@ -681,6 +709,8 @@ def run_z_image_dreambooth_training(
             class_prompt=class_prompt if train_runtime.prior_loss_weight > 0 else None,
             caption_mode=resolved_caption_mode,
             allow_flip=allow_flip,
+            crop_windows=crop_windows,
+            crop_policy=crop_policy,
         )
 
     if latent_cache.is_valid(
@@ -691,6 +721,7 @@ def run_z_image_dreambooth_training(
         family="z_image",
         n_samples=len(pairs) * train_runtime.num_augmentations,
         caption_mode=resolved_caption_mode,
+        crop_policy=crop_policy,
     ):
         _log(exec_ctx, "info", "Reusing cached latents from work_dir/latent_cache …")
         n_samples = len(pairs) * train_runtime.num_augmentations
@@ -1073,7 +1104,12 @@ def run_z_image_dreambooth_training(
         "trigger_word": trigger_word,
         "training_caption": training_caption,
     }
-    if not is_turbo and (request.preset or "").strip().lower() == "scheme4":
+    if is_turbo:
+        lora_config["inference"] = {
+            **Z_IMAGE_TURBO_INFERENCE,
+            "steps": int(train_runtime.turbo_infer_steps),
+        }
+    elif (request.preset or "").strip().lower() == "scheme4":
         lora_config["inference"] = dict(Z_IMAGE_SCHEME4_INFERENCE)
     (dest_dir / "lora_config.json").write_text(json.dumps(lora_config, indent=2), encoding="utf-8")
 

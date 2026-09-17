@@ -46,12 +46,74 @@ def _simulate_training_cover_crop(path: Path, resolution: tuple[int, int]) -> tu
     return crop, src_w, src_h
 
 
+def resolve_face_model_for_audit(project_root: Path | None) -> Path | None:
+    """YuNet path when OpenCV + model are available locally (no download during audits)."""
+    if project_root is None:
+        return None
+    from backend.engine.training.face_crop import opencv_face_detector_available, resolve_face_detector_path
+
+    ok, _why = opencv_face_detector_available()
+    if not ok:
+        return None
+    try:
+        return resolve_face_detector_path(project_root, allow_download=False)
+    except RuntimeError:
+        return None
+
+
+def _face_geometry_issues(
+    path: Path,
+    *,
+    face_model_path: Path,
+    src_w: int,
+    src_h: int,
+    training_resolution: tuple[int, int],
+) -> tuple[int, list[str], list[str], dict[str, Any]]:
+    """Penalties from the real face box: none / tiny (unfixable) / small (auto-crop fixes) / multi."""
+    from backend.engine.training.face_crop import (
+        FACE_LARGE_ENOUGH_FRACTION,
+        detect_faces,
+        min_usable_face_px,
+    )
+
+    faces = detect_faces(path, face_model_path)
+    stats: dict[str, Any] = {"face_count": len(faces)}
+    if not faces:
+        return 40, ["face_not_detected", "small_face"], ["未检测到人脸（人物 LoRA 每张图都应清晰露脸）"], stats
+    face = faces[0]
+    aspect = training_resolution[0] / float(training_resolution[1])
+    cover_h = max(1.0, min(float(src_h), src_w / aspect))
+    frac = face.h / cover_h
+    stats.update({"face_px": int(round(face.h)), "face_frac": round(frac, 3)})
+    penalty = 0
+    issues: list[str] = []
+    reasons: list[str] = []
+    if face.h < min_usable_face_px(int(training_resolution[1])):
+        penalty += 40
+        issues.extend(["tiny_face_in_crop", "small_face"])
+        reasons.append(f"人脸仅 {int(face.h)}px，即使自动人脸裁切放大也会模糊")
+    elif frac < FACE_LARGE_ENOUGH_FRACTION:
+        penalty += 8
+        issues.append("small_face")
+        reasons.append(f"人脸占画面 {frac:.0%}，训练时将自动人脸裁切放大")
+    if len(faces) >= 2 and faces[1].h >= 0.4 * face.h:
+        penalty += 15
+        issues.append("multiple_people")
+        reasons.append("画面中有多张人脸，身份可能混淆")
+    return penalty, issues, reasons, stats
+
+
 def analyze_portrait_training_image(
     path: Path,
     *,
     training_resolution: tuple[int, int] = DEFAULT_TRAINING_RESOLUTION,
+    face_model_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Score one image for person/concept LoRA training at ``training_resolution``."""
+    """Score one image for person/concept LoRA training at ``training_resolution``.
+
+    With ``face_model_path`` (YuNet) the face size comes from a real detection; otherwise the
+    legacy Laplacian "face band" energy of the simulated cover crop is used.
+    """
     if not path.is_file():
         return {
             "score_100": 0,
@@ -99,27 +161,47 @@ def analyze_portrait_training_image(
         issues.append("low_resolution")
         reasons.append(f"短边 {short_edge}px 偏低，训练裁切后五官可能偏糊")
 
-    if landscape:
-        score -= 12
-        issues.append("landscape_framing")
-        reasons.append("横图构图，512 cover 裁切后人物/面部占比通常过小")
-    if aspect >= 1.6:
-        score -= 8
-        issues.append("wrong_framing")
-        reasons.append("超宽画幅，主体在训练分辨率下过小")
+    face_stats: dict[str, Any] = {}
+    face_detected = False
+    if face_model_path is not None:
+        try:
+            penalty, f_issues, f_reasons, face_stats = _face_geometry_issues(
+                path,
+                face_model_path=face_model_path,
+                src_w=src_w,
+                src_h=src_h,
+                training_resolution=training_resolution,
+            )
+            score -= penalty
+            issues.extend(f_issues)
+            reasons.extend(f_reasons)
+            face_detected = True
+        except Exception:
+            face_stats = {}
+            face_detected = False
 
-    if face_energy < 35:
-        score -= 40
-        issues.extend(["tiny_face_in_crop", "small_face"])
-        reasons.append("模拟 512 裁切后面部区域过小或过于模糊")
-    elif face_energy < 70:
-        score -= 22
-        issues.append("face_soft_in_crop")
-        reasons.append("模拟 512 裁切后面部清晰度一般")
-    elif face_energy < 100:
-        score -= 10
-        issues.append("low_detail")
-        reasons.append("面部细节略弱，近景胸像/半身照更佳")
+    if not face_detected:
+        # Framing penalties only matter when we cannot measure (and auto-crop) the real face.
+        if landscape:
+            score -= 12
+            issues.append("landscape_framing")
+            reasons.append("横图构图，512 cover 裁切后人物/面部占比通常过小")
+        if aspect >= 1.6:
+            score -= 8
+            issues.append("wrong_framing")
+            reasons.append("超宽画幅，主体在训练分辨率下过小")
+        if face_energy < 35:
+            score -= 40
+            issues.extend(["tiny_face_in_crop", "small_face"])
+            reasons.append("模拟 512 裁切后面部区域过小或过于模糊")
+        elif face_energy < 70:
+            score -= 22
+            issues.append("face_soft_in_crop")
+            reasons.append("模拟 512 裁切后面部清晰度一般")
+        elif face_energy < 100:
+            score -= 10
+            issues.append("low_detail")
+            reasons.append("面部细节略弱，近景胸像/半身照更佳")
 
     if overall_energy < 25 and "blurry" not in issues:
         score -= 15
@@ -130,20 +212,23 @@ def analyze_portrait_training_image(
     unique_issues = sorted(dict.fromkeys(issues))
     reason = "；".join(reasons[:3]) if reasons else "适合人物 LoRA 训练"
 
+    stats: dict[str, Any] = {
+        "src_width": src_w,
+        "src_height": src_h,
+        "short_edge": short_edge,
+        "aspect_ratio": round(aspect, 3),
+        "face_crop_energy": round(face_energy, 1),
+        "overall_crop_energy": round(overall_energy, 1),
+        "landscape": landscape,
+        "face_detector": face_detected,
+    }
+    stats.update(face_stats)
     return {
         "score_100": score,
         "score_1_5": score_100_to_1_5(score),
         "issues": unique_issues,
         "reason": reason,
-        "stats": {
-            "src_width": src_w,
-            "src_height": src_h,
-            "short_edge": short_edge,
-            "aspect_ratio": round(aspect, 3),
-            "face_crop_energy": round(face_energy, 1),
-            "overall_crop_energy": round(overall_energy, 1),
-            "landscape": landscape,
-        },
+        "stats": stats,
     }
 
 

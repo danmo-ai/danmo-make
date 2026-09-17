@@ -94,6 +94,25 @@
           <DqSlider v-model="params.lora_scale" :min="0" :max="2" :step="0.05" class="composer-advanced-fields__slider-grow" />
           <span class="composer-advanced-fields__val">{{ params.lora_scale }}</span>
         </div>
+        <p v-if="params.lora && selectedLoraHintKey" class="composer-advanced-fields__hint">
+          {{ $t(selectedLoraHintKey) }}
+        </p>
+        <p
+          v-if="params.lora && selectedLoraScaleRange"
+          class="composer-advanced-fields__hint composer-advanced-fields__hint--sub"
+          :class="{ 'composer-advanced-fields__hint--warn': loraScaleOutsideRange }"
+        >
+          <template v-if="loraScaleOutsideRange">
+            {{ $t('studio.loraScaleOutsideRange', {
+              value: params.lora_scale,
+              min: selectedLoraScaleRange[0],
+              max: selectedLoraScaleRange[1],
+            }) }}
+          </template>
+          <template v-else>
+            {{ $t('studio.loraRecommendedScale', { min: selectedLoraScaleRange[0], max: selectedLoraScaleRange[1] }) }}
+          </template>
+        </p>
       </div>
     </div>
 
@@ -260,6 +279,12 @@ import {
   isZImageUnionControlNet,
 } from '@/composables/useStructuralGuide';
 import {
+  type CompatibleLoraRow,
+  findCompatibleLora,
+  loraHintKey,
+  loraRecommendedScale,
+} from '@/utils/loraAdapterMeta';
+import {
   COMPOSER_INFERENCE_ENUM_KEYS,
   composerParamHintI18nKey,
   composerParamLabelI18nKey,
@@ -352,6 +377,24 @@ const schedulerLabel = computed(() => {
 const loraSupported = computed(() =>
   Boolean((props.currentModelConfig?.parameters as { lora_support?: boolean } | undefined)?.lora_support),
 );
+
+const selectedLoraRow = computed<CompatibleLoraRow | undefined>(() => {
+  const id = String(props.params.lora || '');
+  if (!id) return undefined;
+  return findCompatibleLora((props.compatibleLoras || []) as CompatibleLoraRow[], id);
+});
+
+const selectedLoraHintKey = computed(() => loraHintKey(selectedLoraRow.value));
+
+const selectedLoraScaleRange = computed(() => loraRecommendedScale(selectedLoraRow.value));
+
+const loraScaleOutsideRange = computed(() => {
+  const rng = selectedLoraScaleRange.value;
+  const value = Number(props.params.lora_scale);
+  if (!rng || !Number.isFinite(value)) return false;
+  // Slider step is 0.05; tolerate float noise at the boundaries.
+  return value < rng[0] - 1e-6 || value > rng[1] + 1e-6;
+});
 
 const inferenceEnumKeys = computed(() =>
   COMPOSER_INFERENCE_ENUM_KEYS.filter((key) => Boolean(paramSchema.value[key])),
@@ -545,6 +588,10 @@ watch(
 
 .composer-advanced-fields__hint--sub {
   color: var(--dq-label-quaternary, var(--dq-label-tertiary));
+}
+
+.composer-advanced-fields__hint--warn {
+  color: var(--dq-warning);
 }
 
 .composer-advanced-fields__asset-row {

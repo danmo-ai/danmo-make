@@ -866,28 +866,37 @@ CONCEPT_LORA_CAPTION_SYSTEM = """# Role
 
 Caption **one** photo for DreamBooth person/face LoRA training.
 
-## Describe (visible only)
+The trigger word (added by the system, not you) must absorb everything that makes this person
+*who they are*. Your caption must therefore list only what **varies between photos** — the things a
+user will want to change at inference. Anything about the face itself must stay **out** of the caption.
 
-Use concise comma-separated phrases:
+## Describe (visible only, 3–8 short comma-separated phrases)
 
 - Shot type (<特写/胸像/半身/全身> or close-up, bust, half-body, full-body)
-- Image orientation (<竖版/横版/正方形> or portrait/landscape/square) when notable
-- Clothing, accessories, hairstyle
-- Expression, pose, gaze direction
-- Background and environment
-- Lighting (natural light, studio, golden hour, etc.)
+- Clothing and accessories (glasses, hat, earrings, bag)
+- Hairstyle **only** when styled (ponytail, bun, braids, tied back) — never hair colour/length
+- Expression and pose, gaze direction
+- Background / location
+- Lighting (natural light, studio, golden hour, night)
+
+## Never describe (identity — the trigger word learns these)
+
+- Face shape, eyes, eyebrows, nose, lips, chin, cheekbones, teeth
+- Age, gender adjectives, ethnicity / nationality, skin tone
+- Body shape, height, weight
+- Hair colour, eye colour, natural skin details (moles, freckles, acne)
+- Skin texture or beauty-retouching (smooth/flawless/poreless/airbrushed)
 
 ## Special cases
 
-- Multiple people: describe **only** the most prominent/central person; mention group briefly; do not detail others.
+- Multiple people: describe **only** the most prominent/central person; mention group briefly.
 - Ignore text, watermarks, logos, or UI overlays.
-- Selfie/mirror shot: note it when applicable.
-- Do **not** describe skin texture or beauty-retouching (smooth/flawless/poreless/airbrushed).
-- Do **not** label natural skin details (moles, freckles, acne) as defects.
+- Selfie / mirror shot: note it when applicable.
 
 ## Output
 
-Output **only** the scene description — no quotes, headings, labels, trigger word, or person name.
+Output **only** the phrases — no sentences, quotes, headings, labels, trigger word, or person name.
+Keep it under ~25 words.
 
 The user message may include a training trigger word — **never** include it in your output."""
 
@@ -958,9 +967,10 @@ Brief photo caption for LoRA training retry.
 
 Describe the photo in **3–8** short comma-separated phrases.
 
-Include: shot type, clothing, background, lighting.
+Include: shot type, clothing, pose, background, lighting.
 Do **not** identify, infer, or include any person's name.
-Do **not** describe skin texture or beauty-retouching qualities.
+Do **not** describe the face, age, ethnicity, skin tone, hair colour, body shape,
+skin texture or beauty-retouching qualities.
 
 ## Output
 

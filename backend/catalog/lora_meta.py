@@ -114,17 +114,48 @@ def lora_config_picklist_extras(bundle_dir: Path) -> dict[str, Any]:
     inference = data.get("inference")
     if not isinstance(inference, dict):
         return {}
+    return _inference_block_picklist_extras(inference)
+
+
+Z_IMAGE_TURBO_TRAINED_HINT_KEY = "studio.loraHint.zImageTurboTrained"
+
+
+def _inference_block_picklist_extras(inference: dict[str, Any]) -> dict[str, Any]:
     extras: dict[str, Any] = {}
     overrides: dict[str, Any] = {}
     for key in ("steps", "guidance", "scheduler"):
         if key in inference and inference[key] is not None:
             overrides[key] = inference[key]
+    lora_weight = inference.get("lora_weight")
+    if isinstance(lora_weight, (int, float)) and not isinstance(lora_weight, bool):
+        overrides["lora_scale"] = float(lora_weight)
     if overrides:
         extras["compose_overrides"] = overrides
-    if str(inference.get("scheme") or "").strip().lower() == "scheme4":
+    rng = inference.get("lora_weight_range")
+    if (
+        isinstance(rng, (list, tuple))
+        and len(rng) == 2
+        and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in rng)
+    ):
+        lo, hi = float(rng[0]), float(rng[1])
+        if 0 <= lo <= hi:
+            extras["recommended_lora_scale"] = [lo, hi]
+    scheme = str(inference.get("scheme") or "").strip().lower()
+    if scheme == "scheme4":
         extras["tags"] = ["Scheme 4"]
         extras["hint_key"] = "studio.loraHint.zImageDistillPatch"
+    elif scheme == "turbo":
+        extras["tags"] = ["Turbo"]
+        extras["hint_key"] = Z_IMAGE_TURBO_TRAINED_HINT_KEY
     return extras
+
+
+def z_image_turbo_trained_picklist_extras() -> dict[str, Any]:
+    """Picklist extras for user LoRAs trained on Z-Image-Turbo before ``lora_config.json``
+    carried an ``inference`` block (same values the trainer writes today)."""
+    from backend.engine.training.presets import Z_IMAGE_TURBO_INFERENCE
+
+    return _inference_block_picklist_extras(Z_IMAGE_TURBO_INFERENCE)
 
 
 def lora_adapter_picklist_row(

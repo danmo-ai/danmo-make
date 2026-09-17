@@ -160,6 +160,7 @@ async def dataset_health_vlm(dataset_id: str, body: DatasetHealthVlmRequest | No
             audit_kind=audit_kind,
             truncated=truncated,
             total_images=len(paths),
+            project_root=root,
         )
         merged = merge_vlm_hints(base, vlm)
         merged["vision_available"] = True

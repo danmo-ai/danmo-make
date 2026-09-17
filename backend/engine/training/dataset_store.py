@@ -567,6 +567,40 @@ def resolve_per_image_captions(
     return out
 
 
+# Below this many images, per-image captions add caption noise faster than they add
+# outfit/background disentanglement; unified trigger-only captions win.
+CONCEPT_PER_IMAGE_MIN_IMAGES = 15
+
+
+def concept_caption_stats(
+    pairs: list[tuple[Path, str]],
+    *,
+    trigger: str,
+) -> dict[str, Any]:
+    """Summarise how per-image captions of a concept dataset relate to the trigger word."""
+    from backend.engine.training.lora_auto_caption import is_trigger_anchored_short_caption
+
+    captions = [str(p or "").strip() for _, p in pairs]
+    non_empty = [c for c in captions if c]
+    trig = (trigger or "").strip()
+    anchored_short = sum(1 for c in non_empty if is_trigger_anchored_short_caption(c, trig))
+    missing_trigger = sum(1 for c in non_empty if trig and not _caption_contains_trigger(c, trig))
+    long_count = sum(
+        1
+        for c in non_empty
+        if trig and _caption_contains_trigger(c, trig) and not is_trigger_anchored_short_caption(c, trig)
+    )
+    return {
+        "total": len(captions),
+        "non_empty": len(non_empty),
+        "empty": len(captions) - len(non_empty),
+        "unique": len(set(non_empty)),
+        "anchored_short": anchored_short,
+        "missing_trigger": missing_trigger,
+        "long": long_count,
+    }
+
+
 def detect_caption_mode(
     pairs: list[tuple[Path, str]],
     *,
@@ -574,14 +608,25 @@ def detect_caption_mode(
 ) -> str:
     """Auto-detect caption mode when the training request leaves ``caption_mode`` on auto.
 
-    **Concept / face LoRA** (``kind=concept``): always ``unified`` — bind identity to the
-    trigger / ``progress_prompt`` only. VLM per-image captions (outfit, background, pose)
-    dilute the trigger in Qwen3 embeddings and prevent face memorization.
+    **Concept / face LoRA** (``kind=concept``): ``per_image`` only when the dataset is large
+    enough (``CONCEPT_PER_IMAGE_MIN_IMAGES``) and *every* caption is trigger-anchored and short
+    (``<trigger>, outfit, pose, background`` — no identity description); this lets the LoRA
+    disentangle outfit / background from the face. Otherwise ``unified`` — bind identity to the
+    trigger / ``progress_prompt`` only, since long VLM captions dilute the trigger in Qwen3
+    embeddings and prevent face memorization.
 
     **Style / other kinds**: ``per_image`` when most captions differ (typical VLM output).
     """
     kind = str((dataset_meta or {}).get("kind") or "concept").strip().lower()
     if kind == "concept":
+        trigger = str((dataset_meta or {}).get("trigger_word") or "").strip()
+        if not trigger or len(pairs) < CONCEPT_PER_IMAGE_MIN_IMAGES:
+            return "unified"
+        stats = concept_caption_stats(pairs, trigger=trigger)
+        if stats["empty"] or stats["missing_trigger"] or stats["long"]:
+            return "unified"
+        if stats["unique"] > max(1, stats["non_empty"] * 0.5):
+            return "per_image"
         return "unified"
     if len(pairs) < 2:
         return "unified"
@@ -651,6 +696,7 @@ def resize_rgb_image(
     augmentation_index: int = 0,
     resize_mode: str = "cover",
     allow_flip: bool = True,
+    crop_window: tuple[int, int, int, int] | None = None,
 ) -> Any:
     """Resize for LoRA training.
 
@@ -661,6 +707,9 @@ def resize_rgb_image(
     ``allow_flip=False`` disables horizontal mirroring for every aspect ratio (faces are not
     symmetric; concept / identity datasets pass False — the portrait heuristic alone missed
     the common 1:1 face crop).
+    ``crop_window`` ``(left, top, w, h)`` in source pixels (from ``face_crop.plan_face_crop``)
+    replaces the cover crop: the window is jittered slightly per augmentation, cropped, then
+    scaled to ``resolution``.
     """
     import math
     import random
@@ -671,6 +720,13 @@ def resize_rgb_image(
     mode = (resize_mode or "cover").strip().lower()
     img = open_rgb_image(path)
     src_w, src_h = img.size
+
+    if crop_window is not None and mode == "cover":
+        img = _crop_source_window(img, crop_window, augmentation_index, path)
+        img = img.resize((target_w, target_h), Image.LANCZOS)
+        if augmentation_index > 0:
+            img = _photometric_jitter(img, _augmentation_rng(path, augmentation_index))
+        return np.array(img).astype("float32") / 255.0
 
     if mode == "stretch":
         img = img.resize((target_w, target_h), Image.LANCZOS)
@@ -719,10 +775,37 @@ def resize_rgb_image(
         # ratios are always spared; identity datasets disable it entirely via allow_flip.
         if allow_flip and not portrait and aug_rng.random() < 0.5:
             img = img.transpose(Image.FLIP_LEFT_RIGHT)
-        from PIL import ImageEnhance
-
-        brightness = 1.0 + (aug_rng.random() - 0.5) * 0.2
-        contrast = 1.0 + (aug_rng.random() - 0.5) * 0.2
-        img = ImageEnhance.Brightness(img).enhance(brightness)
-        img = ImageEnhance.Contrast(img).enhance(contrast)
+        img = _photometric_jitter(img, aug_rng)
     return np.array(img).astype("float32") / 255.0
+
+
+def _photometric_jitter(img: Any, rng: "random.Random") -> Any:
+    from PIL import ImageEnhance
+
+    brightness = 1.0 + (rng.random() - 0.5) * 0.2
+    contrast = 1.0 + (rng.random() - 0.5) * 0.2
+    img = ImageEnhance.Brightness(img).enhance(brightness)
+    return ImageEnhance.Contrast(img).enhance(contrast)
+
+
+_FACE_WINDOW_JITTER = 0.06
+
+
+def _crop_source_window(
+    img: Any,
+    window: tuple[int, int, int, int],
+    augmentation_index: int,
+    path: Path,
+) -> Any:
+    """Crop ``window`` from the source image; augmentations shift it by up to 6% (in bounds)."""
+    src_w, src_h = img.size
+    left, top, w, h = (int(v) for v in window)
+    w = max(1, min(w, src_w))
+    h = max(1, min(h, src_h))
+    if augmentation_index > 0:
+        rng = _augmentation_rng(path, augmentation_index)
+        left += int(round((rng.random() - 0.5) * 2 * _FACE_WINDOW_JITTER * w))
+        top += int(round((rng.random() - 0.5) * 2 * _FACE_WINDOW_JITTER * h))
+    left = min(max(0, left), src_w - w)
+    top = min(max(0, top), src_h - h)
+    return img.crop((left, top, left + w, top + h))

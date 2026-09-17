@@ -57,6 +57,19 @@ Z_IMAGE_SCHEME4_INFERENCE: dict[str, Any] = {
     "lora_weight": 0.8,
 }
 
+# LoRAs trained directly on Z-Image-Turbo (Ostris assistant on, σ over the 9-step band). They
+# are exported without the assistant, so a slightly higher weight than the 0.8 Scheme 4 default
+# is needed for the subject to read; below 0.8 identity fades, above 1.0 textures over-bake.
+Z_IMAGE_TURBO_INFERENCE: dict[str, Any] = {
+    "scheme": "turbo",
+    "model": "z-image-turbo",
+    "steps": 9,
+    "guidance": 0,
+    "scheduler": "linear",
+    "lora_weight": 0.9,
+    "lora_weight_range": [0.8, 1.0],
+}
+
 # Base training σ: sample uniform u, apply the SD3-style static shift ``train_sigma_shift``.
 # Inference uses shift 6, but training with 6 (let alone 6 + a high bias) puts >60% of samples at
 # σ>0.9 where the input is nearly pure noise and only ~7% in the 0.3–0.7 band that decides facial

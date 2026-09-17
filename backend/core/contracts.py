@@ -458,6 +458,8 @@ class LoraTrainingRequest(BaseModel):
     timestep_high: Optional[int] = Field(None, ge=1)
     timestep_bias: Optional[Literal["uniform", "low", "high"]] = None
     turbo_assistant_off_prob: Optional[float] = Field(None, ge=0, le=1)
+    # Face-aware crop (YuNet): auto = concept datasets when the detector is available; on = required.
+    face_crop: Optional[Literal["auto", "on", "off"]] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

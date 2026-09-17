@@ -9153,7 +9153,7 @@
           "zh": "MiniMax H3 Turbo LoRA",
           "en": "MiniMax H3 Turbo LoRA"
         },
-        "recommended": true,
+        "recommended": false,
         "base_model": "minimax-h3-fl2va",
         "engine": "danqing-video",
         "metadata": {
@@ -9390,8 +9390,8 @@
         "versions": {
           "mlx-q4": {
             "name": {
-              "zh": "4-bit 量化版 (PipeNetwork)",
-              "en": "4-bit Quantized (PipeNetwork)"
+              "zh": "4-bit 量化版",
+              "en": "4-bit Quantized"
             },
             "size": "100GB",
             "min_unified_memory_gb": 64,
@@ -9430,8 +9430,8 @@
           },
           "mlx-q8": {
             "name": {
-              "zh": "8-bit 量化版 (PipeNetwork)",
-              "en": "8-bit Quantized (PipeNetwork)"
+              "zh": "8-bit 量化版",
+              "en": "8-bit Quantized"
             },
             "size": "110GB",
             "min_unified_memory_gb": 96,
