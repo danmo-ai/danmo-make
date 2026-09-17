@@ -8399,6 +8399,142 @@ class LoraTrainingCropTests(unittest.TestCase):
             b = resize_rgb_image(path, (256, 256), augmentation_index=3, allow_flip=True)
             self.assertTrue(np.array_equal(a, b))
 
+    def test_face_crop_window_geometry(self) -> None:
+        from backend.engine.training.face_crop import (
+            FACE_LARGE_ENOUGH_FRACTION,
+            FACE_TARGET_FRACTION,
+            MAX_UPSAMPLE,
+            FaceBox,
+            face_crop_window,
+        )
+
+        # Full-body 900×1600 photo, 73px face near the top → tight square window around it.
+        window, reason = face_crop_window(900, 1600, FaceBox(420, 130, 55, 73, 0.9), (512, 512))
+        self.assertEqual(reason, "face_crop")
+        assert window is not None
+        left, top, w, h = window
+        self.assertEqual(w, h)
+        # Never up-sample more than MAX_UPSAMPLE× → window ≥ 512/1.5.
+        self.assertGreaterEqual(w, int(512 / MAX_UPSAMPLE) - 1)
+        self.assertGreaterEqual(73 / h, FACE_TARGET_FRACTION * 0.7)
+        # Face centre stays inside the window; window stays inside the image.
+        self.assertTrue(left <= 420 + 27 <= left + w)
+        self.assertTrue(top <= 130 + 36 <= top + h)
+        self.assertTrue(0 <= left and left + w <= 900 and 0 <= top and top + h <= 1600)
+
+        # Close-up: face already ≥ FACE_LARGE_ENOUGH_FRACTION of the cover crop → untouched.
+        window, reason = face_crop_window(512, 512, FaceBox(180, 160, 150, 200, 0.9), (512, 512))
+        self.assertIsNone(window)
+        self.assertEqual(reason, "face_large_enough")
+        self.assertGreater(200 / 512, FACE_LARGE_ENOUGH_FRACTION)
+
+        # Face at the very edge: window is clamped into the image rather than going negative.
+        window, reason = face_crop_window(1000, 1000, FaceBox(0, 0, 60, 80, 0.9), (512, 512))
+        assert window is not None
+        self.assertEqual((window[0], window[1]), (0, 0))
+
+    def test_face_crop_cache_key_and_modes(self) -> None:
+        from pathlib import Path
+
+        from backend.engine.training.face_crop import (
+            FaceCropPlan,
+            face_crop_cache_key,
+            normalize_face_crop_mode,
+            plan_training_face_crops,
+        )
+
+        self.assertEqual(normalize_face_crop_mode(None), "auto")
+        self.assertEqual(normalize_face_crop_mode(True), "on")
+        self.assertEqual(normalize_face_crop_mode(False), "off")
+        self.assertEqual(normalize_face_crop_mode("ON"), "on")
+        with self.assertRaises(RuntimeError):
+            normalize_face_crop_mode("sometimes")
+
+        plans = {
+            Path("/d/a.jpg"): FaceCropPlan((10, 20, 300, 300), None, "face_crop"),
+            Path("/d/b.jpg"): FaceCropPlan(None, None, "no_face"),
+        }
+        key = face_crop_cache_key(plans)
+        self.assertTrue(key.startswith("face:"))
+        self.assertEqual(key, face_crop_cache_key(dict(reversed(list(plans.items())))))
+        self.assertEqual(face_crop_cache_key({Path("/d/b.jpg"): plans[Path("/d/b.jpg")]}), "")
+        moved = {Path("/d/a.jpg"): FaceCropPlan((11, 20, 300, 300), None, "face_crop")}
+        self.assertNotEqual(key, face_crop_cache_key(moved))
+
+        # off / non-concept datasets never touch the detector.
+        pairs = [(Path("/nonexistent/x.jpg"), "p")]
+        self.assertEqual(plan_training_face_crops(pairs, project_root=Path("/tmp"), resolution=(512, 512), mode="off", dataset_meta={"kind": "concept"}), {})
+        self.assertEqual(plan_training_face_crops(pairs, project_root=Path("/tmp"), resolution=(512, 512), mode="auto", dataset_meta={"kind": "style"}), {})
+
+    def test_face_crop_window_applied_in_resize(self) -> None:
+        import tempfile
+
+        import numpy as np
+        from PIL import Image
+
+        from backend.engine.training.dataset_store import resize_rgb_image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "body.png"
+            img = Image.new("RGB", (900, 1600), (0, 0, 255))
+            for y in range(130, 203):
+                for x in range(420, 475):
+                    img.putpixel((x, y), (255, 0, 0))
+            img.save(path)
+            plain = resize_rgb_image(path, (512, 512), allow_flip=False)
+            cropped = resize_rgb_image(path, (512, 512), allow_flip=False, crop_window=(106, 0, 341, 341))
+            self.assertEqual(cropped.shape, (512, 512, 3))
+            red_plain = float((plain[:, :, 0] > 0.5).mean())
+            red_cropped = float((cropped[:, :, 0] > 0.5).mean())
+            self.assertGreater(red_cropped, red_plain * 3, "face window should enlarge the face region")
+            # Augmentations jitter the window but stay deterministic.
+            a1 = resize_rgb_image(path, (512, 512), augmentation_index=1, allow_flip=False, crop_window=(106, 0, 341, 341))
+            a2 = resize_rgb_image(path, (512, 512), augmentation_index=1, allow_flip=False, crop_window=(106, 0, 341, 341))
+            self.assertTrue(np.array_equal(a1, a2))
+            self.assertFalse(np.array_equal(a1, cropped))
+
+    def test_latent_cache_fingerprint_includes_crop_policy(self) -> None:
+        from backend.engine.training.latent_cache_mlx import _fingerprint
+
+        base = dict(dataset_id="ds", n_pairs=3, num_augmentations=2, resolution=(512, 512), family="z_image")
+        self.assertEqual(_fingerprint(**base), _fingerprint(**base, crop_policy=""))
+        self.assertNotEqual(_fingerprint(**base), _fingerprint(**base, crop_policy="face:abc"))
+
+    def test_turbo_trained_lora_picklist_extras(self) -> None:
+        import json
+        import tempfile
+
+        from backend.catalog.lora_meta import (
+            Z_IMAGE_TURBO_TRAINED_HINT_KEY,
+            lora_config_picklist_extras,
+            z_image_turbo_trained_picklist_extras,
+        )
+        from backend.engine.training.presets import Z_IMAGE_TURBO_INFERENCE
+
+        extras = z_image_turbo_trained_picklist_extras()
+        self.assertEqual(extras["hint_key"], Z_IMAGE_TURBO_TRAINED_HINT_KEY)
+        self.assertEqual(extras["recommended_lora_scale"], [0.8, 1.0])
+        self.assertEqual(extras["compose_overrides"]["lora_scale"], 0.9)
+        self.assertEqual(extras["compose_overrides"]["steps"], 9)
+        self.assertEqual(extras["compose_overrides"]["guidance"], 0)
+        self.assertEqual(extras["tags"], ["Turbo"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "lora_config.json").write_text(
+                json.dumps({"base_model": "z-image-turbo", "inference": Z_IMAGE_TURBO_INFERENCE}),
+                encoding="utf-8",
+            )
+            self.assertEqual(lora_config_picklist_extras(Path(tmp)), extras)
+            # Scheme 4 block now also carries its lora_weight as a compose override.
+            (Path(tmp) / "lora_config.json").write_text(
+                json.dumps({"inference": {"scheme": "scheme4", "steps": 8, "guidance": 0, "lora_weight": 0.8}}),
+                encoding="utf-8",
+            )
+            s4 = lora_config_picklist_extras(Path(tmp))
+            self.assertEqual(s4["hint_key"], "studio.loraHint.zImageDistillPatch")
+            self.assertEqual(s4["compose_overrides"]["lora_scale"], 0.8)
+            self.assertNotIn("recommended_lora_scale", s4)
+
     def test_grad_checkpoint_skips_plain_python_blocks(self) -> None:
         import mlx.nn as nn
 
