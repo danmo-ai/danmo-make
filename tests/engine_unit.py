@@ -7403,6 +7403,84 @@ class LoraQualityTests(unittest.TestCase):
         )
         self.assertEqual(caption, "陈钰琪，半身照，白色连衣裙，室内自然光")
 
+    def test_concept_caption_drops_identity_phrases_and_caps_length(self) -> None:
+        from backend.engine.training.lora_auto_caption import (
+            MAX_CONCEPT_CAPTION_PHRASES,
+            build_concept_caption_messages,
+            compose_person_caption,
+            drop_identity_phrases,
+            is_trigger_anchored_short_caption,
+            normalize_scene_caption,
+        )
+
+        system = next(m for m in build_concept_caption_messages("sks") if m.role == "system")
+        self.assertIn("never describe", system.content.lower())
+        self.assertIn("ethnicity", system.content.lower())
+
+        raw = (
+            "close-up portrait, young asian woman with brown eyes and long black hair, white shirt, "
+            "smiling, standing on a beach, golden hour, smooth skin, oval face"
+        )
+        self.assertEqual(
+            normalize_scene_caption(raw, subject_name="sks", concept=True),
+            "close-up portrait, white shirt, smiling, standing on a beach, golden hour",
+        )
+        self.assertEqual(
+            compose_person_caption("小明", "半身照，年轻的亚洲女性，黑色长发，白色衬衫，微笑，站在海边，自然光，双眼皮"),
+            "小明，半身照，白色衬衫，微笑，站在海边，自然光",
+        )
+        # Glasses are an accessory (variable), not an identity feature.
+        self.assertEqual(drop_identity_phrases("黑框眼镜，白色衬衫"), "黑框眼镜，白色衬衫")
+        self.assertEqual(drop_identity_phrases("black glasses, blue eyes, red scarf"), "black glasses, red scarf")
+
+        # Without a trigger word the concept path still filters (concept=True is explicit).
+        self.assertEqual(normalize_scene_caption("brown eyes, red dress", concept=True), "red dress")
+        # Style captions are untouched.
+        self.assertEqual(normalize_scene_caption("brown eyes, red dress"), "brown eyes, red dress")
+
+        long_raw = ", ".join(f"phrase {i}" for i in range(14))
+        capped = normalize_scene_caption(long_raw, subject_name="sks", concept=True)
+        self.assertEqual(len(capped.split(", ")), MAX_CONCEPT_CAPTION_PHRASES)
+
+        self.assertTrue(is_trigger_anchored_short_caption("sks, white shirt, beach", "sks"))
+        self.assertFalse(is_trigger_anchored_short_caption("a photo of a woman", "sks"))
+        self.assertFalse(is_trigger_anchored_short_caption("sks, " + long_raw, "sks"))
+        self.assertFalse(is_trigger_anchored_short_caption("sks", ""))
+
+    def test_detect_caption_mode_concept_per_image_only_when_anchored_and_large(self) -> None:
+        from pathlib import Path
+
+        from backend.engine.training.dataset_store import (
+            CONCEPT_PER_IMAGE_MIN_IMAGES,
+            concept_caption_stats,
+            detect_caption_mode,
+        )
+
+        meta = {"kind": "concept", "trigger_word": "sks"}
+        n = CONCEPT_PER_IMAGE_MIN_IMAGES
+        anchored = [(Path(f"{i}.jpg"), f"sks, outfit {i}, background {i}") for i in range(n)]
+        self.assertEqual(detect_caption_mode(anchored, dataset_meta=meta), "per_image")
+        # Too few images → unified even with perfect captions.
+        self.assertEqual(detect_caption_mode(anchored[: n - 1], dataset_meta=meta), "unified")
+        # One long VLM caption → unified.
+        long_caps = list(anchored)
+        long_caps[0] = (Path("0.jpg"), "sks, " + ", ".join(f"p{i}" for i in range(12)))
+        self.assertEqual(detect_caption_mode(long_caps, dataset_meta=meta), "unified")
+        # Missing trigger → unified.
+        missing = list(anchored)
+        missing[1] = (Path("1.jpg"), "a woman in a park")
+        self.assertEqual(detect_caption_mode(missing, dataset_meta=meta), "unified")
+        # Identical captions → unified (nothing to disentangle).
+        same = [(Path(f"{i}.jpg"), "sks, portrait") for i in range(n)]
+        self.assertEqual(detect_caption_mode(same, dataset_meta=meta), "unified")
+        # No trigger word at all → unified.
+        self.assertEqual(detect_caption_mode(anchored, dataset_meta={"kind": "concept"}), "unified")
+
+        stats = concept_caption_stats(missing + [(Path("e.jpg"), "")], trigger="sks")
+        self.assertEqual(stats["missing_trigger"], 1)
+        self.assertEqual(stats["empty"], 1)
+        self.assertEqual(stats["anchored_short"], n - 1)
+
     def test_normalize_scene_caption_rejects_exclamation_garbage(self) -> None:
         from backend.engine.training.lora_auto_caption import normalize_scene_caption
 
@@ -7511,14 +7589,31 @@ class LoraQualityTests(unittest.TestCase):
                 if is_temp:
                     use_path.unlink(missing_ok=True)
 
-    def _add_jpeg(self, root: Path, dataset_id: str, name: str, size: tuple[int, int]) -> None:
+    def _add_jpeg(
+        self,
+        root: Path,
+        dataset_id: str,
+        name: str,
+        size: tuple[int, int],
+        *,
+        seed: int | None = None,
+    ) -> None:
         from PIL import Image
 
         from backend.engine.training import dataset_store
 
         path = dataset_store.datasets_root(root) / dataset_id / "images" / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        Image.new("RGB", size, color=(128, 64, 32)).save(path, format="JPEG")
+        if seed is None:
+            Image.new("RGB", size, color=(128, 64, 32)).save(path, format="JPEG")
+            return
+        # Distinct textured images so the near-duplicate check sees different photos.
+        import random
+
+        rng = random.Random(seed)
+        img = Image.new("RGB", (16, 16))
+        img.putdata([(rng.randrange(256), rng.randrange(256), rng.randrange(256)) for _ in range(256)])
+        img.resize(size, Image.BILINEAR).save(path, format="JPEG")
 
     def test_analyze_dataset_health_good(self) -> None:
         from backend.engine.training import dataset_store
@@ -7526,10 +7621,12 @@ class LoraQualityTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            ds = dataset_store.create_dataset(root, name="good-set", default_prompt="A photo of sks")
+            ds = dataset_store.create_dataset(
+                root, name="good-set", trigger_word="sks", default_prompt="A photo of sks"
+            )
             dataset_id = ds["id"]
             for i in range(12):
-                self._add_jpeg(root, dataset_id, f"img_{i:02d}.jpg", (1080, 1440))
+                self._add_jpeg(root, dataset_id, f"img_{i:02d}.jpg", (1080, 1440), seed=i)
             rows = [
                 {"image": f"images/img_{i:02d}.jpg", "prompt": "A photo of sks"}
                 for i in range(12)
@@ -7542,9 +7639,11 @@ class LoraQualityTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            report = analyze_dataset_health(root, dataset_id)
+            report = analyze_dataset_health(root, dataset_id, face_audit=False)
             self.assertEqual(report["level"], "good")
             self.assertGreaterEqual(int(report["stats"]["median_short_edge"]), 1080)
+            self.assertEqual(report["caption_mode_auto"], "unified")
+            self.assertNotIn("faces", report)
 
     def test_analyze_dataset_health_poor_small_images(self) -> None:
         from backend.engine.training import dataset_store
@@ -7567,10 +7666,153 @@ class LoraQualityTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            report = analyze_dataset_health(root, dataset_id)
+            report = analyze_dataset_health(root, dataset_id, face_audit=False)
             self.assertIn(report["level"], ("fair", "poor"))
             codes = {h["code"] for h in report["hints"]}
             self.assertTrue(codes & {"many_small_512", "many_small_600", "low_resolution_median"})
+            # Concept dataset without a trigger word cannot train; the report must say so.
+            self.assertIn("missing_trigger_word", codes)
+
+    def test_analyze_dataset_health_flags_duplicates_and_caption_issues(self) -> None:
+        from backend.engine.training import dataset_store
+        from backend.engine.training.lora_quality import analyze_dataset_health, find_near_duplicates
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ds = dataset_store.create_dataset(root, name="dups", trigger_word="sks", default_prompt="sks")
+            dataset_id = ds["id"]
+            for i in range(10):
+                self._add_jpeg(root, dataset_id, f"p_{i:02d}.jpg", (1000, 1300), seed=100 + i)
+            # Same shot re-exported at another size → near-duplicate of p_00.
+            self._add_jpeg(root, dataset_id, "p_00_copy.jpg", (900, 1170), seed=100)
+            long_caption = "sks, " + ", ".join(f"phrase {i}" for i in range(12))
+            rows = [{"image": f"images/p_{i:02d}.jpg", "prompt": "sks, white shirt, park"} for i in range(10)]
+            rows.append({"image": "images/p_00_copy.jpg", "prompt": long_caption})
+            rows[1]["prompt"] = "a woman in a park"
+            jsonl = dataset_store.datasets_root(root) / dataset_id / "train.jsonl"
+            jsonl.write_text(
+                "\n".join(__import__("json").dumps(r) for r in rows),
+                encoding="utf-8",
+            )
+            images_dir = dataset_store.datasets_root(root) / dataset_id / "images"
+            pairs = find_near_duplicates(sorted(images_dir.glob("*.jpg")))
+            self.assertIn(("p_00.jpg", "p_00_copy.jpg"), pairs)
+
+            report = analyze_dataset_health(root, dataset_id, face_audit=False)
+            codes = {h["code"]: h for h in report["hints"]}
+            self.assertIn("near_duplicates", codes)
+            self.assertEqual(codes["captions_missing_trigger"]["params"]["count"], 1)
+            self.assertEqual(codes["captions_long"]["params"]["count"], 1)
+            self.assertEqual(report["caption_mode_auto"], "unified")
+            self.assertEqual(report["stats"]["caption_anchored_short_count"], 9)
+
+    def test_analyze_dataset_health_face_audit_rows(self) -> None:
+        from unittest import mock
+
+        from backend.engine.training import dataset_store
+        from backend.engine.training.face_crop import FaceBox
+        from backend.engine.training.lora_quality import analyze_dataset_health
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ds = dataset_store.create_dataset(root, name="faces", trigger_word="sks", default_prompt="sks")
+            dataset_id = ds["id"]
+            names = ["closeup.jpg", "fullbody.jpg", "tiny.jpg", "noface.jpg", "multi.jpg"]
+            for i, name in enumerate(names):
+                self._add_jpeg(root, dataset_id, name, (1200, 1800), seed=200 + i)
+            jsonl = dataset_store.datasets_root(root) / dataset_id / "train.jsonl"
+            jsonl.write_text(
+                "\n".join(
+                    __import__("json").dumps({"image": f"images/{n}", "prompt": "sks, park"}) for n in names
+                ),
+                encoding="utf-8",
+            )
+            faces_by_name = {
+                "closeup.jpg": (FaceBox(300, 300, 500, 500, 0.95),),
+                "fullbody.jpg": (FaceBox(540, 200, 120, 120, 0.9),),
+                "tiny.jpg": (FaceBox(580, 300, 40, 40, 0.8),),
+                "noface.jpg": (),
+                "multi.jpg": (FaceBox(200, 300, 300, 300, 0.9), FaceBox(800, 320, 260, 260, 0.9)),
+            }
+
+            def fake_detect(path: Path, _model: Path):
+                return faces_by_name[Path(path).name]
+
+            with (
+                mock.patch("backend.engine.training.face_crop.opencv_face_detector_available", return_value=(True, "")),
+                mock.patch("backend.engine.training.face_crop.resolve_face_detector_path", return_value=Path("/x.onnx")),
+                mock.patch("backend.engine.training.face_crop.detect_faces", side_effect=fake_detect),
+            ):
+                report = analyze_dataset_health(root, dataset_id)
+
+            self.assertTrue(report["faces"]["available"])
+            by_file = {row["file"]: row for row in report["faces"]["rows"]}
+            self.assertEqual(by_file["closeup.jpg"]["action"], "keep")
+            self.assertEqual(by_file["fullbody.jpg"]["action"], "crop")
+            self.assertEqual(len(by_file["fullbody.jpg"]["window"]), 4)
+            self.assertEqual(by_file["tiny.jpg"]["action"], "tiny")
+            self.assertEqual(by_file["noface.jpg"]["action"], "none")
+            self.assertTrue(by_file["multi.jpg"].get("multi"))
+            codes = {h["code"]: h for h in report["hints"]}
+            self.assertEqual(codes["faces_not_detected"]["params"]["count"], 1)
+            self.assertEqual(codes["faces_too_small"]["params"]["count"], 1)
+            self.assertEqual(codes["multiple_faces"]["params"]["count"], 1)
+            self.assertIn("faces_auto_crop", codes)
+            self.assertEqual(report["stats"]["face_none_count"], 1)
+
+    def test_dataset_health_face_detector_unavailable_is_info_only(self) -> None:
+        from unittest import mock
+
+        from backend.engine.training import dataset_store
+        from backend.engine.training.lora_quality import analyze_dataset_health
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ds = dataset_store.create_dataset(root, name="nocv", trigger_word="sks", default_prompt="sks")
+            dataset_id = ds["id"]
+            for i in range(10):
+                self._add_jpeg(root, dataset_id, f"q_{i}.jpg", (1000, 1300), seed=300 + i)
+            jsonl = dataset_store.datasets_root(root) / dataset_id / "train.jsonl"
+            jsonl.write_text(
+                "\n".join(__import__("json").dumps({"image": f"images/q_{i}.jpg", "prompt": "sks"}) for i in range(10)),
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "backend.engine.training.face_crop.opencv_face_detector_available",
+                return_value=(False, "no cv2"),
+            ):
+                report = analyze_dataset_health(root, dataset_id)
+            codes = {h["code"]: h for h in report["hints"]}
+            self.assertEqual(codes["face_detector_unavailable"]["severity"], "info")
+            self.assertFalse(report["faces"]["available"])
+            self.assertEqual(report["level"], "good")
+
+    def test_portrait_suitability_uses_face_box_when_detector_present(self) -> None:
+        from unittest import mock
+
+        from PIL import Image
+
+        from backend.engine.training.face_crop import FaceBox
+        from backend.engine.training.portrait_lora_suitability import analyze_portrait_training_image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "wide.jpg"
+            Image.effect_noise((1800, 1000), 60).convert("RGB").save(path, format="JPEG")
+            with mock.patch(
+                "backend.engine.training.face_crop.detect_faces",
+                return_value=(FaceBox(700, 200, 400, 400, 0.95),),
+            ):
+                with_face = analyze_portrait_training_image(path, face_model_path=Path("/x.onnx"))
+            without = analyze_portrait_training_image(path)
+            # A real, large face on a landscape photo must not be punished for framing.
+            self.assertNotIn("landscape_framing", with_face["issues"])
+            self.assertIn("landscape_framing", without["issues"])
+            self.assertTrue(with_face["stats"]["face_detector"])
+            self.assertEqual(with_face["stats"]["face_px"], 400)
+            with mock.patch("backend.engine.training.face_crop.detect_faces", return_value=()):
+                no_face = analyze_portrait_training_image(path, face_model_path=Path("/x.onnx"))
+            self.assertIn("face_not_detected", no_face["issues"])
+            self.assertLess(no_face["score_100"], with_face["score_100"])
 
     def test_analyze_training_quality_high_loss_is_diagnostic_only(self) -> None:
         from backend.engine.training.lora_quality import analyze_training_quality
