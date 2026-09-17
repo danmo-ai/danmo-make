@@ -153,7 +153,7 @@ def _detector(model_path: str) -> Any:
 
 
 @lru_cache(maxsize=512)
-def _detect_cached(path_key: str, mtime_ns: int, model_path: str) -> FaceBox | None:
+def _detect_cached(path_key: str, mtime_ns: int, model_path: str) -> tuple[FaceBox, ...]:
     import numpy as np
 
     from backend.engine.training.dataset_store import open_rgb_image
@@ -172,24 +172,29 @@ def _detect_cached(path_key: str, mtime_ns: int, model_path: str) -> FaceBox | N
     det.setInputSize((det_w, det_h))
     _, faces = det.detect(bgr)
     if faces is None or len(faces) == 0:
-        return None
+        return ()
     # YuNet rows: x, y, w, h, 5 landmarks (10 values), score.
-    best = None
+    boxes: list[FaceBox] = []
     for row in faces:
         x, y, w, h = (float(v) for v in row[:4])
         score = float(row[14]) if len(row) > 14 else 1.0
         if score < MIN_FACE_SCORE or w <= 0 or h <= 0:
             continue
-        cand = FaceBox(x / scale, y / scale, w / scale, h / scale, score)
-        if best is None or cand.w * cand.h > best.w * best.h:
-            best = cand
-    return best
+        boxes.append(FaceBox(x / scale, y / scale, w / scale, h / scale, score))
+    boxes.sort(key=lambda b: b.w * b.h, reverse=True)
+    return tuple(boxes)
+
+
+def detect_faces(path: Path, model_path: Path) -> tuple[FaceBox, ...]:
+    """All confident faces in source-pixel coordinates, largest first."""
+    p = Path(path)
+    return _detect_cached(str(p.resolve()), p.stat().st_mtime_ns, str(model_path))
 
 
 def detect_primary_face(path: Path, model_path: Path) -> FaceBox | None:
     """Largest confident face in source-pixel coordinates (None when no face)."""
-    p = Path(path)
-    return _detect_cached(str(p.resolve()), p.stat().st_mtime_ns, str(model_path))
+    faces = detect_faces(path, model_path)
+    return faces[0] if faces else None
 
 
 def face_crop_window(
@@ -239,6 +244,84 @@ def plan_face_crop(path: Path, model_path: Path, target: tuple[int, int]) -> Fac
     src_w, src_h = open_rgb_image(Path(path)).size
     window, reason = face_crop_window(src_w, src_h, face, target)
     return FaceCropPlan(window, face, reason)
+
+
+# A face shorter than this (source px) cannot be re-framed to FACE_TARGET_FRACTION without
+# exceeding MAX_UPSAMPLE at 512² — the crop would be blurry, so the image is flagged instead.
+def min_usable_face_px(target_h: int) -> float:
+    return FACE_TARGET_FRACTION * target_h / MAX_UPSAMPLE
+
+
+def audit_dataset_faces(
+    paths: list[Path],
+    *,
+    project_root: Path,
+    resolution: tuple[int, int] = (512, 512),
+    allow_download: bool = True,
+) -> dict[str, Any]:
+    """Pre-flight face report for an identity dataset (used by dataset health, not training).
+
+    Returns ``{"available": bool, "reason": str, "rows": [...], "counts": {...}}`` where each row
+    is ``{file, width, height, faces, face_px, face_frac, action, window}``; ``action`` is one of
+    ``crop`` (auto face crop will re-frame), ``keep`` (already close-up), ``tiny`` (face too small
+    even for face crop), ``none`` (no face) or ``error``.
+    """
+    ok, why = opencv_face_detector_available()
+    if not ok:
+        return {"available": False, "reason": why, "rows": [], "counts": {}}
+    try:
+        model_path = resolve_face_detector_path(project_root, allow_download=allow_download)
+    except RuntimeError as exc:
+        return {"available": False, "reason": str(exc), "rows": [], "counts": {}}
+
+    from backend.engine.training.dataset_store import open_rgb_image
+
+    target_h = int(resolution[1])
+    tiny_px = min_usable_face_px(target_h)
+    rows: list[dict[str, Any]] = []
+    counts = {"crop": 0, "keep": 0, "tiny": 0, "none": 0, "error": 0, "multi": 0}
+    for path in paths:
+        row: dict[str, Any] = {"file": path.name, "faces": 0, "action": "none", "window": None}
+        try:
+            src_w, src_h = open_rgb_image(path).size
+            row["width"], row["height"] = src_w, src_h
+            faces = detect_faces(path, model_path)
+        except Exception as exc:
+            row["action"] = "error"
+            row["error"] = str(exc)
+            counts["error"] += 1
+            rows.append(row)
+            continue
+        row["faces"] = len(faces)
+        if len(faces) >= 2:
+            # Only count a second face when it is a real competitor (≥ 40% of the primary).
+            primary, second = faces[0], faces[1]
+            if second.h >= 0.4 * primary.h:
+                counts["multi"] += 1
+                row["multi"] = True
+        if not faces:
+            counts["none"] += 1
+            rows.append(row)
+            continue
+        face = faces[0]
+        aspect = resolution[0] / float(resolution[1])
+        cover_h = max(1.0, min(float(src_h), src_w / aspect))
+        row["face_px"] = int(round(face.h))
+        row["face_frac"] = round(face.h / cover_h, 3)
+        window, reason = face_crop_window(src_w, src_h, face, resolution)
+        if face.h < tiny_px:
+            row["action"] = "tiny"
+            counts["tiny"] += 1
+            row["window"] = list(window) if window else None
+        elif window is not None and reason == "face_crop":
+            row["action"] = "crop"
+            counts["crop"] += 1
+            row["window"] = list(window)
+        else:
+            row["action"] = "keep"
+            counts["keep"] += 1
+        rows.append(row)
+    return {"available": True, "reason": "", "rows": rows, "counts": counts, "tiny_face_px": int(tiny_px)}
 
 
 def face_crop_cache_key(plans: dict[Path, FaceCropPlan]) -> str:
