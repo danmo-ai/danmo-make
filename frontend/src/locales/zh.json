@@ -45,6 +45,11 @@
     "qlora4": "4-bit（最省内存）",
     "qlora8": "8-bit（质量更好）",
     "qloraHint": "仅量化冻结的 DiT 基座权重，LoRA 仍全精度训练。",
+    "faceCrop": "人脸感知裁切",
+    "faceCropAuto": "自动（人物/概念数据集）",
+    "faceCropOn": "始终开启（需要检测器）",
+    "faceCropOff": "关闭",
+    "faceCropHint": "全身照 / 半身照按检测到的人脸重新取景，让人脸占 512² 画面约 1/3，而不是只有几十个像素。使用 OpenCV YuNet（230 KB，首次自动下载）。自动模式跳过非人物数据集；OpenCV 不可用时（桌面打包版）回退为偏上部的覆盖裁切并在日志中提示。",
     "gradCheckpoint": "梯度检查点",
     "gradCheckpointHint": "用额外算力换更低峰值内存（quick 预设默认开启）。",
     "compileStep": "编译训练步（实验性）",
@@ -557,9 +562,12 @@
     "restoreDefaults": "恢复默认配置",
     "loraLabel": "LoRA",
     "noLora": "不使用 LoRA",
+    "loraRecommendedScale": "推荐 LoRA 权重 {min}–{max}",
+    "loraScaleOutsideRange": "当前权重 {value} 超出推荐范围 {min}–{max}。",
     "loraHint": {
       "videoStepDistillMoe": "该 LoRA 含高噪/低噪双分片，引擎按步自动合并；参数以注册表 compose_overrides 为准。",
-      "zImageDistillPatch": "Scheme 4：Base 训练的 LoRA 在 Turbo 推理时自动加载，恢复官方 8 步加速配置（cfg_scale=1）。"
+      "zImageDistillPatch": "Scheme 4：Base 训练的 LoRA 在 Turbo 推理时自动加载，恢复官方 8 步加速配置（cfg_scale=1）。",
+      "zImageTurboTrained": "在 Z-Image-Turbo 上训练：线性调度、9 步、CFG 0。LoRA 权重建议 0.8–1.0（默认 0.9）——过低人物特征变淡，过高纹理过曝。"
     },
     "myLoraTag": "我的 LoRA",
     "pickLoraToAdd": "选择 LoRA 添加…",
@@ -874,7 +882,8 @@
     "noLora": "不使用 LoRA",
     "loraHint": {
       "videoStepDistillMoe": "该 LoRA 含高噪/低噪双分片，引擎按步自动合并；参数以注册表 compose_overrides 为准。",
-      "zImageDistillPatch": "Scheme 4：Base 训练的 LoRA 在 Turbo 推理时自动加载，恢复官方 8 步加速配置（cfg_scale=1）。"
+      "zImageDistillPatch": "Scheme 4：Base 训练的 LoRA 在 Turbo 推理时自动加载，恢复官方 8 步加速配置（cfg_scale=1）。",
+      "zImageTurboTrained": "在 Z-Image-Turbo 上训练：线性调度、9 步、CFG 0。LoRA 权重建议 0.8–1.0（默认 0.9）——过低人物特征变淡，过高纹理过曝。"
     },
     "myLoraTag": "我的 LoRA",
     "pickLoraToAdd": "选择 LoRA 添加…",
