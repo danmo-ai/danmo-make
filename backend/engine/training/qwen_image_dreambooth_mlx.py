@@ -16,7 +16,11 @@ from backend.engine.config.model_configs import get_config_class
 from backend.engine.contracts import local_bundle_root
 from backend.engine.families.qwen.weights import remap_qwen_lora_keys
 from backend.engine.pipelines.image_model_load import load_image_transformer
-from backend.engine.training.crop import prepare_training_rgb_image, resolve_training_resolution
+from backend.engine.training.crop import (
+    prepare_training_rgb_image,
+    resolve_training_resolution,
+    training_allows_flip,
+)
 from backend.engine.training.dataset_store import _dataset_meta, load_training_pairs_unified
 from backend.engine.training.flux_dreambooth_mlx import _log, _progress, _save_adapter
 from backend.engine.training.lora_layers_mlx import (
@@ -107,6 +111,7 @@ def _encode_dataset_to_cache(
     exec_ctx: ExecutionContext,
     class_prompt: str | None,
     caption_mode: str = "",
+    allow_flip: bool = True,
 ) -> int:
     w, h = resolution[0], resolution[1]
     total_samples = len(pairs) * num_augmentations
@@ -131,6 +136,7 @@ def _encode_dataset_to_cache(
                 train_cfg,
                 preset=preset,
                 augmentation_index=aug_i,
+                allow_flip=allow_flip,
             )
             nchw = mx.array(arr.transpose(2, 0, 1)[None].astype("float32"))
             n11 = nchw * 2.0 - 1.0
@@ -489,6 +495,7 @@ def run_qwen_image_dreambooth_training(
             exec_ctx=exec_ctx,
             class_prompt=class_prompt if train_runtime.prior_loss_weight > 0 else None,
             caption_mode=resolved_caption_mode,
+            allow_flip=training_allows_flip(dataset_meta),
         )
     text_encoder.release_weights()
     ctx.clear_cache()
