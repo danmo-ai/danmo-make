@@ -64,7 +64,8 @@ import { ref, reactive, watch, onMounted, onUnmounted, inject, type Ref } from '
 import { useI18n } from 'vue-i18n';
 import { toast, confirm } from '@/utils/feedback';
 import { api } from '@/utils/api';
-import { $tt, applyTheme, migrateThemeId, VALID_THEME_IDS, type ThemeId } from '@/utils/i18n';
+import { applyTheme, migrateThemeId, VALID_THEME_IDS, type ThemeId } from '@/stores/theme';
+import { $tt } from '@/utils/i18n';
 import { DQ_STORAGE, getItem, setItem } from '@/utils/storage';
 import { useThemeStore } from '@/stores/theme';
 import { useRegistryStore } from '@/stores/registry';

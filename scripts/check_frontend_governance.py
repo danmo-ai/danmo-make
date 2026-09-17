@@ -39,6 +39,11 @@ THEME_STYLE_EL = re.compile(r"\.el-[a-z0-9_-]+")
 THEME_EL_TOKEN = re.compile(r"--el-")
 THEME_BROKEN_MODEL_CARD = re.compile(r"\.modsurface\s+card")
 
+FONT_SIZE_FALLBACK_RULE = (
+    re.compile(r"var\(--dq-font-size-[^,)]+,\s*\d+px\)"),
+    "remove px fallbacks on --dq-font-size-*",
+)
+
 UI_STYLE_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\.dq-select-dropdown\b"), "use `.dq-select__content` / `.dq-select__option`"),
     (re.compile(r"\.dq-dropdown-menu__item\b"), "use `.dq-dropdown-item`"),
@@ -49,8 +54,13 @@ UI_STYLE_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"font-size:\s*(?:9|10|11)px\b"), "use var(--dq-font-size-caption|body|title)"),
     (re.compile(r"font-size:\s*0\.(?:6|7)\d*rem\b"), "sub-caption rem sizes forbidden; use --dq-font-size-*"),
     (re.compile(r"font-family:\s*ui-monospace\b"), "use var(--dq-font-mono)"),
-    (re.compile(r"var\(--dq-font-size-[^,)]+,\s*\d+px\)"), "remove px fallbacks on --dq-font-size-*"),
+    FONT_SIZE_FALLBACK_RULE,
 ]
+# The sibling dq-ui repository is checked out independently at its moving default branch.
+# Enforce Danmo Make's no-fallback policy on this repository, not on an unpinned external
+# worktree that this PR cannot change. Cross-repo selector / typography compatibility rules
+# still run below; only this product-specific token-fallback policy is local.
+DQ_UI_STYLE_RULES = [rule for rule in UI_STYLE_RULES if rule is not FONT_SIZE_FALLBACK_RULE]
 UI_VUE_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r'\bv-if="motion"\b'), 'use `v-if="divided"` on DqDropdownItem'),
     (re.compile(r"\bv-if='motion'\b"), "use `v-if='divided'` on DqDropdownItem"),
@@ -169,17 +179,16 @@ def check_theme() -> list[str]:
 
 def check_ui() -> list[str]:
     failures: list[str] = []
-    style_paths: list[Path] = []
     if STUDIO_STYLES.is_dir():
-        style_paths.extend(STUDIO_STYLES.glob("*.css"))
+        for path in STUDIO_STYLES.glob("*.css"):
+            _scan_lines(path, "styles", UI_STYLE_RULES, failures)
     if DQ_UI_ROOT.is_dir():
         for pkg in ("ui", "shell", "tokens"):
             pkg_src = DQ_UI_ROOT / pkg / "src"
             if pkg_src.is_dir():
-                style_paths.extend(pkg_src.rglob("*.css"))
-    for path in style_paths:
-        if "node_modules" not in path.parts:
-            _scan_lines(path, "styles", UI_STYLE_RULES, failures)
+                for path in pkg_src.rglob("*.css"):
+                    if "node_modules" not in path.parts:
+                        _scan_lines(path, "styles", DQ_UI_STYLE_RULES, failures)
     vue_roots = [FRONTEND_SRC]
     if DQ_UI_ROOT.is_dir():
         vue_roots.extend((DQ_UI_ROOT / pkg / "src" for pkg in ("ui", "shell")))
