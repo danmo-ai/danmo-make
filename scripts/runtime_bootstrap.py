@@ -289,15 +289,27 @@ def _install_app_reqs(
 
 def _verify_mlx(venv_py: Path, paths: BootstrapPaths, cb: ProgressCb | None) -> dict:
     code = (
-        "import json, mlx.core as mx;"
-        "devs = list(getattr(mx, 'devices', lambda: [])() or []);"
-        "def_dev = str(getattr(mx, 'default_device', lambda: None)());"
-        "info={"
-        "'mlx': getattr(mx, '__version__', None),"
-        "'default_device': def_dev,"
-        "'device_count': len(devs) if isinstance(devs, list) else 0,"
-        "};"
-        "print(json.dumps(info))"
+        "import json, importlib.metadata as md, mlx.core as mx\n"
+        "raw = md.version('mlx')\n"
+        "nums = []\n"
+        "for part in raw.split('+')[0].split('.'):\n"
+        "    digits = ''.join(ch for ch in part if ch.isdigit())\n"
+        "    if not digits:\n"
+        "        break\n"
+        "    nums.append(int(digits))\n"
+        "while len(nums) < 3:\n"
+        "    nums.append(0)\n"
+        "if tuple(nums[:3]) < (0, 32, 3):\n"
+        "    raise SystemExit(f'MLX {raw} is below the required 0.32.3')\n"
+        "print('mlx', raw)\n"
+        "devs = list(getattr(mx, 'devices', lambda: [])() or [])\n"
+        "def_dev = str(getattr(mx, 'default_device', lambda: None)())\n"
+        "info = {\n"
+        "    'mlx': raw,\n"
+        "    'default_device': def_dev,\n"
+        "    'device_count': len(devs) if isinstance(devs, list) else 0,\n"
+        "}\n"
+        "print(json.dumps(info))\n"
     )
     _emit(cb, phase="verify", message="import mlx.core")
     proc = subprocess.run(

@@ -47,6 +47,9 @@ class MLXContext(RuntimeContext):
     backend = "mlx"
 
     def __init__(self, memory_limit_gb: int = 120):
+        from backend.engine.runtime.mlx_version import require_mlx_version
+
+        require_mlx_version()
         # Metal-only flag is macOS-specific; Linux mlx[cuda] must not set it.
         if sys.platform == "darwin":
             os.environ.setdefault("MLX_METAL_DEVICE_ONLY", "1")

@@ -444,14 +444,52 @@ def _normalize_te_abbrev(raw: dict[str, Any]) -> dict[str, Any]:
     return cfg
 
 
-def _build_vlm(text_cfg: dict[str, Any], vis_cfg: dict[str, Any]):
+def require_minimax_h3_mlx_vlm_api() -> str:
+    """Fail loud when mlx-vlm no longer exports the Qwen3-VL symbols H3 calls.
+
+    mlx-vlm 0.7.x also requires transformers>=5.14. This release does not follow
+    that jump; a build that drops these modules is rejected instead of partially
+    loading the text tower.
+    """
+    import importlib
+
+    checks = (
+        ("mlx_vlm.models.qwen3_vl.qwen3_vl", "Model"),
+        ("mlx_vlm.models.qwen3_vl.processing_qwen3_vl", "Qwen3VLImageProcessor"),
+        ("mlx_vlm.models.qwen3_vl.config", "ModelConfig"),
+        ("mlx_vlm.models.qwen3_vl.config", "TextConfig"),
+        ("mlx_vlm.models.qwen3_vl.config", "VisionConfig"),
+        ("mlx_vlm.models.base", "create_attention_mask"),
+    )
     try:
-        from mlx_vlm.models.qwen3_vl.config import ModelConfig, TextConfig, VisionConfig
-        from mlx_vlm.models.qwen3_vl.qwen3_vl import Model
+        mlx_vlm = importlib.import_module("mlx_vlm")
     except ImportError as exc:
         raise RuntimeError(
             "MiniMax-H3 FL2VA text/vision encoding requires `mlx-vlm` (Qwen3-VL)."
         ) from exc
+    version = str(getattr(mlx_vlm, "__version__", "unknown"))
+    missing: list[str] = []
+    for mod_name, attr in checks:
+        try:
+            module = importlib.import_module(mod_name)
+        except ImportError:
+            missing.append(f"{mod_name}.{attr}")
+            continue
+        if not hasattr(module, attr):
+            missing.append(f"{mod_name}.{attr}")
+    if missing:
+        raise RuntimeError(
+            f"mlx-vlm {version} is missing MiniMax-H3 text-encoder symbols: "
+            + ", ".join(missing)
+            + ". This release does not upgrade mlx-vlm to 0.7 (transformers>=5.14)."
+        )
+    return version
+
+
+def _build_vlm(text_cfg: dict[str, Any], vis_cfg: dict[str, Any]):
+    require_minimax_h3_mlx_vlm_api()
+    from mlx_vlm.models.qwen3_vl.config import ModelConfig, TextConfig, VisionConfig
+    from mlx_vlm.models.qwen3_vl.qwen3_vl import Model
 
     text = TextConfig(
         model_type="qwen3_vl_text",

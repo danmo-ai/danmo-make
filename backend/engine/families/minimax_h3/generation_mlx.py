@@ -15,9 +15,21 @@ from backend.engine.families.minimax_h3.scheduler_mlx import MiniMaxH3Scheduler
 from backend.engine.families.minimax_h3.vae_mlx import mux_video_audio_mp4
 from backend.engine.pipelines.pipeline_progress import emit_denoise_progress, emit_post_progress
 from backend.engine.runtime.mlx_runtime import run_eval
+from backend.engine.runtime.mlx_version import require_mlx_version
 
 
 _PROMPT_EMBED_CACHE: dict[str, tuple[Any, np.ndarray]] = {}
+
+
+def denoiser_eval_indices(num_evals: int, reuse: int) -> set[int]:
+    """Steps that run the DiT. ``reuse=1`` is the full Euler trajectory."""
+    count = int(num_evals)
+    interval = max(1, int(reuse or 1))
+    if interval > 1 and count > 2:
+        chosen = {0, count - 1}
+        chosen.update(range(0, count, interval))
+        return chosen
+    return set(range(count))
 
 
 class MinimaxH3MlxGenerator:
@@ -43,6 +55,7 @@ class MinimaxH3MlxGenerator:
         self._project_root: Path | None = None
         self._registry: Any | None = None
         self._adapters: list[Any] | None = None
+        self._use_mlx_compile = False
 
     @staticmethod
     def _log(on_log: Callable[[str, str], None] | None, level: str, msg: str) -> None:
@@ -59,7 +72,7 @@ class MinimaxH3MlxGenerator:
         ) = load_minimax_h3_components(self.bundle_root, ctx=self.ctx)
 
     def _ensure_loaded(self, on_log: Callable[[str, str], None] | None) -> None:
-        if self._dit is None:
+        if self._dit is None or self._text_encoder is None:
             self._log(on_log, "info", "MiniMax-H3 loading FL2VA components…")
             self.load()
             self._log(on_log, "info", "MiniMax-H3 components ready")
@@ -155,6 +168,13 @@ class MinimaxH3MlxGenerator:
         if callable(eval_fn):
             eval_fn()
 
+    def _release_text_encoder(self) -> None:
+        """Drop the conditioner once prompt embeds are evaluated."""
+        self._text_encoder = None
+        clear = getattr(self.ctx, "clear_cache", None)
+        if callable(clear):
+            clear()
+
     def _validate_inference_plan(
         self, steps: int, on_log: Callable[[str, str], None] | None
     ) -> None:
@@ -176,14 +196,17 @@ class MinimaxH3MlxGenerator:
                 "MiniMax-H3 TeaCache is not implemented on the family_generator path; "
                 "set teacache_mode=none."
             )
-        if plan.use_mlx_compile:
+        self._use_mlx_compile = bool(plan.use_mlx_compile)
+        if self._use_mlx_compile:
             self._log(
                 on_log,
-                "warning",
-                "mlx.compile is not applied to MiniMax-H3 DiT in this path (use h3_denoiser_reuse / turbo instead).",
+                "info",
+                "MiniMax-H3 will mx.compile DiT blocks and reject the graph if it diverges from eager.",
             )
+        else:
+            self._log(on_log, "info", "MiniMax-H3 DiT blocks stay eager (use_mlx_compile is off).")
 
-    def _apply_turbo_lora(self, on_log: Callable[[str, str], None] | None) -> None:
+    def _apply_turbo_lora(self, on_log: Callable[[str, str], None] | None):
         from backend.engine.families.minimax_h3.lora_mlx import apply_minimax_h3_turbo_lora
 
         assert self._dit is not None
@@ -194,8 +217,8 @@ class MinimaxH3MlxGenerator:
                     "use h3_turbo via the video pipeline or install "
                     "minimax-h3-turbo-lora and select it as an adapter."
                 )
-            return
-        apply_minimax_h3_turbo_lora(
+            return None
+        return apply_minimax_h3_turbo_lora(
             self._dit,
             bundle_root=self.bundle_root,
             config=self.config,
@@ -226,6 +249,7 @@ class MinimaxH3MlxGenerator:
         on_progress: Any | None = None,
     ) -> str:
         _ = guidance, step_distill
+        require_mlx_version()
         if (negative_prompt or "").strip():
             raise RuntimeError(
                 "MiniMax-H3 FL2VA is CFG-distilled and does not accept a negative prompt."
@@ -247,8 +271,40 @@ class MinimaxH3MlxGenerator:
         assert self._dit is not None and self._text_encoder is not None
         assert self._video_vae is not None and self._audio_vae is not None
 
-        self._apply_turbo_lora(on_log)
+        restore = self._apply_turbo_lora(on_log)
+        try:
+            return self._generate_after_turbo(
+                prompt=prompt,
+                output_path=output_path,
+                width=width,
+                height=height,
+                num_frames=num_frames,
+                seed=seed,
+                steps=steps,
+                image_path=image_path,
+                last_frame_path=last_frame_path,
+                on_log=on_log,
+                on_progress=on_progress,
+            )
+        finally:
+            if restore is not None:
+                restore()
 
+    def _generate_after_turbo(
+        self,
+        *,
+        prompt: str,
+        output_path: str,
+        width: int,
+        height: int,
+        num_frames: int,
+        seed: int,
+        steps: int,
+        image_path: str | None,
+        last_frame_path: str | None,
+        on_log: Any | None,
+        on_progress: Any | None,
+    ) -> str:
         canvas_h, canvas_w = self._resolve_canvas(width, height)
         out_h, out_w = canvas_h, canvas_w
         canvas_h, canvas_w = self._internal_canvas(canvas_h, canvas_w)
@@ -302,6 +358,7 @@ class MinimaxH3MlxGenerator:
                 tags_np = np.array(text_token_tags)
             _PROMPT_EMBED_CACHE[cache_key] = (prompt_embeds, tags_np)
         run_eval(getattr(self.ctx, "eval", None), prompt_embeds)
+        self._release_text_encoder()
 
         num_latent_frames = P.video_latent_num_frames(aligned_frames)
         latent_h = canvas_h // P.VAE_SPATIAL_SCALE
@@ -377,17 +434,45 @@ class MinimaxH3MlxGenerator:
 
         reuse = max(1, int(getattr(self.config, "h3_denoiser_reuse", 1) or 1))
         active_layers = int(getattr(self.config, "h3_active_layers", 50) or 50)
-        eval_indices = set(range(num_evals))
-        if reuse > 1 and num_evals > 2:
-            interval = reuse
-            eval_indices = {0, num_evals - 1}
-            eval_indices.update(range(0, num_evals, interval))
+        eval_indices = denoiser_eval_indices(num_evals, reuse)
 
         position_ids = mx.array(layout.position_ids.astype(np.float32))
         token_tags = mx.array(layout.token_tags.astype(np.int32))
         video_indices = mx.array(layout.video_indices.astype(np.int32))
         audio_indices = mx.array(layout.audio_indices.astype(np.int32))
         text_indices = mx.array(layout.text_indices.astype(np.int32))
+        schedule_ts = P.collect_denoise_timesteps(
+            layout,
+            np.array(video_sched.timesteps),
+            np.array(audio_sched.timesteps),
+            keyframe_noise=P.MINIMAX_H3_KEYFRAME_NOISE_AUG,
+        )
+        assert self._dit is not None
+        if active_layers < len(self._dit.blocks):
+            self._dit.set_active_layers(active_layers)
+        clip_cache = self._dit.prepare_clip(
+            encoder_hidden_states=prompt_embeds,
+            position_ids=position_ids,
+            token_tags=token_tags,
+            schedule_timesteps=mx.array(schedule_ts),
+        )
+        if bool(getattr(self.config, "h3_low_memory", True)):
+            self._dit.drop_adaln_projections()
+            self._log(on_log, "info", "MiniMax-H3 dropped AdaLN projections after caching the schedule.")
+        compiled_blocks = None
+        if bool(getattr(self, "_use_mlx_compile", False)):
+            if clip_cache.attention_mask is not None:
+                raise RuntimeError(
+                    "MiniMax-H3 mx.compile does not cover padding attention masks. "
+                    "Disable use_mlx_compile for this clip."
+                )
+            from backend.engine.families.minimax_h3.transformer_mlx import compile_transformer_block
+
+            compiled_blocks = [
+                compile_transformer_block(block)
+                for block in self._dit.blocks[: self._dit._active_layers]
+            ]
+            self._dit._compile_verified = False
 
         latents = mx.array(video_rows)
         audio_latents = mx.array(audio_rows)
@@ -414,6 +499,7 @@ class MinimaxH3MlxGenerator:
                 condition_audio_timestep=1.0,
             )
             if i in eval_indices or last_v_pred is None:
+                row_cache = P.map_unique_timesteps_to_cache(schedule_ts, unique_t, t_idx)
                 dit_kwargs: dict[str, Any] = dict(
                     hidden_states=latents[None],
                     audio_hidden_states=audio_latents[None],
@@ -426,9 +512,10 @@ class MinimaxH3MlxGenerator:
                     audio_indices=audio_indices,
                     text_indices=text_indices,
                     return_dict=False,
+                    clip_cache=clip_cache,
+                    cache_row_indices=mx.array(row_cache),
+                    compiled_blocks=compiled_blocks,
                 )
-                if active_layers < 50 and hasattr(self._dit, "set_active_layers"):
-                    self._dit.set_active_layers(active_layers)
                 out = self._dit(**dit_kwargs)
                 noise_pred, audio_noise_pred = out
                 run_eval(getattr(self.ctx, "eval", None), noise_pred, audio_noise_pred)

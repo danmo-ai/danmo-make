@@ -14,7 +14,6 @@ from backend.engine.common.bundle.lora_mlx import (
     orient_lora_pair,
     read_lora_config,
 )
-from backend.engine.common.model.base import _collect_params
 from backend.engine.common.model.quantized_lora_mlx import apply_lora_delta_to_weight
 from backend.engine.contracts.pipeline_registry import local_bundle_root
 from backend.engine.families.minimax_h3.lora_weights import (
@@ -52,9 +51,52 @@ def adapters_include_h3_turbo(adapters: Sequence[Any], registry: Any) -> bool:
 
 
 def _dit_param_map(dit: Any) -> dict[str, mx.array]:
-    out: dict[str, mx.array] = {}
-    _collect_params(dit, "", out)
-    return out
+    """Flat DiT keys matching ``expected_dit_param_keys`` (``blocks.0.attn...``).
+
+    ``mlx.nn.Module.parameters()`` stores ``self.blocks`` as a list. The shared
+    ``_collect_params`` walker does not descend dicts inside that list, so LoRA
+    targets would match nothing. ``tree_flatten`` is the same walk the loader uses.
+    """
+    from mlx.utils import tree_flatten
+
+    params = dit.parameters() if hasattr(dit, "parameters") and callable(dit.parameters) else dit
+    return {key: value for key, value in tree_flatten(params)}
+
+
+def _snapshot_weight(param_map: dict[str, mx.array], snaps: dict[str, mx.array], wkey: str) -> None:
+    if wkey not in param_map or wkey in snaps:
+        return
+    snaps[wkey] = mx.array(param_map[wkey])
+    base = wkey[: -len(".weight")] if wkey.endswith(".weight") else wkey
+    for suffix in ("scales", "biases", "bias"):
+        key = f"{base}.{suffix}"
+        if key in param_map and key not in snaps:
+            snaps[key] = mx.array(param_map[key])
+
+
+def restore_minimax_h3_param_snapshots(dit: Any, snapshots: dict[str, mx.array]) -> None:
+    """Write pre-merge copies back. Shape changes fail loud instead of leaving a merged DiT."""
+    if not snapshots:
+        return
+    live = _dit_param_map(dit)
+    missing = [key for key in snapshots if key not in live]
+    if missing:
+        preview = ", ".join(missing[:8])
+        raise RuntimeError(
+            "MiniMax-H3 turbo restore lost parameters after merge: " + preview
+        )
+    restored: list[mx.array] = []
+    for key, saved in snapshots.items():
+        cur = live[key]
+        if tuple(cur.shape) != tuple(saved.shape):
+            raise RuntimeError(
+                f"MiniMax-H3 turbo restore shape mismatch for {key}: "
+                f"live {tuple(cur.shape)} vs snapshot {tuple(saved.shape)}. "
+                "Refusing to leave merged weights on the DiT."
+            )
+        cur[:] = saved.astype(cur.dtype)
+        restored.append(cur)
+    run_eval(None, *restored)
 
 
 def _resolve_lora_file(bundle: Path) -> Path:
@@ -131,8 +173,12 @@ def merge_minimax_h3_turbo_lora(
     strength: float,
     ctx: Any,
     on_log: Callable[[str, str], None] | None = None,
-) -> int:
-    """Merge turbo LoRA into ``MiniMaxH3DiTMLX`` (dense deltas or A/B pairs; quant-aware)."""
+) -> Callable[[], None]:
+    """Merge turbo LoRA into ``MiniMaxH3DiTMLX`` and return a restore callback.
+
+    The callback writes the pre-merge parameter copies back so a later non-turbo
+    run does not keep the distilled weights.
+    """
     load_fn = getattr(ctx, "load_weights", None)
     weights = load_weights_dict(load_fn, str(weight_path))
     if not weights:
@@ -154,6 +200,7 @@ def merge_minimax_h3_turbo_lora(
             dense[module] = tensor
 
     applied = 0
+    snaps: dict[str, mx.array] = {}
     bits = None
     group_size = 64
     quant_cfg = getattr(getattr(dit, "config", None), "quantization", None)
@@ -166,56 +213,63 @@ def merge_minimax_h3_turbo_lora(
 
     target = _MergeTarget()
 
-    for module, delta in dense.items():
-        wkey = minimax_h3_lora_param_key(module)
-        if wkey not in param_map:
-            continue
-        scaled = float(strength) * delta.astype(mx.float32)
-        if bits in (4, 8):
-            apply_lora_delta_to_weight(
-                model=target,
-                wkey=wkey,
-                delta=scaled,
-                ctx=ctx,
-                bits=bits,
-                group_size=group_size,
-            )
-        else:
-            param = param_map[wkey]
-            param[:] = (param.astype(mx.float32) + scaled).astype(param.dtype)
-        applied += 1
+    try:
+        for module, delta in dense.items():
+            wkey = minimax_h3_lora_param_key(module)
+            if wkey not in param_map:
+                continue
+            _snapshot_weight(param_map, snaps, wkey)
+            scaled = float(strength) * delta.astype(mx.float32)
+            if bits in (4, 8):
+                apply_lora_delta_to_weight(
+                    model=target,
+                    wkey=wkey,
+                    delta=scaled,
+                    ctx=ctx,
+                    bits=bits,
+                    group_size=group_size,
+                )
+            else:
+                param = param_map[wkey]
+                param[:] = (param.astype(mx.float32) + scaled).astype(param.dtype)
+            applied += 1
 
-    for module, (down, up, alpha) in groups.items():
-        wkey = minimax_h3_lora_param_key(module)
-        if wkey not in param_map:
-            continue
-        param = param_map[wkey]
-        out_d, in_d = int(param.shape[0]), int(param.shape[1])
-        d_orient, u_orient, rank = orient_lora_pair(
-            down,
-            up,
-            out_d=out_d,
-            in_d=in_d,
-            lora_id=H3_TURBO_LORA_ID,
-            wkey=wkey,
-        )
-        scale = (float(alpha) / float(rank)) * float(strength)
-        delta = mx.matmul(u_orient.astype(mx.float32), d_orient.astype(mx.float32))
-        scaled_delta = scale * delta
-        if bits in (4, 8):
-            apply_lora_delta_to_weight(
-                model=target,
+        for module, (down, up, alpha) in groups.items():
+            wkey = minimax_h3_lora_param_key(module)
+            if wkey not in param_map:
+                continue
+            param = param_map[wkey]
+            out_d, in_d = int(param.shape[0]), int(param.shape[1])
+            d_orient, u_orient, rank = orient_lora_pair(
+                down,
+                up,
+                out_d=out_d,
+                in_d=in_d,
+                lora_id=H3_TURBO_LORA_ID,
                 wkey=wkey,
-                delta=scaled_delta,
-                ctx=ctx,
-                bits=bits,
-                group_size=group_size,
             )
-        else:
-            param[:] = (param.astype(mx.float32) + scaled_delta).astype(param.dtype)
-        applied += 1
+            _snapshot_weight(param_map, snaps, wkey)
+            scale = (float(alpha) / float(rank)) * float(strength)
+            delta = mx.matmul(u_orient.astype(mx.float32), d_orient.astype(mx.float32))
+            scaled_delta = scale * delta
+            if bits in (4, 8):
+                apply_lora_delta_to_weight(
+                    model=target,
+                    wkey=wkey,
+                    delta=scaled_delta,
+                    ctx=ctx,
+                    bits=bits,
+                    group_size=group_size,
+                )
+            else:
+                param[:] = (param.astype(mx.float32) + scaled_delta).astype(param.dtype)
+            applied += 1
+    except Exception:
+        restore_minimax_h3_param_snapshots(dit, snaps)
+        raise
 
     if applied == 0:
+        restore_minimax_h3_param_snapshots(dit, snaps)
         raise RuntimeError(
             f"MiniMax-H3 Turbo LoRA {weight_path.name} matched 0 DiT parameters "
             f"({len(groups)} A/B groups, {len(dense)} dense keys). "
@@ -224,7 +278,11 @@ def merge_minimax_h3_turbo_lora(
     run_eval(getattr(ctx, "eval", None), dit.parameters())
     if on_log:
         on_log("info", f"MiniMax-H3 turbo LoRA merged ({applied} tensors) from {weight_path.name}")
-    return applied
+
+    def _restore() -> None:
+        restore_minimax_h3_param_snapshots(dit, snaps)
+
+    return _restore
 
 
 def apply_minimax_h3_turbo_lora(
@@ -237,13 +295,13 @@ def apply_minimax_h3_turbo_lora(
     registry: Any,
     ctx: Any,
     on_log: Callable[[str, str], None] | None = None,
-) -> None:
+) -> Callable[[], None] | None:
     """Apply turbo LoRA when ``h3_turbo`` or a compatible adapter is present."""
     use_turbo = bool(getattr(config, "h3_turbo", False)) or adapters_include_h3_turbo(
         adapters or (), registry
     )
     if not use_turbo:
-        return
+        return None
 
     strength = 1.0
     for item in adapters or ():
@@ -259,7 +317,7 @@ def apply_minimax_h3_turbo_lora(
         registry=registry,
         adapters=adapters,
     )
-    merge_minimax_h3_turbo_lora(
+    return merge_minimax_h3_turbo_lora(
         dit,
         weight_path=path,
         strength=strength,
