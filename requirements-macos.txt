@@ -2,7 +2,9 @@
 # Includes common deps + MLX stack.
 -r requirements.txt
 
-# MLX core (Metal)
-mlx>=0.21.0
-mlx-lm
-mlx-vlm
+# MLX core (Metal). Floor is 0.32.3: quantized matmul past 32K rows and
+# compile/eager sigmoid agreement. mlx-vlm 0.7.6 needs transformers>=5.14
+# (pinned in requirements.txt) and still exports mlx_vlm.models.qwen3_vl.
+mlx>=0.32.3
+mlx-lm>=0.32.0
+mlx-vlm>=0.7.6

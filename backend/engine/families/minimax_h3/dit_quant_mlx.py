@@ -69,6 +69,34 @@ def _class_predicate(config: MiniMaxH3QuantConfig):
     return predicate
 
 
+def assert_quantized_matmul_finite_over_32k(
+    *,
+    rows: int = 32769,
+    in_features: int = 64,
+    out_features: int = 32,
+    bits: int = 4,
+    group_size: int = 64,
+) -> None:
+    """Fail when a quantized linear is non-finite past the 32K-row gather_qmm bug."""
+    import mlx.core as mx
+
+    if rows <= 32768:
+        raise RuntimeError(f"rows must be > 32768 to lock the gather_qmm fix, got {rows}")
+    if in_features % group_size != 0:
+        raise RuntimeError(
+            f"in_features={in_features} must be divisible by group_size={group_size}"
+        )
+    linear = nn.Linear(in_features, out_features, bias=False)
+    quantized = linear.to_quantized(group_size=group_size, bits=bits)
+    y = quantized(mx.random.normal((rows, in_features)))
+    mx.eval(y)
+    if not bool(mx.all(mx.isfinite(y)).item()):
+        raise RuntimeError(
+            f"Quantized matmul produced non-finite values at rows={rows}. "
+            "MLX gather_qmm above 32K rows requires mlx>=0.32.3."
+        )
+
+
 def apply_minimax_h3_quant_structure(model: nn.Module, config: MiniMaxH3QuantConfig) -> None:
     """Convert ``MiniMaxH3DiTMLX`` to quantized layers before loading PipeNetwork shards."""
     nn.quantize(

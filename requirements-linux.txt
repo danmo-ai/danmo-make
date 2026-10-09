@@ -3,7 +3,10 @@
 # Includes common deps + MLX CUDA stack.
 -r requirements.txt
 
-# MLX core (CUDA)
-mlx[cuda]>=0.21.0
-mlx-lm
-mlx-vlm
+# MLX core (CUDA). Floor is 0.32.3: quantized matmul past 32K rows,
+# eval/compile stream safety, and compile/eager sigmoid agreement.
+# mlx-vlm 0.7.6 needs transformers>=5.14 (pinned in requirements.txt).
+# H3 text encoding imports mlx_vlm.models.qwen3_vl and fails loud if missing.
+mlx[cuda]>=0.32.3
+mlx-lm>=0.32.0
+mlx-vlm>=0.7.6

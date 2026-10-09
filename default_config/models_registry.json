@@ -9335,21 +9335,24 @@
               "oracle"
             ],
             "type": "enum",
-            "label": "H3 质量预设"
+            "label": "H3 质量预设",
+            "note": "balanced/quality/oracle 走完整 Euler（全部层、不复用速度场、不缩小画布）。draft 只打开 Turbo，建议 6–8 步。非 Turbo 推荐 8–16 步；默认 30 步保持原采样积分。"
           },
           "h3_denoiser_reuse": {
             "default": 1,
             "min": 1,
             "max": 3,
             "type": "int",
-            "label": "Denoiser reuse"
+            "label": "Denoiser reuse",
+            "note": "有损：隔步复用速度场，不是等价加速。质量预设会强制为 1。"
           },
           "h3_active_layers": {
             "default": 50,
             "min": 40,
             "max": 50,
             "type": "int",
-            "label": "Active DiT layers"
+            "label": "Active DiT layers",
+            "note": "有损：少于 50 层会改变结果。质量预设保持 50。"
           },
           "h3_internal_canvas": {
             "default": "off",
@@ -9360,7 +9363,8 @@
               "320"
             ],
             "type": "enum",
-            "label": "Internal canvas"
+            "label": "Internal canvas",
+            "note": "有损：在更小画布上去噪再放大，偏离训练分布。质量预设保持 off。"
           },
           "h3_turbo": {
             "default": false,

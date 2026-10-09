@@ -119,7 +119,7 @@ fn wait_for_health(port: u16, child: &mut Child, log_path: &Path) -> Result<(), 
             ));
         }
         match ureq::get(&url).call() {
-            Ok(resp) if (200..300).contains(&resp.status()) => return Ok(()),
+            Ok(resp) if (200..300).contains(&resp.status().as_u16()) => return Ok(()),
             _ => thread::sleep(Duration::from_millis(500)),
         }
     }

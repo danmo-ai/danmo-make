@@ -45,7 +45,7 @@ _SHARED_HIDDEN_IMPORTS: tuple[str, ...] = (
     "backend.mcp.model_guide",
     "mcp",
     "mcp.server",
-    "mcp.server.fastmcp",
+    "mcp.server.mcpserver",
     "mcp.server.streamable_http_manager",
     "sse_starlette",
     "backend.core.container",

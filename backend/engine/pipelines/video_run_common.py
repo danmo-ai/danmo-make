@@ -194,30 +194,27 @@ def snap_wan_pixel_dims_if_needed(pipeline,
     return video_snap_pixel_dims_if_needed(config, w, h, on_log=on_log)
 
 def _apply_minimax_h3_quality_preset(config: Any, preset: str) -> None:
-    """Map registry ``h3_quality_preset`` to runtime config fields."""
+    """Map registry ``h3_quality_preset`` onto a full Euler trajectory.
+
+    ``draft`` only enables Turbo LoRA. Reusing velocities, dropping DiT layers,
+    and shrinking the internal canvas stay available as explicit lossy fields;
+    presets do not turn them on.
+    """
     key = str(preset or "balanced").strip().lower()
+    config.h3_denoiser_reuse = 1
+    config.h3_active_layers = 50
+    config.h3_internal_canvas = "off"
+    config.teacache_mode = "none"
     if key == "draft":
         config.h3_turbo = True
-        config.h3_denoiser_reuse = 1
-        config.h3_active_layers = 45
-        config.h3_internal_canvas = "384"
         config.h3_low_memory = True
-        config.teacache_mode = "none"
-    elif key == "balanced":
+    elif key in ("balanced", "quality", "oracle"):
         config.h3_turbo = False
-        config.h3_denoiser_reuse = 2
-        config.h3_active_layers = 50
-        config.h3_internal_canvas = "off"
-    elif key == "quality":
-        config.h3_turbo = False
-        config.h3_denoiser_reuse = 1
-        config.h3_active_layers = 50
-        config.h3_internal_canvas = "off"
-    elif key == "oracle":
-        config.h3_turbo = False
-        config.h3_denoiser_reuse = 1
-        config.h3_active_layers = 50
-        config.h3_internal_canvas = "off"
+    else:
+        raise RuntimeError(
+            f"Unknown MiniMax-H3 quality preset {preset!r}. "
+            "Use draft, balanced, quality, or oracle."
+        )
 
 
 def apply_video_registry_config_overrides(pipeline, entry: Any, config: Any) -> None:

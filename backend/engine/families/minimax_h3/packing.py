@@ -273,6 +273,56 @@ def build_row_timesteps(
     return distinct.astype(np.float32), inverse.astype(np.int32)
 
 
+def collect_denoise_timesteps(
+    layout: MiniMaxH3PackedSequence,
+    video_timesteps: np.ndarray,
+    audio_timesteps: np.ndarray,
+    *,
+    keyframe_noise: float,
+    condition_audio_timestep: float = 1.0,
+) -> np.ndarray:
+    """Sorted float32 timesteps that appear in a dual video/audio Euler loop."""
+    video = np.asarray(video_timesteps, dtype=np.float32).reshape(-1)
+    audio = np.asarray(audio_timesteps, dtype=np.float32).reshape(-1)
+    n = int(min(video.shape[0], audio.shape[0]))
+    if n <= 0:
+        raise RuntimeError("MiniMax-H3 denoise timestep union is empty.")
+    parts: list[np.ndarray] = []
+    for i in range(n):
+        v_t = float(video[i])
+        a_t = float(audio[i])
+        unique, _inverse = build_row_timesteps(
+            layout,
+            video_timestep=v_t,
+            audio_timestep=a_t,
+            condition_video_timestep=max(v_t, float(keyframe_noise)),
+            condition_audio_timestep=float(condition_audio_timestep),
+        )
+        parts.append(unique)
+    return np.unique(np.concatenate(parts)).astype(np.float32)
+
+
+def map_unique_timesteps_to_cache(
+    cache_timesteps: np.ndarray,
+    unique_t: np.ndarray,
+    row_inverse: np.ndarray,
+) -> np.ndarray:
+    """Map per-step ``np.unique`` inverse indices onto a clip-level timestep table."""
+    cache = np.asarray(cache_timesteps, dtype=np.float32).reshape(-1)
+    unique = np.asarray(unique_t, dtype=np.float32).reshape(-1)
+    inverse = np.asarray(row_inverse)
+    if cache.size == 0 or unique.size == 0:
+        raise RuntimeError("MiniMax-H3 AdaLN cache lookup received an empty timestep set.")
+    pos = np.searchsorted(cache, unique)
+    clipped = np.clip(pos, 0, cache.shape[0] - 1)
+    if np.any(pos >= cache.shape[0]) or not np.array_equal(cache[clipped], unique):
+        raise RuntimeError(
+            "MiniMax-H3 AdaLN cache is missing a scheduled timestep. "
+            "Rebuild the cache from this clip's sigma grid."
+        )
+    return pos[inverse].astype(np.int32)
+
+
 def flow_match_sigmas(num_inference_steps: int, *, shift: float) -> np.ndarray:
     """Deprecated: prefer ``MiniMaxH3Scheduler.set_timesteps``."""
     from backend.engine.families.minimax_h3.scheduler_mlx import MiniMaxH3Scheduler

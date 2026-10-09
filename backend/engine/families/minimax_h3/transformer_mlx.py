@@ -9,10 +9,12 @@ Module names match released safetensors (``video_patch_proj``, ``blocks.*.attn.q
 from __future__ import annotations
 
 import math
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 
 from backend.engine.common.ops.attention import scaled_dot_product_attention_bhsd_mx
 from backend.engine.common.ops.embeddings import sinusoidal_timestep_proj
@@ -37,11 +39,15 @@ def _param_dtype(layer: nn.Module) -> mx.Dtype:
 
 
 def _apply_rotary_emb(hidden_states: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
+    """Rotate Q/K in ``(batch, heads, seq, dim)`` layout.
+
+    ``cos`` / ``sin`` from ``MiniMaxH3RotaryPosEmbed3D`` are ``(seq, rotary_dim)``.
+    """
     rotary_dim = int(cos.shape[-1])
     rotary = hidden_states[..., :rotary_dim]
     passthrough = hidden_states[..., rotary_dim:]
-    cos_b = cos[None, :, None, :].astype(hidden_states.dtype)
-    sin_b = sin[None, :, None, :].astype(hidden_states.dtype)
+    cos_b = cos[None, None, :, :].astype(hidden_states.dtype)
+    sin_b = sin[None, None, :, :].astype(hidden_states.dtype)
     x1, x2 = mx.split(rotary, 2, axis=-1)
     rotated = mx.concatenate((-x2, x1), axis=-1)
     rotary = rotary * cos_b + rotated * sin_b
@@ -133,7 +139,13 @@ class MiniMaxH3Attention(nn.Module):
             key = _apply_rotary_emb(key, *rotary_emb)
 
         out = scaled_dot_product_attention_bhsd_mx(
-            mx, query, key, value, scale=self.scale, mask=attention_mask,
+            mx,
+            query,
+            key,
+            value,
+            scale=self.scale,
+            mask=attention_mask,
+            attention_backend="mlx",
         )
         out = out.transpose(0, 2, 1, 3).reshape(b, s, self.inner_dim)
         return self.out_proj(out.astype(hidden_states.dtype))
@@ -294,6 +306,19 @@ class MiniMaxH3FinalLayer(nn.Module):
         )
 
 
+@dataclass
+class H3ClipCache:
+    """Per-clip values that do not depend on the noisy latents."""
+
+    rotary_emb: tuple[mx.array, mx.array]
+    text_embeds: mx.array
+    attention_mask: mx.array | None
+    block_modulation: list[tuple[mx.array, ...]]
+    final_shift: mx.array
+    final_scale: mx.array
+    schedule_timesteps: np.ndarray
+
+
 class MiniMaxH3DiTMLX(nn.Module):
     """MLX MiniMax-H3 joint video+audio DiT (PipeNetwork / upstream keys)."""
 
@@ -361,6 +386,8 @@ class MiniMaxH3DiTMLX(nn.Module):
             for _ in range(num_layers)
         ]
         self._active_layers = num_layers
+        self._adaln_dropped = False
+        self._compile_verified = True
         self.final_layer = MiniMaxH3FinalLayer(
             hidden_size=hidden_size,
             time_embed_dim=time_embed_dim,
@@ -409,6 +436,76 @@ class MiniMaxH3DiTMLX(nn.Module):
             )
         self._active_layers = count
 
+    def _project_text(self, encoder_hidden_states: mx.array) -> mx.array:
+        text_embeds = self.condition_proj(
+            encoder_hidden_states.astype(_param_dtype(self.condition_proj)),
+        )
+        return self.token_refiner(text_embeds)
+
+    def _temb(self, timestep: mx.array) -> mx.array:
+        temb_input = sinusoidal_timestep_proj(
+            _MLX_CTX,
+            timestep,
+            self.time_embedder.proj_in.weight.shape[1],
+            sin_first=True,
+            flip_sin_to_cos=True,
+            downscale_freq_shift=0.0,
+        )
+        return self.time_embedder(temb_input.astype(_param_dtype(self.time_embedder.proj_in)))
+
+    def prepare_clip(
+        self,
+        *,
+        encoder_hidden_states: mx.array,
+        position_ids: mx.array,
+        token_tags: mx.array,
+        schedule_timesteps: mx.array,
+    ) -> H3ClipCache:
+        """RoPE, text branch, and AdaLN tables for every timestep in the clip.
+
+        The tables match ``adaln_proj(temb)`` / the final AdaLN linear on the same
+        timesteps. Callers compare that on a tiny DiT before trusting the cache.
+        """
+        if self._adaln_dropped:
+            raise RuntimeError(
+                "MiniMax-H3 AdaLN projections were dropped after the previous clip. "
+                "Reload the DiT before preparing another schedule."
+            )
+        rotary = self.rope(position_ids)
+        text_embeds = self._project_text(encoder_hidden_states)
+        attention_mask = self._padding_attention_mask(token_tags, text_embeds.dtype)
+        temb = self._temb(schedule_timesteps)
+        block_modulation = [block.adaln_proj(temb) for block in self.blocks]
+        final_h = self.final_layer.adaln_proj(
+            nn.silu(temb).astype(_param_dtype(self.final_layer.adaln_proj)),
+        )
+        final_shift, final_scale = mx.split(final_h, 2, axis=-1)
+        leaves: list[mx.array] = [rotary[0], rotary[1], text_embeds, final_shift, final_scale]
+        if attention_mask is not None:
+            leaves.append(attention_mask)
+        for mods in block_modulation:
+            leaves.extend(mods)
+        mx.eval(*leaves)
+        return H3ClipCache(
+            rotary_emb=rotary,
+            text_embeds=text_embeds,
+            attention_mask=attention_mask,
+            block_modulation=block_modulation,
+            final_shift=final_shift,
+            final_scale=final_scale,
+            schedule_timesteps=np.array(schedule_timesteps.astype(mx.float32)),
+        )
+
+    def drop_adaln_projections(self) -> None:
+        """Release AdaLN weights after ``prepare_clip`` has materialized the tables."""
+        if self._adaln_dropped:
+            return
+        for block in self.blocks:
+            _release_linear_storage(block.adaln_proj.linear)
+        _release_linear_storage(self.final_layer.adaln_proj)
+        self._adaln_dropped = True
+        mx.eval(mx.zeros((1,)))
+
     def _padding_attention_mask(self, token_tags: mx.array, dtype: mx.Dtype) -> mx.array | None:
         is_pad = token_tags < 0
         if not bool(mx.any(is_pad).item()):
@@ -432,6 +529,9 @@ class MiniMaxH3DiTMLX(nn.Module):
         text_indices: mx.array,
         attention_kwargs: dict[str, Any] | None = None,
         return_dict: bool = True,
+        clip_cache: H3ClipCache | None = None,
+        cache_row_indices: mx.array | None = None,
+        compiled_blocks: list[Callable[..., mx.array]] | None = None,
     ) -> dict[str, mx.array] | tuple[mx.array, mx.array]:
         del attention_kwargs
         if position_ids.ndim != 2 or int(position_ids.shape[-1]) != 3:
@@ -442,8 +542,28 @@ class MiniMaxH3DiTMLX(nn.Module):
                 "`token_tags` and `timestep_indices` must be (seq_len,) matching `position_ids`, "
                 f"got {tuple(token_tags.shape)} and {tuple(timestep_indices.shape)} for seq_len={sequence_length}."
             )
+        if clip_cache is not None and cache_row_indices is None:
+            raise RuntimeError(
+                "MiniMax-H3 clip cache requires cache_row_indices (global timestep id per row)."
+            )
+        if compiled_blocks is not None and clip_cache is None:
+            raise RuntimeError(
+                "MiniMax-H3 compiled blocks require a clip cache so AdaLN is an input, not a live matmul."
+            )
+        if compiled_blocks is not None and (clip_cache is None or clip_cache.attention_mask is not None):
+            raise RuntimeError(
+                "MiniMax-H3 mx.compile does not cover padding attention masks. "
+                "Disable use_mlx_compile for this clip."
+            )
 
-        rotary_emb = self.rope(position_ids)
+        if clip_cache is not None:
+            rotary_emb = clip_cache.rotary_emb
+            text_embeds = clip_cache.text_embeds
+            attention_mask = clip_cache.attention_mask
+        else:
+            rotary_emb = self.rope(position_ids)
+            text_embeds = self._project_text(encoder_hidden_states)
+            attention_mask = None
 
         video_embeds = self.video_patch_proj(
             hidden_states.astype(_param_dtype(self.video_patch_proj)),
@@ -451,10 +571,6 @@ class MiniMaxH3DiTMLX(nn.Module):
         audio_embeds = self.audio_patch_proj(
             audio_hidden_states.astype(_param_dtype(self.audio_patch_proj)),
         )
-        text_embeds = self.condition_proj(
-            encoder_hidden_states.astype(_param_dtype(self.condition_proj)),
-        )
-        text_embeds = self.token_refiner(text_embeds)
 
         packed = mx.zeros(
             (int(text_embeds.shape[0]), sequence_length, int(text_embeds.shape[-1])),
@@ -464,26 +580,58 @@ class MiniMaxH3DiTMLX(nn.Module):
         packed = _index_copy_axis1(packed, video_indices, video_embeds.astype(text_embeds.dtype))
         packed = _index_copy_axis1(packed, audio_indices, audio_embeds.astype(text_embeds.dtype))
 
-        temb_input = sinusoidal_timestep_proj(
-            _MLX_CTX,
-            timestep,
-            self.time_embedder.proj_in.weight.shape[1],
-            sin_first=True,
-            flip_sin_to_cos=True,
-            downscale_freq_shift=0.0,
-        )
-        temb = self.time_embedder(temb_input.astype(_param_dtype(self.time_embedder.proj_in)))
+        if clip_cache is None:
+            attention_mask = self._padding_attention_mask(token_tags, packed.dtype)
+            temb = self._temb(timestep)
+            step_indices = timestep_indices
+        else:
+            step_indices = cache_row_indices
 
-        adaln_indices = timestep_indices * MINIMAX_H3_MODALITY_NUM + mx.maximum(
+        adaln_indices = step_indices * MINIMAX_H3_MODALITY_NUM + mx.maximum(
             token_tags, mx.zeros_like(token_tags),
         )
-        attention_mask = self._padding_attention_mask(token_tags, packed.dtype)
 
-        for block in self.blocks[: self._active_layers]:
-            modulation = block.adaln_proj(temb)
-            packed = block(packed, modulation, adaln_indices, rotary_emb, attention_mask)
+        active = self.blocks[: self._active_layers]
+        if compiled_blocks is not None and len(compiled_blocks) != len(active):
+            raise RuntimeError(
+                f"MiniMax-H3 compiled {len(compiled_blocks)} blocks but {len(active)} are active."
+            )
+        cos_sin = rotary_emb
+        for i, block in enumerate(active):
+            if clip_cache is not None:
+                modulation = clip_cache.block_modulation[i]
+            else:
+                if self._adaln_dropped:
+                    raise RuntimeError(
+                        "MiniMax-H3 AdaLN projections were dropped; pass the clip cache."
+                    )
+                modulation = block.adaln_proj(temb)
+            if compiled_blocks is not None:
+                cos, sin = cos_sin
+                if not self._compile_verified and i == 0:
+                    eager0 = block(packed, modulation, adaln_indices, cos_sin, None)
+                    got0 = compiled_blocks[0](packed, *modulation, adaln_indices, cos, sin)
+                    mx.eval(eager0, got0)
+                    err = float(mx.max(mx.abs(eager0.astype(mx.float32) - got0.astype(mx.float32))).item())
+                    if not math.isfinite(err) or err > H3_COMPILE_ATOL:
+                        raise RuntimeError(
+                            "MiniMax-H3 mx.compile diverges from eager "
+                            f"(max abs {err}, atol {H3_COMPILE_ATOL}). "
+                            "Disable use_mlx_compile. Compiled blocks are not used."
+                        )
+                    self._compile_verified = True
+                    packed = got0
+                    continue
+                packed = compiled_blocks[i](packed, *modulation, adaln_indices, cos, sin)
+            else:
+                packed = block(packed, modulation, adaln_indices, cos_sin, attention_mask)
 
-        packed = self.final_layer.norm_out(packed, temb, timestep_indices)
+        if clip_cache is not None:
+            normed = self.final_layer.norm(packed)
+            packed = normed * (1.0 + _index_select_rows(clip_cache.final_scale, step_indices))
+            packed = packed + _index_select_rows(clip_cache.final_shift, step_indices)
+        else:
+            packed = self.final_layer.norm_out(packed, temb, timestep_indices)
         video_output = _index_select_axis1(
             self.final_layer.video_out(packed.astype(_param_dtype(self.final_layer.video_out))),
             video_indices,
@@ -499,6 +647,78 @@ class MiniMaxH3DiTMLX(nn.Module):
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         return self(*args, **kwargs)
+
+
+H3_COMPILE_ATOL = 1e-3
+
+
+def _release_linear_storage(linear: nn.Module) -> None:
+    weight = getattr(linear, "weight", None)
+    dtype = getattr(weight, "dtype", mx.float32)
+    linear.weight = mx.zeros((1,), dtype=dtype)
+    bias = getattr(linear, "bias", None)
+    if bias is not None:
+        linear.bias = mx.zeros((1,), dtype=getattr(bias, "dtype", dtype))
+    scales = getattr(linear, "scales", None)
+    if scales is not None:
+        linear.scales = mx.zeros((1,), dtype=getattr(scales, "dtype", mx.float32))
+    biases = getattr(linear, "biases", None)
+    if biases is not None:
+        linear.biases = mx.zeros((1,), dtype=getattr(biases, "dtype", mx.float32))
+
+
+def compile_transformer_block(block: MiniMaxH3TransformerBlock) -> Callable[..., mx.array]:
+    """Compile one block. AdaLN is an input, so dropping those weights is safe."""
+
+    def _fn(
+        h: mx.array,
+        m0: mx.array,
+        m1: mx.array,
+        m2: mx.array,
+        m3: mx.array,
+        m4: mx.array,
+        m5: mx.array,
+        idx: mx.array,
+        cos: mx.array,
+        sin: mx.array,
+    ) -> mx.array:
+        return block(h, (m0, m1, m2, m3, m4, m5), idx, (cos, sin), None)
+
+    try:
+        return mx.compile(_fn)
+    except Exception as exc:
+        raise RuntimeError(
+            "MiniMax-H3 mx.compile failed to capture a DiT block. "
+            "Disable use_mlx_compile; eager blocks stay available."
+        ) from exc
+
+
+def assert_compiled_block_close(
+    block: MiniMaxH3TransformerBlock,
+    hidden: mx.array,
+    modulation: tuple[mx.array, ...],
+    indices: mx.array,
+    rotary_emb: tuple[mx.array, mx.array],
+    *,
+    atol: float = H3_COMPILE_ATOL,
+) -> Callable[..., mx.array]:
+    """Compile ``block`` and refuse it when the graph does not match eager."""
+    if len(modulation) != 6:
+        raise RuntimeError(
+            f"MiniMax-H3 block modulation must have 6 tensors, got {len(modulation)}."
+        )
+    compiled = compile_transformer_block(block)
+    cos, sin = rotary_emb
+    eager = block(hidden, modulation, indices, rotary_emb, None)
+    got = compiled(hidden, *modulation, indices, cos, sin)
+    mx.eval(eager, got)
+    err = float(mx.max(mx.abs(eager.astype(mx.float32) - got.astype(mx.float32))).item())
+    if not math.isfinite(err) or err > float(atol):
+        raise RuntimeError(
+            f"MiniMax-H3 mx.compile diverges from eager (max abs {err}, atol {atol}). "
+            "Disable use_mlx_compile. Compiled blocks are not used."
+        )
+    return compiled
 
 
 def is_fp32_dit_key(key: str) -> bool:

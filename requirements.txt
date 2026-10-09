@@ -4,35 +4,39 @@
 # Windows is temporarily unsupported.
 
 # ── Web framework ──
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-python-multipart>=0.0.6
-aiohttp>=3.9.0
+fastapi>=0.143.0
+uvicorn[standard]>=0.54.0
+python-multipart>=0.0.32
+aiohttp>=3.14.4
 
 # ── MCP (Agent / danmo-work connector) ──
-mcp>=1.9.0,<2
+# 2.x renames FastMCP → MCPServer (mcp.server.mcpserver).
+mcp>=2.3.0
 
 # ── Image / Video I/O ──
-Pillow>=10.0.0
-pillow-heif>=0.16.0
-opencv-python-headless>=4.8.0
-imageio>=2.34.0
-imageio-ffmpeg>=0.5.0
+Pillow>=12.3.0
+pillow-heif>=1.8.0
+opencv-python-headless>=5.0.0.93
+imageio>=2.38.1
+imageio-ffmpeg>=0.6.0
 
 # ── Core ──
-pydantic>=2.5.0
-psutil>=5.9.0
+pydantic>=2.14.0
+psutil>=7.2.2
 
 # ── Tokenizers / text encoding ──
-transformers>=4.40.0
-sentencepiece
-tiktoken
+# Floor matches mlx-vlm 0.7.6 (transformers>=5.14) and the current stable release.
+transformers>=5.19.0
+sentencepiece>=0.2.2
+tiktoken>=0.14.0
 
 # ── Model hubs ──
-huggingface-hub>=0.25.0
-safetensors>=0.4.0
-modelscope>=1.20.0
+# Latest hub is 2.x, but tokenizers 0.23 (required by transformers 5.19)
+# still depends on huggingface-hub<2. 1.33.0 is the newest installable release.
+huggingface-hub>=1.33.0,<2
+safetensors>=0.8.0
+modelscope>=1.40.1
 
 # ── Audio ──
-soundfile>=0.12.0
-phonemizer
+soundfile>=0.14.0
+phonemizer>=3.4.0
