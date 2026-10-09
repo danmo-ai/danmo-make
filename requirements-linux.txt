@@ -5,8 +5,8 @@
 
 # MLX core (CUDA). Floor is 0.32.3: quantized matmul past 32K rows,
 # eval/compile stream safety, and compile/eager sigmoid agreement.
-# mlx-vlm stays unpinned below a 0.7/transformers 5.14 jump; H3 text
-# encoding still imports mlx_vlm.models.qwen3_vl and fails loud if missing.
+# mlx-vlm 0.7.6 needs transformers>=5.14 (pinned in requirements.txt).
+# H3 text encoding imports mlx_vlm.models.qwen3_vl and fails loud if missing.
 mlx[cuda]>=0.32.3
-mlx-lm
-mlx-vlm
+mlx-lm>=0.32.0
+mlx-vlm>=0.7.6

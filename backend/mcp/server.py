@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from backend.mcp.bridge import MakeAPIBridge, dumps
 from backend.mcp.model_guide import (
@@ -30,22 +30,24 @@ def set_bridge(bridge: MakeAPIBridge) -> None:
     _bridge = bridge
 
 
-def create_mcp(*, name: str = "danmo-make") -> FastMCP:
-    """Build FastMCP with streamable-HTTP path ``/`` (mount parent at ``/mcp``)."""
-    mcp = FastMCP(
+def create_mcp(*, name: str = "danmo-make") -> MCPServer:
+    """Build an MCP server mounted at ``/mcp``.
+
+    ``streamable_http_path="/"`` and ``stateless_http=True`` are passed to
+    ``streamable_http_app()`` (mcp 2 no longer takes them on the constructor).
+    """
+    mcp = MCPServer(
         name,
         instructions=(
             "Danmo Make local generation API. Prefer wait=true on generate_* tools. "
             "Use asset ids (ast_*) from upload_asset / task results."
         ),
-        streamable_http_path="/",
-        stateless_http=True,
     )
     _register_tools(mcp)
     return mcp
 
 
-def _register_tools(mcp: FastMCP) -> None:
+def _register_tools(mcp: MCPServer) -> None:
     @mcp.tool(description="Probe MLX/CUDA runtime health.")
     async def health() -> str:
         return dumps(await get_bridge().get("/api/system/health"))

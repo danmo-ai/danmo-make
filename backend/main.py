@@ -27,7 +27,7 @@ from backend.mcp.base_url import resolve_api_base_url
 from backend.mcp.server import create_mcp, set_bridge
 
 _mcp = create_mcp()
-_mcp_http_app = _mcp.streamable_http_app()
+_mcp_http_app = _mcp.streamable_http_app(streamable_http_path="/", stateless_http=True)
 
 from backend.core.container import register_services, get_container
 from backend.core.i18n import set_locale, _load_translations

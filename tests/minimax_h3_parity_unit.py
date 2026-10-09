@@ -142,8 +142,14 @@ class MiniMaxH3UpgradeTests(unittest.TestCase):
         linux = (root / "requirements-linux.txt").read_text(encoding="utf-8")
         self.assertIn("mlx>=0.32.3", macos)
         self.assertIn("mlx[cuda]>=0.32.3", linux)
-        self.assertNotIn("mlx-vlm>=0.7", macos)
-        self.assertNotIn("mlx-vlm>=0.7", linux)
+        self.assertIn("mlx-lm>=0.32.0", macos)
+        self.assertIn("mlx-lm>=0.32.0", linux)
+        self.assertIn("mlx-vlm>=0.7.6", macos)
+        self.assertIn("mlx-vlm>=0.7.6", linux)
+        common = (root / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("transformers>=5.19.0", common)
+        self.assertIn("huggingface-hub>=1.33.0,<2", common)
+        self.assertIn("mcp>=2.3.0", common)
 
     def test_version_parse_orders_0323_above_021(self) -> None:
         from backend.engine.runtime.mlx_version import parse_mlx_version

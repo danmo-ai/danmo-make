@@ -447,9 +447,9 @@ def _normalize_te_abbrev(raw: dict[str, Any]) -> dict[str, Any]:
 def require_minimax_h3_mlx_vlm_api() -> str:
     """Fail loud when mlx-vlm no longer exports the Qwen3-VL symbols H3 calls.
 
-    mlx-vlm 0.7.x also requires transformers>=5.14. This release does not follow
-    that jump; a build that drops these modules is rejected instead of partially
-    loading the text tower.
+    mlx-vlm >= 0.7.6 is the supported floor (it requires transformers >= 5.14).
+    A build that drops these modules is rejected instead of partially loading
+    the text tower.
     """
     import importlib
 
@@ -481,7 +481,7 @@ def require_minimax_h3_mlx_vlm_api() -> str:
         raise RuntimeError(
             f"mlx-vlm {version} is missing MiniMax-H3 text-encoder symbols: "
             + ", ".join(missing)
-            + ". This release does not upgrade mlx-vlm to 0.7 (transformers>=5.14)."
+            + ". Install mlx-vlm>=0.7.6 (Qwen3-VL symbols, transformers>=5.14)."
         )
     return version
 
