@@ -1912,6 +1912,30 @@ class TransformerStemDispatchTests(unittest.TestCase):
             )
             self.assertTrue(has_mlx_stem, f"{family} transformer.py lacks MLX stem wiring")
 
+    def test_delegating_stem_is_callable(self) -> None:
+        from types import SimpleNamespace
+
+        from backend.engine.common.model.dit_stem import DelegatingDiTStem
+
+        class _Inner:
+            def __init__(self, config, ctx):
+                self.ctx = ctx
+                self.config = config
+                self._param_map = {}
+
+            def __call__(self, latents, t, **kwargs):
+                return ("inner", latents, t, kwargs)
+
+            def forward(self, latents, t, **kwargs):
+                return ("forward", latents, t, kwargs)
+
+        stem = DelegatingDiTStem(
+            {"id": "unit"},
+            SimpleNamespace(backend="mlx"),
+            mlx_cls=_Inner,
+        )
+        self.assertEqual(stem("lat", 3, txt_embeds="e"), ("inner", "lat", 3, {"txt_embeds": "e"}))
+
     def test_require_mlx_ctx_rejects_non_mlx(self) -> None:
         from types import SimpleNamespace
 
@@ -3110,6 +3134,29 @@ class DownloadStallTests(unittest.TestCase):
         out = _decode_video_latent_chunked(_FakeDecoder(), latent, seed=7)
         self.assertEqual(calls, [(16, 7)])
         self.assertEqual(tuple(out.shape), (1, 3, 121, 4, 4))
+
+    def test_ltx25_gemma4_tokenize_prepends_word_boundary(self) -> None:
+        """Gemma 4 assets omit the leading space; encode must add it before BOS."""
+        from backend.engine.families.ltx25.text_encoder_mlx import _Gemma4LanguageModel
+
+        seen: list[str] = []
+
+        class _Tok:
+            bos_token_id = 2
+            pad_token_id = 0
+
+            def encode(self, text: str) -> list[int]:
+                seen.append(text)
+                return [11, 22]
+
+        gemma = _Gemma4LanguageModel()
+        gemma._tokenizer = _Tok()
+        ids, mask = gemma.tokenize("你好", max_length=8)
+        self.assertEqual(seen, [" 你好"])
+        self.assertEqual(ids.shape, (1, 8))
+        self.assertEqual(int(ids[0, -3].item()), 2)
+        self.assertEqual(int(mask[0, -3].item()), 1)
+        self.assertEqual(int(mask[0, 0].item()), 0)
 
     def test_ltx25_i2v_applies_h264_crf_preprocess(self) -> None:
         """I2V must H.264-roundtrip the source (same as LTX 2.3 / upstream).

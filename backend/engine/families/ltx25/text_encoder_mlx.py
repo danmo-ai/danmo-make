@@ -105,11 +105,17 @@ class _Gemma4LanguageModel:
     def tokenize(self, text: str, max_length: int) -> tuple[mx.array, mx.array]:
         if self._tokenizer is None:
             raise RuntimeError("Gemma not loaded")
-        tokens = self._tokenizer.encode(text.strip())
-        # Gemma 4's tokenizer.json post-processor adds no BOS (upstream
-        # ``LTXGemmaTokenizer`` prepends it manually); bos_token_id=2 in the
-        # bundle text_config, but AutoTokenizer reports None without a
-        # tokenizer_config.json, so fall back to the well-known id.
+        # Gemma 4's tokenizer.json post-processor adds neither a leading word
+        # boundary nor BOS. Upstream ``LTXGemmaTokenizer`` prepends `` `` so the
+        # first piece is ▁-prefixed (Gemma 3's post_processor already does this)
+        # and prepends BOS. Without the space, the first CJK character is a
+        # different token (「口」 vs 「▁口」) and speech conditioning misses.
+        # bos_token_id=2 in the bundle text config; AutoTokenizer reports None
+        # without a tokenizer_config.json, so fall back to that id.
+        text = text.strip()
+        if text and not text.startswith(" "):
+            text = f" {text}"
+        tokens = self._tokenizer.encode(text)
         bos_id = self._tokenizer.bos_token_id if self._tokenizer.bos_token_id is not None else 2
         if not tokens or tokens[0] != bos_id:
             tokens = [bos_id, *tokens]

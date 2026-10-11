@@ -43,6 +43,10 @@ class DelegatingDiTStem:
             raise AttributeError(name)
         return getattr(self._inner, name)
 
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        # Special methods are resolved on the class, not via __getattr__.
+        return self._inner(*args, **kwargs)
+
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         return self._inner.forward(*args, **kwargs)
 

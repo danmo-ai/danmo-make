@@ -44,17 +44,17 @@ Rewrite the user's brief into a detailed prompt for image-to-video or text-to-vi
 
 Subject, scene, lighting, style, camera movement, motion dynamics, pacing, and temporal mood.
 
-For LTX audio-video models, hint ambient sound rhythm and dialogue pacing without writing looping lines.
+For LTX audio-video models, write one English caption. Keep every spoken line verbatim inside quotation marks, in the original language, and name that language (for example Mandarin Chinese). Do not paraphrase, translate, or drop dialogue.
 Distinguish static scene description from continuing motion the camera can follow.
 
 ## Limits
 
-- One paragraph; at most ~120 CJK characters or ~80 English words.
+- One paragraph. Visual briefs stay within ~120 CJK characters or ~80 English words. Spoken scripts are exempt: keep every line.
 - Never repeat the same phrase or word. No filler loops.
 
 ## Output
 
-Output **only** the enhanced prompt text, without explanation or quotation marks.`;
+Output **only** the enhanced prompt text, without explanation. Spoken lines must stay inside quotation marks.`;
 
 const ENHANCE_AUDIO_SYSTEM = `# Role
 
