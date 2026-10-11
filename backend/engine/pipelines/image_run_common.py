@@ -886,8 +886,9 @@ def warm_image_step_preview_decoders(pipeline,
     if preview_decoder in ("auto", "taesd") and preview_state.get("taesd_decoder") is None:
         from backend.engine.common.codecs.vae.taesd_mlx import load_taesd_preview_decoder
 
-        family = str(getattr(entry, "family", "") or "")
-        variant = "taef2" if family in ("flux2", "ernie_image") else "taef1"
+        variant = "taef1"
+        if config is not None:
+            variant = str(getattr(config, "taesd_preview_variant", None) or "taef1")
         try:
             preview_state["taesd_decoder"] = load_taesd_preview_decoder(
                 pipeline.ctx,
@@ -1372,9 +1373,9 @@ def execute_family_image_generator(
 
         batch_progress = on_progress
         if n > 1 and on_progress is not None:
-            from backend.engine.pipelines.image_create_phases import _scale_progress
+            from backend.engine.pipelines.pipeline_progress import scale_batch_progress
 
-            batch_progress = _scale_progress(on_progress, i, n)
+            batch_progress = scale_batch_progress(on_progress, i, n)
 
         pipeline_graph_step("denoise", on_log)
         snap_resolution = bool(getattr(config, "hidream_snap_resolution", True))

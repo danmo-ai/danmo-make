@@ -98,3 +98,21 @@ def emit_phase(
         return
     n = max(1, int(n_steps))
     on_progress(min(1.0, max(0.0, float(progress))), 0, n, phase, phase)
+
+
+def scale_batch_progress(
+    cb: Callable | None,
+    batch_idx: int,
+    total: int,
+) -> Callable | None:
+    """Map per-batch progress into overall ``[batch_idx/total, (batch_idx+1)/total)``."""
+    if cb is None or total <= 1:
+        return cb
+
+    def wrapped(p, s, t, msg=None, phase=None):
+        overall_p = (batch_idx + float(p)) / total
+        prefix = f"[{batch_idx + 1}/{total}]"
+        msg_out = f"{prefix} {msg}" if msg else prefix
+        cb(overall_p, s, t, msg_out, phase)
+
+    return wrapped

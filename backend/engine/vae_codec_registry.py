@@ -29,16 +29,6 @@ def qwen_unpack_latents_nchw(ctx: Any, packed_b64hw: Any) -> Any:
     return ctx.reshape(x, (B, 16, Hg * 2, Wg * 2))
 
 
-def qwen_unpack_latents_nchw(ctx: Any, packed_b64hw: Any) -> Any:
-    """Inverse of ``qwen_pack_latents_nchw`` → [B,16,H_lat,W_lat]."""
-    B = int(packed_b64hw.shape[0])
-    Hg, Wg = int(packed_b64hw.shape[2]), int(packed_b64hw.shape[3])
-    x = ctx.permute(packed_b64hw, (0, 2, 3, 1))
-    x = ctx.reshape(x, (B, Hg, Wg, 16, 2, 2))
-    x = ctx.permute(x, (0, 3, 1, 4, 2, 5))
-    return ctx.reshape(x, (B, 16, Hg * 2, Wg * 2))
-
-
 def _flux2_crop_even_hw_latent(z: Any, ctx: Any) -> Any:
     if int(z.shape[2]) % 2 != 0:
         z = z[:, :, :-1, :]

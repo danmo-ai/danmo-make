@@ -122,6 +122,27 @@ Engine is **MLX-only**: one API on macOS **Metal** and Linux **mlx[cuda]**. No `
 
 Default image family files: `transformer.py`, optional `text_encoder.py`, `weights.py`. Do **not** mirror upstream directory trees.
 
+### 4.4 Shared skeleton vs family personality (design patterns)
+
+Reuse four existing patterns — do **not** add a fifth plugin/strategy framework:
+
+| Pattern | Shared skeleton | Family personality |
+|---------|-----------------|--------------------|
+| **Pipeline** | Session phases: resolve → load → encode → schedule → infer → decode → persist | Families do not reorder phases |
+| **Template method** | `MediaRunContext.session_infer` / `session_persist`; `TransformerBase` hooks (`sanitize`, `prepare_conditioning`, `before_denoise`, `after_load_weights`, …) | Override hooks or RunContext methods |
+| **Strategy** | `InferenceStrategy` / `CfgStrategy` / `StepKwargsBuilder` in `inference/` | Swap CFG / step kwargs / pack fn |
+| **Factory** | `_transformer_registry.get_*` and codec registries | One `(module, fn)` row per family |
+
+**Where to put new behavior (stop at the first fit):**
+
+1. Math / remap → family `transformer` / `weights` + `TransformerBase` hooks
+2. Conditioning / ControlNet / edit extra cond → factory row (`_STRUCTURAL_GUIDE_*`, `_IMAGE_EDIT_EXTRA_COND`, Fill/VL edit tables)
+3. CFG / step kwargs / latent pack ≠ standard loop → strategy or `ModelConfig` → `FamilyRuntimeContract`
+4. Whole stack cannot use denoise loop (Shape B/C) → `*_GENERATION_FACTORY` / upscale job registry
+5. Ctor arity (e.g. `num_frames`) → `ModelConfig` field read by shared loader
+
+`FamilyPlugin` is a **backbone composition root** (load gate + `family_id` / `FamilySpec`). `FamilySpec` stays catalog-facing; denoise semantics live on `ModelConfig` + `FamilyRuntimeContract` only.
+
 ---
 
 ## 5. Registration (Shape A)
@@ -232,7 +253,7 @@ Implementation: [`scripts/check_engine_governance.py`](../scripts/check_engine_g
 | `registry` | Hunyuan and registry contract invariants |
 | `parity` | `remap_*` keys vs Transformer `_param_map` |
 | `docs` | Only `docs/engine_architecture.md` under `docs/` |
-| `pipeline-family` | No `family ==` / `family !=` branches in `pipelines/` |
+| `pipeline-family` | No `family ==` / `family !=` / `family in (...)` / `model_id.startswith` branches in `pipelines/` |
 
 ### 7.3 Validation layers
 
@@ -292,7 +313,7 @@ User-visible failures: HTTP/CLI error + task log/SSE + i18n in `default_config/l
 
 **Dependency rule:** `sessions → inference → (family plugin | codecs) → platform`. No `family ==` in `sessions/`. `observability/` does not import `families/`.
 
-**Encode / schedule (v3 landed shape):** text encode, VAE encode, and scheduler setup live in `build_*_run_context(resolved=…)` inside `pipelines/*_phases.py` (helpers in `image_run_common.py` / `video_run_common.py`). Session `ResolvedRun` is the single registry/bundle source — phased builders must not re-`parse_model_version` or `require()` the entry. Optional per-family `FamilyPlugin.encode_conditioning` remains on the protocol; production encode uses `build_*_run_context` only. Phase trace spans: `_phases/trace.py` (`phase_trace_span`).
+**Encode / schedule (v3 landed shape):** text encode, VAE encode, and scheduler setup live in `build_*_run_context(resolved=…)` inside `pipelines/*_phases.py` (helpers in `image_run_common.py` / `video_run_common.py`). Session `ResolvedRun` is the single registry/bundle source — phased builders must not re-`parse_model_version` or `require()` the entry. Conditioning hooks live on `TransformerBase` or `_transformer_registry` factory rows — not on `FamilyPlugin`. Phase trace spans: `_phases/trace.py` (`phase_trace_span`).
 
 **Infer (single chain):** every `*RunContext` exposes `session_infer()`; production uses `infer_phase(..., run_ctx=ctx)` → `session_infer()` → `execute_*` → `inference/`. Legacy top-level `run_*` / `run_*_from_context` orchestrators are removed — only `run_*_phased` in `phased_create.py` + `build_*_run_context` remain.
 

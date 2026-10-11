@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal
+from typing import Literal
 
-from backend.engine.protocols.components import Backbone, EncodeResult, TextEncoder, VAE
+from backend.engine.protocols.components import Backbone, TextEncoder, VAE
 
 LatentLayout = Literal["nchw", "packed_seq", "qwen_grid", "video_5d", "audio_1d", "pixel_patch"]
 CfgMode = Literal["fused", "batched", "dual", "none"]
@@ -14,7 +14,11 @@ ParadigmKind = Literal["diffusion", "flow_matching", "block_ar", "two_stage", "j
 
 @dataclass(frozen=True)
 class FamilySpec:
-    """Runtime semantics — sourced from catalog ``families`` block (v3 registry)."""
+    """Catalog-facing family metadata (v3 registry ``families`` block).
+
+    Denoise / CFG / scheduler runtime semantics live on ``ModelConfig`` +
+    ``FamilyRuntimeContract`` — do not grow this dataclass into a third contract.
+    """
 
     family_id: str
     media: Literal["image", "video", "audio"]
@@ -30,14 +34,14 @@ class FamilySpec:
     backends: tuple[str, ...] = ("mlx",)
 
 
-ConditioningFn = Callable[..., Any]
-ExtraCondFn = Callable[..., dict[str, Any]]
-ParadigmSelectorFn = Callable[[FamilySpec], ParadigmKind]
-
-
 @dataclass
 class FamilyPlugin:
-    """Composable family entry — sessions and inference depend on this, not family strings."""
+    """Backbone composition root — load gate + family_id/spec; not a fifth strategy surface.
+
+    Conditioning and extra-cond belong on ``TransformerBase`` hooks or
+    ``_transformer_registry`` factory rows (``_STRUCTURAL_GUIDE_*``,
+    ``_IMAGE_EDIT_EXTRA_COND``, …). Production encode uses ``build_*_run_context``.
+    """
 
     family_id: str
     spec: FamilySpec
@@ -45,8 +49,6 @@ class FamilyPlugin:
     vae: VAE | None = None
     text_encoder: TextEncoder | None = None
     secondary_encoders: dict[str, TextEncoder] = field(default_factory=dict)
-    encode_conditioning: ConditioningFn | None = None
-    build_extra_cond: ExtraCondFn | None = None
 
     def select_paradigm(self) -> ParadigmKind:
         return self.spec.paradigm

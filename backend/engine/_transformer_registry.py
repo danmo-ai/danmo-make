@@ -76,6 +76,22 @@ _IMAGE_EDIT_EXTRA_COND = {
     "fibo": ("backend.engine.families.fibo.vae_mlx", "attach_edit_conditioning_extra"),
 }
 
+# family → (module, build_fn) for Fill retouch/extend
+_IMAGE_FILL_EDIT_BUILD = {
+    "flux1": ("backend.engine.families.flux1.fill_edit", "build_flux1_fill_edit_context"),
+}
+_IMAGE_FILL_EDIT_EXECUTE = {
+    "flux1": ("backend.engine.families.flux1.fill_edit", "execute_flux1_fill_edit_denoise"),
+}
+_IMAGE_FILL_EDIT_PERSIST = {
+    "flux1": ("backend.engine.families.flux1.fill_edit", "persist_flux1_fill_edit"),
+}
+
+# family → (module, build_fn) when ModelConfig.edit_use_vl_vision
+_IMAGE_VL_EDIT_BUILD = {
+    "qwen_image": ("backend.engine.families.qwen.edit_util", "build_qwen_image_edit_context"),
+}
+
 
 def get_transformer_class(family: str):
     import importlib
@@ -224,6 +240,31 @@ def attach_image_edit_extra_cond(
         return extra_cond
     fn = getattr(importlib.import_module(entry[0]), entry[1])
     return fn(extra_cond, encoded, height=height, width=width)
+
+
+def _load_registry_fn(table: dict[str, tuple[str, str]], family: str, *, kind: str):
+    import importlib
+
+    entry = table.get(family)
+    if entry is None:
+        return None
+    return getattr(importlib.import_module(entry[0]), entry[1])
+
+
+def get_image_fill_edit_builder(family: str):
+    return _load_registry_fn(_IMAGE_FILL_EDIT_BUILD, family, kind="fill_edit_build")
+
+
+def get_image_fill_edit_execute(family: str):
+    return _load_registry_fn(_IMAGE_FILL_EDIT_EXECUTE, family, kind="fill_edit_execute")
+
+
+def get_image_fill_edit_persist(family: str):
+    return _load_registry_fn(_IMAGE_FILL_EDIT_PERSIST, family, kind="fill_edit_persist")
+
+
+def get_image_vl_edit_builder(family: str):
+    return _load_registry_fn(_IMAGE_VL_EDIT_BUILD, family, kind="vl_edit_build")
 
 
 def encode_prompt_with_image_text_encoder(
@@ -463,7 +504,12 @@ _IMAGE_CONDITIONING: tuple[tuple[str, tuple[str, str]], ...] = (
 )
 
 
-def augment_image_generation_request(request: Any, ctx: Any) -> Any:
+def augment_image_generation_request(
+    request: Any,
+    ctx: Any,
+    *,
+    family: str | None = None,
+) -> Any:
     """Apply registry request augment hooks (companion LoRA, etc.)."""
     import importlib
 
@@ -472,7 +518,7 @@ def augment_image_generation_request(request: Any, ctx: Any) -> Any:
         if getattr(out, field, None) is None:
             continue
         fn = getattr(importlib.import_module(entry[0]), entry[1])
-        out = fn(out, ctx)
+        out = fn(out, ctx, family=family)
     return out
 
 
@@ -557,6 +603,11 @@ _STRUCTURAL_GUIDE_ATTACH = {
     "z_image": ("backend.engine.families.z_image.structural", "attach_structural_conditioning"),
 }
 
+_STRUCTURAL_GUIDE_AUGMENT = {
+    "flux1": ("backend.engine.families.flux1.structural", "augment_request_for_structural_guide"),
+    "z_image": ("backend.engine.families.z_image.structural", "augment_request_for_structural_guide"),
+}
+
 _IMAGE_GENERATION_VALIDATE = {
     "hidream_o1": ("backend.engine.families.hidream_o1.generation", "validate_image_generation_params"),
     "step1x_edit": ("backend.engine.families.step1x_edit.generation", "validate_image_generation_params"),
@@ -589,6 +640,12 @@ _VIDEO_TRANSFORMER_WEIGHT_PREPARE = {
     "ltx": ("backend.engine.families.ltx.weights_mlx", "prepare_ltx_video_transformer_weights"),
 }
 
+# family → (module, apply_adapter_prepare) — mutate config/steps from selected adapters
+_VIDEO_ADAPTER_PREPARE = {
+    "wan": ("backend.engine.families.wan.distill", "apply_adapter_prepare"),
+    "minimax_h3": ("backend.engine.families.minimax_h3.lora_mlx", "apply_adapter_prepare"),
+}
+
 
 def prepare_video_transformer_weights(
     family: str,
@@ -603,6 +660,31 @@ def prepare_video_transformer_weights(
         return weights
     fn = getattr(importlib.import_module(mod_entry[0]), mod_entry[1])
     return fn(config, weights)
+
+
+def apply_video_adapter_prepare(
+    family: str,
+    config: Any,
+    adapters: Any,
+    registry: Any,
+    *,
+    steps_default: int,
+    on_log: Any | None = None,
+) -> tuple[bool, int]:
+    """Registry-driven adapter → config/steps prepare. Returns (force_distill, steps_default)."""
+    import importlib
+
+    mod_entry = _VIDEO_ADAPTER_PREPARE.get(family)
+    if mod_entry is None or not adapters:
+        return False, steps_default
+    fn = getattr(importlib.import_module(mod_entry[0]), mod_entry[1])
+    return fn(
+        config,
+        adapters,
+        registry,
+        steps_default=steps_default,
+        on_log=on_log,
+    )
 
 
 def validate_video_generation_params(
@@ -764,6 +846,15 @@ def get_structural_guide_attach(family: str):
     import importlib
 
     entry = _STRUCTURAL_GUIDE_ATTACH.get(family)
+    if entry is None:
+        return None
+    return getattr(importlib.import_module(entry[0]), entry[1])
+
+
+def get_structural_guide_augment(family: str):
+    import importlib
+
+    entry = _STRUCTURAL_GUIDE_AUGMENT.get(family)
     if entry is None:
         return None
     return getattr(importlib.import_module(entry[0]), entry[1])

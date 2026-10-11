@@ -173,7 +173,7 @@ def _load_wan_single_expert(
             return cached
 
     trans_cls = get_video_transformer_class(family)
-    if family in ("wan", "ltx"):
+    if bool(getattr(config, "transformer_needs_num_frames", False)):
         model = trans_cls(config, ctx, num_frames=num_frames)
     else:
         model = trans_cls(config, ctx)

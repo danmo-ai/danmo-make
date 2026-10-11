@@ -103,6 +103,17 @@ class ImageEditRunContext(MediaRunContext):
     def session_infer(self, **_ignored: Any) -> Any | None:
         return execute_image_edit_denoise(self)
 
+    def session_persist(self, latents: Any) -> tuple[str, dict[str, Any]] | None:
+        return persist_image_edit(self, latents)
+
+    def edit_trace_name(self) -> str:
+        return "image_edit"
+
+    def edit_decode_fn(self) -> Callable[..., Any]:
+        from backend.engine.sessions._phases.decode import decode_image_edit_phase
+
+        return decode_image_edit_phase
+
 
 def build_image_edit_context(
     pipeline: Any,
@@ -125,9 +136,15 @@ def build_image_edit_context(
     image = image_model_from_resolved_run(pipeline, resolved)
 
     if bool(getattr(image.config, "edit_use_vl_vision", False)):
-        from backend.engine.families.qwen.edit_util import build_qwen_image_edit_context
+        from backend.engine._transformer_registry import get_image_vl_edit_builder
 
-        return build_qwen_image_edit_context(
+        builder = get_image_vl_edit_builder(image.family)
+        if builder is None:
+            raise RuntimeError(
+                f"edit_use_vl_vision is set for family={image.family!r} but no "
+                "VL edit builder is registered in _IMAGE_VL_EDIT_BUILD"
+            )
+        return builder(
             pipeline,
             request,
             ctx_exec,
@@ -183,7 +200,9 @@ def build_image_edit_rewrite_context(
     if ctx_exec.cancel_token.is_cancelled():
         return None
 
-    request = augment_image_inference_request(request, pipeline.ctx)
+    request = augment_image_inference_request(
+        request, pipeline.ctx, family=family
+    )
 
     with phase_cm("encode"):
         pil, w, h = load_edit_source_rgb(pipeline, ctx_exec, request.source_asset_id)

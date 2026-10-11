@@ -244,6 +244,12 @@ class QwenImageEditRunContext(MediaRunContext):
     def session_infer(self, **_ignored: Any) -> Any | None:
         return execute_qwen_image_edit_denoise(self)
 
+    def session_persist(self, latents: Any) -> tuple[str, dict[str, Any]] | None:
+        return persist_qwen_image_edit(self, latents)
+
+    def edit_trace_name(self) -> str:
+        return "qwen_image_edit"
+
 
 def build_qwen_image_edit_context(
     pipeline: Any,

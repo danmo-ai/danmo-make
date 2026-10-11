@@ -1,4 +1,4 @@
-"""FLUX Fill retouch/extend — phased session helpers."""
+"""Fill retouch/extend — phased session helpers (factory-dispatched per family)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from backend.core.contracts import ExecutionContext, ImageEditRequest
+from backend.engine._transformer_registry import (
+    get_image_fill_edit_builder,
+    get_image_fill_edit_execute,
+    get_image_fill_edit_persist,
+)
 from backend.engine.contracts.runtime_contracts import FamilyRuntimeContract
 from backend.engine.sessions._context import MediaRunContext, ResolvedRun
 
@@ -63,6 +68,12 @@ class ImageFillEditRunContext(MediaRunContext):
     def session_infer(self, **_ignored: Any) -> Any | None:
         return execute_image_fill_edit_denoise(self)
 
+    def session_persist(self, latents: Any) -> tuple[str, dict[str, Any]] | None:
+        return persist_image_fill_edit(self, latents)
+
+    def edit_trace_name(self) -> str:
+        return "image_fill_edit"
+
 
 def build_image_fill_edit_context(
     pipeline: Any,
@@ -74,14 +85,19 @@ def build_image_fill_edit_context(
     on_log: Callable | None = None,
     phase_cm: PhaseCmFactory | None = None,
 ) -> ImageFillEditRunContext | None:
-    """Prepare Fill edit through encode + schedule (flux-fill-controlnet today)."""
+    """Prepare Fill edit through encode + schedule (registry family builder)."""
     if request.operation not in ("retouch", "extend"):
         raise RuntimeError(
             f"build_image_fill_edit_context requires retouch|extend, got {request.operation!r}"
         )
-    from backend.engine.families.flux1.fill_edit import build_flux1_fill_edit_context
-
-    return build_flux1_fill_edit_context(
+    family = resolved.family_id
+    builder = get_image_fill_edit_builder(family)
+    if builder is None:
+        raise RuntimeError(
+            f"retouch/extend Fill edit is not registered for family={family!r}; "
+            "add a row in _IMAGE_FILL_EDIT_BUILD"
+        )
+    return builder(
         pipeline,
         request,
         ctx_exec,
@@ -93,10 +109,14 @@ def build_image_fill_edit_context(
 
 
 def execute_image_fill_edit_denoise(ctx: ImageFillEditRunContext) -> Any | None:
-    """Run Fill denoise via ``DiffusionParadigm``."""
-    from backend.engine.families.flux1.fill_edit import execute_flux1_fill_edit_denoise
-
-    return execute_flux1_fill_edit_denoise(ctx)
+    """Run Fill denoise via family registry execute."""
+    execute = get_image_fill_edit_execute(ctx.family)
+    if execute is None:
+        raise RuntimeError(
+            f"Fill edit execute is not registered for family={ctx.family!r}; "
+            "add a row in _IMAGE_FILL_EDIT_EXECUTE"
+        )
+    return execute(ctx)
 
 
 def persist_image_fill_edit(
@@ -104,8 +124,10 @@ def persist_image_fill_edit(
     latents: Any,
 ) -> tuple[str, dict[str, Any]] | None:
     """Decode Fill latents and write work_dir asset metadata."""
-    from backend.engine.families.flux1.fill_edit import persist_flux1_fill_edit
-
-    return persist_flux1_fill_edit(ctx, latents)
-
-
+    persist = get_image_fill_edit_persist(ctx.family)
+    if persist is None:
+        raise RuntimeError(
+            f"Fill edit persist is not registered for family={ctx.family!r}; "
+            "add a row in _IMAGE_FILL_EDIT_PERSIST"
+        )
+    return persist(ctx, latents)

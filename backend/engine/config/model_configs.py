@@ -87,6 +87,7 @@ class Flux2Config:
     noise_sample_fp32: bool = True
     vae_preview_warmup: bool = True
     release_text_encoder_after_encode: bool = True
+    taesd_preview_variant: str = "taef2"
 
 
 @dataclass
@@ -236,6 +237,7 @@ class ErnieImageConfig:
     supports_img2img: bool = False
     bundle_config_merger: str = "ernie_image"
     release_text_encoder_after_encode: bool = True
+    taesd_preview_variant: str = "taef2"
 
     @property
     def head_dim(self) -> int:
@@ -550,6 +552,7 @@ class LTXConfig:
     Registry ``step_distill`` selects distilled vs dev pipelines.
     """
     video_pipeline_shape: str = "family_generator"
+    transformer_needs_num_frames: bool = True
     encoder_type: str = "gemma"
     dim: int = 2048
     depth: int = 48
@@ -748,6 +751,7 @@ class WanConfig:
     text_dim: int = 4096
     max_seq_len: int = 512
     text_len: int = 512
+    transformer_needs_num_frames: bool = True
     # Text encoder — UMT5-XXL from .pth bundle (not HuggingFace T5)
     encoder_type: str = "wan_umt5"
     # Spatiotemporal parameters

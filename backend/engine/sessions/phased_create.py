@@ -28,17 +28,11 @@ from backend.engine.pipelines.image_create_phases import (
 )
 from backend.engine.pipelines.image_run_common import execute_family_image_generator, uses_family_image_generator
 from backend.engine.config.model_configs import apply_image_registry_config_overrides, get_config_class
-from backend.engine.families.qwen.edit_util import (
-    QwenImageEditRunContext,
-    persist_qwen_image_edit,
-)
 from backend.engine.pipelines.image_edit_phases import (
     build_image_edit_context,
-    persist_image_edit,
 )
 from backend.engine.pipelines.image_fill_edit_phases import (
     build_image_fill_edit_context,
-    persist_image_fill_edit,
 )
 from backend.engine.pipelines.pipeline_progress import emit_post_progress
 from backend.engine.pipelines.audio_persist import raise_if_cancelled as raise_if_audio_cancelled
@@ -58,7 +52,7 @@ from backend.engine.pipelines.video_create_phases import (
     persist_video_create,
 )
 from backend.engine.sessions._context import ResolvedRun
-from backend.engine.sessions._phases.decode import decode_image_edit_phase, decode_phase
+from backend.engine.sessions._phases.decode import decode_phase
 from backend.engine.sessions._phases.trace import phase_trace_span
 from backend.engine.sessions._phases.infer import infer_phase
 from backend.engine.sessions._phases.persist import persist_audio_edit_phase, persist_audio_phase, persist_phase, traced_persist
@@ -219,9 +213,9 @@ def run_image_create_phased(
             batch_seed = ctx.base_seed + i
             batch_on_progress = ctx.on_progress
             if ctx.n > 1 and ctx.on_progress is not None:
-                from backend.engine.pipelines.image_create_phases import _scale_progress
+                from backend.engine.pipelines.pipeline_progress import scale_batch_progress
 
-                batch_on_progress = _scale_progress(ctx.on_progress, i, ctx.n)
+                batch_on_progress = scale_batch_progress(ctx.on_progress, i, ctx.n)
             if on_log:
                 on_log("info", f"batch {i + 1}/{ctx.n} seed={batch_seed}")
 
@@ -304,8 +298,8 @@ def run_image_edit_phased(
             resolved,
             pipeline,
             ctx,
-            schedule_name="image_fill_edit",
-            persist_fn=persist_image_fill_edit,
+            schedule_name=ctx.edit_trace_name(),
+            persist_fn=ctx.session_persist,
         )
 
     ctx = build_image_edit_context(
@@ -321,22 +315,17 @@ def run_image_edit_phased(
     if ctx is None:
         return None
 
-    if isinstance(ctx, QwenImageEditRunContext):
-        return _run_image_infer_persist(
-            resolved,
-            pipeline,
-            ctx,
-            schedule_name="qwen_image_edit",
-            persist_fn=persist_qwen_image_edit,
-        )
-
+    decode_fn = None
+    edit_decode = getattr(ctx, "edit_decode_fn", None)
+    if callable(edit_decode):
+        decode_fn = edit_decode()
     return _run_image_infer_persist(
         resolved,
         pipeline,
         ctx,
-        schedule_name="image_edit",
-        persist_fn=persist_image_edit,
-        decode_fn=decode_image_edit_phase,
+        schedule_name=ctx.edit_trace_name(),
+        persist_fn=ctx.session_persist,
+        decode_fn=decode_fn,
     )
 
 

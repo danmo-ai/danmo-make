@@ -50,6 +50,40 @@ def adapters_include_h3_turbo(adapters: Sequence[Any], registry: Any) -> bool:
     return False
 
 
+def apply_adapter_prepare(
+    config: Any,
+    adapters: Sequence[Any],
+    registry: Any,
+    *,
+    steps_default: int,
+    on_log: Callable | None = None,
+) -> tuple[bool, int]:
+    """Enable turbo from adapters; return (lightning_distill=False, maybe-updated steps)."""
+    if not adapters_include_h3_turbo(adapters, registry):
+        return False, steps_default
+    config.h3_turbo = True
+    next_steps = steps_default
+    for item in adapters:
+        lora_id, _ = adapter_id_weight(item)
+        mid, _ = parse_model_version(lora_id)
+        if mid != H3_TURBO_LORA_ID:
+            continue
+        try:
+            lora_entry = registry.require(mid)
+        except KeyError:
+            continue
+        overrides = lora_compose_overrides(lora_entry)
+        if overrides.get("steps") is not None:
+            next_steps = int(overrides["steps"])
+        if on_log is not None:
+            on_log(
+                "info",
+                "MiniMax-H3 Turbo LoRA: 4–8 step distill (CFG=1; use 6–8 steps for quality)",
+            )
+        break
+    return False, next_steps
+
+
 def _dit_param_map(dit: Any) -> dict[str, mx.array]:
     """Flat DiT keys matching ``expected_dit_param_keys`` (``blocks.0.attn...``).
 

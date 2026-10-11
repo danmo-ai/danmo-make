@@ -118,19 +118,6 @@ class ImageCreateRunContext(MediaRunContext):
         )
 
 
-def _scale_progress(cb: Callable | None, batch_idx: int, total: int) -> Callable | None:
-    if cb is None or total <= 1:
-        return cb
-
-    def wrapped(p, s, t, msg=None, phase=None):
-        overall_p = (batch_idx + float(p)) / total
-        prefix = f"[{batch_idx + 1}/{total}]"
-        msg_out = f"{prefix} {msg}" if msg else prefix
-        cb(overall_p, s, t, msg_out, phase)
-
-    return wrapped
-
-
 def build_create_run_context(
     pipeline: Any,
     request: ImageGenerationRequest,
@@ -145,7 +132,9 @@ def build_create_run_context(
     """Prepare encode + schedule state for v3 image create."""
     phase_cm = phase_cm or (lambda _name: nullcontext())
 
-    request = augment_image_generation_request(request, pipeline.ctx)
+    request = augment_image_generation_request(
+        request, pipeline.ctx, family=resolved.family_id
+    )
     w, h = parse_size(request.size)
     base_seed = request.seed if request.seed is not None else random.randint(0, 2**32 - 1)
     image = image_model_from_resolved_run(pipeline, resolved)

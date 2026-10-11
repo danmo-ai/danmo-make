@@ -19,6 +19,7 @@ from backend.core.contracts import (
     work_title_metadata,
 )
 from backend.engine._transformer_registry import (
+    apply_video_adapter_prepare,
     encode_video_hunyuan_dual_cfg_batch as _encode_video_hunyuan_dual_cfg_batch_fn,
     encode_video_prompt as _encode_video_prompt_fn,
     get_video_avatar_factory as _get_video_avatar_factory,
@@ -328,67 +329,14 @@ def prepare_video_bundle_and_schedule(pipeline,
     scheduler_default = scheduler_registry or getattr(config, "default_scheduler", "unipc")
 
     adapters = getattr(request, "adapters", None) or []
-    lightning_distill = False
-
-    def _apply_wan_lightning_distill() -> bool:
-        from backend.engine.families.wan.lora_mlx import adapters_include_wan_lightning
-
-        if not adapters_include_wan_lightning(adapters, pipeline._registry):
-            return False
-        from backend.engine.families.wan.distill import WAN_DISTILL_DEFAULT_BOUNDARY_STEP_INDEX
-
-        config.step_distill = True
-        config.supports_guidance = False
-        config.moe_boundary_step_index = WAN_DISTILL_DEFAULT_BOUNDARY_STEP_INDEX
-        if getattr(config, "wan_distill_shift", None) is None:
-            config.wan_distill_shift = 5.0
-        if on_log is not None:
-            on_log(
-                "info",
-                "Wan Lightning LoRA: 4-step distill schedule (no CFG, shift=5, MoE boundary=2)",
-            )
-        return True
-
-    def _apply_h3_turbo_from_adapters() -> None:
-        nonlocal steps_default
-        from backend.catalog.lora_meta import lora_compose_overrides
-        from backend.engine.common.bundle.lora_mlx import adapter_id_weight as _adapter_id_weight
-        from backend.engine.families.minimax_h3.lora_mlx import (
-            H3_TURBO_LORA_ID,
-            adapters_include_h3_turbo,
-        )
-
-        if not adapters_include_h3_turbo(adapters, pipeline._registry):
-            return
-        config.h3_turbo = True
-        for item in adapters:
-            lora_id, _ = _adapter_id_weight(item)
-            mid, _ = parse_model_version(lora_id)
-            if mid != H3_TURBO_LORA_ID:
-                continue
-            try:
-                lora_entry = pipeline._registry.require(mid)
-            except KeyError:
-                continue
-            overrides = lora_compose_overrides(lora_entry)
-            if overrides.get("steps") is not None:
-                steps_default = int(overrides["steps"])
-            if on_log is not None:
-                on_log(
-                    "info",
-                    "MiniMax-H3 Turbo LoRA: 4–8 step distill (CFG=1; use 6–8 steps for quality)",
-                )
-            break
-
-    _adapter_distill_hooks = {"wan": _apply_wan_lightning_distill}
-    _distill_hook = _adapter_distill_hooks.get(family)
-    if _distill_hook is not None and adapters:
-        lightning_distill = _distill_hook()
-
-    _adapter_turbo_hooks = {"minimax_h3": _apply_h3_turbo_from_adapters}
-    _turbo_hook = _adapter_turbo_hooks.get(family)
-    if _turbo_hook is not None and adapters:
-        _turbo_hook()
+    lightning_distill, steps_default = apply_video_adapter_prepare(
+        family,
+        config,
+        adapters,
+        pipeline._registry,
+        steps_default=int(steps_default),
+        on_log=on_log,
+    )
 
     steps = int(request.steps) if request.steps is not None else int(steps_default)
     if lightning_distill:

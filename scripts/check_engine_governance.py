@@ -46,7 +46,20 @@ FORBIDDEN_ENGINE_CODEC_DIRS = (
 FORBIDDEN_COMMON_CODEC_PATHS = (
     "backend/engine/common/codecs/vae/qwen_image",
 )
-PIPELINE_FAMILY_BRANCH_RE = re.compile(r'\bfamily\s*(!=|==)\s*["\']')
+# Pipelines must dispatch via registry/config — not family equality, membership, or model_id prefixes.
+PIPELINE_FAMILY_BRANCH_RE = re.compile(
+    r"("
+    r"""\bfamily\s*(!=|==)\s*['\"]"""
+    r"|"
+    r"""\bfamily\s+in\s*\("""
+    r"|"
+    r"""\bfamily\s+not\s+in\s*\("""
+    r"|"
+    r"""\bmodel_id\s*\.\s*startswith\s*\("""
+    r"|"
+    r"""\bmodel_name\s*\.\s*startswith\s*\("""
+    r")"
+)
 
 PRIMITIVE_PATTERNS = (
     re.compile(r"^\s*class\s+SelfAttention\s*[\(:]", re.M),
@@ -943,7 +956,7 @@ RULE_HINTS: dict[str, str] = {
     "registry": "Fix default_config/models_registry.json Hunyuan contracts",
     "parity": "Fix remap_* vs Transformer _param_map key mismatch (make check-engine-governance --rule parity)",
     "docs": "Keep only docs/engine_architecture.md; merge or delete other docs/*.md files",
-    "pipeline-family": "Use registry/config dispatch instead of family == in pipelines (see docs/engine_architecture.md §5)",
+    "pipeline-family": "Use registry/config dispatch instead of family == / family in (...) / model_id.startswith in pipelines (see docs/engine_architecture.md §4.4)",
     "ltx-vendored": "Remove ltx_core_mlx / ltx_pipelines_mlx imports; implement under backend/engine/families/ltx/",
 }
 
