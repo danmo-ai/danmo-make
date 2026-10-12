@@ -50,8 +50,7 @@ def resolve_version_block(entry: Any, version_key: str | None) -> dict | None:
     return None
 
 
-def local_bundle_root(project_root: Path, entry: Any, version_key: str | None) -> Path | None:
-    block = resolve_version_block(entry, version_key)
+def _bundle_path_for_block(project_root: Path, block: dict | None) -> Path | None:
     if not block:
         return None
     lp = (block.get("local_path") or "").strip()
@@ -62,3 +61,61 @@ def local_bundle_root(project_root: Path, entry: Any, version_key: str | None) -
             return None
     path = resolve_project_path(project_root, lp)
     return path if path.exists() else None
+
+
+def _installed_version_rank(version_key: str, block: dict) -> tuple[int, int, str]:
+    """Smaller quant first, then the registry default, then key name."""
+    quant = block.get("quantization")
+    bits = quant.get("bits") if isinstance(quant, dict) else None
+    if not isinstance(bits, int):
+        key = version_key.lower()
+        if "q4" in key or "int4" in key:
+            bits = 4
+        elif "q8" in key or "int8" in key or "fp8" in key:
+            bits = 8
+        else:
+            bits = 16
+    return (bits, 0 if block.get("default") else 1, version_key)
+
+
+def local_bundle_root(project_root: Path, entry: Any, version_key: str | None) -> Path | None:
+    """Directory for the requested version, or the registry default when version is omitted.
+
+    Does not substitute a different installed quant. Callers that accept a bare
+    model id and must load whichever bundle is on disk use ``resolve_bundle_version``.
+    """
+    return _bundle_path_for_block(project_root, resolve_version_block(entry, version_key))
+
+
+def resolve_bundle_version(
+    project_root: Path,
+    entry: Any,
+    version_key: str | None,
+) -> tuple[str | None, Path | None]:
+    """Resolve the on-disk bundle for a model id.
+
+    An explicit ``version_key`` stays on that version. A bare model id uses the
+    registry default when that directory exists, otherwise the installed version
+    (so ``ltx-2.5-distilled`` loads ``mlx-q8`` when only the 8-bit bundle is present).
+    """
+    raw = getattr(entry, "raw", {}) or {}
+    versions = raw.get("versions") or {}
+    explicit = bool(str(version_key or "").strip())
+    resolved_key = resolve_registry_version_key(versions, version_key) if versions else version_key
+    key_out = str(resolved_key) if resolved_key else None
+    path = local_bundle_root(project_root, entry, version_key)
+    if path is not None or explicit:
+        return key_out, path
+
+    installed: list[tuple[tuple[int, int, str], str, Path]] = []
+    for vk, vinfo in versions.items():
+        if not isinstance(vinfo, dict):
+            continue
+        found = _bundle_path_for_block(project_root, vinfo)
+        if found is None:
+            continue
+        installed.append((_installed_version_rank(str(vk), vinfo), str(vk), found))
+    if not installed:
+        return key_out, None
+    installed.sort(key=lambda item: item[0])
+    return installed[0][1], installed[0][2]

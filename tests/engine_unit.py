@@ -3158,6 +3158,88 @@ class DownloadStallTests(unittest.TestCase):
         self.assertEqual(int(mask[0, -3].item()), 1)
         self.assertEqual(int(mask[0, 0].item()), 0)
 
+    def test_ltx25_dialogue_quotes_open_on_word_boundary(self) -> None:
+        """Newlines and fullwidth colons must not hide the speech-open quote."""
+        from backend.engine.families.ltx25.text_encoder_mlx import normalize_ltx25_dialogue
+
+        src = '播报如下内容：\n\n\n"停产坐实。"\n\n"做渠道的都懂。"'
+        out = normalize_ltx25_dialogue(src)
+        self.assertEqual(out, '播报如下内容： "停产坐实。" "做渠道的都懂。"')
+        self.assertEqual(normalize_ltx25_dialogue('He says "hello"'), 'He says "hello"')
+        self.assertEqual(normalize_ltx25_dialogue('他说："你好"'), '他说： "你好"')
+        self.assertEqual(normalize_ltx25_dialogue('他说：“你好”'), '他说： "你好"')
+        self.assertEqual(
+            normalize_ltx25_dialogue('他说："第一句。\n第二句。"'),
+            '他说： "第一句。 第二句。"',
+        )
+
+    def test_ltx25_spoken_captions_follow_quote_timing(self) -> None:
+        from backend.engine.families.ltx25.generation_mlx import (
+            caption_line_at,
+            spoken_caption_lines,
+        )
+
+        prompt = (
+            '口播如下内容：\n\n'
+            '"停产坐实，5090外面已经在加价扫货了。"\n\n'
+            '"做渠道的都懂。"'
+        )
+        lines = spoken_caption_lines(prompt)
+        self.assertEqual(
+            lines,
+            ["停产坐实，5090外面已经在加价扫货了。", "做渠道的都懂。"],
+        )
+        self.assertEqual(spoken_caption_lines('A man says "hello"'), [])
+        self.assertEqual(caption_line_at(lines, 0, 10), lines[0])
+        self.assertEqual(caption_line_at(lines, 9, 10), lines[1])
+
+    def test_ltx25_caption_wrap_keeps_latin_tokens(self) -> None:
+        from PIL import Image, ImageDraw
+
+        from backend.engine.families.ltx25.generation_mlx import _cjk_font, _wrap_caption
+
+        image = Image.new("RGB", (400, 80), (255, 255, 255))
+        draw = ImageDraw.Draw(image)
+        font = _cjk_font(28)
+        wrapped = _wrap_caption(
+            draw,
+            "我这5090现货37张，PRO6000现货12张，香港仓，今天发。",
+            font,
+            280,
+        )
+        self.assertTrue(any("PRO6000" in row for row in wrapped))
+        self.assertFalse(any(row.endswith("PRO600") or row.startswith("0现货") for row in wrapped))
+        self.assertEqual(font.getname()[0], "Heiti SC")
+
+    def test_ltx25_caption_bar_stays_fixed_when_bright_regions_move(self) -> None:
+        from PIL import Image, ImageDraw
+
+        from backend.engine.families.ltx25.generation_mlx import (
+            _fixed_caption_box,
+            rewrite_spoken_captions,
+        )
+
+        lines = [
+            "停产坐实，5090外面已经在加价扫货了。",
+            "我这5090现货37张，PRO6000现货12张，香港仓，今天发。",
+        ]
+        first = Image.new("RGB", (768, 1280), (30, 40, 50))
+        second = Image.new("RGB", (768, 1280), (30, 40, 50))
+        ImageDraw.Draw(first).rectangle((80, 780, 520, 1120), fill=(255, 255, 255))
+        ImageDraw.Draw(second).rectangle((220, 700, 680, 1080), fill=(255, 255, 255))
+        box = _fixed_caption_box(first)
+        self.assertEqual(box, _fixed_caption_box(second))
+        painted = rewrite_spoken_captions([first, second], lines)
+        self.assertEqual(painted, 2)
+        x1, y1, x2, y2 = box
+        inside = ((x1 + x2) // 2, (y1 + y2) // 2)
+        for frame in (first, second):
+            self.assertEqual(frame.getpixel(inside), (255, 255, 255))
+            self.assertEqual(frame.getpixel((20, 20)), (30, 40, 50))
+        # The moving bright blob above the bar is not used as the caption rectangle.
+        self.assertEqual(first.getpixel((100, 820)), (255, 255, 255))
+        self.assertEqual(second.getpixel((100, 820)), (30, 40, 50))
+
     def test_ltx25_i2v_applies_h264_crf_preprocess(self) -> None:
         """I2V must H.264-roundtrip the source (same as LTX 2.3 / upstream).
 

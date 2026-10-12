@@ -122,8 +122,8 @@ class EngineSessionsTests(unittest.TestCase):
         request.model = "flux2-dev"
         exec_ctx = MagicMock()
         with unittest.mock.patch(
-            "backend.engine.sessions._phases.resolve.local_bundle_root",
-            return_value=Path("/tmp/bundle"),
+            "backend.engine.sessions._phases.resolve.resolve_bundle_version",
+            return_value=(None, Path("/tmp/bundle")),
         ):
             with unittest.mock.patch(
                 "backend.engine.sessions._phases.resolve.require_entry_family",

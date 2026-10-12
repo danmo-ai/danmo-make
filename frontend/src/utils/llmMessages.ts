@@ -44,7 +44,7 @@ Rewrite the user's brief into a detailed prompt for image-to-video or text-to-vi
 
 Subject, scene, lighting, style, camera movement, motion dynamics, pacing, and temporal mood.
 
-For LTX audio-video models, write one English caption. Keep every spoken line verbatim inside quotation marks, in the original language, and name that language (for example Mandarin Chinese). Do not paraphrase, translate, or drop dialogue.
+For LTX audio-video models, write the caption in the language that should be heard. Quoted dialogue is spoken in the language of the surrounding sentences: an English caption with Chinese quotes is performed as English. Do not translate a spoken script. Put one space before each opening quotation mark and keep every spoken line verbatim.
 Distinguish static scene description from continuing motion the camera can follow.
 
 ## Limits
@@ -54,7 +54,7 @@ Distinguish static scene description from continuing motion the camera can follo
 
 ## Output
 
-Output **only** the enhanced prompt text, without explanation. Spoken lines must stay inside quotation marks.`;
+Output **only** the enhanced prompt text, without explanation. Keep spoken lines inside quotation marks.`;
 
 const ENHANCE_AUDIO_SYSTEM = `# Role
 

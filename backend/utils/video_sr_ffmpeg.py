@@ -183,8 +183,9 @@ def extract_png_frames(
         "error",
         "-i",
         str(video),
-        "-vsync",
-        "0",
+        # ffmpeg 8+ dropped -vsync; 0 was passthrough (keep source timestamps).
+        "-fps_mode",
+        "passthrough",
         "-vframes",
         str(int(max_frames)),
         pattern,

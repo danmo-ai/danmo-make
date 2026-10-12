@@ -13,6 +13,7 @@ Two-stage flow (mirrors upstream ``DistilledPipeline``, model_version >= 2.5):
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -53,6 +54,171 @@ from backend.engine.runtime.mlx_runtime import run_eval
 
 _AUDIO_CHANNELS = 8
 _AUDIO_MEL_BINS = 16
+# Checkpoint RoPE time axis (positional_embedding_max_pos[0]). 24fps × 20s = 481 frames (8k+1).
+_MAX_POSITION_SECONDS = 20.0
+
+_SPOKEN_QUOTE = re.compile(r'"([^"]+)"|“([^”]+)”|「([^」]+)」')
+# (path, face index). The lower-third is a heavy squared gothic, same weight as
+# the "AI" badge — Heiti SC Medium, not Hiragino Sans GB W3.
+_CJK_FONT_CANDIDATES = (
+    ("/System/Library/Fonts/STHeiti Medium.ttc", 1),
+    ("/System/Library/Fonts/Hiragino Sans GB.ttc", 2),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", 0),
+    ("/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc", 0),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+    ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 0),
+    ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", 0),
+)
+_CAPTION_PIECE = re.compile(r"[A-Za-z0-9]+|.")
+# Navy sampled from the badge letters on the caption pill.
+_CAPTION_INK = (2, 25, 73)
+
+
+def spoken_caption_lines(prompt: str) -> list[str]:
+    """Quoted lines that should be burned as on-screen captions.
+
+    Diffusion paints Chinese glyphs as unrelated characters. Only CJK quotes
+    are rewritten; an English ``says "hello"`` caption is left alone.
+    """
+    lines: list[str] = []
+    for match in _SPOKEN_QUOTE.finditer(prompt or ""):
+        line = next(group for group in match.groups() if group)
+        line = " ".join(line.split())
+        if line:
+            lines.append(line)
+    if not any("\u4e00" <= ch <= "\u9fff" for line in lines for ch in line):
+        return []
+    return lines
+
+
+def caption_line_at(lines: list[str], frame_index: int, frame_count: int) -> str:
+    """Pick the spoken line for this frame, weighted by character count."""
+    if not lines:
+        raise ValueError("caption_line_at requires at least one line")
+    if frame_count < 1:
+        raise ValueError("frame_count must be >= 1")
+    weights = [max(1, len(line)) for line in lines]
+    total = sum(weights)
+    # Last frame stays on the last line (pos would otherwise land on the boundary).
+    pos = min(frame_index, frame_count - 1) / frame_count * total
+    acc = 0
+    for line, weight in zip(lines, weights):
+        acc += weight
+        if pos < acc:
+            return line
+    return lines[-1]
+
+
+def _cjk_font(size: int):
+    from PIL import ImageFont
+
+    for path, index in _CJK_FONT_CANDIDATES:
+        if Path(path).is_file():
+            return ImageFont.truetype(path, size=size, index=index)
+    raise RuntimeError(
+        "Cannot burn Chinese captions: no CJK font found "
+        "(expected Heiti SC Medium, Hiragino Sans GB W6, or Noto Sans CJK)."
+    )
+
+
+def _text_width(draw, text: str, font) -> float:
+    if hasattr(draw, "textlength"):
+        return float(draw.textlength(text, font=font))
+    box = draw.textbbox((0, 0), text, font=font)
+    return float(box[2] - box[0])
+
+
+def _wrap_caption(draw, text: str, font, max_width: int) -> list[str]:
+    """Wrap on CJK characters, but keep runs like ``PRO6000`` and ``5090`` intact."""
+    lines: list[str] = []
+    current = ""
+    for piece in _CAPTION_PIECE.findall(text):
+        trial = current + piece
+        if current and _text_width(draw, trial, font) > max_width:
+            lines.append(current)
+            current = piece
+        else:
+            current = trial
+    if current:
+        lines.append(current)
+    return lines or [text]
+
+
+def _fixed_caption_box(image) -> tuple[int, int, int, int]:
+    """One lower-third rectangle for the whole clip.
+
+    Geometry comes from the frame size only. Tracking bright clothing or a
+    wobbling painted bar makes the rectangle jump every frame.
+    """
+    width, height = image.size
+    margin_x = max(24, int(width * 0.05))
+    bar_h = max(96, int(height * 0.11))
+    bottom = max(20, int(height * 0.04))
+    y2 = height - bottom
+    y1 = max(0, y2 - bar_h)
+    return margin_x, y1, width - margin_x, y2
+
+
+def _caption_text_bounds(box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = box
+    return x1 + 28, y1 + 14, x2 - 28, y2 - 14
+
+
+def _fit_caption_font(draw, lines: list[str], max_w: int, max_h: int):
+    """One font size for every spoken line, so the bar does not resize mid-clip."""
+    for size in range(42, 13, -2):
+        font = _cjk_font(size)
+        wrapped = [_wrap_caption(draw, line, font, max_w) for line in lines]
+        if any(len(rows) > 2 for rows in wrapped):
+            continue
+        if any(_text_width(draw, row, font) > max_w + 1 for rows in wrapped for row in rows):
+            continue
+        if (size + 4) * max(len(rows) for rows in wrapped) <= max_h:
+            return font
+    return _cjk_font(14)
+
+
+def _paint_caption_line(image, box: tuple[int, int, int, int], line: str, font) -> None:
+    from PIL import ImageDraw
+
+    x1, y1, x2, y2 = box
+    text_left, text_top, text_right, text_bottom = _caption_text_bounds(box)
+    draw = ImageDraw.Draw(image)
+    radius = max(12, (y2 - y1) // 2)
+    draw.rounded_rectangle((x1, y1, x2, y2), radius=radius, fill=(255, 255, 255))
+    if text_right - text_left < 40 or text_bottom - text_top < 20:
+        return
+    max_w = text_right - text_left
+    max_h = text_bottom - text_top
+    wrapped = _wrap_caption(draw, line, font, max_w)[:2]
+    line_h = font.size + 4
+    block_h = line_h * len(wrapped)
+    y = text_top + max(0, (max_h - block_h) // 2)
+    for row in wrapped:
+        width = _text_width(draw, row, font)
+        x = text_left + max(0, int((max_w - width) / 2))
+        draw.text((x, y), row, font=font, fill=_CAPTION_INK)
+        y += line_h
+
+
+def rewrite_spoken_captions(frames: list, lines: list[str]) -> int:
+    """Burn the quoted spoken lines onto one fixed lower-third bar."""
+    if not frames or not lines:
+        return 0
+    from PIL import ImageDraw
+
+    box = _fixed_caption_box(frames[0])
+    text_left, text_top, text_right, text_bottom = _caption_text_bounds(box)
+    font = _fit_caption_font(
+        ImageDraw.Draw(frames[0]),
+        lines,
+        text_right - text_left,
+        text_bottom - text_top,
+    )
+    count = len(frames)
+    for index, frame in enumerate(frames):
+        _paint_caption_line(frame, box, caption_line_at(lines, index, count), font)
+    return count
 
 
 def _materialize(ctx: RuntimeContext, *arrays: mx.array) -> None:
@@ -321,6 +487,13 @@ class LTX25MlxGenerator:
         if num_frames < 9:
             num_frames = 9
         fps = max(1.0, float(fps))
+        duration_sec = (num_frames - 1) / fps
+        if duration_sec > _MAX_POSITION_SECONDS + 1e-6:
+            raise RuntimeError(
+                f"LTX 2.5 positional time axis stops at {_MAX_POSITION_SECONDS:.0f}s "
+                f"({num_frames} frames at {fps:.0f}fps is {duration_sec:.2f}s). "
+                "Use 481 frames at 24fps for the longest single shot."
+            )
 
         stage1_steps = max(1, len(DISTILLED_SIGMAS) - 1)
         stage2_steps = max(1, len(STAGE_2_SIGMAS) - 1)
@@ -467,6 +640,20 @@ class LTX25MlxGenerator:
             ctx.clear_cache()
 
         emit_post_progress(on_progress, n_steps=total_steps, within_post=1.0)
+        caption_lines = spoken_caption_lines(prompt)
+
+        def _rewrite_captions(frames: list) -> None:
+            if not caption_lines:
+                return
+            painted = rewrite_spoken_captions(frames, caption_lines)
+            if painted:
+                self._log(
+                    on_log,
+                    "info",
+                    f"Burned on-screen captions with {len(caption_lines)} spoken lines "
+                    f"({painted} frames)",
+                )
+
         return mux_video_audio_mp4(
             self.bundle_root,
             video_latent,
@@ -475,4 +662,5 @@ class LTX25MlxGenerator:
             frame_rate=fps,
             load_fn=load_fn,
             seed=seed,
+            on_frames=_rewrite_captions if caption_lines else None,
         )

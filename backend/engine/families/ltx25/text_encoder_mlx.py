@@ -31,6 +31,46 @@ from backend.engine.runtime.mlx_runtime import load_weights_dict, run_eval
 
 _DEFAULT_MAX_LENGTH = 1024
 
+# Curly / corner quotes → ASCII `"`, the only quote piece LTX speech spans open on (`▁"`).
+_DIALOGUE_QUOTE_MAP = str.maketrans({
+    "\u201c": '"',  # “
+    "\u201d": '"',  # ”
+    "\u300c": '"',  # 「
+    "\u300d": '"',  # 」
+    "\u300e": '"',  # 『
+    "\u300f": '"',  # 』
+})
+
+
+def normalize_ltx25_dialogue(text: str) -> str:
+    """Put a single space before each opening quote so Gemma emits ``▁"``.
+
+    Training captions open speech with ``▁"`` (a space glued to ``"``). A quote
+    after a newline, a fullwidth colon (``："``), or a curly quote is a different
+    token, so the audio stream never enters the spoken span and babbles.
+    Closing quotes stay glued to the preceding character (``。"``).
+    """
+    text = text.translate(_DIALOGUE_QUOTE_MAP)
+    out: list[str] = []
+    in_quote = False
+    for ch in text:
+        if ch == '"':
+            if not in_quote:
+                while out and out[-1].isspace():
+                    out.pop()
+                out.append(" ")
+                in_quote = True
+            else:
+                in_quote = False
+            out.append('"')
+            continue
+        if in_quote and ch in "\r\n":
+            if not out or out[-1] != " ":
+                out.append(" ")
+            continue
+        out.append(ch)
+    return "".join(out)
+
 
 def _materialize(*arrays: mx.array) -> None:
     run_eval(None, *arrays)
@@ -110,9 +150,11 @@ class _Gemma4LanguageModel:
         # first piece is ▁-prefixed (Gemma 3's post_processor already does this)
         # and prepends BOS. Without the space, the first CJK character is a
         # different token (「口」 vs 「▁口」) and speech conditioning misses.
+        # Opening quotes must also sit on a space (``▁"``); a newline or ``："``
+        # emits a different piece and the spoken span never starts.
         # bos_token_id=2 in the bundle text config; AutoTokenizer reports None
         # without a tokenizer_config.json, so fall back to that id.
-        text = text.strip()
+        text = normalize_ltx25_dialogue(text.strip())
         if text and not text.startswith(" "):
             text = f" {text}"
         tokens = self._tokenizer.encode(text)

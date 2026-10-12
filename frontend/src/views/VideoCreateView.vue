@@ -1588,8 +1588,13 @@ function syncResolutionForModel(modelId?: string, opts?: { ignoreSaved?: boolean
 const durationOptions = computed(() => {
   const p = currentModelConfig.value?.parameters;
   const nf = p?.num_frames;
-  const fps = p?.fps?.default ?? params.fps ?? 16;
+  const fps = Math.max(1, Number(params.fps) || Number(p?.fps?.default) || 16);
   let secs = [1, 2, 3, 4, 5, 8, 10];
+  const frameMax = Number(nf?.max ?? 0);
+  const maxSec = frameMax > 0 ? Math.floor((frameMax - 1) / fps) : 0;
+  for (const extra of [12, 14, 16, 18, 20]) {
+    if (maxSec >= extra && !secs.includes(extra)) secs.push(extra);
+  }
   if (nf?.default && fps > 0) {
     const regSec = Math.max(1, Math.round((Number(nf.default) - 1) / fps));
     if (!secs.includes(regSec)) {

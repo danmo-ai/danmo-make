@@ -1459,6 +1459,7 @@ def mux_video_audio_mp4(
     frame_rate: float = 24.0,
     load_fn: Any | None = None,
     seed: int | None = None,
+    on_frames: Callable[[list], None] | None = None,
 ) -> str:
     """Decode video + audio latents and mux into an mp4 (ffmpeg required)."""
     from PIL import Image
@@ -1473,6 +1474,8 @@ def mux_video_audio_mp4(
         frame = pixels[:, idx, :, :].transpose(1, 2, 0)
         frame = np.clip((frame + 1.0) / 2.0, 0.0, 1.0)
         frames.append(Image.fromarray((frame * 255.0).astype(np.uint8)))
+    if on_frames is not None:
+        on_frames(frames)
 
     waveform, sample_rate = decode_audio_latent(bundle_root, audio_latent, load_fn=load_fn)
 

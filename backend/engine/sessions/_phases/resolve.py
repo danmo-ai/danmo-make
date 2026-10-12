@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from backend.core.contracts import parse_model_version
-from backend.engine.contracts import local_bundle_root, require_entry_family
+from backend.engine.contracts import require_entry_family, resolve_bundle_version
 from backend.engine.platform.session import platform_from_runtime
 from backend.engine.sessions._context import ResolvedRun
 
@@ -21,11 +21,13 @@ def resolve_phase(
     model_key, version_key = parse_model_version(request.model)
     entry = session._registry.require(model_key)
     family_id = require_entry_family(entry, model_id=model_key)
-    bundle_root = local_bundle_root(session._project_root, entry, version_key or None)
+    selected_version, bundle_root = resolve_bundle_version(
+        session._project_root, entry, version_key or None
+    )
     platform = platform_from_runtime(runtime_ctx)
     return ResolvedRun(
         model_id=model_key,
-        version_key=version_key or None,
+        version_key=selected_version,
         family_id=family_id,
         platform=platform,
         plugin=None,

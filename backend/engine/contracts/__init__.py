@@ -3,6 +3,7 @@ from backend.engine.contracts.pipeline_registry import (
     local_bundle_root,
     registry_scalar_default,
     require_entry_family,
+    resolve_bundle_version,
     resolve_project_path,
     resolve_version_block,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "inject_ltx_text_encoder_paths",
     "local_bundle_root",
     "merge_video_bundle_config",
+    "resolve_bundle_version",
     "registry_scalar_default",
     "require_entry_family",
     "resolve_project_path",
