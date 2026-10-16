@@ -213,7 +213,7 @@ API / MCP surface maps `create`→`generate`, rewrite/retouch/extend→`edit`.
 | Action | API |
 |--------|-----|
 | Text-to-music (`create`) | `POST /api/audios/generations` |
-| Cover / repaint | `POST /api/audios/edits` |
+| Cover | `POST /api/audios/edits` |
 
 ### Infinite canvas (short)
 

@@ -298,6 +298,14 @@ class AudioEditRequest(BaseModel):
     source_asset_id: str
     prompt: str = ""
     source_fidelity: float = Field(1.0, ge=0.0, le=1.0)
+    duration: Optional[int] = None  # seconds override (10-600); None = match source
+    instrumental: bool = False
+    lyrics: str = ""
+    vocal_language: str = ""
+    vocal_type: str = ""  # male | female | chorus | duet | auto
+    bpm: Optional[int] = None
+    key_scale: str = ""
+    time_signature: str = ""
     steps: Optional[int] = None
     guidance: Optional[float] = None
     seed: Optional[int] = None

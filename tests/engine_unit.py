@@ -2809,6 +2809,7 @@ class AceStepGenerationTests(unittest.TestCase):
 
         self.assertEqual(ace_step_dit_subdir_for_model("ace-step-xl-sft"), "acestep-v15-xl-sft")
         self.assertEqual(ace_step_dit_subdir_for_model("ace-step-xl-sft:int8"), "acestep-v15-xl-sft")
+        self.assertEqual(ace_step_dit_subdir_for_model("ace-step-xl-turbo"), "acestep-v15-xl-turbo")
         self.assertIsNone(ace_step_dit_subdir_for_model("unknown-model"))
 
     def test_ace_step_lora_base_compatible(self) -> None:
@@ -2816,6 +2817,57 @@ class AceStepGenerationTests(unittest.TestCase):
 
         self.assertTrue(ace_step_lora_base_compatible("ace-step-xl-sft", "ace-step-xl-turbo"))
         self.assertFalse(ace_step_lora_base_compatible("ace-step-xl-sft", "flux1-dev"))
+
+    def test_audio_edit_api_action_is_edit_not_cover(self) -> None:
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        from backend.core.contracts import AudioEditRequest
+        from backend.core.model_registry import ModelRegistry
+        from backend.engine.danqing_audio_engine import DanQingAudioEngine
+
+        reg_path = Path(__file__).resolve().parents[1] / "default_config" / "models_registry.json"
+        registry = ModelRegistry.load(reg_path)
+        entry = registry.require("ace-step-xl-sft")
+        self.assertIn("edit", entry.actions)
+        self.assertNotIn("cover", entry.actions)
+        self.assertIn("create_music", entry.actions)
+
+        engine = DanQingAudioEngine(
+            path_resolver=MagicMock(),
+            registry=registry,
+            runtimes={"mlx": MagicMock()},
+            model_cache=MagicMock(),
+        )
+        self.assertTrue(engine.supports("ace-step-xl-sft", "edit"))
+        self.assertFalse(engine.supports("ace-step-xl-sft", "cover"))
+
+        req = AudioEditRequest(
+            model="ace-step-xl-sft",
+            operation="cover",
+            source_asset_id="ast_test",
+            prompt="jazz piano",
+            lyrics="[verse]\nhello world",
+            duration=20,
+            vocal_language="en",
+            bpm=120,
+            key_scale="C Major",
+            time_signature="4",
+            instrumental=False,
+        )
+        self.assertEqual(req.lyrics, "[verse]\nhello world")
+        self.assertEqual(req.duration, 20)
+        self.assertEqual(req.bpm, 120)
+
+    def test_resolve_vocal_language_signature_no_prompt_kw(self) -> None:
+        import inspect
+
+        from backend.engine.families.ace_step.generation import resolve_vocal_language
+
+        sig = inspect.signature(resolve_vocal_language)
+        self.assertNotIn("prompt", sig.parameters)
+        self.assertEqual(resolve_vocal_language("月光洒在窗前", ""), "zh")
+        self.assertEqual(resolve_vocal_language("hello world", "en"), "en")
 
     def test_ace_step_registry_bundle_repos(self) -> None:
         from backend.core.bundle_repos import bundle_repos_from_version
@@ -2830,6 +2882,24 @@ class AceStepGenerationTests(unittest.TestCase):
         self.assertEqual(
             repos[1]["local_path"],
             "models/Audio/acestep-v15-xl-sft/acestep-v15-xl-sft",
+        )
+
+    def test_ace_step_xl_turbo_registry_entry(self) -> None:
+        from backend.core.bundle_repos import bundle_repos_from_version
+
+        models = _load_default_registry_expanded().get("models") or {}
+        self.assertIn("ace-step-xl-turbo", models)
+        turbo = models["ace-step-xl-turbo"]
+        self.assertEqual(turbo.get("family"), "ace_step")
+        self.assertFalse(turbo.get("recommended", False))
+        self.assertTrue(models["ace-step-xl-sft"].get("recommended"))
+        ver = turbo["versions"]["xl-turbo"]
+        self.assertTrue(ver.get("default"))
+        repos = bundle_repos_from_version(ver)
+        self.assertEqual(repos[1]["repo_id"], "ACE-Step/acestep-v15-xl-turbo")
+        self.assertEqual(
+            repos[1]["local_path"],
+            "models/Audio/acestep-v15-xl-turbo/acestep-v15-xl-turbo",
         )
 
     def test_resolve_dit_bundle_requires_exact_model_subdir(self) -> None:
@@ -5040,6 +5110,32 @@ class BundleManifestTests(unittest.TestCase):
 
 
 class DiffRhythmDecodeTests(unittest.TestCase):
+    def test_create_diffrhythm_generator_accepts_loader_kwargs(self) -> None:
+        """``load_audio_generator`` always passes entry/version_key; factory must accept them."""
+        import inspect
+        from unittest.mock import MagicMock, patch
+
+        from backend.engine.families.diffrhythm.generation import create_diffrhythm_generator
+
+        sig = inspect.signature(create_diffrhythm_generator)
+        self.assertIn("entry", sig.parameters)
+        self.assertIn("version_key", sig.parameters)
+
+        ctx = MagicMock()
+        ctx.backend = "mlx"
+        fake_gen = object()
+        with patch(
+            "backend.engine.families.diffrhythm.generation_mlx.DiffRhythmMlxGenerator",
+            return_value=fake_gen,
+        ):
+            out = create_diffrhythm_generator(
+                ctx,
+                MagicMock(),
+                entry=MagicMock(),
+                version_key="fp16",
+            )
+        self.assertIs(out, fake_gen)
+
     def test_pytorch_bin_bfloat16_storage(self) -> None:
         import numpy as np
 

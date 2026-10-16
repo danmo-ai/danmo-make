@@ -165,10 +165,11 @@ class DanQingAudioEngine(IAudioEngine):
         )
 
     async def edit(self, request: AudioEditRequest, ctx: ExecutionContext) -> EngineResult:
-        if not self.supports(request.model, request.operation):
+        # Registry cover/repaint map to API action "edit" (see api_action_frozenset).
+        if not self.supports(request.model, "edit"):
             raise RuntimeError(
                 f"Model {request.model!r} does not declare audio edit "
-                f"operation {request.operation!r}; see config/models_registry.json."
+                f"(registry cover/repaint); see config/models_registry.json."
             )
         entry = self._registry.get(parse_model_version(request.model)[0])
         if entry is None:

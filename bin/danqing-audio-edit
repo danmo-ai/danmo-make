@@ -41,6 +41,14 @@ def main() -> None:
         default=1.0,
         help="Reference strength 0.0–1.0 (higher = closer to source)",
     )
+    parser.add_argument("--duration", type=int, default=None, help="Duration override (seconds)")
+    parser.add_argument("--instrumental", action="store_true")
+    parser.add_argument("--lyrics", default="")
+    parser.add_argument("--vocal-language", default="")
+    parser.add_argument("--vocal-type", default="")
+    parser.add_argument("--bpm", type=int, default=None)
+    parser.add_argument("--key-scale", default="")
+    parser.add_argument("--time-signature", default="")
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--guidance", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -61,6 +69,14 @@ def main() -> None:
         source_audio=args.source_audio,
         prompt=args.prompt,
         source_fidelity=args.source_fidelity,
+        duration=args.duration,
+        instrumental=args.instrumental,
+        lyrics=args.lyrics,
+        vocal_language=args.vocal_language,
+        vocal_type=args.vocal_type,
+        bpm=args.bpm,
+        key_scale=args.key_scale,
+        time_signature=args.time_signature,
         steps=args.steps,
         guidance=args.guidance,
         seed=args.seed,

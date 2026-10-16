@@ -217,7 +217,15 @@ class DiffRhythmPreparedRequest:
     log_events: List[Tuple[str, str]] = field(default_factory=list)
 
 
-def create_diffrhythm_generator(ctx: Any, bundle_root: Path) -> _DiffRhythmGeneratorProto:
+def create_diffrhythm_generator(
+    ctx: Any,
+    bundle_root: Path,
+    *,
+    entry: Any | None = None,
+    version_key: str | None = None,
+) -> _DiffRhythmGeneratorProto:
+    """Factory for ``load_audio_generator`` (accepts shared ``entry`` / ``version_key`` kwargs)."""
+    _ = entry, version_key
     require_mlx_ctx(ctx, feature="DiffRhythm 2")
     from backend.engine.families.diffrhythm.generation_mlx import DiffRhythmMlxGenerator
 

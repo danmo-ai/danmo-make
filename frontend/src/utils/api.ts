@@ -1098,11 +1098,6 @@ export const api = {
       const response = await client.post('/api/audios/edits', body);
       return response.data;
     },
-
-    async createDub(body: Record<string, unknown> = {}): Promise<unknown> {
-      const response = await client.post('/api/audios/dubs', body);
-      return response.data;
-    },
   },
 };
 

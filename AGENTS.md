@@ -298,8 +298,8 @@ Engines: `ModelRegistry` + `EngineRegistry` → `DanQingImageEngine` / `DanQingV
 
 ### Audio
 
-- `POST /api/audios/generations` — `AUDIO_GENERATION` → `DanQingAudioEngine` → `MusicPipeline` (ACE-Step `ace-step-xl-sft`, MLX)
-- `POST /api/audios/edits` — `AUDIO_EDIT` (registry actions `cover` / `repaint`; engine must declare support)
+- `POST /api/audios/generations` — `AUDIO_GENERATION` → `DanQingAudioEngine` → `MusicPipeline` (ACE-Step `ace-step-xl-sft` / `ace-step-xl-turbo`, DiffRhythm `diffrhythm-v2`, MLX)
+- `POST /api/audios/edits` — `AUDIO_EDIT` (registry action `cover` → API action `edit`; ACE-Step only today; `repaint` is reserved, not implemented)
 
 Route sources: `backend/api/routes/*.py`. Live docs: `http://localhost:7800/docs`.
 
@@ -429,6 +429,7 @@ Workflow: import → select node → Composer fills params → generate lands in
 - **FLUX Fill (retouch/extend)** — `flux-fill-controlnet` only; `ImagePipeline._run_flux1_fill_edit` (384-dim patch concat). Retouch needs `mask_asset_id`; extend uses `ExtendSpec`. CLI: `danqing-edit --operation retouch|extend` with `--mask-image` / `--extend-directions`.
 - **ControlNet / Fill** — structural guide + Fill are **MLX-only** (`backend/engine/families/flux1/structural.py`; registry `backends: ["mlx"]`). Fail loud if unsupported; do not silent-fallback.
 - **MiniMax H3 (FL2VA)** — `video_pipeline_shape=family_generator` under `backend/engine/families/minimax_h3/`. **PipeNetwork/minimax-h3-mlx** is the parity reference for **DiT module tree, weights, scheduler, RoPE, and keyframe conditioning**. Default installs: **PipeNetwork** sharded DiT (`pipenetwork/MiniMax-H3-MLX-{4,8}bit`) + **MiniMaxAI/MiniMax-H3** `FL2VA/` aux (VAE / text encoder / tokenizer). **Compute-bound**: mlx-q4/q8 saves RAM more than wall time. Requires **MLX >= 0.32.3** (quantized matmul past 32K packed rows) and **mlx-vlm >= 0.7.6** with **transformers >= 5.19** for the Qwen3-VL text tower. Turbo: install LoRA **`minimax-h3-turbo-lora:v4-ema`** (larryvrh v4-600 EMA) or set **`h3_quality_preset=draft`** / **`h3_turbo=true`**; 4–8 steps (6–8 recommended). `balanced` / `quality` / `oracle` keep a full Euler trajectory (no velocity reuse, no layer drop, no internal-canvas downscale). Non-turbo runs are commonly 8–16 steps; the registry default remains 30. `h3_turbo` conflicts with TeaCache; `h3_block_streaming` / `h3_token_reduction` fail loud until implemented. Fast checks: `make test-h3-parity`; E2E smoke: `make bench-h3-smoke` (installed bundle). Minimum clip ~5s (`num_frames` ≥ 125 @24fps, 17n+5 rule).
+- **Audio / music** — shipping models: **ACE-Step 1.5 XL SFT** (`ace-step-xl-sft`, recommended) and **XL Turbo** (`ace-step-xl-turbo`, 8-step distilled); plus **DiffRhythm 2** (`diffrhythm-v2`, create-only). Cover uses API action `edit` (registry `cover`). **YuE2** and similar CC BY-NC weight releases stay out of the commercial catalog; do not add them without an explicit non-commercial product mode.
 - **Assistant LLM memory** — separate **`backend_llm`** sidecar (`mlx_vlm.server`), one multimodal model at a time. Settings → **Assistant model cache (minutes)** (`llm_cache_ttl_minutes`, default 30) idle-unloads via `POST /unload`. **Unload after each request** (`llm_unload_each_request`, default off) overrides TTL. **Generation model cache TTL** (`model_cache_ttl_minutes`) applies only to DiT `ModelCache` in danqing-api, not the sidecar.
 
 ---

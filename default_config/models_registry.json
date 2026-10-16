@@ -9960,6 +9960,156 @@
         }
       }
     },
+    "ace-step-xl-turbo": {
+      "catalog": {
+        "media": "audio",
+        "description": {
+          "zh": "ACE-Step-1.5 XL Turbo，4B DiT 蒸馏版，约 8 步快速生成。",
+          "en": "ACE-Step-1.5 XL Turbo; 4B distilled DiT for ~8-step fast generation."
+        },
+        "category": "music_models",
+        "commercial_use_allowed": true,
+        "source": "modelscope",
+        "name": {
+          "zh": "ACE-Step 音乐 Turbo (4B)",
+          "en": "ACE-Step Music Turbo (4B)"
+        },
+        "recommended": false,
+        "engine": "danqing-audio"
+      },
+      "runtime": {
+        "family": "ace_step",
+        "backends": [
+          "mlx"
+        ]
+      },
+      "actions": {
+        "create": {},
+        "cover": {}
+      },
+      "ui": {
+        "parameters": {
+          "duration": {
+            "type": "int",
+            "default": 30,
+            "min": 10,
+            "max": 600
+          },
+          "lm_expansion": {
+            "type": "enum",
+            "default": "auto",
+            "options": [
+              "auto",
+              "format",
+              "off"
+            ],
+            "label": {
+              "zh": "LM 扩写模式（高级）",
+              "en": "LM expansion (advanced)"
+            },
+            "description": {
+              "zh": "默认 auto：对描述+歌词执行 format_sample（官方 Custom 路径）；off 关闭 5Hz LM。",
+              "en": "Default auto runs format_sample on caption+lyrics (official Custom path); off disables 5Hz LM."
+            }
+          },
+          "steps": {
+            "type": "int",
+            "default": 8,
+            "min": 1,
+            "max": 16
+          },
+          "guidance": {
+            "type": "float",
+            "default": 1.0,
+            "min": 1.0,
+            "max": 20.0
+          },
+          "lora_support": true,
+          "supports_lyrics": true,
+          "requires_lyrics_for_vocal": true,
+          "supports_instrumental": true,
+          "supports_vocal_language": true,
+          "supports_vocal_type": true,
+          "supports_bpm": true,
+          "supports_key_scale": true,
+          "supports_time_signature": true,
+          "cover_lyrics_support": true,
+          "cover_music_params_support": true,
+          "cover_duration_override_support": true,
+          "audio_formats": [
+            "wav",
+            "flac",
+            "mp3",
+            "opus",
+            "aac"
+          ]
+        }
+      },
+      "distribution": {
+        "versions": {
+          "xl-turbo": {
+            "name": {
+              "zh": "XL Turbo (4B)",
+              "en": "XL Turbo (4B)"
+            },
+            "size": "28GB",
+            "min_unified_memory_gb": 24,
+            "default": true,
+            "repo_id": "ACE-Step/Ace-Step1.5",
+            "local_path": "models/Audio/acestep-v15-xl-turbo",
+            "source_type": "full",
+            "bundle_repos": [
+              {
+                "repo_id": "ACE-Step/Ace-Step1.5",
+                "local_path": "models/Audio/acestep-v15-xl-turbo",
+                "name": "ACE-Step 1.5 Shared",
+                "size": "9.4GB",
+                "source": "modelscope"
+              },
+              {
+                "repo_id": "ACE-Step/acestep-v15-xl-turbo",
+                "local_path": "models/Audio/acestep-v15-xl-turbo/acestep-v15-xl-turbo",
+                "name": "XL Turbo DiT",
+                "size": "19GB",
+                "source": "modelscope"
+              }
+            ]
+          },
+          "int8": {
+            "name": {
+              "zh": "INT8 量化版",
+              "en": "INT8 Quantized"
+            },
+            "size": "23GB",
+            "default": false,
+            "repo_id": "ACE-Step/Ace-Step1.5",
+            "local_path": "models/Audio/acestep-v15-xl-turbo-int8",
+            "source_type": "derived",
+            "from_version": "xl-turbo",
+            "quantization": {
+              "bits": 8,
+              "scheme": "mlx_affine"
+            }
+          },
+          "int4": {
+            "name": {
+              "zh": "INT4 量化版",
+              "en": "INT4 Quantized"
+            },
+            "size": "21GB",
+            "default": false,
+            "repo_id": "ACE-Step/Ace-Step1.5",
+            "local_path": "models/Audio/acestep-v15-xl-turbo-int4",
+            "source_type": "derived",
+            "from_version": "xl-turbo",
+            "quantization": {
+              "bits": 4,
+              "scheme": "mlx_affine"
+            }
+          }
+        }
+      }
+    },
     "ace-step-lora-super-eurobeats": {
       "catalog": {
         "media": "audio",

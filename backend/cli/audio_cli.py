@@ -100,6 +100,14 @@ def edit(
     source_audio: str = "",
     prompt: str = "",
     source_fidelity: float = 1.0,
+    duration: int | None = None,
+    instrumental: bool = False,
+    lyrics: str = "",
+    vocal_language: str = "",
+    vocal_type: str = "",
+    bpm: int | None = None,
+    key_scale: str = "",
+    time_signature: str = "",
     steps: int | None = None,
     guidance: float | None = None,
     seed: int | None = None,
@@ -142,6 +150,14 @@ def edit(
             source_asset_id=source_asset_id,
             prompt=prompt,
             source_fidelity=source_fidelity,
+            duration=duration,
+            instrumental=instrumental,
+            lyrics=lyrics,
+            vocal_language=vocal_language,
+            vocal_type=vocal_type,
+            bpm=bpm,
+            key_scale=key_scale,
+            time_signature=time_signature,
             steps=steps,
             guidance=guidance,
             seed=seed,
@@ -149,10 +165,11 @@ def edit(
             audio_format=audio_format,
         )
 
-        if not ctx.audio_engine.supports(model, operation):
+        # API action is "edit"; registry verbs are cover/repaint.
+        if not ctx.audio_engine.supports(model, "edit"):
             raise RuntimeError(
-                f"Model {model!r} does not support audio edit operation {operation!r}; "
-                "check config/models_registry.json actions."
+                f"Model {model!r} does not support audio edit "
+                f"(operation={operation!r}); check config/models_registry.json actions."
             )
 
         t0 = time.time()
