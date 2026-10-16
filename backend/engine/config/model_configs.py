@@ -700,6 +700,7 @@ class MinimaxH3Config:
     h3_active_layers: int = 50
     h3_internal_canvas: str = "off"
     h3_turbo: bool = False
+    h3_veda: bool = False
     h3_block_streaming: bool = False
     h3_token_reduction: bool = False
     teacache_mode: str = "none"

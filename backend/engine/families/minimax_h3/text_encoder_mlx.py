@@ -4,7 +4,7 @@ Neural net / vision merge / MRoPE / deepstack: **mlx-vlm** ``qwen3_vl.Model``.
 Local code is only what mlx-vlm cannot do for this product path:
 
 - load MiniMax ``FL2VA/text_encoder`` safetensors (sharded or single file)
-- MiniMax FL2VA presentation (`": "` + vision tags; PipeNetwork / diffusers parity)
+- MiniMax FL2VA presentation (`<Picture N>: ` + vision tags; Diffusers parity)
 - read unnormalized ``hidden_states[50]`` (mlx-vlm forward always applies final RMSNorm)
 
 Upstream keeps the first 50 decoder layers and drops final norm / lm_head; after those
@@ -284,6 +284,8 @@ class MiniMaxH3TextEncoderMLX:
         *,
         pixel_values: mx.array | None = None,
         image_grid_thw: mx.array | None = None,
+        pixel_values_videos: mx.array | None = None,
+        video_grid_thw: mx.array | None = None,
         layer: int = MINIMAX_H3_TEXT_ENCODER_LAYER,
     ) -> mx.array:
         """Return unnormalized hidden states at conditioner layer ``layer``."""
@@ -296,6 +298,8 @@ class MiniMaxH3TextEncoderMLX:
             input_ids,
             pixel_values,
             image_grid_thw=image_grid_thw,
+            pixel_values_videos=pixel_values_videos,
+            video_grid_thw=video_grid_thw,
             mask=attention_mask,
         )
         hidden = emb_feats.inputs_embeds
@@ -338,8 +342,8 @@ class MiniMaxH3TextEncoderMLX:
     ) -> tuple[mx.array, mx.array]:
         """Return ``(prompt_embeds [1,L,H], text_token_tags [L])``.
 
-        Presentation matches Diffusers ``MiniMaxH3TextEncoderStep``: verbatim prompt;
-        each keyframe prepends ``": "`` + vision block. Vision-block rows are tagged as video.
+        Presentation matches Diffusers: verbatim prompt; each keyframe prepends
+        ``<Picture N>: `` plus a vision block. Vision-block rows are tagged as video.
         """
         if not isinstance(prompt, str):
             raise ValueError(
@@ -375,7 +379,7 @@ class MiniMaxH3TextEncoderMLX:
                         f"MiniMax-H3 keyframe {index} produced {num_image_tokens} vision tokens "
                         f"(grid={tuple(grid_np[index].tolist())}, merge={merge_size})."
                     )
-                label_ids = tok(": ", add_special_tokens=False)["input_ids"]
+                label_ids = tok(f"<Picture {index + 1}>: ", add_special_tokens=False)["input_ids"]
                 vision_ids = (
                     [_VISION_START_TOKEN_ID]
                     + [_IMAGE_TOKEN_ID] * num_image_tokens
@@ -410,6 +414,106 @@ class MiniMaxH3TextEncoderMLX:
                 f"MiniMax-H3 prompt embeds last dim must be hidden_size ({hidden}), "
                 f"got {tuple(embeds.shape)}"
             )
+        tags = mx.array(np.asarray(token_tags, dtype=np.int32))
+        if int(tags.shape[0]) != int(embeds.shape[1]):
+            raise RuntimeError(
+                f"text_token_tags length {int(tags.shape[0])} != embed seq {int(embeds.shape[1])}"
+            )
+        return embeds, tags
+
+    def encode_ref2va_prompt(
+        self,
+        prompt: str,
+        prepared: list,
+    ) -> tuple[mx.array, mx.array]:
+        """Ref2VA presentation: ``<Audio N>``, ``<Picture N>``, ``<Video N>``, then the prompt."""
+        from backend.engine.families.minimax_h3.ref2va import (
+            VIDEO_CONDITION_FPS,
+            build_ref2va_presentation,
+            sample_video_condition_frames,
+        )
+
+        if not isinstance(prompt, str):
+            raise ValueError(
+                f"MiniMax-H3 packs one request into one sequence, so `prompt` must be a string, got {type(prompt)}"
+            )
+        self._ensure_weights()
+        tok = self._tokenizer_fast()
+        proc = self._ensure_image_processor()
+        merge_size = int(proc.merge_size) ** 2
+        images = [item.image for item in prepared if item.kind == "image"]
+        videos = [item for item in prepared if item.kind == "video"]
+        pixel_values = None
+        image_grid = None
+        image_token_counts: list[int] = []
+        if images:
+            if not self._has_vision_weights:
+                raise RuntimeError(
+                    "MiniMax-H3 Ref2VA image references require vision weights in the text encoder."
+                )
+            vision = proc(images=images, return_tensors="np")
+            grid_np = np.asarray(vision["image_grid_thw"])
+            image_token_counts = [int(np.prod(grid_np[i])) // merge_size for i in range(len(images))]
+            pixel_values = mx.array(np.asarray(vision["pixel_values"]))
+            image_grid = mx.array(grid_np)
+
+        pixel_videos = None
+        video_grid = None
+        video_block_counts: list[int] = []
+        video_timestamps: list[list[float]] = []
+        if videos:
+            if not self._has_vision_weights:
+                raise RuntimeError(
+                    "MiniMax-H3 Ref2VA video references require vision weights in the text encoder."
+                )
+            from mlx_vlm.models.qwen3_vl.processing_qwen3_vl import Qwen3VLVideoProcessor
+
+            temporal = int(self.vision_config.get("temporal_patch_size", 2))
+            sampled_videos = []
+            for item in videos:
+                frames = np.asarray(item.frames)
+                indices, timestamps = sample_video_condition_frames(
+                    int(frames.shape[0]), temporal_patch=temporal, sample_fps=VIDEO_CONDITION_FPS
+                )
+                sampled_videos.append(frames[indices])
+                video_timestamps.append(timestamps)
+            video_proc = Qwen3VLVideoProcessor(
+                patch_size=int(self.vision_config.get("patch_size", 16)),
+                temporal_patch_size=temporal,
+                merge_size=int(self.vision_config.get("spatial_merge_size", 2)),
+            )
+            video_features = video_proc(sampled_videos)
+            grid_np = np.asarray(video_features["video_grid_thw"])
+            for timestamps, grid in zip(video_timestamps, grid_np):
+                if int(grid[0]) != len(timestamps):
+                    raise RuntimeError(
+                        f"The processor merged a reference video into {int(grid[0])} vision blocks, "
+                        f"but MiniMax-H3 labels {len(timestamps)} of them."
+                    )
+            video_block_counts = [int(grid[1]) * int(grid[2]) // merge_size for grid in grid_np]
+            pixel_videos = mx.array(np.asarray(video_features["pixel_values_videos"]))
+            video_grid = mx.array(grid_np)
+
+        token_ids, token_tags = build_ref2va_presentation(
+            lambda text: tok(text, add_special_tokens=False)["input_ids"],
+            prompt,
+            [item.kind for item in prepared],
+            [bool(item.has_audio) for item in prepared],
+            image_token_counts,
+            video_block_counts,
+            video_timestamps,
+        )
+        input_ids = mx.array([token_ids], dtype=mx.int32)
+        embeds = self.conditioning_hidden_states(
+            input_ids,
+            mx.ones_like(input_ids),
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid,
+            pixel_values_videos=pixel_videos,
+            video_grid_thw=video_grid,
+            layer=MINIMAX_H3_TEXT_ENCODER_LAYER,
+        )
+        run_eval(getattr(self.ctx, "eval", None), embeds)
         tags = mx.array(np.asarray(token_tags, dtype=np.int32))
         if int(tags.shape[0]) != int(embeds.shape[1]):
             raise RuntimeError(

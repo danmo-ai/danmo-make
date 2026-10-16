@@ -1,4 +1,4 @@
-"""MiniMax-H3 FL2VA MLX generation orchestration (t2va / first-last-frame)."""
+"""MiniMax-H3 MLX generation orchestration (t2va / first-last-frame / Ref2VA)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -156,6 +156,45 @@ class MinimaxH3MlxGenerator:
             rows.append(P.patchify_video_latents(np.array(z.astype(mx.float32)), patch)[0])
         return np.concatenate(rows, axis=0)
 
+    def _bind_veda(
+        self,
+        layout: P.MiniMaxH3PackedSequence,
+        num_latent_frames: int,
+        latent_h: int,
+        latent_w: int,
+        patch: tuple[int, int, int],
+        on_log: Callable[[str, str], None] | None,
+        veda_spec: Any | None = None,
+    ) -> None:
+        assert self._dit is not None
+        self._dit._veda = None
+        if not bool(getattr(self.config, "h3_veda", False)):
+            return
+        from backend.engine.families.minimax_h3.veda import fl2va_layout_spec
+        from backend.engine.families.minimax_h3.veda_mlx import bind_h3_veda, resolve_h3_veda_path
+
+        _, patch_h, patch_w = patch
+        spec = veda_spec or fl2va_layout_spec(
+            layout,
+            num_latent_frames=num_latent_frames,
+            token_h=latent_h // patch_h,
+            token_w=latent_w // patch_w,
+        )
+        if self._project_root is None or self._registry is None:
+            path = self.bundle_root / "minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors"
+            if not path.is_file():
+                raise RuntimeError(
+                    "MiniMax-H3 Veda requires the predictor weights and a project registry. "
+                    "Install minimax-h3-veda:fp8 from Models."
+                )
+        else:
+            path = resolve_h3_veda_path(
+                bundle_root=self.bundle_root,
+                project_root=self._project_root,
+                registry=self._registry,
+            )
+        bind_h3_veda(self._dit, spec=spec, path=path, on_log=on_log)
+
     def _release_dit_after_denoise(self) -> None:
         if not bool(getattr(self.config, "h3_low_memory", True)):
             return
@@ -197,6 +236,11 @@ class MinimaxH3MlxGenerator:
                 "set teacache_mode=none."
             )
         self._use_mlx_compile = bool(plan.use_mlx_compile)
+        if bool(getattr(self.config, "h3_veda", False)) and self._use_mlx_compile:
+            raise RuntimeError(
+                "MiniMax-H3 Veda sparse attention is incompatible with mx.compile. "
+                "Disable use_mlx_compile."
+            )
         if self._use_mlx_compile:
             self._log(
                 on_log,
@@ -244,6 +288,7 @@ class MinimaxH3MlxGenerator:
         step_distill: bool,
         image_path: str | None,
         last_frame_path: str | None = None,
+        media_references: list[tuple[str, str]] | None = None,
         negative_prompt: str = "",
         on_log: Any | None = None,
         on_progress: Any | None = None,
@@ -273,6 +318,24 @@ class MinimaxH3MlxGenerator:
 
         restore = self._apply_turbo_lora(on_log)
         try:
+            if media_references:
+                if image_path or last_frame_path:
+                    raise RuntimeError(
+                        "MiniMax-H3 Ref2VA does not combine with first/last keyframes. "
+                        "Drop the start and end frames, or clear the references."
+                    )
+                return self._generate_ref2va(
+                    prompt=prompt,
+                    output_path=output_path,
+                    width=width,
+                    height=height,
+                    num_frames=num_frames,
+                    seed=seed,
+                    steps=steps,
+                    media_references=media_references,
+                    on_log=on_log,
+                    on_progress=on_progress,
+                )
             return self._generate_after_turbo(
                 prompt=prompt,
                 output_path=output_path,
@@ -289,6 +352,25 @@ class MinimaxH3MlxGenerator:
         finally:
             if restore is not None:
                 restore()
+
+    def _generate_ref2va(
+        self,
+        *,
+        prompt: str,
+        output_path: str,
+        width: int,
+        height: int,
+        num_frames: int,
+        seed: int,
+        steps: int,
+        media_references: list[tuple[str, str]],
+        on_log: Any | None,
+        on_progress: Any | None,
+    ) -> str:
+        _ = (prompt, output_path, width, height, num_frames, seed, steps, media_references, on_log, on_progress)
+        raise RuntimeError(
+            "MiniMax-H3 Ref2VA packing helpers are present, but the generator path is not wired yet."
+        )
 
     def _generate_after_turbo(
         self,
@@ -376,6 +458,7 @@ class MinimaxH3MlxGenerator:
             patch_size=patch,
             keyframe_anchors=tuple(anchors),
         )
+        self._bind_veda(layout, num_latent_frames, latent_h, latent_w, patch, on_log)
 
         video_channels = int(getattr(self.config, "latent_channels", 24))
         audio_channels = int(getattr(self.config, "audio_latent_channels", 32))
@@ -534,9 +617,17 @@ class MinimaxH3MlxGenerator:
                 latents = mx.concatenate([latents[:num_cond_rows], stepped_v], axis=0)
             else:
                 latents = video_sched.step(noise_pred[0].astype(mx.float32), v_t, latents)
-            audio_latents = audio_sched.step(
-                audio_noise_pred[0].astype(mx.float32), a_t, audio_latents
-            )
+            num_cond_audio = int(layout.num_condition_audio_rows)
+            if num_cond_audio:
+                gen_a = audio_latents[num_cond_audio:]
+                stepped_a = audio_sched.step(
+                    audio_noise_pred[0, num_cond_audio:].astype(mx.float32), a_t, gen_a
+                )
+                audio_latents = mx.concatenate([audio_latents[:num_cond_audio], stepped_a], axis=0)
+            else:
+                audio_latents = audio_sched.step(
+                    audio_noise_pred[0].astype(mx.float32), a_t, audio_latents
+                )
             run_eval(getattr(self.ctx, "eval", None), latents, audio_latents)
             emit_denoise_progress(on_progress, i + 1, num_evals)
 
@@ -552,10 +643,14 @@ class MinimaxH3MlxGenerator:
             )
         )
         audio_np = np.array(audio_latents.astype(mx.float32))
+        audio_np = audio_np[int(layout.num_condition_audio_rows) :]
         left = audio_np[:num_audio].T
         right = audio_np[num_audio:].T
         audio_latent = mx.array(np.stack([left, right], axis=0))
 
+        veda = getattr(self._dit, "_veda", None)
+        if veda is not None:
+            self._log(on_log, "info", veda.summary_line())
         self._release_dit_after_denoise()
         emit_post_progress(on_progress, n_steps=num_evals, within_post=0.2)
         self._log(on_log, "info", f"MiniMax-H3 decode+mux → {output_path}")

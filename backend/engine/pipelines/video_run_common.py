@@ -194,6 +194,27 @@ def snap_wan_pixel_dims_if_needed(pipeline,
 ) -> tuple[int, int]:
     return video_snap_pixel_dims_if_needed(config, w, h, on_log=on_log)
 
+def parse_h3_veda(value: Any) -> bool:
+    """Registry / request flag. ``off`` and ``none`` stay dense."""
+    if isinstance(value, bool):
+        return value
+    norm = str(value).strip().lower()
+    if norm in ("", "none", "off", "false", "0"):
+        return False
+    if norm in ("on", "true", "1", "veda"):
+        return True
+    raise RuntimeError(f"Unknown MiniMax-H3 h3_veda={value!r}. Use off or on.")
+
+
+def apply_h3_veda_request(config: Any, request: Any) -> None:
+    if not hasattr(config, "h3_veda"):
+        return
+    raw = getattr(request, "h3_veda", None)
+    if raw is None:
+        return
+    config.h3_veda = parse_h3_veda(raw)
+
+
 def _apply_minimax_h3_quality_preset(config: Any, preset: str) -> None:
     """Map registry ``h3_quality_preset`` onto a full Euler trajectory.
 
@@ -286,6 +307,10 @@ def apply_video_registry_config_overrides(pipeline, entry: Any, config: Any) -> 
     preset = getattr(config, "h3_quality_preset", None)
     if preset and hasattr(config, "h3_denoiser_reuse"):
         _apply_minimax_h3_quality_preset(config, str(preset))
+    if hasattr(config, "h3_veda"):
+        veda_raw = _registry_scalar_default_fn(entry, "h3_veda", None)
+        if veda_raw is not None:
+            config.h3_veda = parse_h3_veda(veda_raw)
     if getattr(config, "inject_text_encoder_paths", False):
         configure_hunyuan_text_encoder_paths(pipeline, entry, config)
         configure_ltx_text_encoder_paths(pipeline, entry, config)
@@ -629,6 +654,7 @@ def execute_family_video_generator(pipeline,
     seed = request.seed if request.seed is not None else random.randint(0, 2 ** 32 - 1)
 
     apply_video_registry_config_overrides(pipeline, entry, config)
+    apply_h3_veda_request(config, request)
     if not uses_family_video_generator(config):
         raise RuntimeError(
             f"Internal error: _run_family_video_generator called for "

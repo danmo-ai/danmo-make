@@ -887,6 +887,8 @@
     "teacacheMedium": "Balanced (~1.35×)",
     "teacacheFast": "Fast (~1.5×)",
     "teacacheHint": "Training-free TeaCache step skipping on MLX. Best for multi-step image (FLUX.1 dev, Z-Image) and video (Wan, Hunyuan); keep off or auto for distilled short schedules.",
+    "h3VedaOff": "Off (full attention)",
+    "h3VedaOn": "On (skip ~90% of video attention)",
     "latentRefineScale": "Latent upscale",
     "latentRefineDenoise": "Latent refine strength",
     "controlInpaintHint": "Optional: bind a source image and mask (white = repaint) for Z-Image Union inpaint+control. Use a higher ControlNet strength (~0.75–1.0).",

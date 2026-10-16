@@ -543,6 +543,7 @@ const props = defineProps<{
     lora?: string;
     lora_scale?: number;
     teacache_mode?: string;
+    h3_veda?: string;
     upscale_scale?: number;
     upscale_denoise?: number;
     upscale_max_frames?: number;

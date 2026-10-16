@@ -362,7 +362,7 @@ export function strengthToSourceFidelity(strength: unknown, fallback = 0.4): num
 export const COMPOSER_INFERENCE_ENUM_KEYS = ['teacache_mode', 'lemica_mode'] as const;
 
 /** Video composer: TeaCache only (LeMiCa is image Z-Image specific). */
-export const VIDEO_INFERENCE_ENUM_KEYS = ['teacache_mode'] as const;
+export const VIDEO_INFERENCE_ENUM_KEYS = ['teacache_mode', 'h3_veda'] as const;
 
 export function hasRegistryParam(
   parameters: Record<string, unknown> | undefined | null,
@@ -431,6 +431,10 @@ export function enumOptionI18nKey(paramKey: string, value: string): string | nul
       slow: 'lemicaSlow',
       medium: 'lemicaMedium',
       fast: 'lemicaFast',
+    },
+    h3_veda: {
+      off: 'h3VedaOff',
+      on: 'h3VedaOn',
     },
   };
   return map[paramKey]?.[value] ?? null;

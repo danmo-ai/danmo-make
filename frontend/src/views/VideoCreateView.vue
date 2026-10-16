@@ -394,6 +394,7 @@ const params = reactive({
   lora: '',
   lora_scale: 1.0,
   teacache_mode: 'auto',
+  h3_veda: 'off',
 });
 
 const selectedModelVersion = ref('');

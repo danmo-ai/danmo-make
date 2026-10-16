@@ -172,7 +172,7 @@ class VideoGenerationRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     reference_asset_ids: list[str] = Field(default_factory=list)
     teacache_mode: Optional[str] = None
-
+    h3_veda: Optional[str] = None
 
 
 class VideoAvatarRequest(BaseModel):
@@ -248,6 +248,7 @@ class VideoEditRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     reference_asset_ids: list[str] = Field(default_factory=list)
     teacache_mode: Optional[str] = None
+    h3_veda: Optional[str] = None
 
 
 class VideoUpscaleRequest(BaseModel):

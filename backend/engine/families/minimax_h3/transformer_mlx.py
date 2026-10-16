@@ -123,6 +123,8 @@ class MiniMaxH3Attention(nn.Module):
         hidden_states: mx.array,
         rotary_emb: tuple[mx.array, mx.array] | None = None,
         attention_mask: mx.array | None = None,
+        veda: Any | None = None,
+        layer_index: int = 0,
     ) -> mx.array:
         b, s, _ = hidden_states.shape
         qkv = self.qkv_proj(hidden_states).reshape(b, s, self.heads, 3, self.head_dim)
@@ -138,15 +140,24 @@ class MiniMaxH3Attention(nn.Module):
             query = _apply_rotary_emb(query, *rotary_emb)
             key = _apply_rotary_emb(key, *rotary_emb)
 
-        out = scaled_dot_product_attention_bhsd_mx(
-            mx,
-            query,
-            key,
-            value,
-            scale=self.scale,
-            mask=attention_mask,
-            attention_backend="mlx",
-        )
+        if veda is not None:
+            if attention_mask is not None:
+                raise RuntimeError(
+                    "MiniMax-H3 Veda does not cover padding attention masks."
+                )
+            if b != 1:
+                raise RuntimeError(f"MiniMax-H3 Veda expects batch size 1, got {b}.")
+            out = veda.attend(query, key, value, layer_index)
+        else:
+            out = scaled_dot_product_attention_bhsd_mx(
+                mx,
+                query,
+                key,
+                value,
+                scale=self.scale,
+                mask=attention_mask,
+                attention_backend="mlx",
+            )
         out = out.transpose(0, 2, 1, 3).reshape(b, s, self.inner_dim)
         return self.out_proj(out.astype(hidden_states.dtype))
 
@@ -270,6 +281,8 @@ class MiniMaxH3TransformerBlock(nn.Module):
         adaln_indices: mx.array,
         rotary_emb: tuple[mx.array, mx.array],
         attention_mask: mx.array | None = None,
+        veda: Any | None = None,
+        layer_index: int = 0,
     ) -> mx.array:
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = modulation
 
@@ -278,7 +291,7 @@ class MiniMaxH3TransformerBlock(nn.Module):
             shift_msa, adaln_indices,
         )
         hidden_states = hidden_states + _index_select_rows(gate_msa, adaln_indices) * self.attn(
-            h, rotary_emb, attention_mask,
+            h, rotary_emb, attention_mask, veda, layer_index,
         )
 
         h = self.norm2(hidden_states)
@@ -388,6 +401,7 @@ class MiniMaxH3DiTMLX(nn.Module):
         self._active_layers = num_layers
         self._adaln_dropped = False
         self._compile_verified = True
+        self._veda = None
         self.final_layer = MiniMaxH3FinalLayer(
             hidden_size=hidden_size,
             time_embed_dim=time_embed_dim,
@@ -555,6 +569,12 @@ class MiniMaxH3DiTMLX(nn.Module):
                 "MiniMax-H3 mx.compile does not cover padding attention masks. "
                 "Disable use_mlx_compile for this clip."
             )
+        veda = getattr(self, "_veda", None)
+        if veda is not None and compiled_blocks is not None:
+            raise RuntimeError(
+                "MiniMax-H3 Veda sparse attention is incompatible with mx.compile. "
+                "Disable use_mlx_compile."
+            )
 
         if clip_cache is not None:
             rotary_emb = clip_cache.rotary_emb
@@ -624,7 +644,7 @@ class MiniMaxH3DiTMLX(nn.Module):
                     continue
                 packed = compiled_blocks[i](packed, *modulation, adaln_indices, cos, sin)
             else:
-                packed = block(packed, modulation, adaln_indices, cos_sin, attention_mask)
+                packed = block(packed, modulation, adaln_indices, cos_sin, attention_mask, veda, i)
 
         if clip_cache is not None:
             normed = self.final_layer.norm(packed)

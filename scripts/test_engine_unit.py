@@ -12,6 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _ENGINE_TEST_MODULES = (
     "tests.engine_unit",
     "tests.minimax_h3_parity_unit",
+    "tests.minimax_h3_veda_unit",
     "tests.test_catalog_unit",
     "tests.test_observability_unit",
     "tests.test_engine_sessions_unit",

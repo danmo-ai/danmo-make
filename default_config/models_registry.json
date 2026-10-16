@@ -9216,6 +9216,55 @@
         }
       }
     },
+    "minimax-h3-veda": {
+      "catalog": {
+        "media": "video",
+        "description": {
+          "zh": "MiniMax H3 Veda 稀疏注意力预测器（T2VA 8 步预览）：视频 token 只保留约 10% 的注意力块，文本和音频保持稠密。需已安装 minimax-h3-fl2va；可与 Turbo LoRA 叠加。",
+          "en": "MiniMax H3 Veda sparse-attention predictor (T2VA 8-step preview): video tokens keep about 10% of attention blocks; text and audio stay dense. Requires minimax-h3-fl2va; stacks with the Turbo LoRA."
+        },
+        "category": "tools",
+        "commercial_use_allowed": false,
+        "type": "tool",
+        "source": "huggingface",
+        "name": {
+          "zh": "MiniMax H3 Veda",
+          "en": "MiniMax H3 Veda"
+        },
+        "recommended": false,
+        "base_model": "minimax-h3-fl2va",
+        "engine": "danqing-video"
+      },
+      "runtime": {
+        "family": "minimax_h3",
+        "backends": [
+          "mlx"
+        ]
+      },
+      "actions": {},
+      "ui": {
+        "parameters": {}
+      },
+      "distribution": {
+        "versions": {
+          "fp8": {
+            "name": {
+              "zh": "FP8 版",
+              "en": "FP8"
+            },
+            "size": "280MB",
+            "default": true,
+            "source": "huggingface",
+            "repo_id": "Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview",
+            "local_path": "models/Tools/minimax-h3-veda-fp8",
+            "source_type": "full",
+            "allow_patterns": [
+              "minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors"
+            ]
+          }
+        }
+      }
+    },
     "minimax-h3-fl2va": {
       "catalog": {
         "media": "video",
@@ -9370,6 +9419,16 @@
             "default": false,
             "type": "bool",
             "label": "Turbo LoRA (4–8 steps)"
+          },
+          "h3_veda": {
+            "default": "off",
+            "options": [
+              "off",
+              "on"
+            ],
+            "type": "enum",
+            "label": "Veda 稀疏注意力",
+            "note": "跳过约 90% 的视频注意力，文本和音频仍走完整注意力。需先在模型页安装 MiniMax H3 Veda 预测器；可与 8 步 Turbo LoRA 叠加。发布权重按 8 步 Turbo 训练。"
           },
           "h3_low_memory": {
             "default": true,

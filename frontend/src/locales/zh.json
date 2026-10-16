@@ -888,6 +888,8 @@
     "teacacheMedium": "平衡（约 1.35×）",
     "teacacheFast": "速度优先（约 1.5×）",
     "teacacheHint": "训练无关的 TeaCache 步间跳过；多步图像（FLUX.1 dev / Z-Image）与视频（Wan / Hunyuan）在 MLX 上可显著加速，distill 短步模型请保持关闭或自动。",
+    "h3VedaOff": "关闭（完整注意力）",
+    "h3VedaOn": "开启（约跳过 90% 视频注意力）",
     "latentRefineScale": "Latent 放大倍率",
     "latentRefineDenoise": "Latent refine 去噪强度",
     "controlInpaintHint": "可选：绑定源图与遮罩（白色=重绘区域）以启用 Z-Image Union 局部重绘+控制网；建议提高 ControlNet 强度（约 0.75–1.0）。",

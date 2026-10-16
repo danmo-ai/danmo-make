@@ -30,6 +30,7 @@ def generate(
     shift: float | None = None,
     seed: int | None = None,
     teacache_mode: str | None = None,
+    h3_veda: str | None = None,
     output: str = "",
     project_root: Path | None = None,
 ) -> str:
@@ -59,6 +60,8 @@ def generate(
             payload["shift"] = shift
         if teacache_mode is not None:
             payload["teacache_mode"] = teacache_mode
+        if h3_veda is not None:
+            payload["h3_veda"] = h3_veda
         request = VideoGenerationRequest(**payload)
 
         if not ctx.video_engine.supports(model, "generate"):
@@ -98,6 +101,7 @@ def edit(
     steps: int | None = None,
     seed: int | None = None,
     teacache_mode: str | None = None,
+    h3_veda: str | None = None,
     output: str = "",
     project_root: Path | None = None,
 ) -> str:
@@ -119,6 +123,7 @@ def edit(
             steps=steps,
             seed=seed,
             teacache_mode=teacache_mode,
+            h3_veda=h3_veda,
         )
 
         if not ctx.video_engine.supports(model, "edit"):
