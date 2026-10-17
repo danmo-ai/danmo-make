@@ -321,22 +321,25 @@ class ConditionMlxConfig:
     def from_json(cls, path: Path) -> "ConditionMlxConfig":
         with open(path, encoding="utf-8") as f:
             raw = json.load(f)
-        layer_types = tuple(raw["layer_types"])
+        from backend.engine.families.ace_step.generation import ace_step_condition_side_config
+
+        side = ace_step_condition_side_config(raw)
+        layer_types = tuple(side["layer_types"])
         return cls(
-            hidden_size=raw["hidden_size"],
-            text_hidden_dim=raw["text_hidden_dim"],
-            timbre_hidden_dim=raw["timbre_hidden_dim"],
-            audio_acoustic_hidden_dim=raw["audio_acoustic_hidden_dim"],
-            num_lyric_encoder_hidden_layers=raw["num_lyric_encoder_hidden_layers"],
-            num_timbre_encoder_hidden_layers=raw["num_timbre_encoder_hidden_layers"],
-            num_attention_heads=raw["num_attention_heads"],
-            num_key_value_heads=raw["num_key_value_heads"],
-            intermediate_size=raw["intermediate_size"],
-            head_dim=raw["head_dim"],
-            rms_norm_eps=raw["rms_norm_eps"],
-            rope_theta=raw["rope_theta"],
-            sliding_window=raw["sliding_window"],
-            use_sliding_window=raw.get("use_sliding_window", True),
+            hidden_size=side["hidden_size"],
+            text_hidden_dim=side["text_hidden_dim"],
+            timbre_hidden_dim=side["timbre_hidden_dim"],
+            audio_acoustic_hidden_dim=side["audio_acoustic_hidden_dim"],
+            num_lyric_encoder_hidden_layers=side["num_lyric_encoder_hidden_layers"],
+            num_timbre_encoder_hidden_layers=side["num_timbre_encoder_hidden_layers"],
+            num_attention_heads=side["num_attention_heads"],
+            num_key_value_heads=side["num_key_value_heads"],
+            intermediate_size=side["intermediate_size"],
+            head_dim=side["head_dim"],
+            rms_norm_eps=side["rms_norm_eps"],
+            rope_theta=side["rope_theta"],
+            sliding_window=side["sliding_window"],
+            use_sliding_window=side.get("use_sliding_window", True),
             layer_types=layer_types,
         )
 
@@ -361,14 +364,25 @@ class ConditionMlxConfig:
 
 
 def load_condition_encoder_mlx(
-    dit_bundle: Path, *, eval_fn: Any | None = None, array_fn: Any | None = None
+    dit_bundle: Path,
+    *,
+    eval_fn: Any | None = None,
+    array_fn: Any | None = None,
+    encoder_weights: list[tuple[str, Any]] | None = None,
 ) -> AceStepConditionEncoderMLX:
     cfg = ConditionMlxConfig.from_json(dit_bundle / "config.json")
     model = AceStepConditionEncoderMLX(cfg.as_dict())
-    weights_path = dit_bundle / "model.safetensors"
-    weights = load_prefix_weights_for_mlx(
-        str(weights_path), "encoder.", strip_prefix=True, array_fn=array_fn
-    )
+    if encoder_weights is None:
+        from backend.engine.families.ace_step.weights_mlx import resolve_dit_checkpoint_path
+
+        weights = load_prefix_weights_for_mlx(
+            str(resolve_dit_checkpoint_path(dit_bundle)),
+            "encoder.",
+            strip_prefix=True,
+            array_fn=array_fn,
+        )
+    else:
+        weights = encoder_weights
     model.load_weights(weights, strict=False)
     run_eval(eval_fn, model.parameters())
     return model

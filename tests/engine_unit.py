@@ -2378,6 +2378,49 @@ class AceStepGenerationTests(unittest.TestCase):
         self.assertNotIn("layers", pm)
         self.assertNotIn("proj_in", pm)
 
+    def test_ace_step_dit_forward_cfg_batch2_adaln_broadcast(self) -> None:
+        """CFG doubles batch; AdaLN must broadcast [B,1,D] onto [B,T,D] (B=2)."""
+        import mlx.core as mx
+        import numpy as np
+
+        from backend.engine.families.ace_step.transformer_mlx import AceStepDiTMLX
+
+        dit = AceStepDiTMLX(
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            rms_norm_eps=1e-6,
+            attention_bias=False,
+            in_channels=192,
+            audio_acoustic_hidden_dim=64,
+            patch_size=2,
+            sliding_window=8,
+            layer_types=("full_attention",),
+            rope_theta=10000.0,
+            max_position_embeddings=128,
+            encoder_hidden_size=32,
+        )
+        bsz, t_len = 2, 16
+        hs = mx.zeros((bsz, t_len, 64), dtype=mx.float32)
+        ctx = mx.zeros((bsz, t_len, 128), dtype=mx.float32)
+        enc = mx.zeros((bsz, 8, 32), dtype=mx.float32)
+        t = mx.full((bsz,), 0.5, dtype=mx.float32)
+        out, _ = dit(
+            hidden_states=hs,
+            timestep=t,
+            timestep_r=t,
+            encoder_hidden_states=enc,
+            context_latents=ctx,
+            cache=None,
+            use_cache=False,
+        )
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (bsz, t_len, 64))
+        self.assertTrue(np.isfinite(np.array(out)).all())
+
     def test_prepare_music_request_auto_zh_and_turbo_steps(self) -> None:
         import json
         import tempfile
@@ -2868,6 +2911,145 @@ class AceStepGenerationTests(unittest.TestCase):
         self.assertNotIn("prompt", sig.parameters)
         self.assertEqual(resolve_vocal_language("月光洒在窗前", ""), "zh")
         self.assertEqual(resolve_vocal_language("hello world", "en"), "en")
+
+    def test_ace_step_condition_side_config_uses_encoder_dims(self) -> None:
+        from backend.engine.families.ace_step.generation import ace_step_condition_side_config
+
+        side = ace_step_condition_side_config(
+            {
+                "hidden_size": 2560,
+                "intermediate_size": 9728,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 8,
+                "encoder_hidden_size": 2048,
+                "encoder_intermediate_size": 6144,
+                "encoder_num_attention_heads": 16,
+                "encoder_num_key_value_heads": 8,
+            }
+        )
+        self.assertEqual(side["hidden_size"], 2048)
+        self.assertEqual(side["intermediate_size"], 6144)
+        self.assertEqual(side["num_attention_heads"], 16)
+        self.assertEqual(side["num_key_value_heads"], 8)
+
+    def test_ace_step_condition_embedder_matches_encoder_hidden_size(self) -> None:
+        from backend.engine.runtime.mlx import MLXContext
+        from backend.engine.families.ace_step.transformer import AceStepTransformer
+
+        dit = AceStepTransformer(
+            MLXContext(),
+            hidden_size=2560,
+            intermediate_size=9728,
+            num_hidden_layers=2,
+            num_attention_heads=32,
+            num_key_value_heads=8,
+            head_dim=128,
+            rms_norm_eps=1e-6,
+            attention_bias=False,
+            in_channels=192,
+            audio_acoustic_hidden_dim=64,
+            patch_size=2,
+            sliding_window=128,
+            layer_types=("sliding_attention", "full_attention"),
+            rope_theta=1_000_000.0,
+            max_position_embeddings=128,
+            encoder_hidden_size=2048,
+        )
+        w = dit._param_map["condition_embedder.weight"]
+        self.assertEqual(tuple(w.shape), (2560, 2048))
+
+    def test_resolve_dit_checkpoint_path_prefers_sharded_index(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from backend.engine.families.ace_step.weights_mlx import resolve_dit_checkpoint_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "model.safetensors.index.json").write_text(
+                '{"weight_map": {"a": "model-00001-of-00001.safetensors"}}',
+                encoding="utf-8",
+            )
+            self.assertEqual(resolve_dit_checkpoint_path(root), root)
+
+            single = root / "with_single"
+            single.mkdir()
+            (single / "model.safetensors").write_bytes(b"")
+            self.assertEqual(resolve_dit_checkpoint_path(single), single / "model.safetensors")
+
+    def test_load_silence_latent_numpy_from_pt(self) -> None:
+        from pathlib import Path
+
+        from backend.engine.families.ace_step.generation import load_silence_latent_numpy
+
+        pt = Path(
+            "/Users/nil.luo/Workspace/studio-workspace/models/Audio/"
+            "acestep-v15-xl-sft/acestep-v15-xl-sft/silence_latent.pt"
+        )
+        if not pt.is_file():
+            self.skipTest("ACE-Step silence_latent.pt not installed")
+        arr = load_silence_latent_numpy(pt)
+        self.assertEqual(arr.ndim, 3)
+        self.assertEqual(arr.shape[0], 1)
+        self.assertEqual(arr.shape[2], 64)
+        self.assertGreater(arr.shape[1], 64)
+
+    def test_ace_step_timestep_schedule_sft_vs_turbo(self) -> None:
+        from backend.engine.families.ace_step.generation_mlx import (
+            SHIFT_TIMESTEPS,
+            get_timestep_schedule,
+        )
+
+        sft = get_timestep_schedule(shift=3.0, infer_steps=50)
+        self.assertEqual(len(sft), 50)
+        self.assertAlmostEqual(sft[0], 1.0, places=6)
+        self.assertLess(sft[-1], sft[0])
+        # shift=3 compresses mid timesteps above the uniform grid
+        uniform_mid = 1.0 - 25 / 50
+        shifted_mid = 3.0 * uniform_mid / (1.0 + 2.0 * uniform_mid)
+        self.assertAlmostEqual(sft[25], shifted_mid, places=6)
+
+        turbo = get_timestep_schedule(shift=1.0, infer_steps=8)
+        self.assertEqual(len(turbo), 8)
+        self.assertEqual(turbo, SHIFT_TIMESTEPS[1.0])
+
+        legacy = get_timestep_schedule(shift=1.0)
+        self.assertEqual(len(legacy), 8)
+        self.assertEqual(legacy, SHIFT_TIMESTEPS[1.0])
+
+    def test_ace_step_nonperiodic_src_latents_no_tile(self) -> None:
+        import numpy as np
+
+        from backend.engine.families.ace_step.generation import build_nonperiodic_src_latents
+
+        # Synthetic silence with a strong period so tiling would spike autocorrelation.
+        period = 64
+        t = 128
+        c = 8
+        base = np.zeros((1, t, c), dtype=np.float32)
+        for i in range(t):
+            base[0, i, :] = float(np.sin(2 * np.pi * i / period))
+
+        length = t * 3 + 17
+        nonperiodic = build_nonperiodic_src_latents(base, length)
+        self.assertEqual(nonperiodic.shape, (length, c))
+        # Constant across time → lag-period autocorr of demeaned signal is ~0
+        signal = nonperiodic[:, 0]
+        demeaned = signal - float(np.mean(signal))
+        lag = period
+        num = float(np.dot(demeaned[:-lag], demeaned[lag:]))
+        den = float(np.dot(demeaned, demeaned)) + 1e-12
+        nonperiodic_acf = abs(num / den)
+
+        tiled = np.tile(base[0], (4, 1))[:length]
+        tiled_d = tiled[:, 0] - float(np.mean(tiled[:, 0]))
+        tiled_num = float(np.dot(tiled_d[:-lag], tiled_d[lag:]))
+        tiled_den = float(np.dot(tiled_d, tiled_d)) + 1e-12
+        tiled_acf = abs(tiled_num / tiled_den)
+
+        self.assertLess(nonperiodic_acf, 0.05)
+        self.assertGreater(tiled_acf, 0.5)
+        self.assertLess(nonperiodic_acf, tiled_acf)
 
     def test_ace_step_registry_bundle_repos(self) -> None:
         from backend.core.bundle_repos import bundle_repos_from_version

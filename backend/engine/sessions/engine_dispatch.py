@@ -260,3 +260,47 @@ def dispatch_video_upscale(
         request, exec_ctx, on_progress=on_progress, on_log=on_log
     )
 
+
+def dispatch_audio_create(
+    *,
+    runtime: Any,
+    registry: Any,
+    asset_store: Any,
+    model_cache: Any | None,
+    project_root: Path | None,
+    request: AudioGenerationRequest,
+    exec_ctx: ExecutionContext,
+    on_log: Callable | None = None,
+) -> Any:
+    assert_generation_family_has_plugin(request.model, registry, expected_media="audio")
+    _require_session_route(
+        routes_to_audio_session(request.model, registry),
+        model=request.model,
+        operation="audio create",
+    )
+    return AudioSession(**_session_kwargs(runtime, registry, asset_store, model_cache, project_root)).run(
+        request, exec_ctx, on_log=on_log
+    )
+
+
+def dispatch_audio_edit(
+    *,
+    runtime: Any,
+    registry: Any,
+    asset_store: Any,
+    model_cache: Any | None,
+    project_root: Path | None,
+    request: AudioEditRequest,
+    exec_ctx: ExecutionContext,
+    on_log: Callable | None = None,
+) -> Any:
+    assert_generation_family_has_plugin(request.model, registry, expected_media="audio")
+    _require_session_route(
+        routes_to_audio_edit_session(request.model, registry),
+        model=request.model,
+        operation="audio edit",
+    )
+    return AudioSession(**_session_kwargs(runtime, registry, asset_store, model_cache, project_root)).run_edit(
+        request, exec_ctx, on_log=on_log
+    )
+

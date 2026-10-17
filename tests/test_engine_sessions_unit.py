@@ -451,6 +451,12 @@ class EngineSessionsTests(unittest.TestCase):
                     "flux2-dev", registry, expected_media="image"
                 )
 
+    def test_dispatch_audio_create_and_edit_exported(self) -> None:
+        from backend.engine.sessions import engine_dispatch
+
+        self.assertTrue(callable(engine_dispatch.dispatch_audio_create))
+        self.assertTrue(callable(engine_dispatch.dispatch_audio_edit))
+
     def test_plugin_upscale_pipeline_if_ready(self) -> None:
         from backend.engine.families._upscale_backbone import (
             UpscalePluginBackbone,

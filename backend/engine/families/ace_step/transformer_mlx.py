@@ -265,6 +265,14 @@ class _DiTLayer(nn.Module):
         shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = (
             unpack_modulation_6table(modulation)
         )
+        # Unpack yields [B, D]; expand to [B, 1, D] so CFG (B>1) broadcasts with [B, T, D].
+        # With B=1, [1, D] happened to broadcast against [1, T, D]; B=2 does not.
+        shift_msa = mx.expand_dims(shift_msa, 1)
+        scale_msa = mx.expand_dims(scale_msa, 1)
+        gate_msa = mx.expand_dims(gate_msa, 1)
+        c_shift_msa = mx.expand_dims(c_shift_msa, 1)
+        c_scale_msa = mx.expand_dims(c_scale_msa, 1)
+        c_gate_msa = mx.expand_dims(c_gate_msa, 1)
 
         # 1) Self-attention
         normed = self.self_attn_norm(hidden_states)
@@ -355,10 +363,13 @@ class AceStepDiTMLX(nn.Module):
         layer_types: Optional[list] = None,
         rope_theta: float = 1_000_000.0,
         max_position_embeddings: int = 32768,
+        encoder_hidden_size: Optional[int] = None,
     ):
         super().__init__()
         self.hidden_size = hidden_size
         self.patch_size = patch_size
+        # XL: condition tokens are encoder_hidden_size (2048), DiT is hidden_size (2560).
+        condition_dim = int(encoder_hidden_size) if encoder_hidden_size is not None else int(hidden_size)
 
         if layer_types is None:
             layer_types = [
@@ -381,7 +392,7 @@ class AceStepDiTMLX(nn.Module):
         self.time_embed = _TimestepEmbedding(time_embed_dim=hidden_size)
         self.time_embed_r = _TimestepEmbedding(time_embed_dim=hidden_size)
 
-        self.condition_embedder = nn.Linear(hidden_size, hidden_size, bias=True)
+        self.condition_embedder = nn.Linear(condition_dim, hidden_size, bias=True)
 
         self.layers = [
             _DiTLayer(

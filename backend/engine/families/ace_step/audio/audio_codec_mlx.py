@@ -443,7 +443,7 @@ def _load_special_params(
     import mlx.core as mx_mod
     import numpy as np
 
-    from backend.engine.families.ace_step.weights_mlx import _iter_safetensors_float32_numpy
+    from backend.engine.families.ace_step.weights_mlx import iter_dit_checkpoint_tensors
 
     if array_fn is None:
         array_fn = mx_mod.array
@@ -452,7 +452,7 @@ def _load_special_params(
         "tokenizer.attention_pooler.special_token",
         "detokenizer.special_tokens",
     }
-    for key, arr in _iter_safetensors_float32_numpy(str(weights_path)):
+    for key, arr in iter_dit_checkpoint_tensors(weights_path):
         if key in wanted:
             out[key] = array_fn(np.asarray(arr, dtype=np.float32))
     return out
@@ -463,24 +463,38 @@ def load_audio_codec_mlx(
     *,
     eval_fn: Any | None = None,
     array_fn: Any | None = None,
+    tokenizer_weights: List[Tuple[str, Any]] | None = None,
+    detokenizer_weights: List[Tuple[str, Any]] | None = None,
+    special_params: dict[str, Any] | None = None,
 ) -> AceStepAudioCodecMLX:
     cfg_path = dit_bundle / "config.json"
     with open(cfg_path, encoding="utf-8") as f:
-        config = json.load(f)
-    weights_path = dit_bundle / "model.safetensors"
-    tok_weights = _filter_learned_weights(
-        load_prefix_weights_for_mlx(
-            str(weights_path), "tokenizer.", strip_prefix=True, array_fn=array_fn
-        )
-    )
-    det_weights = load_prefix_weights_for_mlx(
-        str(weights_path), "detokenizer.", strip_prefix=True, array_fn=array_fn
-    )
+        raw_config = json.load(f)
+    from backend.engine.families.ace_step.generation import ace_step_condition_side_config
+
+    # Tokenizer/detokenizer share encoder_* dims (2048 on XL), not DiT hidden_size.
+    config = ace_step_condition_side_config(raw_config)
+    if tokenizer_weights is None or detokenizer_weights is None:
+        from backend.engine.families.ace_step.weights_mlx import resolve_dit_checkpoint_path
+
+        weights_path = resolve_dit_checkpoint_path(dit_bundle)
+        if tokenizer_weights is None:
+            tokenizer_weights = load_prefix_weights_for_mlx(
+                str(weights_path), "tokenizer.", strip_prefix=True, array_fn=array_fn
+            )
+        if detokenizer_weights is None:
+            detokenizer_weights = load_prefix_weights_for_mlx(
+                str(weights_path), "detokenizer.", strip_prefix=True, array_fn=array_fn
+            )
+        if special_params is None:
+            special_params = _load_special_params(weights_path, array_fn=array_fn)
+    tok_weights = _filter_learned_weights(list(tokenizer_weights))
+    det_weights = list(detokenizer_weights)
     tokenizer = _AceStepAudioTokenizerMLX(config)
     detokenizer = _AudioTokenDetokenizerMLX(config)
     tokenizer.load_weights(tok_weights, strict=False)
     detokenizer.load_weights(det_weights, strict=False)
-    special = _load_special_params(weights_path, array_fn=array_fn)
+    special = special_params or {}
     if "tokenizer.attention_pooler.special_token" in special:
         tokenizer.attention_pooler.special_token = special[
             "tokenizer.attention_pooler.special_token"

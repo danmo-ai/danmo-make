@@ -260,6 +260,28 @@ def write_lrc_sidecar(
 LYRIC_TOKEN_MAX_LENGTH = 2048
 
 
+def ace_step_condition_side_config(raw: dict) -> dict:
+    """Runtime config for condition encoder / tokenizer / detokenizer.
+
+    XL DiT ``hidden_size`` (e.g. 2560) differs from ``encoder_hidden_size`` (2048).
+    Upstream builds a deepcopy and overlays encoder_* onto the side modules.
+    """
+    if not isinstance(raw, dict) or not raw:
+        raise RuntimeError("ACE-Step config must be a non-empty dict")
+    cfg = dict(raw)
+    cfg["hidden_size"] = int(raw.get("encoder_hidden_size", raw["hidden_size"]))
+    cfg["intermediate_size"] = int(
+        raw.get("encoder_intermediate_size", raw["intermediate_size"])
+    )
+    cfg["num_attention_heads"] = int(
+        raw.get("encoder_num_attention_heads", raw["num_attention_heads"])
+    )
+    cfg["num_key_value_heads"] = int(
+        raw.get("encoder_num_key_value_heads", raw["num_key_value_heads"])
+    )
+    return cfg
+
+
 def warn_lyrics_char_heuristic(lyrics: str) -> Optional[str]:
     """Rough pre-check before tokenization (Chinese-heavy text ~1–2 chars/token)."""
     if is_instrumental_lyrics(lyrics):
@@ -456,15 +478,50 @@ def resolve_silence_latent_npy_path(pt_path: Path) -> Path:
 
 
 def load_silence_latent_numpy(pt_path: Path) -> np.ndarray:
-    """Load silence latent for MLX (``.npy`` cache written by CUDA loader)."""
+    """Load silence latent as ``[B, T, C]`` float32 (``.npy`` cache or torch-free ``.pt``)."""
     npy_path = resolve_silence_latent_npy_path(pt_path)
-    if not npy_path.is_file():
+    if npy_path.is_file():
+        arr = np.asarray(np.load(npy_path), dtype=np.float32)
+    else:
+        from backend.engine.common.bundle.pytorch_bin_numpy import load_pytorch_bin
+
+        obj = load_pytorch_bin(pt_path)
+        if not isinstance(obj, np.ndarray):
+            raise RuntimeError(
+                f"silence_latent checkpoint must be a tensor ndarray, got {type(obj)!r}: {pt_path}"
+            )
+        arr = np.asarray(obj, dtype=np.float32)
+        # Upstream stores [B, C, T]; runtime slices expect [B, T, C].
+        if arr.ndim == 3 and arr.shape[1] < arr.shape[2] and arr.shape[1] <= 256:
+            arr = np.transpose(arr, (0, 2, 1))
+        try:
+            np.save(npy_path, arr)
+        except OSError:
+            pass
+    if arr.ndim != 3:
         raise RuntimeError(
-            f"MLX ACE-Step requires {npy_path.name} next to {pt_path.name}. "
-            "Run once on CUDA backend or: "
-            "python -c \"...\" to convert silence_latent.pt to .npy"
+            f"silence_latent must be rank-3 [B,T,C], got shape={arr.shape} from {pt_path}"
         )
-    return np.asarray(np.load(npy_path), dtype=np.float32)
+    return arr
+
+
+def build_nonperiodic_src_latents(silence_latent: np.ndarray, length: int) -> np.ndarray:
+    """Build text-to-music ``src`` latents without tiling the silence template.
+
+    Uses the mean channel vector of ``silence_latent`` broadcast to ``length``
+    frames so long clips do not receive a periodic silence texture as DiT context.
+    """
+    arr = np.asarray(silence_latent, dtype=np.float32)
+    if arr.ndim != 3:
+        raise RuntimeError(
+            f"silence_latent must be rank-3 [B,T,C], got shape={arr.shape}"
+        )
+    length = int(length)
+    if length < 1:
+        raise RuntimeError(f"src latent length must be >= 1, got {length}")
+    channels = int(arr.shape[-1])
+    mean_vec = np.mean(arr[0], axis=0, keepdims=True).astype(np.float32)
+    return np.broadcast_to(mean_vec, (length, channels)).copy()
 
 
 def format_metadata(
@@ -846,6 +903,18 @@ def run_cover_edit(
         batch_seed = seed + i
         if on_progress:
             on_progress((i + 0.1) / n, i + 1, n, f"Cover generation {i + 1}/{n}")
+        cover_steps = (
+            int(config.turbo_infer_steps)
+            if is_turbo
+            else int(request.steps or config.default_infer_steps)
+        )
+        cover_guidance = (
+            1.0
+            if is_turbo
+            else float(
+                request.guidance if request.guidance is not None else 3.0
+            )
+        )
         waveform = generator.generate_cover_waveform(
             reference_waveform=ref_wf,
             prompt=effective_prompt,
@@ -858,6 +927,8 @@ def run_cover_edit(
             key_scale=request.key_scale or "",
             time_signature=request.time_signature or "",
             duration=cover_duration,
+            steps=cover_steps,
+            guidance=cover_guidance,
         )
         quality = getattr(generator, "last_quality", None)
         waveforms.append(waveform)

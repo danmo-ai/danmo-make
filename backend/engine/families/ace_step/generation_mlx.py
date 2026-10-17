@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import numpy as np
@@ -27,6 +27,7 @@ from backend.engine.families.ace_step.generation import (
     SFT_GEN_PROMPT,
     VAE_TILE_CHUNK_SIZE,
     VAE_TILE_OVERLAP,
+    build_nonperiodic_src_latents,
     diffusion_retry_seed,
     duration_to_latent_frames,
     estimate_hum_ratio,
@@ -53,8 +54,6 @@ from backend.engine.families.ace_step.generation import (
 from backend.engine.families.ace_step.transformer import AceStepTransformer
 from backend.engine.families.ace_step.transformer_mlx import _CrossAttentionCache
 from backend.engine.families.ace_step.vae.vae import AceStepVAE
-from backend.engine.families.ace_step.weights_mlx import load_decoder_safetensors_for_mlx
-
 logger = logging.getLogger(__name__)
 
 
@@ -80,6 +79,7 @@ class AceStepMlxGenerator:
         self._text_encoder: Any = None
         self._text_tokenizer: Any = None
         self._silence_latent: np.ndarray | None = None
+        self._null_condition_emb: np.ndarray | None = None
         self._model_config: Any = None
         self.last_latent_frames: int = 0
         self.last_hum_ratio: float = 0.0
@@ -121,24 +121,39 @@ class AceStepMlxGenerator:
             self._model_config = json.loads(f.read())
 
         logger.info("Loading ACE-Step MLX condition encoder + DiT + VAE from %s", dit_bundle)
-        self._condition_encoder = load_condition_encoder_mlx(
-            dit_bundle, eval_fn=self._ctx.eval, array_fn=self._ctx.array
-        )
         from backend.engine.families.ace_step.audio.audio_codec_mlx import load_audio_codec_mlx
+        from backend.engine.families.ace_step.weights_mlx import (
+            load_ace_step_weight_groups,
+            resolve_dit_checkpoint_path,
+        )
 
+        weight_groups = load_ace_step_weight_groups(dit_bundle, array_fn=self._ctx.array)
+        null_emb = weight_groups.special.get("null_condition_emb")
+        if null_emb is not None:
+            self._null_condition_emb = np.array(null_emb, dtype=np.float32)
+        else:
+            self._null_condition_emb = None
+        self._condition_encoder = load_condition_encoder_mlx(
+            dit_bundle,
+            eval_fn=self._ctx.eval,
+            array_fn=self._ctx.array,
+            encoder_weights=weight_groups.encoder,
+        )
         self._audio_codec = load_audio_codec_mlx(
-            dit_bundle, eval_fn=self._ctx.eval, array_fn=self._ctx.array
+            dit_bundle,
+            eval_fn=self._ctx.eval,
+            array_fn=self._ctx.array,
+            tokenizer_weights=weight_groups.tokenizer,
+            detokenizer_weights=weight_groups.detokenizer,
+            special_params=weight_groups.special,
         )
 
         cfg = self._model_config
         from backend.engine.common.bundle.quant_inference import resolve_dit_inference_weight_mode
         from backend.engine.common.bundle.safetensors_affine_quant import read_bundle_affine_bits_if_quantized
 
-        dit_path = dit_bundle / "model.safetensors"
-        dit_weights = load_decoder_safetensors_for_mlx(
-            str(dit_path), array_fn=self._ctx.array
-        )
-        weight_items = list(dit_weights)
+        dit_path = resolve_dit_checkpoint_path(dit_bundle)
+        weight_items = list(weight_groups.decoder)
         weight_keys = frozenset(k for k, _ in weight_items)
         bundle_affine_bits = read_bundle_affine_bits_if_quantized(dict(weight_items), dit_path)
         inference_mode = resolve_dit_inference_weight_mode(
@@ -166,6 +181,7 @@ class AceStepMlxGenerator:
             layer_types=tuple(cfg["layer_types"]) if cfg.get("layer_types") else None,
             rope_theta=cfg["rope_theta"],
             max_position_embeddings=cfg["max_position_embeddings"],
+            encoder_hidden_size=int(cfg.get("encoder_hidden_size", cfg["hidden_size"])),
         )
         self._dit.load_weights(
             weight_items,
@@ -235,12 +251,20 @@ class AceStepMlxGenerator:
         return fmt
 
     def _silence_latent_slice(self, length: int) -> np.ndarray:
-        available = self._silence_latent.shape[1]
+        """Prefix of silence latent; pad with mean vector (never tile)."""
+        available = int(self._silence_latent.shape[1])
+        channels = int(self._silence_latent.shape[-1])
+        length = int(length)
         if length <= available:
-            return self._silence_latent[0, :length, :]
-        repeats = (length + available - 1) // available
-        tiled = np.tile(self._silence_latent[0], (repeats, 1))
-        return tiled[:length, :]
+            return self._silence_latent[0, :length, :].astype(np.float32, copy=True)
+        prefix = self._silence_latent[0].astype(np.float32)
+        mean_vec = np.mean(prefix, axis=0, keepdims=True)
+        pad = np.broadcast_to(mean_vec, (length - available, channels))
+        return np.concatenate([prefix, pad], axis=0)
+
+    def _text_to_music_src_latents(self, length: int) -> np.ndarray:
+        """Non-periodic constant context for text-to-music (``is_covers=0``)."""
+        return build_nonperiodic_src_latents(self._silence_latent, length)
 
     def _infer_refer_latent(self) -> tuple[np.ndarray, np.ndarray]:
         refer = self._silence_latent[:, :750, :]
@@ -307,11 +331,23 @@ class AceStepMlxGenerator:
         lm_enabled: bool = True,
         lm_quantize_bits: Optional[int] = None,
     ) -> np.ndarray:
-        del steps, guidance  # turbo schedule is shift-driven
         from backend.engine.families.ace_step.quality.quality_score import assess_generation_quality
 
         if self._condition_encoder is None or self._dit is None or self._vae is None:
             raise RuntimeError("ACE-Step MLX generator not loaded; call load() first")
+
+        is_turbo = self._is_turbo(self._model_config)
+        infer_steps = int(steps)
+        guidance_scale = float(guidance)
+        if is_turbo:
+            # Distilled turbo: fixed 8-step shift=1 schedule, no CFG.
+            infer_steps = 8
+            shift = 1.0
+            guidance_scale = 1.0
+        elif guidance_scale > 1.0 and self._null_condition_emb is None:
+            raise RuntimeError(
+                "ACE-Step SFT CFG requires null_condition_emb in DiT checkpoint weights"
+            )
 
         duration = max(10.0, min(600.0, float(duration)))
         requested_samples = int(round(duration * SAMPLE_RATE))
@@ -325,7 +361,7 @@ class AceStepMlxGenerator:
                 max_latent_length,
             )
 
-        silence_tiled = self._silence_latent_slice(max_latent_length)
+        src_context = self._text_to_music_src_latents(max_latent_length)
         instruction = DEFAULT_DIT_INSTRUCTION
         if not instruction.endswith(":"):
             instruction = instruction + ":"
@@ -354,7 +390,7 @@ class AceStepMlxGenerator:
 
         def _lm_stage() -> None:
             nonlocal caption, lyrics_use, duration, requested_samples, max_latent_length
-            nonlocal silence_tiled, bpm_use, key_use, ts_use, lang_use
+            nonlocal src_context, bpm_use, key_use, ts_use, lang_use
             if lm_fmt is None:
                 if lm_enabled and self._lm_enabled():
                     logger.warning(
@@ -382,7 +418,7 @@ class AceStepMlxGenerator:
                     latent_frames = duration_to_latent_frames(duration)
                     max_latent_length = snap_latent_frames_for_inference(latent_frames)
                     self.last_latent_frames = max_latent_length
-                    silence_tiled = self._silence_latent_slice(max_latent_length)
+                    src_context = self._text_to_music_src_latents(max_latent_length)
                 key_use = expanded.keyscale or key_use
                 ts_use = expanded.timesignature or ts_use
                 lang_use = expanded.language or lang_use
@@ -473,7 +509,7 @@ class AceStepMlxGenerator:
             refer_packed = self._ctx.array(refer_np.astype(np.float32))
             refer_order_mx = self._ctx.array(refer_order.astype(np.int32))
 
-            src_latents_np = silence_tiled.astype(np.float32)[np.newaxis, ...]
+            src_latents_np = src_context.astype(np.float32)[np.newaxis, ...]
             src_latents = self._ctx.array(src_latents_np)
             latent_dim = int(src_latents.shape[-1])
             chunk_masks = mx.ones((1, max_latent_length, latent_dim), dtype=mx.float32)
@@ -487,9 +523,6 @@ class AceStepMlxGenerator:
                 idx = np.array(self.last_audio_code_indices[:max_codes], dtype=np.int32)
                 audio_code_mx = mx.array(idx.reshape(1, -1, 1), dtype=mx.int32)
                 is_covers = mx.ones((1,), dtype=mx.int32)
-
-            if self._is_turbo(self._model_config) and shift >= 2.5:
-                shift = 1.0
 
             enc_hs, _, ctx = prepare_condition_mlx(
                 self._condition_encoder,
@@ -517,6 +550,14 @@ class AceStepMlxGenerator:
             max_attempts = 6 if self.last_lm_expanded else 3
             run_seed = int(seed)
 
+            logger.info(
+                "ACE-Step MLX diffusion: turbo=%s steps=%d shift=%.2f guidance=%.2f",
+                is_turbo,
+                infer_steps,
+                shift,
+                guidance_scale,
+            )
+            null_emb_np = None if is_turbo else self._null_condition_emb
             for attempt in range(max_attempts):
                 out = mlx_generate_diffusion(
                     self._dit._model,
@@ -526,6 +567,9 @@ class AceStepMlxGenerator:
                     seed=run_seed,
                     infer_method="ode",
                     shift=shift,
+                    infer_steps=infer_steps,
+                    guidance_scale=guidance_scale,
+                    null_condition_emb_np=null_emb_np,
                     eval_fn=self._ctx.eval,
                     array_fn=self._ctx.array,
                     randn_fn=getattr(self._ctx, "randn", None),
@@ -651,6 +695,8 @@ class AceStepMlxGenerator:
         time_signature: str = "",
         shift: float = 3.0,
         audio_cover_strength: float = 1.0,
+        steps: int = 50,
+        guidance: float = 3.0,
         **kwargs: Any,
     ) -> np.ndarray:
         del kwargs
@@ -663,6 +709,18 @@ class AceStepMlxGenerator:
             or self._audio_codec is None
         ):
             raise RuntimeError("ACE-Step MLX generator not loaded; call load() first")
+
+        is_turbo = self._is_turbo(self._model_config)
+        infer_steps = int(steps)
+        guidance_scale = float(guidance)
+        if is_turbo:
+            infer_steps = 8
+            shift = 1.0
+            guidance_scale = 1.0
+        elif guidance_scale > 1.0 and self._null_condition_emb is None:
+            raise RuntimeError(
+                "ACE-Step SFT CFG requires null_condition_emb in DiT checkpoint weights"
+            )
 
         ref_latents_np = self._encode_reference_latents(reference_waveform)
         ref_len = int(ref_latents_np.shape[1])
@@ -746,9 +804,6 @@ class AceStepMlxGenerator:
         attention_mask = mx.ones((1, max_latent_length), dtype=mx.float32)
         silence_latent_mx = self._ctx.array(self._silence_latent.astype(np.float32))
 
-        if self._is_turbo(self._model_config) and shift >= 2.5:
-            shift = 1.0
-
         strength = float(max(0.0, min(1.0, audio_cover_strength)))
 
         enc_hs, _, ctx = prepare_condition_mlx(
@@ -769,8 +824,8 @@ class AceStepMlxGenerator:
 
         enc_hs_nc, ctx_nc = None, None
         if strength < 1.0:
-            silence_tiled = self._silence_latent_slice(max_latent_length)
-            silence_src = self._ctx.array(silence_tiled.astype(np.float32)[np.newaxis, ...])
+            silence_src_np = self._text_to_music_src_latents(max_latent_length)
+            silence_src = self._ctx.array(silence_src_np.astype(np.float32)[np.newaxis, ...])
             is_covers_zero = mx.zeros((1,), dtype=mx.int32)
             enc_hs_nc, _, ctx_nc = prepare_condition_mlx(
                 self._condition_encoder,
@@ -795,6 +850,7 @@ class AceStepMlxGenerator:
         src_shape = tuple(src_latents_np.shape)
 
         run_seed = int(seed)
+        null_emb_np = None if is_turbo else self._null_condition_emb
         out = mlx_generate_diffusion(
             self._dit._model,
             encoder_hidden_states_np=enc_np,
@@ -803,6 +859,9 @@ class AceStepMlxGenerator:
             seed=run_seed,
             infer_method="ode",
             shift=shift,
+            infer_steps=infer_steps,
+            guidance_scale=guidance_scale,
+            null_condition_emb_np=null_emb_np,
             audio_cover_strength=strength,
             encoder_hidden_states_non_cover_np=enc_np_nc,
             context_latents_non_cover_np=ctx_np_nc,
@@ -861,8 +920,14 @@ SHIFT_TIMESTEPS = {
 def get_timestep_schedule(
     shift: float = 3.0,
     timesteps: Optional[list] = None,
+    infer_steps: Optional[int] = None,
 ) -> List[float]:
-    """Timestep schedule for turbo DiT (matches upstream ``generate_audio``)."""
+    """Timestep schedule for DiT sampling (matches upstream ``dit_generate``).
+
+    When ``infer_steps`` is set, build an N-step flow-match schedule with
+    ``shift * t / (1 + (shift - 1) * t)``. Otherwise fall back to the legacy
+    8-step ``SHIFT_TIMESTEPS`` lookup (turbo default).
+    """
     if timesteps is not None:
         ts_list = list(timesteps)
         while ts_list and ts_list[-1] == 0:
@@ -876,6 +941,14 @@ def get_timestep_schedule(
             ]
             return [min(valid, key=lambda x, t=t: abs(x - t)) for t in ts_list[:20]]
 
+    if infer_steps is not None and int(infer_steps) > 0:
+        n = int(infer_steps)
+        raw = [1.0 - i / n for i in range(n)]
+        if float(shift) != 1.0:
+            s = float(shift)
+            raw = [s * t / (1.0 + (s - 1.0) * t) for t in raw]
+        return raw
+
     original_shift = shift
     shift = min(VALID_SHIFTS, key=lambda x: abs(x - shift))
     if original_shift != shift:
@@ -884,7 +957,7 @@ def get_timestep_schedule(
             original_shift,
             shift,
         )
-    return SHIFT_TIMESTEPS[shift]
+    return list(SHIFT_TIMESTEPS[shift])
 
 
 def mlx_generate_diffusion(
@@ -896,6 +969,9 @@ def mlx_generate_diffusion(
     infer_method: str = "ode",
     shift: float = 3.0,
     timesteps: Optional[list] = None,
+    infer_steps: Optional[int] = None,
+    guidance_scale: float = 1.0,
+    null_condition_emb_np: Optional[np.ndarray] = None,
     audio_cover_strength: float = 1.0,
     encoder_hidden_states_non_cover_np: Optional[np.ndarray] = None,
     context_latents_non_cover_np: Optional[np.ndarray] = None,
@@ -935,7 +1011,23 @@ def mlx_generate_diffusion(
     channels = int(src_latents_shape[2])
     noise_shape = (bsz, t_len, channels)
 
-    t_schedule_list = get_timestep_schedule(shift, timesteps)
+    do_cfg = float(guidance_scale) > 1.0 and null_condition_emb_np is not None
+    if float(guidance_scale) > 1.0 and null_condition_emb_np is None:
+        raise RuntimeError(
+            "ACE-Step CFG requires null_condition_emb_np when guidance_scale > 1"
+        )
+    if do_cfg:
+        null_cond = array_fn(np.asarray(null_condition_emb_np, dtype=np.float32))
+        null_expanded = mx.broadcast_to(null_cond, enc_hs.shape)
+        enc_hs = mx.concatenate([enc_hs, null_expanded], axis=0)
+        ctx_lat = mx.concatenate([ctx_lat, ctx_lat], axis=0)
+        if enc_hs_nc is not None:
+            null_expanded_nc = mx.broadcast_to(null_cond, enc_hs_nc.shape)
+            enc_hs_nc = mx.concatenate([enc_hs_nc, null_expanded_nc], axis=0)
+        if ctx_nc is not None:
+            ctx_nc = mx.concatenate([ctx_nc, ctx_nc], axis=0)
+
+    t_schedule_list = get_timestep_schedule(shift, timesteps, infer_steps=infer_steps)
     num_steps = len(t_schedule_list)
     cover_steps = int(num_steps * audio_cover_strength)
 
@@ -946,17 +1038,25 @@ def mlx_generate_diffusion(
     _state_ctx = [ctx_lat]
 
     def _model_forward(xt: Any, t_curr_val: float, state: dict) -> Any:
-        t_curr = mx.full((bsz,), t_curr_val)
+        x_in = mx.concatenate([xt, xt], axis=0) if do_cfg else xt
+        t_curr = mx.full((x_in.shape[0],), t_curr_val)
         vt, new_cache = mlx_decoder(
-            hidden_states=xt,
+            hidden_states=x_in,
             timestep=t_curr,
             timestep_r=t_curr,
             encoder_hidden_states=_state_enc_hs[0],
             context_latents=_state_ctx[0],
-            cache=state.get("cache"),
-            use_cache=True,
+            cache=state.get("cache") if not do_cfg else None,
+            use_cache=not do_cfg,
         )
-        state["cache"] = new_cache
+        if do_cfg:
+            pred_cond = vt[:bsz]
+            pred_uncond = vt[bsz:]
+            # Classic CFG: uncond + guidance * (cond - uncond)
+            vt = pred_uncond + float(guidance_scale) * (pred_cond - pred_uncond)
+            state["cache"] = None
+        else:
+            state["cache"] = new_cache
         return vt
 
     def _init_noise(shape: tuple, _seed: int) -> Any:
@@ -988,7 +1088,7 @@ def mlx_generate_diffusion(
         if step_idx >= cover_steps and enc_hs_nc is not None:
             _state_enc_hs[0] = enc_hs_nc
             _state_ctx[0] = ctx_nc
-            state["cache"] = _CrossAttentionCache()
+            state["cache"] = None if do_cfg else _CrossAttentionCache()
 
     bundle = AudioInferenceBundle(
         ctx=None,
@@ -1000,7 +1100,7 @@ def mlx_generate_diffusion(
             timestep_schedule=t_schedule_list,
             init_noise_fn=_init_noise,
             euler_step_fn=_euler_step,
-            cache_init_fn=lambda: _CrossAttentionCache(),
+            cache_init_fn=lambda: None if do_cfg else _CrossAttentionCache(),
             before_step_fn=_before_step if enc_hs_nc is not None else None,
         ),
     )
@@ -1011,6 +1111,9 @@ def mlx_generate_diffusion(
     total_end = time.time()
     time_costs = result.get("time_costs", {})
     time_costs["total_time_cost"] = total_end - total_start
+    time_costs["num_steps"] = num_steps
+    time_costs["guidance_scale"] = float(guidance_scale)
+    time_costs["cfg_enabled"] = bool(do_cfg)
 
     return {
         "target_latents": np.array(xt),
