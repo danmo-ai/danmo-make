@@ -48,6 +48,25 @@ def _paths() -> IPathResolver:
     return get_container().resolve(IPathResolver)
 
 
+def _reject_path_traversal(name: str, *, field: str) -> None:
+    if ".." in name or "/" in name or "\\" in name:
+        raise HTTPException(
+            400,
+            detail={"code": "invalid_path", "message": f"{field} must be a filename only"},
+        )
+
+
+def _resolve_dataset_file(root: Path, dataset_id: str, file_path: str) -> Path:
+    _reject_path_traversal(dataset_id, field="dataset_id")
+    base = (root / "datasets" / dataset_id).resolve()
+    path = (base / file_path).resolve()
+    try:
+        path.relative_to(base)
+    except ValueError:
+        raise HTTPException(404, detail={"code": "not_found", "message": "image not found"}) from None
+    return path
+
+
 @router.get("/datasets")
 def list_datasets():
     root = _paths().get_project_root()
@@ -523,7 +542,7 @@ def dataset_image_file(dataset_id: str, file_path: str):
     from fastapi.responses import FileResponse
 
     root = _paths().get_project_root()
-    path = root / "datasets" / dataset_id / file_path
+    path = _resolve_dataset_file(root, dataset_id, file_path)
     if not path.is_file():
         raise HTTPException(404, detail={"code": "not_found", "message": "image not found"})
     return FileResponse(path)
@@ -533,6 +552,7 @@ def dataset_image_file(dataset_id: str, file_path: str):
 def training_artifact_file(task_id: str, filename: str, sched: TaskScheduler = Depends(get_task_scheduler)):
     from fastapi.responses import FileResponse
 
+    _reject_path_traversal(filename, field="filename")
     work = sched.task_work_dir(task_id)
     candidates = [
         work / filename,
@@ -746,6 +766,7 @@ def register_training_checkpoint(
     body: LoraRegisterRequest,
     sched: TaskScheduler = Depends(get_task_scheduler),
 ):
+    _reject_path_traversal(body.checkpoint, field="checkpoint")
     work = sched.task_work_dir(task_id)
     ckpt = work / "adapters" / body.checkpoint
     if not ckpt.is_file():

@@ -123,14 +123,21 @@ class CanvasSessionStore:
         title: Optional[str] = None,
         state: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
-        existing = self.get_session(session_id)
-        if not existing:
-            return None
         now = datetime.now().isoformat()
-        new_title = (title.strip() if title is not None else existing["title"])
-        new_state = state if state is not None else existing["state"]
         with self._lock:
             conn = self._conn()
+            row = conn.execute(
+                """
+                SELECT id, media, title, state_json, created_at, updated_at
+                FROM canvas_sessions WHERE id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+            if not row:
+                return None
+            existing = self._row_to_detail(row)
+            new_title = (title.strip() if title is not None else existing["title"])
+            new_state = state if state is not None else existing["state"]
             conn.execute(
                 """
                 UPDATE canvas_sessions

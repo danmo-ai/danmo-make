@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -69,7 +70,7 @@ async def run_lora_training_subprocess(
     repo = _repo_root()
     env = dict(__import__("os").environ)
     py_path = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = str(repo) if not py_path else f"{repo}{Path.pathsep}{py_path}"
+    env["PYTHONPATH"] = str(repo) if not py_path else f"{repo}{os.pathsep}{py_path}"
     if worker_memory_gb is not None:
         env["DANQING_MLX_MEMORY_LIMIT_GB"] = str(int(worker_memory_gb))
 
