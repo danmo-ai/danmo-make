@@ -530,6 +530,7 @@ class AceStepConfig:
     supports_img2img: bool = False
     default_infer_steps: int = 50            # base/sft; turbo = 8
     default_shift: float = 3.0
+    default_guidance: float = 7.0            # upstream APG default (base/sft)
 
     def __post_init__(self):
         if self.layer_types is None:

@@ -31,7 +31,8 @@ SFT_GEN_PROMPT = """# Instruction
 {caption}
 
 # Metas
-{metadata}<|endoftext|>"""
+{metadata}<|endoftext|>
+"""
 
 DEFAULT_DIT_INSTRUCTION = "Fill the audio semantic mask based on the given conditions:"
 COVER_DIT_INSTRUCTION = (
@@ -597,6 +598,7 @@ class AceStepPreparedRequest:
     shift: float
     is_turbo: bool
     duration: float
+    guidance: float = 1.0
     lm_enabled: bool = True
     resource_tier: str = ""
     lm_quantize_bits: Optional[int] = None
@@ -791,9 +793,13 @@ def prepare_music_request(
     is_turbo = resolve_bundle_is_turbo(bundle_root, dit_subdir=dit_subdir)
     steps = request.steps or config.default_infer_steps
     shift = float(config.default_shift)
+    guidance = float(
+        request.guidance if request.guidance is not None else config.default_guidance
+    )
     if is_turbo:
         steps = min(int(steps), int(config.turbo_infer_steps))
         shift = float(config.turbo_shift)
+        guidance = 1.0
         events.append(
             (
                 "info",
@@ -810,6 +816,7 @@ def prepare_music_request(
         shift=shift,
         is_turbo=is_turbo,
         duration=duration,
+        guidance=guidance,
         lm_enabled=lm_use,
         resource_tier=policy.tier,
         lm_quantize_bits=policy.lm_quantize_bits,
@@ -912,7 +919,7 @@ def run_cover_edit(
             1.0
             if is_turbo
             else float(
-                request.guidance if request.guidance is not None else 3.0
+                request.guidance if request.guidance is not None else config.default_guidance
             )
         )
         waveform = generator.generate_cover_waveform(
