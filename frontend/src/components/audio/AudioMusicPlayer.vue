@@ -205,7 +205,7 @@ const props = defineProps({
   hue: { type: Number, default: 0 },
 });
 
-const emit = defineEmits(['download', 'play', 'pause', 'duration', 'error']);
+const emit = defineEmits(['download', 'play', 'pause', 'duration', 'error', 'timeupdate']);
 
 const waveBars = 32;
 
@@ -440,5 +440,15 @@ watch(
   () => syncFromElement(),
 );
 
-defineExpose({ pause, load, togglePlay, playWhenReady, isPlaying });
+watch(currentTime, (t) => emit('timeupdate', t));
+
+function seek(seconds: number) {
+  const el = audioEl.value;
+  if (!el || !Number.isFinite(seconds)) return;
+  const max = duration.value > 0 ? duration.value : Number.POSITIVE_INFINITY;
+  el.currentTime = Math.min(max, Math.max(0, seconds));
+  syncFromElement();
+}
+
+defineExpose({ pause, load, togglePlay, playWhenReady, seek, isPlaying });
 </script>
