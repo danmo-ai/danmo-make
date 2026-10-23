@@ -232,26 +232,23 @@ function downloadLrc() {
   color: var(--dq-label-primary);
 }
 
-.gallery-audio-detail--lightbox {
-  container-type: inline-size;
+/* Pop-player layout when lightbox is widened for timed lyrics (dialog ≥ ~960px). */
+.gallery-audio-detail--lightbox.gallery-audio-detail--has-timeline .gallery-audio-detail__layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.95fr) minmax(340px, 1.05fr);
+  gap: 24px;
+  align-items: start;
+  width: 100%;
+  min-width: 0;
 }
 
-.gallery-audio-detail__layout {
-  display: block;
+.gallery-audio-detail--lightbox.gallery-audio-detail--has-timeline .gallery-audio-detail__main,
+.gallery-audio-detail--lightbox.gallery-audio-detail--has-timeline .gallery-audio-detail__lyrics-block {
+  min-width: 0;
 }
 
-/* Pop-player layout: Now Playing on the left, synced lyrics on the right. */
-@container (min-width: 680px) {
-  .gallery-audio-detail--has-timeline .gallery-audio-detail__layout {
-    display: grid;
-    grid-template-columns: minmax(260px, 0.9fr) minmax(340px, 1.1fr);
-    gap: 24px;
-    align-items: start;
-  }
-
-  .gallery-audio-detail--has-timeline .gallery-audio-detail__lyrics-block {
-    margin-top: 0;
-  }
+.gallery-audio-detail--lightbox.gallery-audio-detail--has-timeline .gallery-audio-detail__lyrics-block {
+  margin-top: 0;
 }
 
 .gallery-audio-detail .studio-audio-effective-lyrics__head {
