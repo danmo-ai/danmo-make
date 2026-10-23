@@ -14,7 +14,12 @@ import time
 from pathlib import Path
 
 from backend.cli.base import build_exec_context, engine_session
-from backend.core.contracts import VideoEditRequest, VideoGenerationRequest, VideoUpscaleRequest
+from backend.core.contracts import (
+    VideoEditRequest,
+    VideoGenerationRequest,
+    VideoMediaReference,
+    VideoUpscaleRequest,
+)
 
 
 def generate(
@@ -31,6 +36,8 @@ def generate(
     seed: int | None = None,
     teacache_mode: str | None = None,
     h3_veda: str | None = None,
+    h3_turbo: bool | None = None,
+    media_references: list[tuple[str, str]] | None = None,
     output: str = "",
     project_root: Path | None = None,
 ) -> str:
@@ -62,6 +69,13 @@ def generate(
             payload["teacache_mode"] = teacache_mode
         if h3_veda is not None:
             payload["h3_veda"] = h3_veda
+        if h3_turbo is not None:
+            payload["h3_turbo"] = h3_turbo
+        if media_references:
+            payload["media_references"] = [
+                VideoMediaReference(kind=kind, asset_id=asset_id)  # type: ignore[arg-type]
+                for kind, asset_id in media_references
+            ]
         request = VideoGenerationRequest(**payload)
 
         if not ctx.video_engine.supports(model, "generate"):
@@ -102,6 +116,7 @@ def edit(
     seed: int | None = None,
     teacache_mode: str | None = None,
     h3_veda: str | None = None,
+    h3_turbo: bool | None = None,
     output: str = "",
     project_root: Path | None = None,
 ) -> str:
@@ -124,6 +139,7 @@ def edit(
             seed=seed,
             teacache_mode=teacache_mode,
             h3_veda=h3_veda,
+            h3_turbo=h3_turbo,
         )
 
         if not ctx.video_engine.supports(model, "edit"):

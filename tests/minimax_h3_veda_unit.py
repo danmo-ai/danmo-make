@@ -211,6 +211,162 @@ class VedaAttentionTest(unittest.TestCase):
         self.assertAlmostEqual(float(bundle.generated.ratio), 0.1)
         self.assertTrue(bundle.plans.select((2, 8, 16))[1])
 
+    def test_bind_respects_trimmed_active_layers(self) -> None:
+        """Predictor shallower than DiT depth is OK once h3_active_layers is applied."""
+        from safetensors.numpy import save_file
+
+        from backend.engine.families.minimax_h3.veda import LayoutSpec, SpanSpec
+        from backend.engine.families.minimax_h3.veda_mlx import (
+            _BUNDLE_CACHE,
+            bind_h3_veda,
+        )
+
+        plans = {
+            "16x8_t2": {
+                "geometry": "16x8_t2",
+                "grid": [2, 8, 16],
+                "shapes": ["2x8x8"],
+                "head_shape": [[0, 0]],
+            }
+        }
+        metadata = {
+            "format": "miowtion-veda-predictor-v1",
+            "num_layers": "1",
+            "num_heads": "2",
+            "head_dim": "8",
+            "keep_ratio": "0.1",
+            "dtype": "float32",
+            "plans": json.dumps(plans),
+            "step": "0",
+        }
+        spec = LayoutSpec(
+            seq_len=260,
+            target=SpanSpec("target", 4, (2, 8, 16)),
+        )
+
+        class _Attn:
+            heads = 2
+            head_dim = 8
+
+        class _Block:
+            def __init__(self) -> None:
+                self.attn = _Attn()
+
+        class _Dit:
+            def __init__(self) -> None:
+                self.blocks = [_Block(), _Block()]
+                self._active_layers = len(self.blocks)
+                self._veda = None
+
+            def set_active_layers(self, count: int) -> None:
+                self._active_layers = count
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "predictor.safetensors"
+            save_file(
+                {
+                    "layers.0.proj_q": np.zeros((2, 24, 8), dtype=np.float32),
+                    "layers.0.proj_k": np.ones((2, 24, 8), dtype=np.float32),
+                },
+                path,
+                metadata=metadata,
+            )
+            _BUNDLE_CACHE.pop(str(path.resolve()), None)
+            dit = _Dit()
+            with self.assertRaises(RuntimeError) as raised:
+                bind_h3_veda(dit, spec=spec, path=path)
+            self.assertIn("1 layers", str(raised.exception))
+            self.assertIn("2", str(raised.exception))
+
+            dit.set_active_layers(1)
+            runtime = bind_h3_veda(dit, spec=spec, path=path)
+            self.assertIs(dit._veda, runtime)
+            _BUNDLE_CACHE.pop(str(path.resolve()), None)
+
+
+class H3RequestOverridesTest(unittest.TestCase):
+    def test_apply_h3_turbo_and_veda_request(self) -> None:
+        from backend.engine.pipelines.video_run_common import (
+            apply_h3_turbo_request,
+            apply_h3_veda_request,
+        )
+
+        class _Cfg:
+            h3_turbo = False
+            h3_veda = False
+
+        class _Req:
+            h3_turbo = None
+            h3_veda = None
+
+        cfg = _Cfg()
+        req = _Req()
+        apply_h3_turbo_request(cfg, req)
+        apply_h3_veda_request(cfg, req)
+        self.assertFalse(cfg.h3_turbo)
+        self.assertFalse(cfg.h3_veda)
+
+        req.h3_turbo = True
+        req.h3_veda = "on"
+        apply_h3_turbo_request(cfg, req)
+        apply_h3_veda_request(cfg, req)
+        self.assertTrue(cfg.h3_turbo)
+        self.assertTrue(cfg.h3_veda)
+
+        # Explicit false wins after an adapter-style enable.
+        cfg.h3_turbo = True
+        req.h3_turbo = False
+        apply_h3_turbo_request(cfg, req)
+        self.assertFalse(cfg.h3_turbo)
+
+    def test_turbo_merge_skips_when_config_false(self) -> None:
+        from backend.engine.families.minimax_h3.lora_mlx import apply_minimax_h3_turbo_lora
+
+        class _Cfg:
+            h3_turbo = False
+
+        restore = apply_minimax_h3_turbo_lora(
+            object(),
+            bundle_root=Path("."),
+            config=_Cfg(),
+            adapters=[{"id": "minimax-h3-turbo-lora:v4-ema", "weight": 1.0}],
+            project_root=Path("."),
+            registry=object(),
+            ctx=object(),
+        )
+        self.assertIsNone(restore)
+
+    def test_adapter_prepare_enables_turbo_until_request_clears(self) -> None:
+        from backend.engine.families.minimax_h3.lora_mlx import apply_adapter_prepare
+        from backend.engine.pipelines.video_run_common import apply_h3_turbo_request
+
+        class _Cfg:
+            h3_turbo = False
+
+        class _Entry:
+            parameters = {"h3_turbo": True, "h3_turbo_distill": True}
+            raw: dict = {}
+
+        class _Registry:
+            def require(self, mid: str):
+                if mid != "minimax-h3-turbo-lora":
+                    raise KeyError(mid)
+                return _Entry()
+
+        class _Req:
+            h3_turbo = False
+
+        cfg = _Cfg()
+        apply_adapter_prepare(
+            cfg,
+            [{"id": "minimax-h3-turbo-lora:v4-ema", "weight": 1.0}],
+            _Registry(),
+            steps_default=30,
+        )
+        self.assertTrue(cfg.h3_turbo)
+        apply_h3_turbo_request(cfg, _Req())
+        self.assertFalse(cfg.h3_turbo)
+
 
 if __name__ == "__main__":
     unittest.main()

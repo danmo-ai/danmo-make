@@ -27,6 +27,7 @@ class MinimaxH3GeneratorProto(Protocol):
         step_distill: bool,
         image_path: str | None,
         last_frame_path: str | None = None,
+        media_references: list[tuple[str, str]] | None = None,
         negative_prompt: str = "",
         on_log: Any | None,
         on_progress: Any | None = None,

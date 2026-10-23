@@ -155,6 +155,13 @@ class ImageUpscaleRequest(BaseModel):
 # ----- Video -----
 
 
+class VideoMediaReference(BaseModel):
+    """Ordered typed reference for MiniMax-H3 Ref2VA (image / video / audio)."""
+
+    kind: Literal["image", "video", "audio"]
+    asset_id: str
+
+
 class VideoGenerationRequest(BaseModel):
     model: str
     title: str = ""
@@ -171,8 +178,10 @@ class VideoGenerationRequest(BaseModel):
     priority: Literal["normal", "high"] = "normal"
     metadata: dict[str, Any] = Field(default_factory=dict)
     reference_asset_ids: list[str] = Field(default_factory=list)
+    media_references: list[VideoMediaReference] = Field(default_factory=list)
     teacache_mode: Optional[str] = None
     h3_veda: Optional[str] = None
+    h3_turbo: Optional[bool] = None
 
 
 class VideoAvatarRequest(BaseModel):
@@ -247,8 +256,10 @@ class VideoEditRequest(BaseModel):
     priority: Literal["normal", "high"] = "normal"
     metadata: dict[str, Any] = Field(default_factory=dict)
     reference_asset_ids: list[str] = Field(default_factory=list)
+    media_references: list[VideoMediaReference] = Field(default_factory=list)
     teacache_mode: Optional[str] = None
     h3_veda: Optional[str] = None
+    h3_turbo: Optional[bool] = None
 
 
 class VideoUpscaleRequest(BaseModel):

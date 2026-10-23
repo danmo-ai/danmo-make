@@ -205,9 +205,14 @@ def load_minimax_h3_components(
         raise RuntimeError(
             f"Unexpected MiniMax-H3 model_type={cfg.get('model_type')!r} in bundle metadata"
         )
+    # PipeNetwork / MiniMaxAI: FL2VA and Ref2VA DiT weights are the same; only
+    # packing and the conditioner presentation differ.
     partition = str(cfg.get("partition", "fl2va")).lower()
-    if partition not in ("fl2va", ""):
-        raise RuntimeError(f"Phase1 supports FL2VA only; bundle partition={cfg.get('partition')!r}")
+    if partition not in ("fl2va", "ref2va", ""):
+        raise RuntimeError(
+            f"Unsupported MiniMax-H3 bundle partition={cfg.get('partition')!r}; "
+            "expected fl2va or ref2va."
+        )
 
     dit_cfg = _resolve_dit_config(root)
     aux = minimax_h3_aux_root(root)

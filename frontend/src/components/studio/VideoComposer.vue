@@ -160,6 +160,76 @@
             </DqIconButton>
           </ComposerIconTip>
         </template>
+        <template v-if="showH3Ref2VA">
+          <div
+            v-for="(ref, idx) in h3MediaRefs"
+            :key="`${ref.kind}-${ref.path}-${idx}`"
+            class="video-composer__ref-slot"
+          >
+            <div class="video-composer__ref-pill">
+              <span class="video-composer__ref-kind">{{ h3RefKindLabel(ref.kind) }}</span>
+              <ComposerIconTip :content="ref.path">
+                <img
+                  v-if="ref.kind === 'image'"
+                  :src="ref.previewUrl"
+                  alt=""
+                  class="video-composer__ref-thumb"
+                />
+                <video
+                  v-else-if="ref.kind === 'video'"
+                  :src="ref.previewUrl"
+                  class="video-composer__ref-thumb"
+                />
+                <span v-else class="video-composer__ref-audio">♪</span>
+              </ComposerIconTip>
+              <ComposerIconTip :content="$t('create.composerTip.removeRef')">
+                <DqIconButton
+                  type="text"
+                  size="sm"
+                  :aria-label="$tt('common.delete')"
+                  @click="$emit('remove-h3-reference', idx)"
+                >
+                  <DqIcon :size="10"><Close /></DqIcon>
+                </DqIconButton>
+              </ComposerIconTip>
+            </div>
+          </div>
+          <template v-if="h3MediaRefs.length < h3RefMax">
+            <ComposerIconTip :content="$t('create.h3AddRefImage')">
+              <DqIconButton
+                type="text"
+                size="sm"
+                class="video-composer__ref-add"
+                :aria-label="$t('create.h3AddRefImage')"
+                @click="$emit('pick-h3-reference', 'image')"
+              >
+                <DqIcon :size="14"><Picture /></DqIcon>
+              </DqIconButton>
+            </ComposerIconTip>
+            <ComposerIconTip :content="$t('create.h3AddRefVideo')">
+              <DqIconButton
+                type="text"
+                size="sm"
+                class="video-composer__ref-add"
+                :aria-label="$t('create.h3AddRefVideo')"
+                @click="$emit('pick-h3-reference', 'video')"
+              >
+                <DqIcon :size="14"><VideoCamera /></DqIcon>
+              </DqIconButton>
+            </ComposerIconTip>
+            <ComposerIconTip :content="$t('create.h3AddRefAudio')">
+              <DqIconButton
+                type="text"
+                size="sm"
+                class="video-composer__ref-add"
+                :aria-label="$t('create.h3AddRefAudio')"
+                @click="$emit('pick-h3-reference', 'audio')"
+              >
+                ♪
+              </DqIconButton>
+            </ComposerIconTip>
+          </template>
+        </template>
       </div>
 
       <!-- Preset / enhance (prompt corner, same as ImageComposer) -->
@@ -474,6 +544,37 @@
             </p>
           </div>
         </div>
+
+        <template v-if="showH3AccelGroups">
+          <div class="video-composer__advanced-row video-composer__advanced-row--stack">
+            <div class="video-composer__field video-composer__field--full">
+              <label>{{ $tt('create.h3AttentionAccel') }}</label>
+              <DqSelect v-model="h3AttentionAccel" size="sm" class="video-composer__select">
+                <DqOption
+                  v-for="opt in h3AttentionAccelOptions"
+                  :key="opt.value"
+                  :value="opt.value"
+                  :label="opt.label"
+                />
+              </DqSelect>
+              <p class="video-composer__param-note">{{ $tt('create.h3AttentionHint') }}</p>
+            </div>
+          </div>
+          <div class="video-composer__advanced-row video-composer__advanced-row--stack">
+            <div class="video-composer__field video-composer__field--full">
+              <label>{{ $tt('create.h3MemoryMode') }}</label>
+              <DqSelect v-model="h3MemoryMode" size="sm" class="video-composer__select">
+                <DqOption
+                  v-for="opt in h3MemoryModeOptions"
+                  :key="opt.value"
+                  :value="opt.value"
+                  :label="opt.label"
+                />
+              </DqSelect>
+              <p class="video-composer__param-note">{{ $tt('create.h3MemoryHint') }}</p>
+            </div>
+          </div>
+        </template>
       </div>
     </ComposerAdvancedCollapsible>
   </div>
@@ -544,6 +645,7 @@ const props = defineProps<{
     lora_scale?: number;
     teacache_mode?: string;
     h3_veda?: string;
+    h3_turbo?: boolean;
     upscale_scale?: number;
     upscale_denoise?: number;
     upscale_max_frames?: number;
@@ -561,6 +663,9 @@ const props = defineProps<{
   extraReferenceMedia?: Array<{ previewUrl: string; path: string; label?: string }>;
   showBerniniReferences?: boolean;
   berniniRefMax?: number;
+  showH3Ref2VA?: boolean;
+  h3MediaRefs?: Array<{ kind: 'image' | 'video' | 'audio'; path: string; previewUrl: string }>;
+  h3RefMax?: number;
   modelNotReady?: boolean;
   modelNotReadyName?: string;
   workModeOptions?: Array<{ label: string; value: string }>;
@@ -586,6 +691,8 @@ const emit = defineEmits<{
   (e: 'remove-tail-reference'): void;
   (e: 'pick-extra-reference'): void;
   (e: 'remove-extra-reference', index: number): void;
+  (e: 'pick-h3-reference', kind: 'image' | 'video' | 'audio'): void;
+  (e: 'remove-h3-reference', index: number): void;
   (e: 'model-change', value: string): void;
   (e: 'reset-defaults'): void;
   (e: 'go-download'): void;
@@ -684,9 +791,21 @@ const showBerniniReferences = computed(
   () => Boolean(props.showBerniniReferences) && supportsBerniniReferenceImages(paramSchema.value),
 );
 
+const showH3Ref2VA = computed(() => Boolean(props.showH3Ref2VA) && props.workMode === 'ref2va');
+
+const h3MediaRefs = computed(() => props.h3MediaRefs || []);
+
+const h3RefMax = computed(() => props.h3RefMax ?? 12);
+
 const showRefArea = computed(
-  () => needsReferenceInput.value || showBerniniReferences.value,
+  () => needsReferenceInput.value || showBerniniReferences.value || showH3Ref2VA.value,
 );
+
+function h3RefKindLabel(kind: string): string {
+  if (kind === 'video') return $tt('create.h3RefKindVideo');
+  if (kind === 'audio') return $tt('create.h3RefKindAudio');
+  return $tt('create.h3RefKindImage');
+}
 
 const extraReferenceMedia = computed(
   () => props.extraReferenceMedia || [],
@@ -701,6 +820,42 @@ const paramSchema = computed(() =>
 const inferenceEnumKeys = computed(() =>
   VIDEO_INFERENCE_ENUM_KEYS.filter((key) => Boolean(paramSchema.value[key])),
 );
+
+const showH3AccelGroups = computed(
+  () => Boolean(paramSchema.value.h3_veda || paramSchema.value.h3_turbo),
+);
+
+type H3AttentionAccel = 'off' | 'veda';
+type H3MemoryMode = 'off' | 'turbo';
+
+const h3AttentionAccel = computed<H3AttentionAccel>({
+  get() {
+    const raw = String(localParams.value.h3_veda || 'off').trim().toLowerCase();
+    return raw === 'on' || raw === 'veda' ? 'veda' : 'off';
+  },
+  set(value) {
+    patchParams({ h3_veda: value === 'veda' ? 'on' : 'off' });
+  },
+});
+
+const h3MemoryMode = computed<H3MemoryMode>({
+  get() {
+    return localParams.value.h3_turbo ? 'turbo' : 'off';
+  },
+  set(value) {
+    patchParams({ h3_turbo: value === 'turbo' });
+  },
+});
+
+const h3AttentionAccelOptions = computed(() => [
+  { value: 'off' as const, label: $tt('create.h3AccelOff') },
+  { value: 'veda' as const, label: $tt('create.h3AccelVeda') },
+]);
+
+const h3MemoryModeOptions = computed(() => [
+  { value: 'off' as const, label: $tt('create.h3AccelOff') },
+  { value: 'turbo' as const, label: $tt('create.h3AccelTurbo') },
+]);
 
 function paramFieldLabel(paramKey: string): string {
   const spec = paramSchema.value[paramKey];
@@ -1046,6 +1201,22 @@ function onKeydown(e: KeyboardEvent) {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.video-composer__ref-kind {
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0.75;
+  padding: 0 2px;
+}
+
+.video-composer__ref-audio {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
 }
 
 .video-composer__tail-hint,

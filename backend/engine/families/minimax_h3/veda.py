@@ -190,8 +190,9 @@ class Budget:
 
     def describe(self) -> str:
         if self.tiles is not None:
-            return f"{self.tiles:g} tiles"
-        return f"{100.0 * (1.0 - min(float(self.ratio), 1.0)):g}% sparse"
+            return f"{self.tiles:g} tiles/query"
+        keep = min(float(self.ratio), 1.0)
+        return f"keep_ratio={keep:g} (target ~{100.0 * (1.0 - keep):g}% of video tile-pairs)"
 
 
 def split_budget(budget: float, n_cols: int) -> tuple[int, int, float]:

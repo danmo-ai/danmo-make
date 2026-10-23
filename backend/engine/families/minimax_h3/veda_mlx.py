@@ -470,10 +470,17 @@ def bind_h3_veda(
     dit._veda = runtime
     if on_log is not None:
         exact_note = "exact" if exact else "nearest plan"
+        ref_note = (
+            "keyframes dense"
+            if bundle.reference.keeps_all
+            else f"keyframes {bundle.reference.describe()}"
+        )
         on_log(
             "info",
             f"MiniMax-H3 Veda sparse attention on ({exact_note}: {how}; "
-            f"video {bundle.generated.describe()}). Text and audio stay dense. "
+            f"target {bundle.generated.describe()}; {ref_note}; "
+            f"active_layers={active}). Text and audio stay dense. "
+            "Configured keep_ratio is a target; the denoise summary reports measured keep. "
             "The released predictor was trained with the 8-step Turbo LoRA.",
         )
     return runtime

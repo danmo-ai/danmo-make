@@ -9364,6 +9364,7 @@
           },
           "negative_prompt_support": false,
           "video_edit_source_mode": "first_frame",
+          "h3_ref2va_support": true,
           "resolution_presets": {
             "default": "1344x768",
             "options": [
@@ -9428,7 +9429,7 @@
             ],
             "type": "enum",
             "label": "Veda 稀疏注意力",
-            "note": "跳过约 90% 的视频注意力，文本和音频仍走完整注意力。需先在模型页安装 MiniMax H3 Veda 预测器；可与 8 步 Turbo LoRA 叠加。发布权重按 8 步 Turbo 训练。"
+            "note": "只稀疏视频↔视频注意力（默认 keep_ratio≈0.1，小画布实测可能更低）。文本和音频保持稠密；首尾帧关键帧默认也走稀疏预算。需先安装 MiniMax H3 Veda 预测器；可与 8 步 Turbo LoRA 叠加。发布权重按 8 步 Turbo 训练。"
           },
           "h3_low_memory": {
             "default": true,

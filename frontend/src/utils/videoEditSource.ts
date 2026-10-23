@@ -32,6 +32,15 @@ export function supportsBerniniReferenceImages(
   return isBerniniRenderer(parameters);
 }
 
+/** MiniMax-H3 ordered image/video/audio references (Ref2VA). */
+export function supportsH3Ref2VA(
+  parameters: Record<string, unknown> | undefined | null,
+): boolean {
+  return Boolean(parameters?.h3_ref2va_support);
+}
+
+export const H3_REF2VA_MAX_REFERENCES = 12;
+
 export function videoRequiresSourceVideo(
   parameters: Record<string, unknown> | undefined | null,
 ): boolean {

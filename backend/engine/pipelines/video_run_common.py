@@ -215,6 +215,16 @@ def apply_h3_veda_request(config: Any, request: Any) -> None:
     config.h3_veda = parse_h3_veda(raw)
 
 
+def apply_h3_turbo_request(config: Any, request: Any) -> None:
+    """Apply optional request ``h3_turbo``. ``None`` keeps registry / adapter state."""
+    if not hasattr(config, "h3_turbo"):
+        return
+    raw = getattr(request, "h3_turbo", None)
+    if raw is None:
+        return
+    config.h3_turbo = bool(raw)
+
+
 def _apply_minimax_h3_quality_preset(config: Any, preset: str) -> None:
     """Map registry ``h3_quality_preset`` onto a full Euler trajectory.
 
@@ -655,6 +665,7 @@ def execute_family_video_generator(pipeline,
 
     apply_video_registry_config_overrides(pipeline, entry, config)
     apply_h3_veda_request(config, request)
+    apply_h3_turbo_request(config, request)
     if not uses_family_video_generator(config):
         raise RuntimeError(
             f"Internal error: _run_family_video_generator called for "
@@ -679,6 +690,8 @@ def execute_family_video_generator(pipeline,
             on_log=on_log,
         )
     )
+    # Adapter prepare may set h3_turbo=True; an explicit request false must win.
+    apply_h3_turbo_request(config, request)
 
     if bundle_root is None or not bundle_root.is_dir():
         raise RuntimeError(f"Video model bundle not found for {request.model!r}")
@@ -821,10 +834,36 @@ def execute_family_video_generator(pipeline,
         # Optional last-frame for FL2VA-style families (VideoEditRequest.tail_asset_id).
         import inspect as _inspect
 
-        if last_frame_path is not None and "last_frame_path" in _inspect.signature(
-            generator.generate_and_save
-        ).parameters:
+        gen_sig = _inspect.signature(generator.generate_and_save).parameters
+        if last_frame_path is not None and "last_frame_path" in gen_sig:
             gen_kwargs["last_frame_path"] = last_frame_path
+        media_refs = list(getattr(request, "media_references", None) or [])
+        if media_refs and "media_references" in gen_sig:
+            if image_path or last_frame_path:
+                raise RuntimeError(
+                    "MiniMax-H3 Ref2VA media_references cannot be combined with "
+                    "first/last keyframes (source_asset_id / tail_asset_id)."
+                )
+            resolved_refs: list[tuple[str, str]] = []
+            for index, ref in enumerate(media_refs):
+                kind = str(getattr(ref, "kind", "") or "").strip().lower()
+                asset_id = str(getattr(ref, "asset_id", "") or "").strip()
+                if kind not in ("image", "video", "audio"):
+                    raise RuntimeError(
+                        f"media_references[{index}].kind must be image, video, or audio, got {kind!r}."
+                    )
+                if not asset_id:
+                    raise RuntimeError(f"media_references[{index}].asset_id is required.")
+                path = pipeline._asset_store.get_file_path(asset_id)
+                if path is None or not Path(path).is_file():
+                    raise RuntimeError(
+                        f"media_references[{index}] asset not found: {asset_id!r}"
+                    )
+                resolved_refs.append((kind, str(path)))
+            gen_kwargs["media_references"] = resolved_refs
+            gen_kwargs["image_path"] = None
+            if "last_frame_path" in gen_sig:
+                gen_kwargs["last_frame_path"] = None
     result_path = generator.generate_and_save(**gen_kwargs)
 
     if ctx_exec.cancel_token.is_cancelled():

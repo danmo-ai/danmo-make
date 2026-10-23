@@ -32,6 +32,18 @@ export function findCompatibleLora(
   return loras.find((row) => String(row.id) === key);
 }
 
+/** MiniMax-H3 Turbo distill — driven by composer memory-mode, not the generic LoRA picker. */
+export function isH3TurboLora(lora: CompatibleLoraRow | null | undefined): boolean {
+  const id = String(lora?.id || '').trim();
+  if (!id) return false;
+  const mid = id.includes(':') ? id.slice(0, id.indexOf(':')) : id;
+  return mid === 'minimax-h3-turbo-lora';
+}
+
+export function filterOutH3TurboLoras(loras: CompatibleLoraRow[]): CompatibleLoraRow[] {
+  return loras.filter((row) => !isH3TurboLora(row));
+}
+
 export function applyLoraComposeOverrides(
   params: Record<string, unknown>,
   lora: CompatibleLoraRow | null | undefined,

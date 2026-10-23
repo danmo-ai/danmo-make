@@ -367,9 +367,175 @@ class MinimaxH3MlxGenerator:
         on_log: Any | None,
         on_progress: Any | None,
     ) -> str:
-        _ = (prompt, output_path, width, height, num_frames, seed, steps, media_references, on_log, on_progress)
-        raise RuntimeError(
-            "MiniMax-H3 Ref2VA packing helpers are present, but the generator path is not wired yet."
+        from backend.engine.families.minimax_h3.ref2va import (
+            build_ref2va_packed_sequence,
+            ref2va_duration_ok,
+        )
+        from backend.engine.families.minimax_h3.ref2va_mlx import (
+            encode_audio_rows,
+            encode_visual_latents,
+            noise_visual_rows,
+            prepare_references,
+        )
+        from backend.engine.families.minimax_h3.veda import ref2va_layout_spec
+
+        assert self._dit is not None and self._text_encoder is not None
+        assert self._video_vae is not None and self._audio_vae is not None
+
+        canvas_h, canvas_w = self._resolve_canvas(width, height)
+        out_h, out_w = canvas_h, canvas_w
+        canvas_h, canvas_w = self._internal_canvas(canvas_h, canvas_w)
+
+        aligned_frames = P.align_num_frames(int(num_frames))
+        if aligned_frames != num_frames:
+            self._log(
+                on_log,
+                "info",
+                f"MiniMax-H3 snapped num_frames {num_frames} → {aligned_frames} (17n+5)",
+            )
+        ref2va_duration_ok(aligned_frames)
+
+        if bool(getattr(self.config, "h3_turbo", False)):
+            steps = min(int(steps), 8)
+
+        audio_sr = int(getattr(self._audio_vae, "sampling_rate", 32000) or 32000)
+        prepared = prepare_references(
+            list(media_references),
+            num_frames=aligned_frames,
+            audio_sample_rate=audio_sr,
+        )
+        kinds = [item.kind for item in prepared]
+        self._log(
+            on_log,
+            "info",
+            f"MiniMax-H3 Ref2VA encoding prompt + {len(prepared)} reference(s) "
+            f"({', '.join(kinds)})…",
+        )
+        prompt_embeds, text_token_tags = self._text_encoder.encode_ref2va_prompt(prompt, prepared)
+        if isinstance(text_token_tags, mx.array):
+            tags_np = np.array(text_token_tags)
+        else:
+            tags_np = np.asarray(text_token_tags, dtype=np.int64)
+        run_eval(getattr(self.ctx, "eval", None), prompt_embeds)
+        self._release_text_encoder()
+
+        num_latent_frames = P.video_latent_num_frames(aligned_frames)
+        latent_h = canvas_h // P.VAE_SPATIAL_SCALE
+        latent_w = canvas_w // P.VAE_SPATIAL_SCALE
+        num_audio = P.audio_latent_num_frames(aligned_frames)
+        patch = tuple(getattr(self.config, "patch_size", P.PATCH_SIZE))
+        video_channels = int(getattr(self.config, "latent_channels", 24))
+        audio_channels = int(getattr(self.config, "audio_latent_channels", 32))
+        pt, ph, pw = patch
+        patch_dim = video_channels * pt * ph * pw
+        num_target_video_rows = num_latent_frames * (latent_h // ph) * (latent_w // pw)
+        num_target_audio_rows = num_audio * P.MINIMAX_H3_AUDIO_CHANNELS
+
+        mx.random.seed(int(seed))
+        visual_latents = encode_visual_latents(self._video_vae, prepared, ctx=self.ctx)
+        visual_shapes: list[tuple[int, int, int]] = []
+        for latent in visual_latents:
+            arr = np.array(latent)
+            if arr.ndim == 5:
+                _b, _c, t, h, w = arr.shape
+            elif arr.ndim == 4:
+                _c, t, h, w = arr.shape
+            else:
+                raise RuntimeError(
+                    f"MiniMax-H3 Ref2VA visual latent must be 4D or 5D, got shape {arr.shape}."
+                )
+            visual_shapes.append((int(t), int(h), int(w)))
+
+        video_sched_tmp = MiniMaxH3Scheduler(
+            shift=float(getattr(self.config, "scheduler_shift", 12.0))
+        )
+        cond_video = noise_visual_rows(visual_latents, video_sched_tmp, ctx=self.ctx)
+
+        audio_encoded = encode_audio_rows(self._audio_vae, prepared, ctx=self.ctx)
+        audio_row_counts = [int(rows.shape[0]) for rows in audio_encoded]
+        audio_sched_tmp = MiniMaxH3Scheduler(
+            shift=float(getattr(self.config, "audio_scheduler_shift", 3.0))
+        )
+        cond_audio_parts: list[np.ndarray] = []
+        for rows in audio_encoded:
+            noise = mx.random.normal(rows.shape).astype(mx.float32)
+            noised = audio_sched_tmp.scale_noise(mx.array(rows), 1.0, noise)
+            run_eval(getattr(self.ctx, "eval", None), noised)
+            cond_audio_parts.append(np.array(noised.astype(mx.float32)))
+        cond_audio = (
+            np.concatenate(cond_audio_parts, axis=0)
+            if cond_audio_parts
+            else np.zeros((0, audio_channels), dtype=np.float32)
+        )
+
+        pack = build_ref2va_packed_sequence(
+            tags_np,
+            kinds,
+            [bool(item.has_audio) for item in prepared],
+            visual_shapes,
+            audio_row_counts,
+            num_latent_frames=num_latent_frames,
+            latent_height=latent_h,
+            latent_width=latent_w,
+            num_audio_latents=num_audio,
+            patch_size=patch,
+        )
+        layout = pack.layout
+        if int(cond_video.shape[0]) != int(layout.num_condition_video_rows):
+            raise RuntimeError(
+                f"Ref2VA visual rows {cond_video.shape[0]} != layout "
+                f"{layout.num_condition_video_rows}."
+            )
+        if int(cond_audio.shape[0]) != int(layout.num_condition_audio_rows):
+            raise RuntimeError(
+                f"Ref2VA audio rows {cond_audio.shape[0]} != layout "
+                f"{layout.num_condition_audio_rows}."
+            )
+
+        target_video = np.array(
+            mx.random.normal((num_target_video_rows, patch_dim)).astype(mx.float32),
+            dtype=np.float32,
+        )
+        target_audio = np.array(
+            mx.random.normal((num_target_audio_rows, audio_channels)).astype(mx.float32),
+            dtype=np.float32,
+        )
+        video_rows = np.concatenate([cond_video, target_video], axis=0)
+        audio_rows = (
+            np.concatenate([cond_audio, target_audio], axis=0)
+            if cond_audio.size
+            else target_audio
+        )
+
+        veda_spec = ref2va_layout_spec(
+            layout.sequence_length,
+            [(span.start, span.grid) for span in pack.visual_spans],
+            pack.target_start,
+            pack.target_grid,
+        )
+        return self._joint_denoise_and_mux(
+            prompt_embeds=prompt_embeds,
+            layout=layout,
+            video_rows=video_rows,
+            audio_rows=audio_rows,
+            num_latent_frames=num_latent_frames,
+            latent_h=latent_h,
+            latent_w=latent_w,
+            num_audio=num_audio,
+            patch=patch,
+            video_channels=video_channels,
+            canvas_h=canvas_h,
+            canvas_w=canvas_w,
+            out_h=out_h,
+            out_w=out_w,
+            aligned_frames=aligned_frames,
+            seed=seed,
+            steps=steps,
+            output_path=output_path,
+            on_log=on_log,
+            on_progress=on_progress,
+            veda_spec=veda_spec,
+            log_label="Ref2VA",
         )
 
     def _generate_after_turbo(
@@ -458,7 +624,6 @@ class MinimaxH3MlxGenerator:
             patch_size=patch,
             keyframe_anchors=tuple(anchors),
         )
-        self._bind_veda(layout, num_latent_frames, latent_h, latent_w, patch, on_log)
 
         video_channels = int(getattr(self.config, "latent_channels", 24))
         audio_channels = int(getattr(self.config, "audio_latent_channels", 32))
@@ -500,6 +665,59 @@ class MinimaxH3MlxGenerator:
             dtype=np.float32,
         )
 
+        return self._joint_denoise_and_mux(
+            prompt_embeds=prompt_embeds,
+            layout=layout,
+            video_rows=video_rows,
+            audio_rows=audio_rows,
+            num_latent_frames=num_latent_frames,
+            latent_h=latent_h,
+            latent_w=latent_w,
+            num_audio=num_audio,
+            patch=patch,
+            video_channels=video_channels,
+            canvas_h=canvas_h,
+            canvas_w=canvas_w,
+            out_h=out_h,
+            out_w=out_w,
+            aligned_frames=aligned_frames,
+            seed=seed,
+            steps=steps,
+            output_path=output_path,
+            on_log=on_log,
+            on_progress=on_progress,
+            veda_spec=None,
+            log_label="FL2VA",
+        )
+
+    def _joint_denoise_and_mux(
+        self,
+        *,
+        prompt_embeds: Any,
+        layout: P.MiniMaxH3PackedSequence,
+        video_rows: np.ndarray,
+        audio_rows: np.ndarray,
+        num_latent_frames: int,
+        latent_h: int,
+        latent_w: int,
+        num_audio: int,
+        patch: tuple[int, int, int],
+        video_channels: int,
+        canvas_h: int,
+        canvas_w: int,
+        out_h: int,
+        out_w: int,
+        aligned_frames: int,
+        seed: int,
+        steps: int,
+        output_path: str,
+        on_log: Any | None,
+        on_progress: Any | None,
+        veda_spec: Any | None,
+        log_label: str,
+    ) -> str:
+        assert self._dit is not None
+        num_cond_rows = int(layout.num_condition_video_rows)
         video_shift = float(
             (self._bundle_cfg or {}).get("sigma_shift_scales", {}).get("video")
             or getattr(self.config, "scheduler_shift", 12.0)
@@ -530,9 +748,17 @@ class MinimaxH3MlxGenerator:
             np.array(audio_sched.timesteps),
             keyframe_noise=P.MINIMAX_H3_KEYFRAME_NOISE_AUG,
         )
-        assert self._dit is not None
-        if active_layers < len(self._dit.blocks):
-            self._dit.set_active_layers(active_layers)
+        # Trim first so Veda bind compares the predictor to the layers that actually run.
+        self._dit.set_active_layers(active_layers)
+        self._bind_veda(
+            layout,
+            num_latent_frames,
+            latent_h,
+            latent_w,
+            patch,
+            on_log,
+            veda_spec=veda_spec,
+        )
         clip_cache = self._dit.prepare_clip(
             encoder_hidden_states=prompt_embeds,
             position_ids=position_ids,
@@ -565,7 +791,7 @@ class MinimaxH3MlxGenerator:
         self._log(
             on_log,
             "info",
-            f"MiniMax-H3 denoise {num_evals} steps @ {canvas_w}x{canvas_h}"
+            f"MiniMax-H3 {log_label} denoise {num_evals} steps @ {canvas_w}x{canvas_h}"
             + (f" (internal; output {out_w}x{out_h})" if (out_w, out_h) != (canvas_w, canvas_h) else "")
             + f", {aligned_frames} frames, seed={seed}",
         )

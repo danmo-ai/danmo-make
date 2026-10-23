@@ -330,11 +330,12 @@ def apply_minimax_h3_turbo_lora(
     ctx: Any,
     on_log: Callable[[str, str], None] | None = None,
 ) -> Callable[[], None] | None:
-    """Apply turbo LoRA when ``h3_turbo`` or a compatible adapter is present."""
-    use_turbo = bool(getattr(config, "h3_turbo", False)) or adapters_include_h3_turbo(
-        adapters or (), registry
-    )
-    if not use_turbo:
+    """Apply turbo LoRA when ``config.h3_turbo`` is set.
+
+    Adapters enable turbo via ``apply_adapter_prepare`` (sets ``config.h3_turbo``).
+    An explicit request ``h3_turbo=false`` clears that flag after prepare and wins here.
+    """
+    if not bool(getattr(config, "h3_turbo", False)):
         return None
 
     strength = 1.0

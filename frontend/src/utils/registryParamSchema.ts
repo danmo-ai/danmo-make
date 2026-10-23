@@ -361,8 +361,11 @@ export function strengthToSourceFidelity(strength: unknown, fallback = 0.4): num
 /** Enum inference options declared in models_registry (Composer advanced panel). */
 export const COMPOSER_INFERENCE_ENUM_KEYS = ['teacache_mode', 'lemica_mode'] as const;
 
-/** Video composer: TeaCache only (LeMiCa is image Z-Image specific). */
-export const VIDEO_INFERENCE_ENUM_KEYS = ['teacache_mode', 'h3_veda'] as const;
+/** Video composer generic enum loop (TeaCache). H3 Veda is a dedicated mutex group. */
+export const VIDEO_INFERENCE_ENUM_KEYS = ['teacache_mode'] as const;
+
+/** Still submitted on create/edit when the model declares them. */
+export const VIDEO_H3_INFERENCE_ENUM_KEYS = ['h3_veda'] as const;
 
 export function hasRegistryParam(
   parameters: Record<string, unknown> | undefined | null,

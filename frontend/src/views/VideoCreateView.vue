@@ -124,8 +124,11 @@
         :extra-reference-media="extraReferenceMedia"
         :show-bernini-references="showBerniniReferences"
         :bernini-ref-max="berniniRefMax"
+        :show-h3-ref2va="showH3Ref2VA"
+        :h3-media-refs="h3MediaRefMedia"
+        :h3-ref-max="h3Ref2vaMax"
         :current-model-config="currentModelConfig"
-        :compatible-loras="compatibleLoras"
+        :compatible-loras="composerCompatibleLoras"
         :model-not-ready="selectedModelNotReady"
         :model-not-ready-name="currentModelDisplayName"
         :work-mode-options="videoWorkSegmentOptions"
@@ -136,6 +139,8 @@
         @remove-tail-reference="removeTailImage"
         @pick-extra-reference="showExtraRefPicker = true"
         @remove-extra-reference="removeExtraReference"
+        @pick-h3-reference="onPickH3Reference"
+        @remove-h3-reference="removeH3Reference"
         @model-change="onModelVersionChange"
         @reset-defaults="resetToDefaults"
         @go-download="goToDownload"
@@ -186,6 +191,15 @@
       accept-kind="image"
       :recent-gallery="recentStartImages"
       @pick="onExtraRefPick"
+    />
+  </DqDialog>
+
+  <!-- MiniMax-H3 Ref2VA references -->
+  <DqDialog v-model:open="showH3RefPicker" :title="h3RefPickerTitle" width="70%">
+    <AssetPicker
+      :accept-kind="h3RefPickKind"
+      :recent-gallery="recentStartImages"
+      @pick="onH3RefPick"
     />
   </DqDialog>
 
@@ -291,6 +305,7 @@ import {
   pickClosestResolutionPreset,
   pickResolutionForModel,
   VIDEO_INFERENCE_ENUM_KEYS,
+  VIDEO_H3_INFERENCE_ENUM_KEYS,
   appendActiveEnumFields,
 } from '@/utils/registryParamSchema';
 import {
@@ -302,13 +317,17 @@ import {
   animateReferenceAcceptKind,
   berniniMaxReferenceImages,
   galleryPathIsVideo,
+  H3_REF2VA_MAX_REFERENCES,
   supportsBerniniReferenceImages,
+  supportsH3Ref2VA,
   videoRequiresSourceVideo,
   videoSupportsVideoEdit,
 } from '@/utils/videoEditSource';
 import {
   applyLoraComposeOverrides,
+  filterOutH3TurboLoras,
   findCompatibleLora,
+  isH3TurboLora,
   type CompatibleLoraRow,
 } from '@/utils/loraAdapterMeta';
 
@@ -395,6 +414,7 @@ const params = reactive({
   lora_scale: 1.0,
   teacache_mode: 'auto',
   h3_veda: 'off',
+  h3_turbo: false,
 });
 
 const selectedModelVersion = ref('');
@@ -597,7 +617,12 @@ function onCanvasComposerRestore(snapshot: {
   if (snapshot.title != null) params.title = snapshot.title;
   if (snapshot.negative_prompt != null) params.negative_prompt = snapshot.negative_prompt;
   if (snapshot.seed != null) params.seed = snapshot.seed;
-  if (snapshot.mode === 'create' || snapshot.mode === 'animate' || snapshot.mode === 'edit') {
+  if (
+    snapshot.mode === 'create'
+    || snapshot.mode === 'animate'
+    || snapshot.mode === 'edit'
+    || snapshot.mode === 'ref2va'
+  ) {
     videoWorkMode.value = snapshot.mode;
   } else if (snapshot.mode === 'upscale') {
     videoWorkMode.value = 'create';
@@ -1050,6 +1075,74 @@ watch(
 const showAssetPicker = ref(false);
 const showTailAssetPicker = ref(false);
 const showExtraRefPicker = ref(false);
+const showH3RefPicker = ref(false);
+const h3RefPickKind = ref<'image' | 'video' | 'audio'>('image');
+type H3MediaRefRow = { kind: 'image' | 'video' | 'audio'; path: string; previewUrl: string };
+const h3MediaRefs = ref<H3MediaRefRow[]>([]);
+const h3Ref2vaMax = H3_REF2VA_MAX_REFERENCES;
+
+const showH3Ref2VA = computed(() => {
+  return (
+    videoWorkMode.value === 'ref2va' &&
+    supportsH3Ref2VA(currentModelConfig.value?.parameters as Record<string, unknown> | undefined)
+  );
+});
+
+const h3MediaRefMedia = computed(() => h3MediaRefs.value);
+
+const h3RefPickerTitle = computed(() => {
+  if (h3RefPickKind.value === 'video') return $tt('create.h3AddRefVideo');
+  if (h3RefPickKind.value === 'audio') return $tt('create.h3AddRefAudio');
+  return $tt('create.h3AddRefImage');
+});
+
+function onPickH3Reference(kind: 'image' | 'video' | 'audio') {
+  if (h3MediaRefs.value.length >= h3Ref2vaMax) {
+    toast.warning($tt('video.berniniRefMax', { n: h3Ref2vaMax }));
+    return;
+  }
+  h3RefPickKind.value = kind;
+  showH3RefPicker.value = true;
+}
+
+function onH3RefPick(payload: { path: string; previewUrl: string }) {
+  if (h3MediaRefs.value.length >= h3Ref2vaMax) {
+    showH3RefPicker.value = false;
+    return;
+  }
+  if (h3MediaRefs.value.some((r) => r.path === payload.path && r.kind === h3RefPickKind.value)) {
+    showH3RefPicker.value = false;
+    return;
+  }
+  h3MediaRefs.value.push({
+    kind: h3RefPickKind.value,
+    path: payload.path,
+    previewUrl: payload.previewUrl || '',
+  });
+  showH3RefPicker.value = false;
+}
+
+function removeH3Reference(index: number) {
+  h3MediaRefs.value = h3MediaRefs.value.filter((_, i) => i !== index);
+}
+
+async function resolveH3MediaReferences(): Promise<Array<{ kind: string; asset_id: string }>> {
+  const out: Array<{ kind: string; asset_id: string }> = [];
+  for (const row of h3MediaRefs.value) {
+    let assetId = '';
+    if (row.path.startsWith('asset:')) {
+      assetId = row.path.slice('asset:'.length);
+    } else {
+      const blob = await api.gen.urlToBlob(row.previewUrl || bindVideoAssetFromPath(row.path).previewUrl);
+      const name =
+        row.kind === 'audio' ? 'ref.wav' : row.kind === 'video' ? 'ref.mp4' : 'ref.png';
+      const up = await api.gen.uploadAsset(new File([blob], name, { type: blob.type || 'application/octet-stream' }));
+      assetId = (up as { id: string }).id;
+    }
+    out.push({ kind: row.kind, asset_id: assetId });
+  }
+  return out;
+}
 
 function removeReference() {
   if (videoWorkMode.value === 'edit') {
@@ -1289,10 +1382,15 @@ const modelsDetailedStatus = ref<Record<string, any>>({});
 
 const compatibleLoras = ref<CompatibleLoraRow[]>([]);
 
+/** Turbo distill is selected via memory-mode, not the generic LoRA list. */
+const composerCompatibleLoras = computed(() => filterOutH3TurboLoras(compatibleLoras.value));
+
+const h3TurboSavedParams = ref<{ steps: number; guide_scale: number } | null>(null);
+
 function syncVideoLoraSelection() {
   if (!params.lora) return;
-  const row = findCompatibleLora(compatibleLoras.value, params.lora);
-  if (!row) {
+  const row = findCompatibleLora(composerCompatibleLoras.value, params.lora);
+  if (!row || isH3TurboLora(row)) {
     params.lora = '';
     return;
   }
@@ -1302,10 +1400,23 @@ function syncVideoLoraSelection() {
 function buildVideoAdapters() {
   const adapters: { id: string; weight: number }[] = [];
   if (!params.lora) return adapters;
-  const row = findCompatibleLora(compatibleLoras.value, params.lora);
-  if (!row) return adapters;
+  const row = findCompatibleLora(composerCompatibleLoras.value, params.lora);
+  if (!row || isH3TurboLora(row)) return adapters;
   adapters.push({ id: String(params.lora), weight: Number(params.lora_scale) || 1.0 });
   return adapters;
+}
+
+function appendH3InferenceFields(body: Record<string, unknown>) {
+  const parameters = currentModelConfig.value?.parameters as Record<string, unknown> | undefined;
+  appendActiveEnumFields(
+    body,
+    params as Record<string, unknown>,
+    VIDEO_H3_INFERENCE_ENUM_KEYS,
+    parameters,
+  );
+  if (parameters && Object.prototype.hasOwnProperty.call(parameters, 'h3_turbo')) {
+    body.h3_turbo = Boolean(params.h3_turbo);
+  }
 }
 
 const loadCompatibleLoras = async () => {
@@ -1363,6 +1474,11 @@ const videoWorkSegmentOptions = computed(() => {
   if (allVersions.value.some((v) => videoSupportsAnimate(v.actions || {}))) {
     opts.push({ label: $tt('video.modeAnimate'), value: 'animate' });
   }
+  if (
+    supportsH3Ref2VA(currentModelConfig.value?.parameters as Record<string, unknown> | undefined)
+  ) {
+    opts.push({ label: $tt('create.h3Ref2vaMode'), value: 'ref2va' });
+  }
   if (allVersions.value.some((v) => videoVersionSupportsEdit(v))) {
     opts.push({ label: $tt('video.modeEdit'), value: 'edit' });
   }
@@ -1383,6 +1499,10 @@ const videoVersionsForMode = computed(() => {
     }
     if (videoWorkMode.value === 'edit') {
       return videoVersionSupportsEdit(v);
+    }
+    if (videoWorkMode.value === 'ref2va') {
+      const cfg = modelRegistry.value[v.modelKey] as { parameters?: Record<string, unknown> } | undefined;
+      return videoSupportsCreate(acts) && supportsH3Ref2VA(cfg?.parameters);
     }
     return videoSupportsCreate(acts);
   });
@@ -1659,9 +1779,12 @@ const loadModelDefaults = () => {
   if (p.num_frames) params.num_frames = p.num_frames.default;
   if (p.fps) params.fps = p.fps.default;
   if (p.lora_scale?.default != null) params.lora_scale = p.lora_scale.default;
+  h3TurboSavedParams.value = null;
   applyDefaults(p, params as Record<string, unknown>);
   params.seed = '';
   params.lora = '';
+  params.h3_turbo = Boolean(p.h3_turbo?.default);
+  if (!params.h3_veda) params.h3_veda = 'off';
   syncComposerPickersFromParams();
 };
 
@@ -1691,10 +1814,11 @@ const hasCustomParams = computed(() => {
   if (params.seed) return true;
   if (params.lora) return true;
   if (p.lora_scale && params.lora_scale !== p.lora_scale.default) return true;
-  for (const key of VIDEO_INFERENCE_ENUM_KEYS) {
+  for (const key of [...VIDEO_INFERENCE_ENUM_KEYS, ...VIDEO_H3_INFERENCE_ENUM_KEYS]) {
     const spec = p[key as keyof typeof p] as { default?: unknown } | undefined;
     if (spec && params[key as keyof typeof params] !== spec.default) return true;
   }
+  if (p.h3_turbo && Boolean(params.h3_turbo) !== Boolean(p.h3_turbo.default)) return true;
   return false;
 });
 
@@ -1992,6 +2116,16 @@ const startGeneration = async (options: StartGenerationOptions = {}) => {
     toast.warning($tt('video.needEditSource'));
     return;
   }
+  if (videoWorkMode.value === 'ref2va') {
+    if (!h3MediaRefs.value.length) {
+      toast.warning($tt('create.h3Ref2vaNeedRefs'));
+      return;
+    }
+    if (h3MediaRefs.value.every((r) => r.kind === 'audio')) {
+      toast.warning($tt('create.h3Ref2vaAudioOnly'));
+      return;
+    }
+  }
 
   if (!queueOnly) {
     generating.value = true;
@@ -2009,7 +2143,36 @@ const startGeneration = async (options: StartGenerationOptions = {}) => {
     const meta = buildCanvasMeta();
     const modelStr = params.version ? `${params.model}:${params.version}` : params.model;
     let submitRes: any;
-    if (videoWorkMode.value === 'animate' || videoWorkMode.value === 'edit') {
+    if (videoWorkMode.value === 'ref2va') {
+      const body: Record<string, unknown> = {
+        model: modelStr,
+        title: String(params.title || '').trim(),
+        prompt: params.prompt,
+        negative_prompt: params.negative_prompt || '',
+        size: `${params.width}x${params.height}`,
+        num_frames: params.num_frames,
+        fps: params.fps || 16,
+        steps: params.steps,
+        guidance: params.guide_scale,
+        shift: params.shift || undefined,
+        seed: params.seed ? parseInt(params.seed, 10) : null,
+        metadata: { ...meta },
+        priority: 'normal',
+        media_references: await resolveH3MediaReferences(),
+      };
+      const adapters = buildVideoAdapters();
+      if (adapters.length > 0) {
+        body.adapters = adapters;
+      }
+      appendActiveEnumFields(
+        body,
+        params as Record<string, unknown>,
+        VIDEO_INFERENCE_ENUM_KEYS,
+        currentModelConfig.value?.parameters as Record<string, unknown> | undefined,
+      );
+      appendH3InferenceFields(body);
+      submitRes = await api.gen.createVideoGeneration(body);
+    } else if (videoWorkMode.value === 'animate' || videoWorkMode.value === 'edit') {
       const refPath = videoWorkMode.value === 'edit'
         ? sourceVideoPath.value
         : resolveAnimateSourcePath();
@@ -2080,6 +2243,7 @@ const startGeneration = async (options: StartGenerationOptions = {}) => {
         VIDEO_INFERENCE_ENUM_KEYS,
         currentModelConfig.value?.parameters as Record<string, unknown> | undefined,
       );
+      appendH3InferenceFields(animateBody);
       submitRes = await api.gen.createVideoEdit(animateBody);
     } else {
       const body: Record<string, unknown> = {
@@ -2111,6 +2275,7 @@ const startGeneration = async (options: StartGenerationOptions = {}) => {
         VIDEO_INFERENCE_ENUM_KEYS,
         currentModelConfig.value?.parameters as Record<string, unknown> | undefined,
       );
+      appendH3InferenceFields(body);
       submitRes = await api.gen.createVideoGeneration(body);
     }
     if (queueOnly) {
@@ -2171,10 +2336,21 @@ function onGallerySelect(item: GalleryItem) {
 watch(videoWorkMode, (mode) => {
   if (mode === 'animate') {
     clearAnimateVideoReference();
+    h3MediaRefs.value = [];
   } else if (mode === 'edit') {
     clearAnimateImageReference();
     tailImageSrc.value = '';
     tailImagePath.value = '';
+    h3MediaRefs.value = [];
+  } else if (mode === 'ref2va') {
+    clearAnimateImageReference();
+    clearAnimateVideoReference();
+    tailImageSrc.value = '';
+    tailImagePath.value = '';
+    extraRefPaths.value = [];
+    extraRefPreviews.value = [];
+  } else {
+    h3MediaRefs.value = [];
   }
 
   const cfg = currentModelConfig.value;
@@ -2184,6 +2360,8 @@ watch(videoWorkMode, (mode) => {
     ok = videoSupportsAnimate(acts);
   } else if (mode === 'edit') {
     ok = videoVersionSupportsEdit({ modelKey: params.model, actions: acts });
+  } else if (mode === 'ref2va') {
+    ok = videoSupportsCreate(acts) && supportsH3Ref2VA(cfg?.parameters as Record<string, unknown>);
   } else {
     ok = videoSupportsCreate(acts);
   }
@@ -2225,12 +2403,41 @@ watch(
   () => params.lora,
   (loraId) => {
     if (!loraId) return;
-    const row = findCompatibleLora(compatibleLoras.value, loraId);
-    if (!row) {
+    const row = findCompatibleLora(composerCompatibleLoras.value, loraId);
+    if (!row || isH3TurboLora(row)) {
       params.lora = '';
       return;
     }
     applyLoraComposeOverrides(params as Record<string, unknown>, row);
+  },
+);
+
+watch(
+  () => params.h3_turbo,
+  (on, was) => {
+    const parameters = currentModelConfig.value?.parameters as
+      | Record<string, { default?: unknown }>
+      | undefined;
+    if (!parameters || !Object.prototype.hasOwnProperty.call(parameters, 'h3_turbo')) {
+      return;
+    }
+    if (on && !was) {
+      h3TurboSavedParams.value = {
+        steps: params.steps,
+        guide_scale: params.guide_scale,
+      };
+      const defaultSteps = Number(parameters.steps?.default ?? 30);
+      if (params.steps === defaultSteps) {
+        params.steps = 8;
+        params.guide_scale = 1.0;
+      }
+      return;
+    }
+    if (!on && was && h3TurboSavedParams.value) {
+      params.steps = h3TurboSavedParams.value.steps;
+      params.guide_scale = h3TurboSavedParams.value.guide_scale;
+      h3TurboSavedParams.value = null;
+    }
   },
 );
 
