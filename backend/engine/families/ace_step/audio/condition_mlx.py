@@ -42,7 +42,9 @@ def _pack_sequences(
     hidden_cat = mx.concatenate([hidden1, hidden2], axis=1)
     mask_cat = mx.concatenate([mask1, mask2], axis=1)
     bsz, length, dim = hidden_cat.shape
-    sort_idx = mx.argsort(-mask_cat, axis=1)
+    # Upstream uses a stable descending sort; the position tie-breaker keeps that order.
+    order = mx.arange(length, dtype=mx.float32)[None, :]
+    sort_idx = mx.argsort((mask_cat <= 0).astype(mx.float32) * length + order, axis=1)
     idx_exp = mx.expand_dims(sort_idx, axis=-1)
     idx_exp = mx.broadcast_to(idx_exp, (bsz, length, dim))
     hidden_left = mx.take_along_axis(hidden_cat, idx_exp, axis=1)
@@ -219,6 +221,7 @@ class _TimbreEncoderMLX(nn.Module):
         self.rotary_emb = _ZImageEncoderRotaryEmbedding(
             dim=config["head_dim"], base=config["rope_theta"]
         )
+        self.special_token = mx.zeros((1, 1, hidden))
         layer_types: Sequence[str] = config["layer_types"]
         n_layers = config["num_timbre_encoder_hidden_layers"]
         self.layers = [
@@ -237,8 +240,13 @@ class _TimbreEncoderMLX(nn.Module):
 
     def __call__(self, refer_packed: mx.array, refer_order: mx.array) -> Tuple[mx.array, mx.array]:
         del refer_order  # text2music uses one reference per batch row
-        bsz, seq_len, _ = refer_packed.shape
+        bsz = int(refer_packed.shape[0])
         hidden_states = self.embed_tokens(refer_packed)
+        special = mx.broadcast_to(
+            self.special_token.astype(hidden_states.dtype), (bsz, 1, int(hidden_states.shape[-1]))
+        )
+        hidden_states = mx.concatenate([special, hidden_states], axis=1)
+        seq_len = int(hidden_states.shape[1])
         position_ids = build_position_ids_2d(mx, bsz, seq_len, dtype=mx.int32)
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
         attn_mask = mx.ones((bsz, seq_len), dtype=mx.float32)
@@ -383,6 +391,10 @@ def load_condition_encoder_mlx(
         )
     else:
         weights = encoder_weights
+    if not any(key == "timbre_encoder.special_token" for key, _ in weights):
+        raise RuntimeError(
+            f"ACE-Step checkpoint under {dit_bundle} lacks encoder.timbre_encoder.special_token"
+        )
     model.load_weights(weights, strict=False)
     run_eval(eval_fn, model.parameters())
     return model
