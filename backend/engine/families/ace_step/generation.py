@@ -6,11 +6,12 @@ Pipeline and engine must import from this module only, not from ``generation_*``
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Protocol, Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 
 import numpy as np
 
@@ -641,6 +642,91 @@ class AceStepPreparedRequest:
     resource_tier: str = ""
     lm_quantize_bits: Optional[int] = None
     log_events: List[Tuple[str, str]] = field(default_factory=list)
+    sampler_kwargs: Dict[str, Any] = field(default_factory=dict)
+
+
+DCW_MODES = ("low", "high", "double", "pix")
+
+
+@dataclass(frozen=True)
+class AceStepDcwSettings:
+    """Differential Correction in Wavelet domain (upstream ``dcw_*`` sampler knobs)."""
+
+    enabled: bool
+    mode: str = "double"
+    scaler: float = 0.05
+    high_scaler: float = 0.02
+
+    def sampler_kwargs(self) -> Dict[str, Any]:
+        return {
+            "dcw_enabled": self.enabled,
+            "dcw_mode": self.mode,
+            "dcw_scaler": self.scaler,
+            "dcw_high_scaler": self.high_scaler,
+        }
+
+    def describe(self) -> str:
+        if not self.enabled:
+            return "DCW off"
+        return (
+            f"DCW {self.mode} (haar, scaler={self.scaler:g}, "
+            f"high_scaler={self.high_scaler:g})"
+        )
+
+
+def _metadata_bool(raw: Any, key: str) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    raise RuntimeError(f"ACE-Step metadata {key}={raw!r} is not a boolean")
+
+
+def _metadata_float(raw: Any, key: str) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"ACE-Step metadata {key}={raw!r} is not a number") from exc
+    if not math.isfinite(value) or value < 0.0 or value > 1.0:
+        raise RuntimeError(f"ACE-Step metadata {key}={value} must be within [0, 1]")
+    return value
+
+
+def resolve_dcw_settings(
+    metadata: Optional[Dict[str, Any]],
+    config: AceStepConfig,
+    *,
+    is_turbo: bool,
+) -> AceStepDcwSettings:
+    """``metadata.dcw_*`` overrides on top of ``AceStepConfig``; enabled defaults to turbo."""
+    meta = metadata or {}
+    enabled = (
+        _metadata_bool(meta["dcw_enabled"], "dcw_enabled")
+        if meta.get("dcw_enabled") is not None
+        else bool(is_turbo)
+    )
+    mode = str(meta.get("dcw_mode") or config.dcw_mode).strip().lower()
+    if mode not in DCW_MODES:
+        raise RuntimeError(f"ACE-Step dcw_mode={mode!r}; expected one of {', '.join(DCW_MODES)}")
+    wavelet = str(meta.get("dcw_wavelet") or "haar").strip().lower()
+    if wavelet != "haar":
+        raise RuntimeError(
+            f"ACE-Step dcw_wavelet={wavelet!r} is not supported on MLX; only 'haar' is implemented"
+        )
+    scaler = (
+        _metadata_float(meta["dcw_scaler"], "dcw_scaler")
+        if meta.get("dcw_scaler") is not None
+        else float(config.dcw_scaler)
+    )
+    high_scaler = (
+        _metadata_float(meta["dcw_high_scaler"], "dcw_high_scaler")
+        if meta.get("dcw_high_scaler") is not None
+        else float(config.dcw_high_scaler)
+    )
+    return AceStepDcwSettings(enabled=enabled, mode=mode, scaler=scaler, high_scaler=high_scaler)
 
 
 def create_ace_step_generator(
@@ -845,6 +931,8 @@ def prepare_music_request(
                 f"({getattr(bundle_root, 'name', bundle_root)})",
             )
         )
+    dcw = resolve_dcw_settings(request.metadata, config, is_turbo=is_turbo)
+    events.append(("info", f"ACE-Step sampler: {dcw.describe()}"))
 
     return AceStepPreparedRequest(
         lyrics=lyrics,
@@ -859,6 +947,7 @@ def prepare_music_request(
         resource_tier=policy.tier,
         lm_quantize_bits=policy.lm_quantize_bits,
         log_events=events,
+        sampler_kwargs=dcw.sampler_kwargs(),
     )
 
 
@@ -893,6 +982,7 @@ def run_cover_edit(
     dit_subdir = ace_step_dit_subdir_for_model(request.model)
     is_turbo = resolve_bundle_is_turbo(bundle_root, dit_subdir=dit_subdir)
     shift = float(config.turbo_shift if is_turbo else config.default_shift)
+    dcw = resolve_dcw_settings(request.metadata, config, is_turbo=is_turbo)
     ref_wf = load_reference_waveform(source_path)
     seed = (
         request.seed
@@ -929,6 +1019,7 @@ def run_cover_edit(
         f"strength={request.source_fidelity}",
         f"seed={seed}",
         f"n={n}",
+        dcw.describe(),
     ]
     if lyrics != "[Instrumental]":
         log_parts.append(f"lyrics={len(lyrics)}chars lang={vocal_lang}")
@@ -974,6 +1065,7 @@ def run_cover_edit(
             duration=cover_duration,
             steps=cover_steps,
             guidance=cover_guidance,
+            **dcw.sampler_kwargs(),
         )
         quality = getattr(generator, "last_quality", None)
         waveforms.append(waveform)

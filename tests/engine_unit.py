@@ -2520,6 +2520,7 @@ class AceStepGenerationTests(unittest.TestCase):
             self.assertEqual(prepared.vocal_language, "zh")
             self.assertEqual(prepared.steps, 8)
             self.assertEqual(prepared.shift, 3.0)
+            self.assertTrue(prepared.sampler_kwargs["dcw_enabled"])
             self.assertTrue(prepared.is_turbo)
             self.assertEqual(prepared.duration, 10.0)
 
@@ -3198,6 +3199,84 @@ class AceStepGenerationTests(unittest.TestCase):
         legacy = get_timestep_schedule(shift=1.0)
         self.assertEqual(len(legacy), 8)
         self.assertEqual(legacy, SHIFT_TIMESTEPS[1.0])
+
+    def test_ace_step_dcw_haar_matches_numpy_reference(self) -> None:
+        import mlx.core as mx
+        import numpy as np
+
+        from backend.engine.families.ace_step.generation_mlx import apply_dcw_mlx
+
+        def np_haar(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            if x.shape[1] % 2:
+                x = np.concatenate([x, np.zeros_like(x[:, :1])], axis=1)
+            return (x[:, 0::2] + x[:, 1::2]) / np.sqrt(2), (x[:, 0::2] - x[:, 1::2]) / np.sqrt(2)
+
+        def np_ihaar(lo: np.ndarray, hi: np.ndarray, n: int) -> np.ndarray:
+            out = np.empty((lo.shape[0], lo.shape[1] * 2, lo.shape[2]), dtype=lo.dtype)
+            out[:, 0::2] = (lo + hi) / np.sqrt(2)
+            out[:, 1::2] = (lo - hi) / np.sqrt(2)
+            return out[:, :n]
+
+        rng = np.random.default_rng(3)
+        for t_len in (10, 11):
+            x = rng.standard_normal((1, t_len, 4)).astype(np.float32)
+            y = rng.standard_normal((1, t_len, 4)).astype(np.float32)
+            t = 0.8
+            xl, xh = np_haar(x)
+            yl, yh = np_haar(y)
+            xl = xl + t * 0.05 * (xl - yl)
+            xh = xh + (1 - t) * 0.02 * (xh - yh)
+            want = np_ihaar(xl, xh, t_len)
+            got = apply_dcw_mlx(
+                mx.array(x), mx.array(y), t_curr=t, mode="double", scaler=0.05, high_scaler=0.02,
+            )
+            np.testing.assert_allclose(np.array(got), want, atol=1e-6)
+            same = apply_dcw_mlx(
+                mx.array(x), mx.array(x), t_curr=t, mode="double", scaler=0.05, high_scaler=0.02,
+            )
+            np.testing.assert_allclose(np.array(same), x, atol=1e-6)
+        with self.assertRaises(ValueError):
+            apply_dcw_mlx(mx.array(x), mx.array(y), t_curr=0.5, mode="bogus", scaler=0.05, high_scaler=0.02)
+
+    def test_ace_step_resolve_dcw_settings(self) -> None:
+        from backend.engine.config.model_configs import AceStepConfig
+        from backend.engine.families.ace_step.generation import resolve_dcw_settings
+
+        cfg = AceStepConfig()
+        turbo = resolve_dcw_settings({}, cfg, is_turbo=True)
+        self.assertTrue(turbo.enabled)
+        self.assertEqual((turbo.mode, turbo.scaler, turbo.high_scaler), ("double", 0.05, 0.02))
+        self.assertFalse(resolve_dcw_settings(None, cfg, is_turbo=False).enabled)
+        sft_on = resolve_dcw_settings(
+            {"dcw_enabled": "true", "dcw_mode": "low", "dcw_scaler": 0.1}, cfg, is_turbo=False,
+        )
+        self.assertTrue(sft_on.enabled)
+        self.assertEqual(sft_on.mode, "low")
+        self.assertEqual(sft_on.sampler_kwargs()["dcw_scaler"], 0.1)
+        self.assertFalse(resolve_dcw_settings({"dcw_enabled": False}, cfg, is_turbo=True).enabled)
+        for bad in ({"dcw_wavelet": "db4"}, {"dcw_mode": "wide"}, {"dcw_scaler": 2}, {"dcw_enabled": "maybe"}):
+            with self.assertRaises(RuntimeError):
+                resolve_dcw_settings(bad, cfg, is_turbo=True)
+
+    def test_ace_step_vae_tile_windows(self) -> None:
+        from backend.engine.families.ace_step.generation import (
+            VAE_TILE_OVERLAP,
+            vae_tile_windows,
+        )
+
+        self.assertEqual(vae_tile_windows(512), [(0, 512, 0, 512)])
+        self.assertEqual(vae_tile_windows(150, chunk_size=32), [(0, 150, 0, 150)])
+        windows = vae_tile_windows(3751)
+        self.assertEqual(windows[0][2], 0)
+        self.assertEqual(windows[-1][3], 3751)
+        for (_, _, _, prev_end), (_, _, start, _) in zip(windows, windows[1:]):
+            self.assertEqual(prev_end, start)
+        for win_start, win_end, core_start, core_end in windows:
+            self.assertLessEqual(win_end - win_start, 512)
+            if core_start > 0:
+                self.assertEqual(core_start - win_start, VAE_TILE_OVERLAP)
+            if core_end < 3751:
+                self.assertEqual(win_end - core_end, VAE_TILE_OVERLAP)
 
     def test_ace_step_nonperiodic_src_latents_no_tile(self) -> None:
         import numpy as np

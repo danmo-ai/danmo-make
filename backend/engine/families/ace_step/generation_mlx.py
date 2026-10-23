@@ -6,6 +6,7 @@ Conditioning, DiT diffusion, and VAE decode all run on MLX.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -326,6 +327,10 @@ class AceStepMlxGenerator:
         instrumental: bool = False,
         lm_enabled: bool = True,
         lm_quantize_bits: Optional[int] = None,
+        dcw_enabled: bool = False,
+        dcw_mode: str = "double",
+        dcw_scaler: float = 0.05,
+        dcw_high_scaler: float = 0.02,
     ) -> np.ndarray:
         from backend.engine.families.ace_step.quality.quality_score import assess_generation_quality
 
@@ -569,6 +574,10 @@ class AceStepMlxGenerator:
                     array_fn=self._ctx.array,
                     randn_fn=getattr(self._ctx, "randn", None),
                     seeded_randn_fn=getattr(self._ctx, "seeded_randn", None),
+                    dcw_enabled=dcw_enabled,
+                    dcw_mode=dcw_mode,
+                    dcw_scaler=dcw_scaler,
+                    dcw_high_scaler=dcw_high_scaler,
                 )
                 latents = out["target_latents"]
                 collapsed, latent_cos, latent_diff = latents_collapsed_to_silence(
@@ -766,6 +775,10 @@ class AceStepMlxGenerator:
         audio_cover_strength: float = 1.0,
         steps: int = 50,
         guidance: float = 3.0,
+        dcw_enabled: bool = False,
+        dcw_mode: str = "double",
+        dcw_scaler: float = 0.05,
+        dcw_high_scaler: float = 0.02,
         **kwargs: Any,
     ) -> np.ndarray:
         del kwargs
@@ -937,6 +950,10 @@ class AceStepMlxGenerator:
             array_fn=self._ctx.array,
             randn_fn=getattr(self._ctx, "randn", None),
             seeded_randn_fn=getattr(self._ctx, "seeded_randn", None),
+            dcw_enabled=dcw_enabled,
+            dcw_mode=dcw_mode,
+            dcw_scaler=dcw_scaler,
+            dcw_high_scaler=dcw_high_scaler,
         )
         latents = out["target_latents"]
         latent_cos = latent_cosine_similarity(latents, src_latents_np)
@@ -1051,6 +1068,75 @@ def _apg_forward_mlx(
     return pred_cond + (guidance_scale - 1.0) * orthogonal
 
 
+_INV_SQRT2 = 1.0 / math.sqrt(2.0)
+
+
+def _haar_dwt_1d_mlx(x: mx.array) -> Tuple[mx.array, mx.array]:
+    """Single-level Haar DWT along T of ``[B, T, C]``; odd T is zero-padded (pytorch_wavelets ``mode='zero'``)."""
+    if int(x.shape[1]) % 2 == 1:
+        x = mx.concatenate([x, mx.zeros((x.shape[0], 1, x.shape[2]), dtype=x.dtype)], axis=1)
+    even = x[:, 0::2, :]
+    odd = x[:, 1::2, :]
+    return (even + odd) * _INV_SQRT2, (even - odd) * _INV_SQRT2
+
+
+def _haar_idwt_1d_mlx(low: mx.array, high: mx.array, out_t: int) -> mx.array:
+    even = (low + high) * _INV_SQRT2
+    odd = (low - high) * _INV_SQRT2
+    stacked = mx.stack([even, odd], axis=2)
+    return stacked.reshape(even.shape[0], -1, even.shape[2])[:, :out_t, :]
+
+
+def apply_dcw_mlx(
+    x_next: mx.array,
+    denoised: mx.array,
+    *,
+    t_curr: float,
+    mode: str,
+    scaler: float,
+    high_scaler: float,
+) -> mx.array:
+    """Upstream ``apply_mlx_dcw`` (Haar basis): push ``x_next`` bands away from the predicted clean sample.
+
+    Low band scales with ``t`` (strong at high noise), high band with ``1 - t``; ``pix`` applies the raw
+    scaler in sample space.
+    """
+    t = float(t_curr)
+    low_s = t * float(scaler)
+    high_s = (1.0 - t) * float(scaler)
+    double_high_s = (1.0 - t) * float(high_scaler)
+
+    if mode == "pix":
+        if float(scaler) == 0.0:
+            return x_next
+        return x_next + float(scaler) * (x_next - denoised)
+    if mode == "low":
+        if low_s == 0.0:
+            return x_next
+    elif mode == "high":
+        if high_s == 0.0:
+            return x_next
+    elif mode == "double":
+        if low_s == 0.0 and double_high_s == 0.0:
+            return x_next
+    else:
+        raise ValueError(f"Invalid dcw_mode={mode!r}; expected low, high, double or pix")
+
+    out_t = int(x_next.shape[1])
+    x_low, x_high = _haar_dwt_1d_mlx(x_next)
+    y_low, y_high = _haar_dwt_1d_mlx(denoised)
+    if mode == "low":
+        x_low = x_low + low_s * (x_low - y_low)
+    elif mode == "high":
+        x_high = x_high + high_s * (x_high - y_high)
+    else:
+        if low_s != 0.0:
+            x_low = x_low + low_s * (x_low - y_low)
+        if double_high_s != 0.0:
+            x_high = x_high + double_high_s * (x_high - y_high)
+    return _haar_idwt_1d_mlx(x_low, x_high, out_t)
+
+
 def mlx_align_lyric_timestamps(
     model: Any,
     *,
@@ -1116,6 +1202,10 @@ def mlx_generate_diffusion(
     array_fn: Optional[Callable[..., Any]] = None,
     randn_fn: Optional[Callable[..., Any]] = None,
     seeded_randn_fn: Optional[Callable[..., Any]] = None,
+    dcw_enabled: bool = False,
+    dcw_mode: str = "double",
+    dcw_scaler: float = 0.05,
+    dcw_high_scaler: float = 0.02,
 ) -> Dict[str, object]:
     """Run MLX flow-matching diffusion via L2 ``FlowMatchingInference``."""
     from backend.engine.inference import (
@@ -1207,6 +1297,32 @@ def mlx_generate_diffusion(
             return mx.concatenate(parts, axis=0)
         return seeded_random_normal(seeded_randn_fn, shape, int(seed))
 
+    dcw_active = bool(dcw_enabled) and (
+        float(dcw_scaler) != 0.0 or (dcw_mode == "double" and float(dcw_high_scaler) != 0.0)
+    )
+    if dcw_active:
+        logger.info(
+            "ACE-Step MLX DCW enabled (mode=%s, scaler=%.3f, high_scaler=%.3f, wavelet=haar)",
+            dcw_mode,
+            float(dcw_scaler),
+            float(dcw_high_scaler),
+        )
+
+    def _sampler_step(x: Any, v: Any, t_curr: float, t_next: float | None, step_idx: int) -> Any:
+        x_next = _euler_step(x, v, t_curr, t_next, step_idx)
+        if not dcw_active or t_next is None:
+            # Final step returns x0 == denoised, so the correction is identically zero.
+            return x_next
+        denoised = x - v * mx.full((bsz, 1, 1), t_curr)
+        return apply_dcw_mlx(
+            x_next,
+            denoised,
+            t_curr=t_curr,
+            mode=dcw_mode,
+            scaler=float(dcw_scaler),
+            high_scaler=float(dcw_high_scaler),
+        )
+
     def _euler_step(x: Any, v: Any, t_curr: float, t_next: float | None, step_idx: int) -> Any:
         if t_next is None:
             # Last step: use full timestep as dt
@@ -1234,7 +1350,7 @@ def mlx_generate_diffusion(
         flow=FlowMatchingSpec(
             timestep_schedule=t_schedule_list,
             init_noise_fn=_init_noise,
-            euler_step_fn=_euler_step,
+            euler_step_fn=_sampler_step,
             cache_init_fn=lambda: None if do_cfg else _CrossAttentionCache(),
             before_step_fn=_before_step if enc_hs_nc is not None else None,
         ),
@@ -1249,6 +1365,7 @@ def mlx_generate_diffusion(
     time_costs["num_steps"] = num_steps
     time_costs["guidance_scale"] = float(guidance_scale)
     time_costs["cfg_enabled"] = bool(do_cfg)
+    time_costs["dcw_enabled"] = bool(dcw_active)
 
     return {
         "target_latents": np.array(xt),
