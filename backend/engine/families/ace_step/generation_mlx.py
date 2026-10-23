@@ -655,6 +655,16 @@ class AceStepMlxGenerator:
                 near_silence=collapsed,
                 pmi_bonus=self.last_pmi.quality_bonus() if self.last_pmi is not None else 0.0,
             )
+            if not is_instrumental_lyrics(lyrics_use) and self.last_lyrics_capture is not None:
+                self.last_lyrics_capture.timestamps = self._align_lyrics(
+                    latents_np=np.asarray(latents, dtype=np.float32),
+                    encoder_hidden_states_np=enc_np,
+                    context_latents_np=ctx_np,
+                    lyric_token_ids=lyric_tok["input_ids"][0].tolist(),
+                    language=lang_use,
+                    infer_steps=infer_steps,
+                    total_duration_sec=max_latent_length * LATENT_HOP_SAMPLES / SAMPLE_RATE,
+                )
             return wf
 
         if lm_fmt is not None:
@@ -666,6 +676,70 @@ class AceStepMlxGenerator:
 
         _lm_stage()
         return _dit_stage(None)
+
+    def _align_lyrics(
+        self,
+        *,
+        latents_np: np.ndarray,
+        encoder_hidden_states_np: np.ndarray,
+        context_latents_np: np.ndarray,
+        lyric_token_ids: List[int],
+        language: str,
+        infer_steps: int,
+        total_duration_sec: float,
+    ) -> Any:
+        """Upstream ``get_lyric_timestamp``: one early-exit DiT pass → cross-attn → DTW.
+
+        Returns ``None`` (caller keeps the structure estimate, labelled as such) when the
+        checkpoint has no ``lyric_alignment_layers_config``.
+        """
+        from backend.engine.families.ace_step.vocals.lyrics_alignment import (
+            LYRIC_HEADER_TEMPLATE,
+            QWEN_ENDOFTEXT_ID,
+            parse_layers_config,
+        )
+
+        layers_config = parse_layers_config(
+            (self._model_config or {}).get("lyric_alignment_layers_config")
+        )
+        if layers_config is None:
+            logger.warning(
+                "ACE-Step: DiT config.json has no lyric_alignment_layers_config; "
+                "lyric timeline stays a structure estimate"
+            )
+            return None
+        header = LYRIC_HEADER_TEMPLATE.format(language=language)
+        start = len(self._text_tokenizer.encode(header, add_special_tokens=False))
+        try:
+            end = lyric_token_ids.index(QWEN_ENDOFTEXT_ID)
+        except ValueError:
+            end = len(lyric_token_ids)
+        pure_ids = lyric_token_ids[start:end]
+        if not pure_ids:
+            return None
+
+        t0 = time.time()
+        result = mlx_align_lyric_timestamps(
+            self._dit._model,
+            latents_np=latents_np,
+            encoder_hidden_states_np=encoder_hidden_states_np,
+            context_latents_np=context_latents_np,
+            lyric_range=(start, end),
+            lyric_token_ids=pure_ids,
+            layers_config=layers_config,
+            infer_steps=infer_steps,
+            total_duration_sec=total_duration_sec,
+            decode=lambda ids: self._text_tokenizer.decode(ids, skip_special_tokens=False),
+            eval_fn=self._ctx.eval,
+            array_fn=self._ctx.array,
+            seeded_randn_fn=getattr(self._ctx, "seeded_randn", None),
+        )
+        logger.info(
+            "ACE-Step lyric timeline aligned: %d lines in %.2fs",
+            len(result.segments),
+            time.time() - t0,
+        )
+        return result
 
     def _encode_reference_latents(self, reference_waveform: np.ndarray) -> np.ndarray:
         wf = np.asarray(reference_waveform, dtype=np.float32)
@@ -981,6 +1055,52 @@ def _apg_forward_mlx(
     )
     orthogonal = diff - mx.sum(diff * unit, axis=1, keepdims=True) * unit
     return pred_cond + (guidance_scale - 1.0) * orthogonal
+
+
+def mlx_align_lyric_timestamps(
+    model: Any,
+    *,
+    latents_np: np.ndarray,
+    encoder_hidden_states_np: np.ndarray,
+    context_latents_np: np.ndarray,
+    lyric_range: Tuple[int, int],
+    lyric_token_ids: List[int],
+    layers_config: Dict[int, List[int]],
+    infer_steps: int,
+    total_duration_sec: float,
+    decode: Callable[[List[int]], str],
+    seed: int = 42,
+    eval_fn: Optional[Callable[..., Any]] = None,
+    array_fn: Optional[Callable[..., Any]] = None,
+    seeded_randn_fn: Optional[Callable[..., Any]] = None,
+) -> Any:
+    """Re-noise final latents at ``t = 1/steps``, capture lyric cross-attention, run DTW."""
+    from backend.engine.families.ace_step.vocals.lyrics_alignment import align_lyrics_from_attention
+
+    if infer_steps <= 0:
+        raise ValueError(f"infer_steps must be positive, got {infer_steps}")
+    eval_fn = eval_fn or mx.eval
+    array_fn = array_fn or mx.array
+    pred = array_fn(np.asarray(latents_np, dtype=np.float32)[:1])
+    t_last = 1.0 / float(infer_steps)
+    noise = seeded_random_normal(seeded_randn_fn, tuple(pred.shape), int(seed))
+    xt = t_last * noise + (1.0 - t_last) * pred
+    probs = model.capture_cross_attention(
+        xt,
+        mx.full((1,), t_last, dtype=mx.float32),
+        array_fn(np.asarray(encoder_hidden_states_np, dtype=np.float32)[:1]),
+        array_fn(np.asarray(context_latents_np, dtype=np.float32)[:1]),
+        layers_config,
+    )
+    start, end = lyric_range
+    lyric_probs = probs[:, start:end, :]
+    eval_fn(lyric_probs)
+    return align_lyrics_from_attention(
+        np.array(lyric_probs, dtype=np.float32),
+        lyric_token_ids,
+        total_duration_sec=float(total_duration_sec),
+        decode=decode,
+    )
 
 
 def mlx_generate_diffusion(

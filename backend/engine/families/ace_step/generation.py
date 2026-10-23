@@ -148,6 +148,23 @@ class AceStepLyricsCapture:
     caption_effective: str = ""
     lm_expanded: bool = False
     lyrics_changed: bool = False
+    # ``LyricsAlignmentResult`` from DiT cross-attention; ``None`` → structure estimate.
+    timestamps: Any = None
+
+
+def _lyrics_alignment_for(
+    cap: AceStepLyricsCapture,
+    duration_sec: float,
+) -> Any:
+    from backend.engine.families.ace_step.vocals.lyrics_alignment import estimate_lyrics_alignment
+
+    if cap.timestamps is not None and cap.timestamps.segments:
+        return cap.timestamps
+    return estimate_lyrics_alignment(
+        cap.lyrics_effective,
+        duration_sec=float(duration_sec),
+        instrumental=False,
+    )
 
 
 def capture_inference_lyrics(
@@ -197,8 +214,6 @@ def lyrics_capture_metadata(
     duration_sec: Optional[float] = None,
 ) -> dict[str, Any]:
     """Serializable fields for task result / asset metadata."""
-    from backend.engine.families.ace_step.vocals.lyrics_alignment import estimate_lyrics_alignment
-
     if is_instrumental_lyrics(cap.lyrics_effective):
         return {
             "lyrics_alignment": "instrumental",
@@ -212,12 +227,7 @@ def lyrics_capture_metadata(
         "lm_expanded": cap.lm_expanded,
     }
     if duration_sec is not None and duration_sec > 0:
-        alignment = estimate_lyrics_alignment(
-            cap.lyrics_effective,
-            duration_sec=float(duration_sec),
-            instrumental=False,
-        )
-        meta.update(alignment.as_metadata())
+        meta.update(_lyrics_alignment_for(cap, float(duration_sec)).as_metadata())
     else:
         meta["lyrics_alignment"] = "conditioning_only"
     return meta
@@ -240,8 +250,9 @@ def write_lrc_sidecar(
     lyrics: str,
     *,
     duration_sec: float,
+    alignment: Any = None,
 ) -> Optional[Path]:
-    """Write ``<stem>.lrc`` when structure-based alignment is available."""
+    """Write ``<stem>.lrc`` (DiT-aligned when ``alignment`` is given, else structure estimate)."""
     from backend.engine.families.ace_step.vocals.lyrics_alignment import (
         estimate_lyrics_alignment,
         format_lrc,
@@ -249,7 +260,8 @@ def write_lrc_sidecar(
 
     if is_instrumental_lyrics(lyrics) or duration_sec <= 0:
         return None
-    alignment = estimate_lyrics_alignment(lyrics, duration_sec=float(duration_sec))
+    if alignment is None or not alignment.segments:
+        alignment = estimate_lyrics_alignment(lyrics, duration_sec=float(duration_sec))
     lrc_text = format_lrc(alignment)
     if not lrc_text:
         return None
@@ -973,7 +985,13 @@ def post_generation_artifacts(
         out_path,
         cap.lyrics_effective,
         duration_sec=duration_sec,
+        alignment=cap.timestamps,
     )
     if lrc_path is not None and on_log:
-        on_log("info", f"歌词时间轴已写入: {lrc_path.name}")
+        aligned = cap.timestamps is not None and bool(cap.timestamps.segments)
+        on_log(
+            "info",
+            f"歌词时间轴已写入: {lrc_path.name}"
+            + ("（DiT 交叉注意力对齐）" if aligned else "（按段落估算）"),
+        )
     return lyrics_capture_metadata(cap, duration_sec=duration_sec)
