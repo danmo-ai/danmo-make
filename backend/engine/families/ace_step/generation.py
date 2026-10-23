@@ -6,11 +6,12 @@ Pipeline and engine must import from this module only, not from ``generation_*``
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Protocol, Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 
 import numpy as np
 
@@ -44,8 +45,65 @@ DEFAULT_LM_SIMPLE_INSTRUCTION = (
 
 SAMPLE_RATE = 48_000
 LATENT_HOP_SAMPLES = 1920
-VAE_TILE_CHUNK_SIZE = 32
-VAE_TILE_OVERLAP = 8
+VAE_TILE_CHUNK_SIZE = 512
+VAE_TILE_MIN_CHUNK_SIZE = 192
+VAE_TILE_OVERLAP = 64
+
+
+TIMBRE_REFERENCE_FRAMES = 750
+TIMBRE_SEGMENT_FRAMES = 250
+
+
+def sample_timbre_reference_latents(latents: np.ndarray, seed: int) -> np.ndarray:
+    """30 s timbre reference from front/middle/back 10 s segments (upstream ``process_reference_audio``).
+
+    Upstream samples in waveform space before VAE encode; this samples the already-encoded
+    ``[1, T, C]`` latents at 25 Hz so the source audio is encoded once.
+    """
+    lat = np.asarray(latents, dtype=np.float32)
+    if lat.ndim == 2:
+        lat = lat[np.newaxis, ...]
+    total = int(lat.shape[1])
+    if total <= 0:
+        raise RuntimeError("ACE-Step timbre reference latents are empty")
+    if total < TIMBRE_REFERENCE_FRAMES:
+        lat = np.tile(lat, (1, int(math.ceil(TIMBRE_REFERENCE_FRAMES / total)), 1))
+        total = int(lat.shape[1])
+    rng = np.random.default_rng(int(seed))
+    seg = total // 3
+    starts = (
+        int(rng.integers(0, max(0, seg - TIMBRE_SEGMENT_FRAMES) + 1)),
+        seg + int(rng.integers(0, max(0, seg - TIMBRE_SEGMENT_FRAMES) + 1)),
+        2 * seg + int(rng.integers(0, max(0, (total - 2 * seg) - TIMBRE_SEGMENT_FRAMES) + 1)),
+    )
+    return np.concatenate(
+        [lat[:, s : s + TIMBRE_SEGMENT_FRAMES, :] for s in starts], axis=1
+    ).astype(np.float32, copy=False)
+
+
+def vae_tile_windows(t_len: int, chunk_size: int = VAE_TILE_CHUNK_SIZE) -> list[tuple[int, int, int, int]]:
+    """Overlap-discard VAE decode windows ``(win_start, win_end, core_start, core_end)``.
+
+    Mirrors upstream MLX ``_mlx_decode_single``: chunk is clamped to ≥192 latent
+    frames and each window carries 64 frames of context that is trimmed after decode.
+    """
+    chunk = max(VAE_TILE_MIN_CHUNK_SIZE, int(chunk_size))
+    if t_len <= chunk:
+        return [(0, t_len, 0, t_len)]
+    stride = chunk - 2 * VAE_TILE_OVERLAP
+    windows = []
+    for idx in range((t_len + stride - 1) // stride):
+        core_start = idx * stride
+        core_end = min(core_start + stride, t_len)
+        windows.append(
+            (
+                max(0, core_start - VAE_TILE_OVERLAP),
+                min(t_len, core_end + VAE_TILE_OVERLAP),
+                core_start,
+                core_end,
+            )
+        )
+    return windows
 
 
 def duration_to_latent_frames(duration: float) -> int:
@@ -615,6 +673,91 @@ class AceStepPreparedRequest:
     resource_tier: str = ""
     lm_quantize_bits: Optional[int] = None
     log_events: List[Tuple[str, str]] = field(default_factory=list)
+    sampler_kwargs: Dict[str, Any] = field(default_factory=dict)
+
+
+DCW_MODES = ("low", "high", "double", "pix")
+
+
+@dataclass(frozen=True)
+class AceStepDcwSettings:
+    """Differential Correction in Wavelet domain (upstream ``dcw_*`` sampler knobs)."""
+
+    enabled: bool
+    mode: str = "double"
+    scaler: float = 0.05
+    high_scaler: float = 0.02
+
+    def sampler_kwargs(self) -> Dict[str, Any]:
+        return {
+            "dcw_enabled": self.enabled,
+            "dcw_mode": self.mode,
+            "dcw_scaler": self.scaler,
+            "dcw_high_scaler": self.high_scaler,
+        }
+
+    def describe(self) -> str:
+        if not self.enabled:
+            return "DCW off"
+        return (
+            f"DCW {self.mode} (haar, scaler={self.scaler:g}, "
+            f"high_scaler={self.high_scaler:g})"
+        )
+
+
+def _metadata_bool(raw: Any, key: str) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    raise RuntimeError(f"ACE-Step metadata {key}={raw!r} is not a boolean")
+
+
+def _metadata_float(raw: Any, key: str) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"ACE-Step metadata {key}={raw!r} is not a number") from exc
+    if not math.isfinite(value) or value < 0.0 or value > 1.0:
+        raise RuntimeError(f"ACE-Step metadata {key}={value} must be within [0, 1]")
+    return value
+
+
+def resolve_dcw_settings(
+    metadata: Optional[Dict[str, Any]],
+    config: AceStepConfig,
+    *,
+    is_turbo: bool,
+) -> AceStepDcwSettings:
+    """``metadata.dcw_*`` overrides on top of ``AceStepConfig``; enabled defaults to turbo."""
+    meta = metadata or {}
+    enabled = (
+        _metadata_bool(meta["dcw_enabled"], "dcw_enabled")
+        if meta.get("dcw_enabled") is not None
+        else bool(is_turbo)
+    )
+    mode = str(meta.get("dcw_mode") or config.dcw_mode).strip().lower()
+    if mode not in DCW_MODES:
+        raise RuntimeError(f"ACE-Step dcw_mode={mode!r}; expected one of {', '.join(DCW_MODES)}")
+    wavelet = str(meta.get("dcw_wavelet") or "haar").strip().lower()
+    if wavelet != "haar":
+        raise RuntimeError(
+            f"ACE-Step dcw_wavelet={wavelet!r} is not supported on MLX; only 'haar' is implemented"
+        )
+    scaler = (
+        _metadata_float(meta["dcw_scaler"], "dcw_scaler")
+        if meta.get("dcw_scaler") is not None
+        else float(config.dcw_scaler)
+    )
+    high_scaler = (
+        _metadata_float(meta["dcw_high_scaler"], "dcw_high_scaler")
+        if meta.get("dcw_high_scaler") is not None
+        else float(config.dcw_high_scaler)
+    )
+    return AceStepDcwSettings(enabled=enabled, mode=mode, scaler=scaler, high_scaler=high_scaler)
 
 
 def create_ace_step_generator(
@@ -819,6 +962,8 @@ def prepare_music_request(
                 f"({getattr(bundle_root, 'name', bundle_root)})",
             )
         )
+    dcw = resolve_dcw_settings(request.metadata, config, is_turbo=is_turbo)
+    events.append(("info", f"ACE-Step sampler: {dcw.describe()}"))
 
     return AceStepPreparedRequest(
         lyrics=lyrics,
@@ -833,6 +978,7 @@ def prepare_music_request(
         resource_tier=policy.tier,
         lm_quantize_bits=policy.lm_quantize_bits,
         log_events=events,
+        sampler_kwargs=dcw.sampler_kwargs(),
     )
 
 
@@ -867,6 +1013,11 @@ def run_cover_edit(
     dit_subdir = ace_step_dit_subdir_for_model(request.model)
     is_turbo = resolve_bundle_is_turbo(bundle_root, dit_subdir=dit_subdir)
     shift = float(config.turbo_shift if is_turbo else config.default_shift)
+    dcw = resolve_dcw_settings(request.metadata, config, is_turbo=is_turbo)
+    raw_timbre = (request.metadata or {}).get("cover_timbre_from_source")
+    timbre_from_source = (
+        _metadata_bool(raw_timbre, "cover_timbre_from_source") if raw_timbre is not None else False
+    )
     ref_wf = load_reference_waveform(source_path)
     seed = (
         request.seed
@@ -903,6 +1054,8 @@ def run_cover_edit(
         f"strength={request.source_fidelity}",
         f"seed={seed}",
         f"n={n}",
+        dcw.describe(),
+        "timbre=source" if timbre_from_source else "timbre=silence (upstream default)",
     ]
     if lyrics != "[Instrumental]":
         log_parts.append(f"lyrics={len(lyrics)}chars lang={vocal_lang}")
@@ -948,6 +1101,8 @@ def run_cover_edit(
             duration=cover_duration,
             steps=cover_steps,
             guidance=cover_guidance,
+            timbre_from_source=timbre_from_source,
+            **dcw.sampler_kwargs(),
         )
         quality = getattr(generator, "last_quality", None)
         waveforms.append(waveform)

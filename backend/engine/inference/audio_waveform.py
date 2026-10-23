@@ -33,4 +33,5 @@ def run_audio_waveform(ctx: Any, *, batch_seed: int, batch_idx: int) -> Any:
             instrumental=bool(ctx.request.instrumental),
             lm_enabled=ctx.lm_enabled,
             lm_quantize_bits=ctx.lm_quantize_bits,
+            **getattr(ctx.prepared, "sampler_kwargs", {}),
         )

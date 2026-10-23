@@ -2519,7 +2519,8 @@ class AceStepGenerationTests(unittest.TestCase):
             prepared = prepare_music_request(req, AceStepConfig(), bundle, backend="mlx")
             self.assertEqual(prepared.vocal_language, "zh")
             self.assertEqual(prepared.steps, 8)
-            self.assertEqual(prepared.shift, 1.0)
+            self.assertEqual(prepared.shift, 3.0)
+            self.assertTrue(prepared.sampler_kwargs["dcw_enabled"])
             self.assertTrue(prepared.is_turbo)
             self.assertEqual(prepared.duration, 10.0)
 
@@ -3190,13 +3191,218 @@ class AceStepGenerationTests(unittest.TestCase):
         shifted_mid = 3.0 * uniform_mid / (1.0 + 2.0 * uniform_mid)
         self.assertAlmostEqual(sft[25], shifted_mid, places=6)
 
-        turbo = get_timestep_schedule(shift=1.0, infer_steps=8)
+        turbo = get_timestep_schedule(shift=3.0, infer_steps=8)
         self.assertEqual(len(turbo), 8)
-        self.assertEqual(turbo, SHIFT_TIMESTEPS[1.0])
+        for got, want in zip(turbo, SHIFT_TIMESTEPS[3.0]):
+            self.assertAlmostEqual(got, want, places=12)
 
         legacy = get_timestep_schedule(shift=1.0)
         self.assertEqual(len(legacy), 8)
         self.assertEqual(legacy, SHIFT_TIMESTEPS[1.0])
+
+    def test_ace_step_dcw_haar_matches_numpy_reference(self) -> None:
+        import mlx.core as mx
+        import numpy as np
+
+        from backend.engine.families.ace_step.generation_mlx import apply_dcw_mlx
+
+        def np_haar(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            if x.shape[1] % 2:
+                x = np.concatenate([x, np.zeros_like(x[:, :1])], axis=1)
+            return (x[:, 0::2] + x[:, 1::2]) / np.sqrt(2), (x[:, 0::2] - x[:, 1::2]) / np.sqrt(2)
+
+        def np_ihaar(lo: np.ndarray, hi: np.ndarray, n: int) -> np.ndarray:
+            out = np.empty((lo.shape[0], lo.shape[1] * 2, lo.shape[2]), dtype=lo.dtype)
+            out[:, 0::2] = (lo + hi) / np.sqrt(2)
+            out[:, 1::2] = (lo - hi) / np.sqrt(2)
+            return out[:, :n]
+
+        rng = np.random.default_rng(3)
+        for t_len in (10, 11):
+            x = rng.standard_normal((1, t_len, 4)).astype(np.float32)
+            y = rng.standard_normal((1, t_len, 4)).astype(np.float32)
+            t = 0.8
+            xl, xh = np_haar(x)
+            yl, yh = np_haar(y)
+            xl = xl + t * 0.05 * (xl - yl)
+            xh = xh + (1 - t) * 0.02 * (xh - yh)
+            want = np_ihaar(xl, xh, t_len)
+            got = apply_dcw_mlx(
+                mx.array(x), mx.array(y), t_curr=t, mode="double", scaler=0.05, high_scaler=0.02,
+            )
+            np.testing.assert_allclose(np.array(got), want, atol=1e-6)
+            same = apply_dcw_mlx(
+                mx.array(x), mx.array(x), t_curr=t, mode="double", scaler=0.05, high_scaler=0.02,
+            )
+            np.testing.assert_allclose(np.array(same), x, atol=1e-6)
+        with self.assertRaises(ValueError):
+            apply_dcw_mlx(mx.array(x), mx.array(y), t_curr=0.5, mode="bogus", scaler=0.05, high_scaler=0.02)
+
+    def test_ace_step_resolve_dcw_settings(self) -> None:
+        from backend.engine.config.model_configs import AceStepConfig
+        from backend.engine.families.ace_step.generation import resolve_dcw_settings
+
+        cfg = AceStepConfig()
+        turbo = resolve_dcw_settings({}, cfg, is_turbo=True)
+        self.assertTrue(turbo.enabled)
+        self.assertEqual((turbo.mode, turbo.scaler, turbo.high_scaler), ("double", 0.05, 0.02))
+        self.assertFalse(resolve_dcw_settings(None, cfg, is_turbo=False).enabled)
+        sft_on = resolve_dcw_settings(
+            {"dcw_enabled": "true", "dcw_mode": "low", "dcw_scaler": 0.1}, cfg, is_turbo=False,
+        )
+        self.assertTrue(sft_on.enabled)
+        self.assertEqual(sft_on.mode, "low")
+        self.assertEqual(sft_on.sampler_kwargs()["dcw_scaler"], 0.1)
+        self.assertFalse(resolve_dcw_settings({"dcw_enabled": False}, cfg, is_turbo=True).enabled)
+        for bad in ({"dcw_wavelet": "db4"}, {"dcw_mode": "wide"}, {"dcw_scaler": 2}, {"dcw_enabled": "maybe"}):
+            with self.assertRaises(RuntimeError):
+                resolve_dcw_settings(bad, cfg, is_turbo=True)
+
+    def test_ace_step_sample_timbre_reference_latents(self) -> None:
+        import numpy as np
+
+        from backend.engine.families.ace_step.generation import sample_timbre_reference_latents
+
+        lat = np.arange(3000, dtype=np.float32).reshape(1, 3000, 1)
+        ref = sample_timbre_reference_latents(lat, seed=7)
+        self.assertEqual(ref.shape, (1, 750, 1))
+        np.testing.assert_array_equal(ref, sample_timbre_reference_latents(lat, seed=7))
+        front, middle, back = ref[0, 0, 0], ref[0, 250, 0], ref[0, 500, 0]
+        self.assertLess(front, 1000)
+        self.assertTrue(1000 <= middle < 2000)
+        self.assertGreaterEqual(back, 2000)
+        short = sample_timbre_reference_latents(np.ones((1, 100, 4), dtype=np.float32), seed=0)
+        self.assertEqual(short.shape, (1, 750, 4))
+
+    def test_ace_step_cover_edit_defaults_silence_timbre_and_dcw(self) -> None:
+        import json
+        import tempfile
+
+        import numpy as np
+        import soundfile as sf
+
+        from backend.core.contracts import AudioEditRequest
+        from backend.engine.config.model_configs import AceStepConfig
+        from backend.engine.families.ace_step.generation import SAMPLE_RATE, run_cover_edit
+
+        class _FakeGen:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            def generate_cover_waveform(self, **kwargs):
+                self.calls.append(kwargs)
+                return np.zeros((SAMPLE_RATE, 2), dtype=np.float32)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp)
+            dit = bundle / "acestep-v15-xl-turbo"
+            dit.mkdir()
+            (dit / "config.json").write_text(json.dumps({"is_turbo": True}), encoding="utf-8")
+            (dit / "model.safetensors").write_bytes(b"")
+            src = bundle / "src.wav"
+            sf.write(str(src), np.zeros((SAMPLE_RATE, 2), dtype=np.float32), SAMPLE_RATE)
+            for meta, want_source in (({}, False), ({"cover_timbre_from_source": True}, True)):
+                gen = _FakeGen()
+                run_cover_edit(
+                    gen,
+                    AudioEditRequest(model="ace-step-xl-turbo", source_asset_id="a", metadata=meta),
+                    config=AceStepConfig(),
+                    bundle_root=bundle,
+                    source_path=src,
+                    raise_if_cancelled=lambda: None,
+                )
+                call = gen.calls[0]
+                self.assertIs(call["timbre_from_source"], want_source)
+                self.assertTrue(call["dcw_enabled"])
+                self.assertEqual(call["shift"], 3.0)
+
+    def test_ace_step_cover_non_cover_phase_uses_default_instruction(self) -> None:
+        from types import SimpleNamespace
+        from unittest import mock
+
+        import mlx.core as mx
+        import numpy as np
+
+        from backend.engine.families.ace_step import generation_mlx as gm
+        from backend.engine.families.ace_step.generation import (
+            COVER_DIT_INSTRUCTION,
+            DEFAULT_DIT_INSTRUCTION,
+        )
+
+        prompts: list[str] = []
+        cond_calls: list[dict] = []
+        diffusion_calls: list[dict] = []
+
+        def tokenizer(text, **_kw):
+            prompts.append(text)
+            n = 4 + len(prompts)
+            return {"input_ids": np.ones((1, n), dtype=np.int32), "attention_mask": np.ones((1, n))}
+
+        def fake_condition(_enc, **kw):
+            cond_calls.append(kw)
+            return mx.zeros((1, 3, 8)), None, mx.zeros((1, 40, 128))
+
+        def fake_diffusion(_model, **kw):
+            diffusion_calls.append(kw)
+            return {"target_latents": np.random.default_rng(0).standard_normal((1, 40, 64)).astype(np.float32)}
+
+        gen = gm.AceStepMlxGenerator.__new__(gm.AceStepMlxGenerator)
+        gen._ctx = SimpleNamespace(array=mx.array, eval=mx.eval)
+        gen._condition_encoder = object()
+        gen._dit = SimpleNamespace(_model=object())
+        gen._vae = object()
+        gen._audio_codec = object()
+        gen._model_config = {"is_turbo": True}
+        gen._null_condition_emb = None
+        gen._silence_latent = np.full((1, 800, 64), 0.25, dtype=np.float32)
+        gen._text_tokenizer = tokenizer
+        gen._text_encoder = SimpleNamespace(
+            encode=lambda ids, _m: mx.full((1, ids.shape[1], 8), float(ids.shape[1])),
+            token_embed=lambda ids: mx.zeros((1, ids.shape[1], 8)),
+        )
+        gen._encode_reference_latents = lambda _wf: np.zeros((1, 40, 64), dtype=np.float32)
+        gen._decode_latents_mlx = lambda _lat: mx.array(
+            np.random.default_rng(1).standard_normal((1, 48_000, 2)).astype(np.float32)
+        )
+        with mock.patch.object(gm, "prepare_condition_mlx", fake_condition), mock.patch.object(
+            gm, "mlx_generate_diffusion", fake_diffusion
+        ):
+            gen.generate_cover_waveform(
+                reference_waveform=np.zeros((48_000, 2), dtype=np.float32),
+                prompt="jazz",
+                audio_cover_strength=0.5,
+                dcw_enabled=True,
+            )
+
+        self.assertIn(COVER_DIT_INSTRUCTION, prompts[0])
+        self.assertIn(DEFAULT_DIT_INSTRUCTION, prompts[2])
+        self.assertEqual(len(cond_calls), 2)
+        cover_text = np.array(cond_calls[0]["text_hidden_states"])
+        nc_text = np.array(cond_calls[1]["text_hidden_states"])
+        self.assertNotEqual(cover_text.shape, nc_text.shape)
+        np.testing.assert_allclose(np.array(cond_calls[0]["refer_packed"]), 0.25)
+        self.assertTrue(diffusion_calls[0]["dcw_enabled"])
+        self.assertEqual(diffusion_calls[0]["shift"], 3.0)
+
+    def test_ace_step_vae_tile_windows(self) -> None:
+        from backend.engine.families.ace_step.generation import (
+            VAE_TILE_OVERLAP,
+            vae_tile_windows,
+        )
+
+        self.assertEqual(vae_tile_windows(512), [(0, 512, 0, 512)])
+        self.assertEqual(vae_tile_windows(150, chunk_size=32), [(0, 150, 0, 150)])
+        windows = vae_tile_windows(3751)
+        self.assertEqual(windows[0][2], 0)
+        self.assertEqual(windows[-1][3], 3751)
+        for (_, _, _, prev_end), (_, _, start, _) in zip(windows, windows[1:]):
+            self.assertEqual(prev_end, start)
+        for win_start, win_end, core_start, core_end in windows:
+            self.assertLessEqual(win_end - win_start, 512)
+            if core_start > 0:
+                self.assertEqual(core_start - win_start, VAE_TILE_OVERLAP)
+            if core_end < 3751:
+                self.assertEqual(win_end - core_end, VAE_TILE_OVERLAP)
 
     def test_ace_step_nonperiodic_src_latents_no_tile(self) -> None:
         import numpy as np

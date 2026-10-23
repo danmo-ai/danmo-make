@@ -512,7 +512,11 @@ class AceStepConfig:
     max_position_embeddings: int = 32768
     is_turbo: bool = False                  # turbo: 8-step, no CFG
     turbo_infer_steps: int = 8
-    turbo_shift: float = 1.0
+    turbo_shift: float = 3.0                # upstream turbo default
+    # DCW (wavelet-domain sampler correction): on by default for turbo only (upstream).
+    dcw_mode: str = "double"
+    dcw_scaler: float = 0.05
+    dcw_high_scaler: float = 0.02
 
     # VAE
     vae_encoder_hidden_size: int = 128
