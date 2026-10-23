@@ -4,85 +4,87 @@
     class="gallery-audio-detail"
     :class="[`gallery-audio-detail--${variant}`, { 'gallery-audio-detail--has-timeline': hasTimeline }]"
   >
-    <div class="gallery-audio-detail__main">
-      <AudioMusicPlayer
-        ref="playerRef"
-        :key="item.path"
-        :src="src"
-        :title="displayTitle"
-        :subtitle="displaySubtitle"
-        :hue="artHue"
-        :duration-seconds="durationSeconds"
-        :layout="variant === 'lightbox' ? 'featured' : 'inline'"
-        :autoplay="false"
-        :show-download="variant === 'lightbox'"
-        @download="emit('download')"
-        @timeupdate="onTimeUpdate"
-      />
+    <div class="gallery-audio-detail__layout">
+      <div class="gallery-audio-detail__main">
+        <AudioMusicPlayer
+          ref="playerRef"
+          :key="item.path"
+          :src="src"
+          :title="displayTitle"
+          :subtitle="displaySubtitle"
+          :hue="artHue"
+          :duration-seconds="durationSeconds"
+          :layout="variant === 'lightbox' ? 'featured' : 'inline'"
+          :autoplay="false"
+          :show-download="variant === 'lightbox'"
+          @download="emit('download')"
+          @timeupdate="onTimeUpdate"
+        />
 
-      <template v-if="variant === 'lightbox'">
-        <GalleryAssetDetailMeta :item="item" show-prompt />
-      </template>
-    </div>
-
-    <div class="gallery-audio-detail__lyrics-block studio-audio-effective-lyrics">
-      <div class="studio-audio-effective-lyrics__head">
-        <span class="studio-audio-effective-lyrics__label">
-          {{ hasTimeline ? $t('gallery.syncedLyrics') : $t('audio.effectiveLyrics') }}
-          <span
-            v-if="hasTimeline"
-            class="gallery-audio-detail__timeline-badge"
-            :class="{ 'is-aligned': isAligned }"
-            :title="isAligned ? $t('gallery.lyricsAlignedHint') : $t('gallery.lyricsEstimatedHint')"
-          >
-            {{ isAligned ? $t('gallery.lyricsAligned') : $t('gallery.lyricsEstimated') }}
-          </span>
-        </span>
-        <div v-if="lyricsText" class="gallery-audio-detail__lyrics-actions">
-          <DqButton
-            v-if="hasTimeline"
-            type="text"
-            size="sm"
-            @click="showFullText = !showFullText"
-          >
-            {{ showFullText ? $t('gallery.lyricsShowSynced') : $t('gallery.lyricsShowFull') }}
-          </DqButton>
-          <DqButton type="text" size="sm" @click="copyLyrics">
-            {{ $t('gallery.copy') }}
-          </DqButton>
-          <DqButton type="text" size="sm" @click="downloadLyrics">
-            {{ $t('audio.downloadLyrics') }}
-          </DqButton>
-          <DqButton v-if="hasTimeline" type="text" size="sm" @click="downloadLrc">
-            {{ $t('gallery.downloadLrc') }}
-          </DqButton>
-        </div>
+        <template v-if="variant === 'lightbox'">
+          <GalleryAssetDetailMeta :item="item" show-prompt />
+        </template>
       </div>
-      <AudioLyricsScroller
-        v-if="hasTimeline && !showFullText"
-        class="gallery-audio-detail__scroller"
-        :lines="timelineLines"
-        :current-time="currentTime"
-        :compact="variant !== 'lightbox'"
-        :karaoke="isAligned"
-        @seek="onSeek"
-      />
-      <pre v-else-if="lyricsText" class="studio-audio-effective-lyrics__body">{{ lyricsText }}</pre>
-      <p v-else-if="isInstrumental" class="gallery-audio-detail__lyrics-empty">
-        {{ $t('gallery.lyricsInstrumental') }}
-      </p>
-      <p v-else class="gallery-audio-detail__lyrics-empty">
-        {{ $t('gallery.lyricsUnavailable') }}
-      </p>
-      <p v-if="lyricsText" class="studio-field-footnote studio-audio-effective-lyrics__hint">
-        {{
-          !hasTimeline
-            ? $t('audio.effectiveLyricsHint')
-            : isAligned
-              ? $t('gallery.lyricsAlignedHint')
-              : $t('gallery.lyricsEstimatedHint')
-        }}
-      </p>
+
+      <div class="gallery-audio-detail__lyrics-block studio-audio-effective-lyrics">
+        <div class="studio-audio-effective-lyrics__head">
+          <span class="studio-audio-effective-lyrics__label">
+            {{ hasTimeline ? $t('gallery.syncedLyrics') : $t('audio.effectiveLyrics') }}
+            <span
+              v-if="hasTimeline"
+              class="gallery-audio-detail__timeline-badge"
+              :class="{ 'is-aligned': isAligned }"
+              :title="isAligned ? $t('gallery.lyricsAlignedHint') : $t('gallery.lyricsEstimatedHint')"
+            >
+              {{ isAligned ? $t('gallery.lyricsAligned') : $t('gallery.lyricsEstimated') }}
+            </span>
+          </span>
+          <div v-if="lyricsText" class="gallery-audio-detail__lyrics-actions">
+            <DqButton
+              v-if="hasTimeline"
+              type="text"
+              size="sm"
+              @click="showFullText = !showFullText"
+            >
+              {{ showFullText ? $t('gallery.lyricsShowSynced') : $t('gallery.lyricsShowFull') }}
+            </DqButton>
+            <DqButton type="text" size="sm" @click="copyLyrics">
+              {{ $t('gallery.copy') }}
+            </DqButton>
+            <DqButton type="text" size="sm" @click="downloadLyrics">
+              {{ $t('audio.downloadLyrics') }}
+            </DqButton>
+            <DqButton v-if="hasTimeline" type="text" size="sm" @click="downloadLrc">
+              {{ $t('gallery.downloadLrc') }}
+            </DqButton>
+          </div>
+        </div>
+        <AudioLyricsScroller
+          v-if="hasTimeline && !showFullText"
+          class="gallery-audio-detail__scroller"
+          :lines="timelineLines"
+          :current-time="currentTime"
+          :compact="variant !== 'lightbox'"
+          :karaoke="isAligned"
+          @seek="onSeek"
+        />
+        <pre v-else-if="lyricsText" class="studio-audio-effective-lyrics__body">{{ lyricsText }}</pre>
+        <p v-else-if="isInstrumental" class="gallery-audio-detail__lyrics-empty">
+          {{ $t('gallery.lyricsInstrumental') }}
+        </p>
+        <p v-else class="gallery-audio-detail__lyrics-empty">
+          {{ $t('gallery.lyricsUnavailable') }}
+        </p>
+        <p v-if="lyricsText" class="studio-field-footnote studio-audio-effective-lyrics__hint">
+          {{
+            !hasTimeline
+              ? $t('audio.effectiveLyricsHint')
+              : isAligned
+                ? $t('gallery.lyricsAlignedHint')
+                : $t('gallery.lyricsEstimatedHint')
+          }}
+        </p>
+      </div>
     </div>
   </div>
 </template>
@@ -230,22 +232,40 @@ function downloadLrc() {
   color: var(--dq-label-primary);
 }
 
+.gallery-audio-detail--lightbox {
+  container-type: inline-size;
+}
+
+.gallery-audio-detail__layout {
+  display: block;
+}
+
 /* Pop-player layout: Now Playing on the left, synced lyrics on the right. */
-@media (min-width: 900px) {
-  .gallery-audio-detail--lightbox.gallery-audio-detail--has-timeline {
+@container (min-width: 680px) {
+  .gallery-audio-detail--has-timeline .gallery-audio-detail__layout {
     display: grid;
-    grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.1fr);
-    gap: 20px;
+    grid-template-columns: minmax(260px, 0.9fr) minmax(340px, 1.1fr);
+    gap: 24px;
     align-items: start;
   }
 
-  .gallery-audio-detail--lightbox.gallery-audio-detail--has-timeline .gallery-audio-detail__lyrics-block {
+  .gallery-audio-detail--has-timeline .gallery-audio-detail__lyrics-block {
     margin-top: 0;
   }
 }
 
+.gallery-audio-detail .studio-audio-effective-lyrics__head {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+.gallery-audio-detail .gallery-audio-detail__lyrics-actions {
+  flex-wrap: wrap;
+}
+
 .gallery-audio-detail__timeline-badge {
   display: inline-block;
+  white-space: nowrap;
   margin-left: 6px;
   padding: 1px 6px;
   border-radius: 999px;
