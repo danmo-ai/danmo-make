@@ -2895,6 +2895,123 @@ class AceStepGenerationTests(unittest.TestCase):
             self.assertTrue(lrc.is_file())
             self.assertIn("[00:", lrc.read_text(encoding="utf-8"))
 
+    @staticmethod
+    def _char_lyrics(text: str) -> tuple[list[int], Any]:
+        vocab = sorted(set(text))
+        ids = [vocab.index(ch) for ch in text]
+        return ids, (lambda toks: "".join(vocab[i] for i in toks))
+
+    def test_dit_lyric_alignment_follows_attention_diagonal(self) -> None:
+        import numpy as np
+
+        from backend.engine.families.ace_step.vocals.lyrics_alignment import (
+            DIT_ALIGNMENT_MODE,
+            align_lyrics_from_attention,
+            format_lrc,
+        )
+
+        text = "[verse]\nab cd\nef gh\n[chorus]\nij kl\n"
+        ids, decode = self._char_lyrics(text)
+        n_fr = 200
+        attn = np.zeros((2, len(ids), n_fr), dtype=np.float32)
+        for k in range(len(ids)):
+            c = int((k + 0.5) * n_fr / len(ids))
+            attn[:, k, max(0, c - 2) : c + 3] = 8.0
+        attn += np.random.default_rng(0).normal(0, 0.3, attn.shape).astype(np.float32)
+        res = align_lyrics_from_attention(attn, ids, total_duration_sec=100.0, decode=decode)
+        self.assertEqual(res.mode, DIT_ALIGNMENT_MODE)
+        self.assertEqual([s.text for s in res.segments], ["ab cd", "ef gh", "ij kl"])
+        self.assertEqual([s.label for s in res.segments], ["verse", "verse", "chorus"])
+        starts = [s.start_sec for s in res.segments]
+        self.assertEqual(starts, sorted(starts))
+        line_start_tok = text.index("ij kl")
+        self.assertAlmostEqual(starts[2], 100.0 * line_start_tok / len(ids), delta=3.0)
+        self.assertIn("ij kl", format_lrc(res) or "")
+
+    def test_dtw_path_matches_bruteforce_dp(self) -> None:
+        import numpy as np
+
+        from backend.engine.families.ace_step.vocals.lyrics_alignment import dtw_path
+
+        x = np.random.default_rng(3).normal(size=(7, 11))
+        n, m = x.shape
+        acc = np.full((n + 1, m + 1), np.inf)
+        acc[0, 0] = 0.0
+        for i in range(1, n + 1):
+            for j in range(1, m + 1):
+                acc[i, j] = x[i - 1, j - 1] + min(acc[i - 1, j - 1], acc[i - 1, j], acc[i, j - 1])
+        ti, tj = dtw_path(x)
+        self.assertEqual((ti[0], tj[0]), (0, 0))
+        self.assertEqual((ti[-1], tj[-1]), (n - 1, m - 1))
+        self.assertTrue(np.all(np.diff(ti) >= 0) and np.all(np.diff(tj) >= 0))
+        self.assertAlmostEqual(float(x[ti, tj].sum()), float(acc[n, m]), places=4)
+
+    def test_ace_step_dit_capture_cross_attention_early_exit(self) -> None:
+        import mlx.core as mx
+        import numpy as np
+
+        from backend.engine.families.ace_step.transformer_mlx import AceStepDiTMLX
+
+        dit = AceStepDiTMLX(
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=3,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            in_channels=192,
+            audio_acoustic_hidden_dim=64,
+            patch_size=2,
+            sliding_window=8,
+            layer_types=("sliding_attention", "full_attention", "sliding_attention"),
+            max_position_embeddings=128,
+            encoder_hidden_size=32,
+        )
+        hs = mx.random.normal((1, 16, 64), key=mx.random.key(0))
+        ctx = mx.random.normal((1, 16, 128), key=mx.random.key(1))
+        enc = mx.random.normal((1, 9, 32), key=mx.random.key(2))
+        probs = dit.capture_cross_attention(hs, mx.array([0.1]), enc, ctx, {0: [1], 1: [0, 3]})
+        self.assertEqual(tuple(probs.shape), (3, 9, 8))
+        np.testing.assert_allclose(np.array(probs).sum(axis=1), 1.0, atol=1e-5)
+        with self.assertRaises(ValueError):
+            dit.capture_cross_attention(hs, mx.array([0.1]), enc, ctx, {3: [0]})
+
+    def test_lyrics_metadata_and_lrc_prefer_dit_alignment(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from backend.engine.families.ace_step.generation import (
+            AceStepLyricsCapture,
+            lyrics_capture_metadata,
+            write_lrc_sidecar,
+        )
+        from backend.engine.families.ace_step.vocals.lyrics_alignment import (
+            DIT_ALIGNMENT_MODE,
+            LyricsAlignmentResult,
+            LyricsAlignmentSegment,
+        )
+
+        aligned = LyricsAlignmentResult(
+            mode=DIT_ALIGNMENT_MODE,
+            segments=(LyricsAlignmentSegment(label="verse", start_sec=12.5, end_sec=15.0, text="Hello"),),
+        )
+        cap = AceStepLyricsCapture(lyrics_effective="[verse]\nHello", timestamps=aligned)
+        meta = lyrics_capture_metadata(cap, duration_sec=30.0)
+        self.assertEqual(meta["lyrics_alignment"], DIT_ALIGNMENT_MODE)
+        self.assertEqual(meta["lyrics_segments"][0]["start_sec"], 12.5)
+        self.assertEqual(
+            lyrics_capture_metadata(AceStepLyricsCapture(lyrics_effective="[verse]\nHello"), duration_sec=30.0)[
+                "lyrics_alignment"
+            ],
+            "structure_estimate",
+        )
+        with tempfile.TemporaryDirectory() as td:
+            audio = Path(td) / "track.wav"
+            audio.write_bytes(b"RIFF")
+            lrc = write_lrc_sidecar(audio, cap.lyrics_effective, duration_sec=30.0, alignment=aligned)
+            assert lrc is not None
+            self.assertEqual(lrc.read_text(encoding="utf-8"), "[00:12.50]Hello\n")
+
     def test_import_public_generation_entry(self) -> None:
         from backend.engine.families.ace_step import generation
 

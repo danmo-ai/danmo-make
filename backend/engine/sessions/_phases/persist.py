@@ -48,14 +48,14 @@ def persist_audio_phase(
 ) -> EngineResult:
     from backend.engine.pipelines.audio_create_phases import persist_audio_create
 
-    output_paths, output_durations, lyrics_capture, generator = batch_result
+    output_paths, output_durations, lyrics_captures, generator = batch_result
     return traced_persist(
         resolved,
         persist_audio_create,
         create_ctx,
         output_paths,
         output_durations,
-        lyrics_capture,
+        lyrics_captures,
         generator,
     )
 
