@@ -44,8 +44,34 @@ DEFAULT_LM_SIMPLE_INSTRUCTION = (
 
 SAMPLE_RATE = 48_000
 LATENT_HOP_SAMPLES = 1920
-VAE_TILE_CHUNK_SIZE = 32
-VAE_TILE_OVERLAP = 8
+VAE_TILE_CHUNK_SIZE = 512
+VAE_TILE_MIN_CHUNK_SIZE = 192
+VAE_TILE_OVERLAP = 64
+
+
+def vae_tile_windows(t_len: int, chunk_size: int = VAE_TILE_CHUNK_SIZE) -> list[tuple[int, int, int, int]]:
+    """Overlap-discard VAE decode windows ``(win_start, win_end, core_start, core_end)``.
+
+    Mirrors upstream MLX ``_mlx_decode_single``: chunk is clamped to ≥192 latent
+    frames and each window carries 64 frames of context that is trimmed after decode.
+    """
+    chunk = max(VAE_TILE_MIN_CHUNK_SIZE, int(chunk_size))
+    if t_len <= chunk:
+        return [(0, t_len, 0, t_len)]
+    stride = chunk - 2 * VAE_TILE_OVERLAP
+    windows = []
+    for idx in range((t_len + stride - 1) // stride):
+        core_start = idx * stride
+        core_end = min(core_start + stride, t_len)
+        windows.append(
+            (
+                max(0, core_start - VAE_TILE_OVERLAP),
+                min(t_len, core_end + VAE_TILE_OVERLAP),
+                core_start,
+                core_end,
+            )
+        )
+    return windows
 
 
 def duration_to_latent_frames(duration: float) -> int:

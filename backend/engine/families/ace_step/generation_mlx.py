@@ -50,6 +50,7 @@ from backend.engine.families.ace_step.generation import (
     resolve_dit_bundle,
     resolve_silence_latent_path,
     snap_latent_frames_for_inference,
+    vae_tile_windows,
 )
 from backend.engine.families.ace_step.transformer import AceStepTransformer
 from backend.engine.families.ace_step.transformer_mlx import _CrossAttentionCache
@@ -280,27 +281,20 @@ class AceStepMlxGenerator:
         if latents.ndim == 2:
             latents = mx.expand_dims(latents, 0)
         t_len = int(latents.shape[1])
-        if t_len <= VAE_TILE_CHUNK_SIZE:
+        windows = vae_tile_windows(t_len)
+        if len(windows) == 1:
             return self._vae.decode(latents)
 
         logger.info(
-            "ACE-Step MLX VAE tiled decode: T=%d chunk=%d overlap=%d",
+            "ACE-Step MLX VAE tiled decode: T=%d chunk=%d overlap=%d windows=%d",
             t_len,
             VAE_TILE_CHUNK_SIZE,
             VAE_TILE_OVERLAP,
+            len(windows),
         )
-        chunk_size = VAE_TILE_CHUNK_SIZE
-        overlap = VAE_TILE_OVERLAP
-        stride = chunk_size - 2 * overlap
-        num_steps = (t_len + stride - 1) // stride
         chunks: list[Any] = []
         upsample: float | None = None
-
-        for step_idx in range(num_steps):
-            core_start = step_idx * stride
-            core_end = min(core_start + stride, t_len)
-            win_start = max(0, core_start - overlap)
-            win_end = min(t_len, core_end + overlap)
+        for win_start, win_end, core_start, core_end in windows:
             latent_chunk = latents[:, win_start:win_end, :]
             audio_chunk = self._vae.decode(latent_chunk)
             if upsample is None:
@@ -309,7 +303,9 @@ class AceStepMlxGenerator:
             trim_end = int(round((win_end - core_end) * upsample))
             audio_len = int(audio_chunk.shape[1])
             end_idx = audio_len - trim_end if trim_end > 0 else audio_len
-            chunks.append(audio_chunk[:, trim_start:end_idx, :])
+            trimmed = audio_chunk[:, trim_start:end_idx, :]
+            self._ctx.eval(trimmed)
+            chunks.append(trimmed)
 
         return mx.concatenate(chunks, axis=1)
 
