@@ -3316,6 +3316,74 @@ class AceStepGenerationTests(unittest.TestCase):
                 self.assertTrue(call["dcw_enabled"])
                 self.assertEqual(call["shift"], 3.0)
 
+    def test_ace_step_cover_non_cover_phase_uses_default_instruction(self) -> None:
+        from types import SimpleNamespace
+        from unittest import mock
+
+        import mlx.core as mx
+        import numpy as np
+
+        from backend.engine.families.ace_step import generation_mlx as gm
+        from backend.engine.families.ace_step.generation import (
+            COVER_DIT_INSTRUCTION,
+            DEFAULT_DIT_INSTRUCTION,
+        )
+
+        prompts: list[str] = []
+        cond_calls: list[dict] = []
+        diffusion_calls: list[dict] = []
+
+        def tokenizer(text, **_kw):
+            prompts.append(text)
+            n = 4 + len(prompts)
+            return {"input_ids": np.ones((1, n), dtype=np.int32), "attention_mask": np.ones((1, n))}
+
+        def fake_condition(_enc, **kw):
+            cond_calls.append(kw)
+            return mx.zeros((1, 3, 8)), None, mx.zeros((1, 40, 128))
+
+        def fake_diffusion(_model, **kw):
+            diffusion_calls.append(kw)
+            return {"target_latents": np.random.default_rng(0).standard_normal((1, 40, 64)).astype(np.float32)}
+
+        gen = gm.AceStepMlxGenerator.__new__(gm.AceStepMlxGenerator)
+        gen._ctx = SimpleNamespace(array=mx.array, eval=mx.eval)
+        gen._condition_encoder = object()
+        gen._dit = SimpleNamespace(_model=object())
+        gen._vae = object()
+        gen._audio_codec = object()
+        gen._model_config = {"is_turbo": True}
+        gen._null_condition_emb = None
+        gen._silence_latent = np.full((1, 800, 64), 0.25, dtype=np.float32)
+        gen._text_tokenizer = tokenizer
+        gen._text_encoder = SimpleNamespace(
+            encode=lambda ids, _m: mx.full((1, ids.shape[1], 8), float(ids.shape[1])),
+            token_embed=lambda ids: mx.zeros((1, ids.shape[1], 8)),
+        )
+        gen._encode_reference_latents = lambda _wf: np.zeros((1, 40, 64), dtype=np.float32)
+        gen._decode_latents_mlx = lambda _lat: mx.array(
+            np.random.default_rng(1).standard_normal((1, 48_000, 2)).astype(np.float32)
+        )
+        with mock.patch.object(gm, "prepare_condition_mlx", fake_condition), mock.patch.object(
+            gm, "mlx_generate_diffusion", fake_diffusion
+        ):
+            gen.generate_cover_waveform(
+                reference_waveform=np.zeros((48_000, 2), dtype=np.float32),
+                prompt="jazz",
+                audio_cover_strength=0.5,
+                dcw_enabled=True,
+            )
+
+        self.assertIn(COVER_DIT_INSTRUCTION, prompts[0])
+        self.assertIn(DEFAULT_DIT_INSTRUCTION, prompts[2])
+        self.assertEqual(len(cond_calls), 2)
+        cover_text = np.array(cond_calls[0]["text_hidden_states"])
+        nc_text = np.array(cond_calls[1]["text_hidden_states"])
+        self.assertNotEqual(cover_text.shape, nc_text.shape)
+        np.testing.assert_allclose(np.array(cond_calls[0]["refer_packed"]), 0.25)
+        self.assertTrue(diffusion_calls[0]["dcw_enabled"])
+        self.assertEqual(diffusion_calls[0]["shift"], 3.0)
+
     def test_ace_step_vae_tile_windows(self) -> None:
         from backend.engine.families.ace_step.generation import (
             VAE_TILE_OVERLAP,

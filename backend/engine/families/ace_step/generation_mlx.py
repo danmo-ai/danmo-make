@@ -911,13 +911,29 @@ class AceStepMlxGenerator:
 
         enc_hs_nc, ctx_nc = None, None
         if strength < 1.0:
+            # Upstream re-encodes the caption with the text2music instruction for the non-cover phase.
+            nc_tok = self._text_tokenizer(
+                SFT_GEN_PROMPT.format(
+                    instruction=DEFAULT_DIT_INSTRUCTION,
+                    caption=caption,
+                    metadata=metadata,
+                ),
+                padding="longest",
+                truncation=True,
+                max_length=256,
+                return_tensors="np",
+            )
+            nc_mask = self._ctx.array(nc_tok["attention_mask"].astype(np.float32))
+            nc_hidden = self._text_encoder.encode(
+                self._ctx.array(nc_tok["input_ids"].astype(np.int32)), nc_mask
+            )
             silence_src_np = self._text_to_music_src_latents(max_latent_length)
             silence_src = self._ctx.array(silence_src_np.astype(np.float32)[np.newaxis, ...])
             is_covers_zero = mx.zeros((1,), dtype=mx.int32)
             enc_hs_nc, _, ctx_nc = prepare_condition_mlx(
                 self._condition_encoder,
-                text_hidden_states=text_hidden,
-                text_attention_mask=text_mask,
+                text_hidden_states=nc_hidden,
+                text_attention_mask=nc_mask,
                 lyric_hidden_states=lyric_hidden,
                 lyric_attention_mask=lyric_mask,
                 refer_packed=refer_packed,
