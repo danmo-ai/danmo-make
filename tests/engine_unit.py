@@ -2421,6 +2421,70 @@ class AceStepGenerationTests(unittest.TestCase):
         self.assertEqual(tuple(out.shape), (bsz, t_len, 64))
         self.assertTrue(np.isfinite(np.array(out)).all())
 
+    def test_ace_step_timbre_encoder_pools_learned_special_token(self) -> None:
+        """Upstream timbre encoder prepends ``special_token`` and returns its (CLS) output."""
+        import mlx.core as mx
+        import numpy as np
+
+        from backend.engine.families.ace_step.audio.condition_mlx import _TimbreEncoderMLX
+
+        enc = _TimbreEncoderMLX(
+            {
+                "hidden_size": 32,
+                "timbre_hidden_dim": 16,
+                "rms_norm_eps": 1e-6,
+                "head_dim": 8,
+                "rope_theta": 10000.0,
+                "layer_types": ("sliding_attention", "full_attention"),
+                "num_timbre_encoder_hidden_layers": 2,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 2,
+                "intermediate_size": 64,
+                "sliding_window": 4,
+                "use_sliding_window": True,
+            }
+        )
+        refer = mx.random.normal((1, 12, 16), key=mx.random.key(0))
+        enc.load_weights([("special_token", mx.full((1, 1, 32), 0.5))], strict=False)
+        out_a, mask = enc(refer, mx.array([0]))
+        enc.load_weights([("special_token", mx.full((1, 1, 32), -0.5))], strict=False)
+        out_b, _ = enc(refer, mx.array([0]))
+        self.assertEqual(tuple(out_a.shape), (1, 1, 32))
+        self.assertEqual(tuple(mask.shape), (1, 1))
+        self.assertGreater(float(np.max(np.abs(np.array(out_a) - np.array(out_b)))), 1e-3)
+
+    def test_ace_step_residual_fsq_soft_clamps_like_vector_quantize_pytorch(self) -> None:
+        """ResidualFSQ (bound_hard_clamp=True): tanh(x/c)*c then clamp, not plain tanh."""
+        import mlx.core as mx
+        import numpy as np
+
+        from backend.engine.families.ace_step.audio.audio_codec_mlx import _MlxResidualFSQ
+
+        fsq = _MlxResidualFSQ(dim=1, levels=[8], num_quantizers=1)
+        codes, indices = fsq(mx.array([[[-1.2], [0.0], [3.0]]]))
+        np.testing.assert_allclose(np.array(codes).reshape(-1), [-1.0, 1.0 / 7.0, 1.0], atol=1e-6)
+        self.assertEqual(np.array(indices).reshape(-1).tolist(), [0, 4, 7])
+
+    def test_ace_step_apg_matches_upstream_momentum_projection(self) -> None:
+        import mlx.core as mx
+        import numpy as np
+
+        from backend.engine.families.ace_step.generation_mlx import _apg_forward_mlx
+
+        rng = np.random.default_rng(0)
+        state: dict = {}
+        running = 0.0
+        for _ in range(3):
+            cond = rng.standard_normal((1, 10, 4)).astype(np.float32)
+            uncond = rng.standard_normal((1, 10, 4)).astype(np.float32)
+            running = (cond - uncond) + (-0.75) * running
+            diff = running * np.minimum(1.0, 2.5 / np.linalg.norm(running, axis=1, keepdims=True))
+            unit = cond / np.linalg.norm(cond, axis=1, keepdims=True)
+            orth = diff - np.sum(diff * unit, axis=1, keepdims=True) * unit
+            expected = cond + 6.0 * orth
+            got = _apg_forward_mlx(mx.array(cond), mx.array(uncond), 7.0, state)
+            np.testing.assert_allclose(np.array(got), expected, rtol=1e-4, atol=1e-5)
+
     def test_prepare_music_request_auto_zh_and_turbo_steps(self) -> None:
         import json
         import tempfile

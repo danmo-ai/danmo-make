@@ -960,6 +960,29 @@ def get_timestep_schedule(
     return list(SHIFT_TIMESTEPS[shift])
 
 
+_APG_MOMENTUM = -0.75
+_APG_NORM_THRESHOLD = 2.5
+
+
+def _apg_forward_mlx(
+    pred_cond: mx.array,
+    pred_uncond: mx.array,
+    guidance_scale: float,
+    momentum_state: dict,
+) -> mx.array:
+    """Adaptive projected guidance — upstream ``apg_forward(..., dims=[1])`` with ``MomentumBuffer()``."""
+    diff = pred_cond - pred_uncond
+    diff = diff + _APG_MOMENTUM * momentum_state.get("running", 0.0)
+    momentum_state["running"] = diff
+    diff_norm = mx.sqrt(mx.sum(diff * diff, axis=1, keepdims=True))
+    diff = diff * mx.minimum(1.0, _APG_NORM_THRESHOLD / diff_norm)
+    unit = pred_cond / mx.maximum(
+        mx.sqrt(mx.sum(pred_cond * pred_cond, axis=1, keepdims=True)), 1e-12
+    )
+    orthogonal = diff - mx.sum(diff * unit, axis=1, keepdims=True) * unit
+    return pred_cond + (guidance_scale - 1.0) * orthogonal
+
+
 def mlx_generate_diffusion(
     mlx_decoder: Any,
     encoder_hidden_states_np: np.ndarray,
@@ -1030,6 +1053,7 @@ def mlx_generate_diffusion(
     t_schedule_list = get_timestep_schedule(shift, timesteps, infer_steps=infer_steps)
     num_steps = len(t_schedule_list)
     cover_steps = int(num_steps * audio_cover_strength)
+    apg_momentum: dict = {}
 
     # -- Build closures for AudioInferenceBundle --
 
@@ -1050,10 +1074,7 @@ def mlx_generate_diffusion(
             use_cache=not do_cfg,
         )
         if do_cfg:
-            pred_cond = vt[:bsz]
-            pred_uncond = vt[bsz:]
-            # Classic CFG: uncond + guidance * (cond - uncond)
-            vt = pred_uncond + float(guidance_scale) * (pred_cond - pred_uncond)
+            vt = _apg_forward_mlx(vt[:bsz], vt[bsz:], float(guidance_scale), apg_momentum)
             state["cache"] = None
         else:
             state["cache"] = new_cache

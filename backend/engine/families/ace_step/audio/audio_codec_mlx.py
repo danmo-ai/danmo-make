@@ -83,9 +83,11 @@ class _MlxFSQ(nn.Module):
         return self._scale_and_shift_inverse(codes_non_centered.astype(mx.float32))
 
     def _symmetry_preserving_bound(self, z: mx.array) -> mx.array:
+        # ResidualFSQ soft-clamps its input, so the per-layer bound is a hard clamp
+        # (vector-quantize-pytorch ``bound_hard_clamp=True``), not tanh.
         levels_f = self._levels.astype(mx.float32)
         scale = 2.0 / (levels_f - 1.0)
-        bracket = (levels_f - 1.0) * (mx.tanh(z) + 1.0) / 2.0 + 0.5
+        bracket = (levels_f - 1.0) * (mx.clip(z, -1.0, 1.0) + 1.0) / 2.0 + 0.5
         bracket = _floor_ste(bracket)
         return scale * bracket - 1.0
 
@@ -94,7 +96,7 @@ class _MlxFSQ(nn.Module):
 
     def codes_to_indices(self, codes: mx.array) -> mx.array:
         scaled = self._scale_and_shift(codes)
-        return mx.sum(scaled * self._basis.astype(mx.float32), axis=-1).astype(mx.int32)
+        return mx.round(mx.sum(scaled * self._basis.astype(mx.float32), axis=-1)).astype(mx.int32)
 
     def __call__(self, z: mx.array) -> Tuple[mx.array, mx.array]:
         codes = self.quantize(z)
@@ -121,6 +123,7 @@ class _MlxResidualFSQ(nn.Module):
         self.layers = [_MlxFSQ(levels) for _ in range(num_quantizers)]
         levels_f = mx.array(list(levels), dtype=mx.float32)
         self.scales = [levels_f ** (-i) for i in range(num_quantizers)]
+        self.soft_clamp_input_value = 1.0 + 1.0 / (levels_f - 1.0)
 
     def get_output_from_indices(self, indices: mx.array) -> mx.array:
         if indices.ndim == 2:
@@ -142,6 +145,8 @@ class _MlxResidualFSQ(nn.Module):
     def __call__(self, x: mx.array) -> Tuple[mx.array, mx.array]:
         if self.project_in is not None:
             x = self.project_in(x)
+        clamp = self.soft_clamp_input_value
+        x = mx.tanh(x / clamp) * clamp
         quantized_out = mx.zeros_like(x)
         residual = x
         all_indices: list[mx.array] = []
