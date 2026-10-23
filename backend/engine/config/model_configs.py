@@ -512,7 +512,7 @@ class AceStepConfig:
     max_position_embeddings: int = 32768
     is_turbo: bool = False                  # turbo: 8-step, no CFG
     turbo_infer_steps: int = 8
-    turbo_shift: float = 1.0
+    turbo_shift: float = 3.0                # upstream turbo default
 
     # VAE
     vae_encoder_hidden_size: int = 128

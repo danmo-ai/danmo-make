@@ -2519,7 +2519,7 @@ class AceStepGenerationTests(unittest.TestCase):
             prepared = prepare_music_request(req, AceStepConfig(), bundle, backend="mlx")
             self.assertEqual(prepared.vocal_language, "zh")
             self.assertEqual(prepared.steps, 8)
-            self.assertEqual(prepared.shift, 1.0)
+            self.assertEqual(prepared.shift, 3.0)
             self.assertTrue(prepared.is_turbo)
             self.assertEqual(prepared.duration, 10.0)
 
@@ -3190,9 +3190,10 @@ class AceStepGenerationTests(unittest.TestCase):
         shifted_mid = 3.0 * uniform_mid / (1.0 + 2.0 * uniform_mid)
         self.assertAlmostEqual(sft[25], shifted_mid, places=6)
 
-        turbo = get_timestep_schedule(shift=1.0, infer_steps=8)
+        turbo = get_timestep_schedule(shift=3.0, infer_steps=8)
         self.assertEqual(len(turbo), 8)
-        self.assertEqual(turbo, SHIFT_TIMESTEPS[1.0])
+        for got, want in zip(turbo, SHIFT_TIMESTEPS[3.0]):
+            self.assertAlmostEqual(got, want, places=12)
 
         legacy = get_timestep_schedule(shift=1.0)
         self.assertEqual(len(legacy), 8)

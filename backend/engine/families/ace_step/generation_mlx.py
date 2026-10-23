@@ -336,9 +336,8 @@ class AceStepMlxGenerator:
         infer_steps = int(steps)
         guidance_scale = float(guidance)
         if is_turbo:
-            # Distilled turbo: fixed 8-step shift=1 schedule, no CFG.
+            # Distilled turbo: fixed 8-step schedule (caller-provided shift), no CFG.
             infer_steps = 8
-            shift = 1.0
             guidance_scale = 1.0
         elif guidance_scale > 1.0 and self._null_condition_emb is None:
             raise RuntimeError(
@@ -785,7 +784,6 @@ class AceStepMlxGenerator:
         guidance_scale = float(guidance)
         if is_turbo:
             infer_steps = 8
-            shift = 1.0
             guidance_scale = 1.0
         elif guidance_scale > 1.0 and self._null_condition_emb is None:
             raise RuntimeError(
