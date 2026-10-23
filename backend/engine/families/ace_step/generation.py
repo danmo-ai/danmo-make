@@ -50,6 +50,37 @@ VAE_TILE_MIN_CHUNK_SIZE = 192
 VAE_TILE_OVERLAP = 64
 
 
+TIMBRE_REFERENCE_FRAMES = 750
+TIMBRE_SEGMENT_FRAMES = 250
+
+
+def sample_timbre_reference_latents(latents: np.ndarray, seed: int) -> np.ndarray:
+    """30 s timbre reference from front/middle/back 10 s segments (upstream ``process_reference_audio``).
+
+    Upstream samples in waveform space before VAE encode; this samples the already-encoded
+    ``[1, T, C]`` latents at 25 Hz so the source audio is encoded once.
+    """
+    lat = np.asarray(latents, dtype=np.float32)
+    if lat.ndim == 2:
+        lat = lat[np.newaxis, ...]
+    total = int(lat.shape[1])
+    if total <= 0:
+        raise RuntimeError("ACE-Step timbre reference latents are empty")
+    if total < TIMBRE_REFERENCE_FRAMES:
+        lat = np.tile(lat, (1, int(math.ceil(TIMBRE_REFERENCE_FRAMES / total)), 1))
+        total = int(lat.shape[1])
+    rng = np.random.default_rng(int(seed))
+    seg = total // 3
+    starts = (
+        int(rng.integers(0, max(0, seg - TIMBRE_SEGMENT_FRAMES) + 1)),
+        seg + int(rng.integers(0, max(0, seg - TIMBRE_SEGMENT_FRAMES) + 1)),
+        2 * seg + int(rng.integers(0, max(0, (total - 2 * seg) - TIMBRE_SEGMENT_FRAMES) + 1)),
+    )
+    return np.concatenate(
+        [lat[:, s : s + TIMBRE_SEGMENT_FRAMES, :] for s in starts], axis=1
+    ).astype(np.float32, copy=False)
+
+
 def vae_tile_windows(t_len: int, chunk_size: int = VAE_TILE_CHUNK_SIZE) -> list[tuple[int, int, int, int]]:
     """Overlap-discard VAE decode windows ``(win_start, win_end, core_start, core_end)``.
 
@@ -983,6 +1014,10 @@ def run_cover_edit(
     is_turbo = resolve_bundle_is_turbo(bundle_root, dit_subdir=dit_subdir)
     shift = float(config.turbo_shift if is_turbo else config.default_shift)
     dcw = resolve_dcw_settings(request.metadata, config, is_turbo=is_turbo)
+    raw_timbre = (request.metadata or {}).get("cover_timbre_from_source")
+    timbre_from_source = (
+        _metadata_bool(raw_timbre, "cover_timbre_from_source") if raw_timbre is not None else False
+    )
     ref_wf = load_reference_waveform(source_path)
     seed = (
         request.seed
@@ -1020,6 +1055,7 @@ def run_cover_edit(
         f"seed={seed}",
         f"n={n}",
         dcw.describe(),
+        "timbre=source" if timbre_from_source else "timbre=silence (upstream default)",
     ]
     if lyrics != "[Instrumental]":
         log_parts.append(f"lyrics={len(lyrics)}chars lang={vocal_lang}")
@@ -1065,6 +1101,7 @@ def run_cover_edit(
             duration=cover_duration,
             steps=cover_steps,
             guidance=cover_guidance,
+            timbre_from_source=timbre_from_source,
             **dcw.sampler_kwargs(),
         )
         quality = getattr(generator, "last_quality", None)

@@ -3258,6 +3258,64 @@ class AceStepGenerationTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 resolve_dcw_settings(bad, cfg, is_turbo=True)
 
+    def test_ace_step_sample_timbre_reference_latents(self) -> None:
+        import numpy as np
+
+        from backend.engine.families.ace_step.generation import sample_timbre_reference_latents
+
+        lat = np.arange(3000, dtype=np.float32).reshape(1, 3000, 1)
+        ref = sample_timbre_reference_latents(lat, seed=7)
+        self.assertEqual(ref.shape, (1, 750, 1))
+        np.testing.assert_array_equal(ref, sample_timbre_reference_latents(lat, seed=7))
+        front, middle, back = ref[0, 0, 0], ref[0, 250, 0], ref[0, 500, 0]
+        self.assertLess(front, 1000)
+        self.assertTrue(1000 <= middle < 2000)
+        self.assertGreaterEqual(back, 2000)
+        short = sample_timbre_reference_latents(np.ones((1, 100, 4), dtype=np.float32), seed=0)
+        self.assertEqual(short.shape, (1, 750, 4))
+
+    def test_ace_step_cover_edit_defaults_silence_timbre_and_dcw(self) -> None:
+        import json
+        import tempfile
+
+        import numpy as np
+        import soundfile as sf
+
+        from backend.core.contracts import AudioEditRequest
+        from backend.engine.config.model_configs import AceStepConfig
+        from backend.engine.families.ace_step.generation import SAMPLE_RATE, run_cover_edit
+
+        class _FakeGen:
+            def __init__(self) -> None:
+                self.calls: list[dict] = []
+
+            def generate_cover_waveform(self, **kwargs):
+                self.calls.append(kwargs)
+                return np.zeros((SAMPLE_RATE, 2), dtype=np.float32)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp)
+            dit = bundle / "acestep-v15-xl-turbo"
+            dit.mkdir()
+            (dit / "config.json").write_text(json.dumps({"is_turbo": True}), encoding="utf-8")
+            (dit / "model.safetensors").write_bytes(b"")
+            src = bundle / "src.wav"
+            sf.write(str(src), np.zeros((SAMPLE_RATE, 2), dtype=np.float32), SAMPLE_RATE)
+            for meta, want_source in (({}, False), ({"cover_timbre_from_source": True}, True)):
+                gen = _FakeGen()
+                run_cover_edit(
+                    gen,
+                    AudioEditRequest(model="ace-step-xl-turbo", source_asset_id="a", metadata=meta),
+                    config=AceStepConfig(),
+                    bundle_root=bundle,
+                    source_path=src,
+                    raise_if_cancelled=lambda: None,
+                )
+                call = gen.calls[0]
+                self.assertIs(call["timbre_from_source"], want_source)
+                self.assertTrue(call["dcw_enabled"])
+                self.assertEqual(call["shift"], 3.0)
+
     def test_ace_step_vae_tile_windows(self) -> None:
         from backend.engine.families.ace_step.generation import (
             VAE_TILE_OVERLAP,

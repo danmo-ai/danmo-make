@@ -50,6 +50,7 @@ from backend.engine.families.ace_step.generation import (
     normalize_waveform,
     resolve_dit_bundle,
     resolve_silence_latent_path,
+    sample_timbre_reference_latents,
     snap_latent_frames_for_inference,
     vae_tile_windows,
 )
@@ -779,6 +780,7 @@ class AceStepMlxGenerator:
         dcw_mode: str = "double",
         dcw_scaler: float = 0.05,
         dcw_high_scaler: float = 0.02,
+        timbre_from_source: bool = False,
         **kwargs: Any,
     ) -> np.ndarray:
         del kwargs
@@ -823,9 +825,13 @@ class AceStepMlxGenerator:
         else:
             src_latents_np = ref_latents_np[:, :max_latent_length, :].copy()
 
-        refer_len = min(750, int(src_latents_np.shape[1]))
-        refer_packed = self._ctx.array(src_latents_np[:, :refer_len, :].astype(np.float32))
-        refer_order_mx = self._ctx.array(np.array([0], dtype=np.int32))
+        if timbre_from_source:
+            refer_np = sample_timbre_reference_latents(ref_latents_np, int(seed))
+            refer_order = np.array([0], dtype=np.int32)
+        else:
+            refer_np, refer_order = self._infer_refer_latent()
+        refer_packed = self._ctx.array(refer_np.astype(np.float32))
+        refer_order_mx = self._ctx.array(refer_order)
 
         duration_sec = max_latent_length * LATENT_HOP_SAMPLES / SAMPLE_RATE
         requested_samples = int(round(duration_sec * SAMPLE_RATE))
