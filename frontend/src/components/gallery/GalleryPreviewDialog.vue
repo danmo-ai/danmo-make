@@ -313,7 +313,10 @@ const dialogWidth = computed(() => {
     if (w > 0 && h > 0 && w >= h) return 'min(860px, 92vw)';
     return 'min(640px, 92vw)';
   }
-  if (props.media === 'audio') return '640px';
+  if (props.media === 'audio') {
+    const segs = currentItem.value?.metadata?.lyrics_segments;
+    return Array.isArray(segs) && segs.length ? 'min(960px, 94vw)' : '640px';
+  }
   return 'min(94vw, 1120px)';
 });
 

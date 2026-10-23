@@ -195,6 +195,25 @@ class _Attention(nn.Module):
         attn_out = attn_out.transpose(0, 2, 1, 3).reshape(B, L, -1)
         return self.o_proj(attn_out)
 
+    def cross_attention_probs(
+        self,
+        hidden_states: mx.array,
+        encoder_hidden_states: mx.array,
+        heads: List[int],
+    ) -> mx.array:
+        """Explicit softmax(q·kᵀ) for selected heads → ``[B, len(heads), L, enc_L]``."""
+        B, L, _ = hidden_states.shape
+        enc_L = encoder_hidden_states.shape[1]
+        q = self.q_proj(hidden_states)
+        q = self.q_norm(q.reshape(B, L, self.num_heads, self.head_dim)).transpose(0, 2, 1, 3)
+        k = self.k_proj(encoder_hidden_states)
+        k = self.k_norm(k.reshape(B, enc_L, self.num_kv_heads, self.head_dim)).transpose(0, 2, 1, 3)
+        head_idx = mx.array([int(h) for h in heads], dtype=mx.int32)
+        q_sel = mx.take(q, head_idx, axis=1).astype(mx.float32)
+        k_sel = mx.take(k, head_idx // self.n_rep, axis=1).astype(mx.float32)
+        scores = (q_sel * self.scale) @ k_sel.transpose(0, 1, 3, 2)
+        return mx.softmax(scores, axis=-1)
+
 
 # ---------------------------------------------------------------------------
 # DiT layer
@@ -260,6 +279,8 @@ class _DiTLayer(nn.Module):
         encoder_attention_mask: Optional[mx.array],
         cache: Optional[_CrossAttentionCache] = None,
         use_cache: bool = False,
+        capture_heads: Optional[List[int]] = None,
+        captured: Optional[List[mx.array]] = None,
     ) -> mx.array:
         modulation = self.scale_shift_table + temb
         shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = (
@@ -286,6 +307,10 @@ class _DiTLayer(nn.Module):
 
         # 2) Cross-attention
         normed = self.cross_attn_norm(hidden_states)
+        if capture_heads and captured is not None:
+            captured.append(
+                self.cross_attn.cross_attention_probs(normed, encoder_hidden_states, capture_heads)
+            )
         cross_out = self.cross_attn(
             normed,
             encoder_hidden_states=encoder_hidden_states,
@@ -438,16 +463,14 @@ class AceStepDiTMLX(nn.Module):
             )
         return self._sliding_masks[key]
 
-    def __call__(
+    def _prologue(
         self,
         hidden_states: mx.array,
         timestep: mx.array,
         timestep_r: mx.array,
         encoder_hidden_states: mx.array,
         context_latents: mx.array,
-        cache: Optional[_CrossAttentionCache] = None,
-        use_cache: bool = True,
-    ) -> Tuple[mx.array, Optional[_CrossAttentionCache]]:
+    ):
         temb_t, proj_t = self.time_embed(timestep)
         temb_r, proj_r = self.time_embed_r(timestep - timestep_r)
         temb = temb_t + temb_r
@@ -456,7 +479,6 @@ class AceStepDiTMLX(nn.Module):
         hidden_states = mx.concatenate([context_latents, hidden_states], axis=-1)
 
         original_seq_len = hidden_states.shape[1]
-        pad_length = 0
         if hidden_states.shape[1] % self.patch_size != 0:
             pad_length = self.patch_size - (hidden_states.shape[1] % self.patch_size)
             padding = mx.zeros(
@@ -469,12 +491,88 @@ class AceStepDiTMLX(nn.Module):
         encoder_hidden_states = self.condition_embedder(encoder_hidden_states)
 
         seq_len = hidden_states.shape[1]
-        dtype = hidden_states.dtype
-
         cos, sin = self.rotary_emb(seq_len)
-
         has_sliding = any(lt == "sliding_attention" for lt in self._layer_types)
-        sliding_mask = self._get_sliding_mask(seq_len, dtype) if has_sliding else None
+        sliding_mask = self._get_sliding_mask(seq_len, hidden_states.dtype) if has_sliding else None
+        return (
+            hidden_states,
+            encoder_hidden_states,
+            temb,
+            timestep_proj,
+            cos,
+            sin,
+            sliding_mask,
+            original_seq_len,
+        )
+
+    def capture_cross_attention(
+        self,
+        hidden_states: mx.array,
+        timestep: mx.array,
+        encoder_hidden_states: mx.array,
+        context_latents: mx.array,
+        layers_config: Dict[int, List[int]],
+    ) -> mx.array:
+        """Cross-attn probs of selected (layer, head) pairs → ``[n_sel, enc_L, frames]`` (batch 0).
+
+        Runs layers only up to ``max(layers_config)`` (upstream ``enable_early_exit``).
+        """
+        if not layers_config:
+            raise ValueError("layers_config must select at least one (layer, head)")
+        (
+            hidden_states,
+            encoder_hidden_states,
+            _temb,
+            timestep_proj,
+            cos,
+            sin,
+            sliding_mask,
+            _orig_len,
+        ) = self._prologue(hidden_states, timestep, timestep, encoder_hidden_states, context_latents)
+
+        last_layer = max(int(k) for k in layers_config)
+        if last_layer >= len(self.layers):
+            raise ValueError(
+                f"lyric alignment layer {last_layer} out of range (DiT has {len(self.layers)} layers)"
+            )
+        captured: List[mx.array] = []
+        for idx, layer in enumerate(self.layers[: last_layer + 1]):
+            heads = [int(h) for h in layers_config.get(idx, [])]
+            hidden_states = layer(
+                hidden_states,
+                position_cos_sin=(cos, sin),
+                temb=timestep_proj,
+                self_attn_mask=sliding_mask if layer.layer_type == "sliding_attention" else None,
+                encoder_hidden_states=encoder_hidden_states,
+                encoder_attention_mask=None,
+                cache=None,
+                use_cache=False,
+                capture_heads=heads or None,
+                captured=captured,
+            )
+        probs = mx.concatenate(captured, axis=1)[0]
+        return probs.transpose(0, 2, 1)
+
+    def __call__(
+        self,
+        hidden_states: mx.array,
+        timestep: mx.array,
+        timestep_r: mx.array,
+        encoder_hidden_states: mx.array,
+        context_latents: mx.array,
+        cache: Optional[_CrossAttentionCache] = None,
+        use_cache: bool = True,
+    ) -> Tuple[mx.array, Optional[_CrossAttentionCache]]:
+        (
+            hidden_states,
+            encoder_hidden_states,
+            temb,
+            timestep_proj,
+            cos,
+            sin,
+            sliding_mask,
+            original_seq_len,
+        ) = self._prologue(hidden_states, timestep, timestep_r, encoder_hidden_states, context_latents)
 
         for layer in self.layers:
             self_attn_mask = sliding_mask if layer.layer_type == "sliding_attention" else None

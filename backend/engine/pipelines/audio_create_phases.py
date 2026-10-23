@@ -193,7 +193,7 @@ def build_audio_create_run_context(
 def execute_audio_infer_batch(
     ctx: AudioCreateRunContext,
 ) -> tuple[list[str], list[float], Any, Any]:
-    """Run batched waveform generation; returns paths, durations, lyrics_capture, generator."""
+    """Run batched waveform generation; returns paths, durations, per-sample lyrics captures, generator."""
     pipeline = ctx.pipeline
     exec_ctx = ctx.exec_ctx
     family = ctx.family
@@ -202,7 +202,7 @@ def execute_audio_infer_batch(
 
     output_paths: List[str] = []
     output_durations: List[float] = []
-    lyrics_capture: Any = None
+    lyrics_captures: List[Any] = []
 
     for i in range(ctx.n):
         raise_if_cancelled(exec_ctx)
@@ -256,9 +256,7 @@ def execute_audio_infer_batch(
         if q_msg:
             exec_ctx.on_log(LogEvent(level="info", message=q_msg))
 
-        cap = getattr(generator, "last_lyrics_capture", None)
-        if cap is not None:
-            lyrics_capture = cap
+        lyrics_captures.append(getattr(generator, "last_lyrics_capture", None))
 
         exec_ctx.on_log(
             LogEvent(
@@ -326,14 +324,14 @@ def execute_audio_infer_batch(
         output_paths.append(str(out_path))
         output_durations.append(dur_written)
 
-    return output_paths, output_durations, lyrics_capture, generator
+    return output_paths, output_durations, lyrics_captures, generator
 
 
 def persist_audio_create(
     ctx: AudioCreateRunContext,
     output_paths: list[str],
     output_durations: list[float],
-    lyrics_capture: Any,
+    lyrics_captures: list[Any],
     generator: Any,
 ) -> EngineResult:
     exec_ctx = ctx.exec_ctx
@@ -364,7 +362,7 @@ def persist_audio_create(
         exec_ctx.task_id,
         output_durations,
         family=family,
-        lyrics_capture=lyrics_capture,
+        lyrics_captures=lyrics_captures,
     )
 
     result_meta: dict[str, Any] = {
@@ -374,6 +372,7 @@ def persist_audio_create(
         "guidance": ctx.guidance,
         "duration_seconds": ctx.duration,
     }
+    lyrics_capture = next((c for c in reversed(lyrics_captures) if c is not None), None)
     if lyrics_capture is not None:
         result_meta.update(
             audio_lyrics_metadata(family, lyrics_capture, duration_sec=ctx.duration)

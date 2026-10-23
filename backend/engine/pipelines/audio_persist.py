@@ -76,7 +76,7 @@ def persist_audio_create_assets(
     durations: list[float] | None,
     *,
     family: str,
-    lyrics_capture: Any | None = None,
+    lyrics_captures: list[Any] | None = None,
 ) -> list[str]:
     parent_id, relation = resolve_lineage(request.metadata)
     ids: list[str] = []
@@ -95,6 +95,9 @@ def persist_audio_create_assets(
             "output_path": str(p),
         }
         asset_meta.update(work_title_metadata(request.title))
+        lyrics_capture = (
+            lyrics_captures[idx] if lyrics_captures and idx < len(lyrics_captures) else None
+        )
         if lyrics_capture is not None:
             dur_meta = asset_meta.get("duration_seconds")
             asset_meta.update(
