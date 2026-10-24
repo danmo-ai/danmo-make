@@ -282,6 +282,17 @@
                 </div>
               </div>
 
+              <div v-if="workMode === 'create' && showDenoise" class="audio-composer__advanced-row">
+                <div class="audio-composer__field">
+                  <label>{{ $tt('audio.denoise') }}</label>
+                  <DqSelect v-model="localParams.denoise" size="sm">
+                    <DqOption value="off" :label="$tt('audio.denoiseOff')" />
+                    <DqOption value="mild" :label="$tt('audio.denoiseMild')" />
+                    <DqOption value="strong" :label="$tt('audio.denoiseStrong')" />
+                  </DqSelect>
+                </div>
+              </div>
+
               <!-- Temperature & Top-K (create mode only) -->
               <div v-if="workMode !== 'cover' && (temperatureDef || topKDef)" class="audio-composer__advanced-row">
                 <div v-if="temperatureDef" class="audio-composer__field">
@@ -731,6 +742,7 @@ function onStyleCommand(command: string) {
 
 // Capability flags from registry
 const paramDefs = computed(() => props.currentModelConfig?.parameters || {});
+const showDenoise = computed(() => paramDefs.value.denoise?.type === 'enum');
 
 const stepsDef = computed(() => {
   const p = paramDefs.value.steps;

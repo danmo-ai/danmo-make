@@ -299,6 +299,7 @@ class AudioGenerationRequest(BaseModel):
     n: int = Field(2, ge=1, le=8)
     lm_expansion: Optional[str] = None  # auto | format | off
     audio_format: str = "mp3"
+    denoise: Literal["off", "mild", "strong"] = "off"
     adapters: list[AdapterRef] = Field(default_factory=list)
     priority: Literal["normal", "high"] = "normal"
     metadata: dict[str, Any] = Field(default_factory=dict)

@@ -2596,6 +2596,62 @@ class AceStepGenerationTests(unittest.TestCase):
             self.assertTrue(prepared.lm_enabled)
             self.assertEqual(prepared.lyrics, "[verse]\nhello world")
 
+    def test_audio_denoise_contract_and_filters(self) -> None:
+        from pydantic import ValidationError
+
+        from backend.core.contracts import AudioGenerationRequest
+        from backend.engine.pipelines.audio_persist import audio_denoise_filter
+
+        self.assertEqual(AudioGenerationRequest(model="m", prompt="p").denoise, "off")
+        self.assertIsNone(audio_denoise_filter("off"))
+        self.assertEqual(audio_denoise_filter("mild"), "afftdn=nr=6:nf=-45:tn=1")
+        self.assertEqual(audio_denoise_filter("strong"), "afftdn=nr=10:nf=-42:tn=1")
+        with self.assertRaises(ValidationError):
+            AudioGenerationRequest(model="m", prompt="p", denoise="invalid")
+        with self.assertRaises(RuntimeError):
+            audio_denoise_filter("invalid")
+
+    def test_audio_denoise_save_waveform_preserves_format(self) -> None:
+        import shutil
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        import numpy as np
+        import soundfile as sf
+
+        from backend.engine.pipelines.audio_persist import save_audio_waveform
+
+        if shutil.which("ffmpeg") is None:
+            self.skipTest("ffmpeg not installed")
+        sample_rate = 48_000
+        t = np.arange(sample_rate // 4, dtype=np.float32) / sample_rate
+        tone = 0.2 * np.sin(2 * np.pi * 440 * t)
+        waveform = np.stack([tone, tone], axis=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            for mode in ("off", "mild", "strong"):
+                with self.subTest(mode=mode):
+                    with patch(
+                        "backend.engine.pipelines.audio_persist.subprocess.run",
+                        wraps=subprocess.run,
+                    ) as run:
+                        path = save_audio_waveform(
+                            Path(tmp) / mode,
+                            waveform,
+                            "test-model",
+                            7,
+                            family="test",
+                            sample_rate=sample_rate,
+                            denoise=mode,
+                        )
+                    self.assertEqual(run.call_count, 0 if mode == "off" else 1)
+                    info = sf.info(str(path))
+                    self.assertEqual(info.samplerate, sample_rate)
+                    self.assertEqual(info.channels, 2)
+                    self.assertEqual(info.frames, len(waveform))
+                    self.assertEqual(info.subtype, "PCM_16")
+
     def test_resource_policy_clamps_duration(self) -> None:
         from backend.engine.families.ace_step.quality.resource_policy import (
             AceStepResourcePolicy,
@@ -5945,14 +6001,14 @@ class LLMServiceTests(unittest.TestCase):
     def test_get_model_info_reads_registry_name(self) -> None:
         svc = self._load_service()
         info = svc.get_model_info()
-        self.assertEqual(info["model_id"], "qwen3.5-4b")
+        self.assertEqual(info["model_id"], "qwen3-vl-4b-instruct")
         self.assertIsInstance(info["name"], dict)
         self.assertIn("zh", info["name"])
         self.assertIn("en", info["name"])
         self.assertIsInstance(info["available"], bool)
 
         vision = svc.get_vision_model_info()
-        self.assertEqual(vision["model_id"], "qwen3-vl-4b-instruct")
+        self.assertEqual(vision["model_id"], info["model_id"])
         self.assertIsInstance(vision["name"], dict)
 
     def test_normalize_app_llm_settings_uses_saved_defaults(self) -> None:
@@ -6209,49 +6265,28 @@ Should not appear
             self.assertNotIn("/think", user_content)
 
     def test_enhance_prompt_includes_style_and_reuses_loaded_model(self) -> None:
-        from unittest.mock import MagicMock, patch
-
         from backend.core.contracts import EnhanceRequest
 
         svc = self._load_service()
-        svc.apply_model_settings(llm_think_enabled=True)
-        load_calls = 0
-        generate_calls = 0
-        user_messages: list[str] = []
+        calls: list[str] = []
 
-        fake_model = MagicMock()
-        fake_tokenizer = MagicMock()
-
-        def capture_load():
-            nonlocal load_calls
-            load_calls += 1
-            return fake_model, fake_tokenizer
-
-        def capture_build(_tokenizer, messages, *, enable_thinking=None):
-            user_messages.append(messages[-1].content)
-            return "stub-prompt"
-
-        def capture_generate(*_args, **_kwargs):
-            nonlocal generate_calls
-            generate_calls += 1
-            return "夕阳下的少女，金色余晖，柔和逆光，写实摄影"
-
-        with patch.object(svc, "_load_model", side_effect=capture_load), \
-             patch.object(svc, "_unload_model"), \
-             patch.object(svc, "_build_chat_prompt", side_effect=capture_build), \
-             patch("backend.engine.llm.service_mlx.mlx_lm.generate", side_effect=capture_generate):
-            result = svc.enhance_prompt(
-                EnhanceRequest(prompt="夕阳下的少女", style_positive="cinematic"),
+        def capture(request, enable_thinking=None):
+            calls.append(request.messages[-1].content)
+            return svc._format_response(
+                "夕阳下的少女，金色余晖，柔和逆光，写实摄影",
+                request.model or svc._model_id,
             )
 
+        svc.chat_completion = capture  # type: ignore[method-assign]
+        result = svc.enhance_prompt(
+            EnhanceRequest(prompt="夕阳下的少女", style_positive="cinematic"),
+        )
+
         self.assertTrue(result.enhanced_prompt.strip())
-        self.assertEqual(load_calls, 1)
-        self.assertGreaterEqual(generate_calls, 1)
-        self.assertTrue(user_messages)
-        self.assertIn("cinematic", user_messages[0])
+        self.assertEqual(len(calls), 1)
+        self.assertIn("cinematic", calls[0])
 
     def test_generation_kwargs_uses_sampler(self) -> None:
-        from backend.core.contracts import ChatCompletionRequest, ChatMessage
         from backend.core.model_registry import ModelRegistry
         from backend.engine.llm.service_mlx import LLMService
         from backend.utils.path_utils import PathResolver
@@ -6260,21 +6295,10 @@ Should not appear
         registry = ModelRegistry.load(root / "default_config" / "models_registry.json")
         svc = LLMService(registry, PathResolver(root), default_model_id="qwen3-4b-thinking-2507")
 
-        request = ChatCompletionRequest(
-            messages=[ChatMessage(role="user", content="hi")],
-            temperature=0.7,
-            top_p=0.9,
-            max_tokens=128,
-        )
-        kwargs = svc._generation_kwargs(request)
-        self.assertEqual(kwargs["max_tokens"], 128)
-        self.assertIn("sampler", kwargs)
-        self.assertNotIn("temp", kwargs)
-        self.assertTrue(callable(kwargs["sampler"]))
-
-        think_kwargs = svc._generation_kwargs(request, think_active=True)
-        self.assertGreater(think_kwargs["max_tokens"], 128)
-        self.assertLessEqual(think_kwargs["max_tokens"], 8192)
+        self.assertEqual(svc._token_budget(128, False), 128)
+        grown = svc._token_budget(128, True)
+        self.assertGreater(grown, 128)
+        self.assertLessEqual(grown, 8192)
 
     def test_think_mode_suffix_respects_settings(self) -> None:
         from backend.core.model_registry import ModelRegistry

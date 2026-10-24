@@ -4,6 +4,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from pathlib import Path
+import shutil
+import subprocess
 from typing import Any
 
 import numpy as np
@@ -39,6 +41,44 @@ def raise_if_cancelled(exec_ctx: ExecutionContext) -> None:
         raise asyncio.CancelledError()
 
 
+DENOISE_FILTERS = {
+    "mild": "afftdn=nr=6:nf=-45:tn=1",
+    "strong": "afftdn=nr=10:nf=-42:tn=1",
+}
+
+
+def audio_denoise_filter(mode: str) -> str | None:
+    if mode == "off":
+        return None
+    try:
+        return DENOISE_FILTERS[mode]
+    except KeyError as exc:
+        raise RuntimeError(f"Unknown audio denoise mode {mode!r}; use off, mild, or strong") from exc
+
+
+def apply_audio_denoise(path: Path, mode: str) -> Path:
+    audio_filter = audio_denoise_filter(mode)
+    if audio_filter is None:
+        return path
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("Audio denoise requires ffmpeg on PATH")
+    tmp_path = path.with_name(f".{path.stem}.{mode}.tmp.wav")
+    cmd = [
+        ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(path), "-af", audio_filter, "-c:a", "pcm_s16le", str(tmp_path),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, check=False)
+        if proc.returncode != 0:
+            detail = (proc.stderr or b"").decode(errors="ignore").strip()[:1200]
+            raise RuntimeError(f"Audio denoise ({mode}) failed: {detail or 'ffmpeg error'}")
+        tmp_path.replace(path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    return path
+
+
 def save_audio_waveform(
     project_root: Path,
     waveform: Any,
@@ -47,6 +87,7 @@ def save_audio_waveform(
     *,
     family: str,
     sample_rate: int,
+    denoise: str = "off",
 ) -> Path:
     """Write one waveform to ``outputs/audio/*.wav``."""
     out_dir = project_root / "outputs" / "audio"
@@ -63,7 +104,7 @@ def save_audio_waveform(
         wf = wf[:, None]
 
     sf.write(str(out_path), wf, sample_rate)
-    return out_path
+    return apply_audio_denoise(out_path, denoise)
 
 
 def persist_audio_create_assets(
@@ -91,6 +132,7 @@ def persist_audio_create_assets(
             "prompt": request.prompt,
             "duration_seconds": dur if dur is not None else request.duration,
             "format": fmt,
+            "denoise": request.denoise,
             "elapsed_seconds": elapsed,
             "output_path": str(p),
         }

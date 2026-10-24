@@ -2,7 +2,8 @@
 
 The predictor scores 128-token tiles (TripPool + a residual projection). Video
 queries keep the top tiles; text, audio, and keyframe-global rows stay dense.
-Attention itself is gather + ``mx.fast.scaled_dot_product_attention``.
+Attention itself is gather plus ``scaled_dot_product_attention_bhsd_mx``
+(``attention_backend="mlx"``).
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from typing import Any, Callable
 import mlx.core as mx
 import numpy as np
 
+from backend.engine.common.ops.attention import scaled_dot_product_attention_bhsd_mx
 from backend.engine.contracts.pipeline_registry import local_bundle_root
 from backend.engine.families.minimax_h3.veda import (
     TILE_SIZE,
@@ -327,7 +329,9 @@ def _attend_selected(
         values = mx.take(v_flat, idx, axis=0).reshape(heads * count, 1, kmax * TILE_SIZE, dim)
         allow = mx.array(np.ascontiguousarray(allowed[:, r0:r1].reshape(heads * count, 1, 1, kmax * TILE_SIZE)))
         query = qm[:, r0:r1].reshape(heads * count, 1, TILE_SIZE, dim)
-        out = mx.fast.scaled_dot_product_attention(query, keys, values, scale=scale, mask=allow)
+        out = scaled_dot_product_attention_bhsd_mx(
+            mx, query, keys, values, scale=scale, mask=allow, attention_backend="mlx",
+        )
         mx.eval(out)
         out = mx.transpose(out.reshape(heads, count, TILE_SIZE, dim), (1, 2, 0, 3))
         pieces.append(out.reshape(count * TILE_SIZE, heads, dim))
@@ -341,7 +345,9 @@ def _attend_selected(
     global_pieces: list[mx.array] = []
     for r0 in range(n_video, n):
         query = qm[:, r0 : r0 + 1].reshape(heads, 1, TILE_SIZE, dim)
-        out = mx.fast.scaled_dot_product_attention(query, keys, values, scale=scale, mask=allow_all)
+        out = scaled_dot_product_attention_bhsd_mx(
+            mx, query, keys, values, scale=scale, mask=allow_all, attention_backend="mlx",
+        )
         mx.eval(out)
         global_pieces.append(mx.transpose(out.reshape(heads, TILE_SIZE, dim), (1, 0, 2)))
     return mx.concatenate([video_out, mx.concatenate(global_pieces, axis=0)], axis=0)

@@ -49,6 +49,7 @@ def main():
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--n", type=int, default=2)
     parser.add_argument("--audio-format", default="mp3")
+    parser.add_argument("--denoise", choices=("off", "mild", "strong"), default="off")
     parser.add_argument("--output", required=True, help="Output audio path")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     args = parser.parse_args()
@@ -71,6 +72,7 @@ def main():
         seed=args.seed,
         n=args.n,
         audio_format=args.audio_format,
+        denoise=args.denoise,
         output=args.output,
         project_root=Path(args.project_root).resolve(),
     )

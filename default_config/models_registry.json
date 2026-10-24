@@ -9906,6 +9906,23 @@
               "en": "Default auto runs format_sample on caption+lyrics (official Custom path); off disables 5Hz LM."
             }
           },
+          "denoise": {
+            "type": "enum",
+            "default": "off",
+            "options": [
+              "off",
+              "mild",
+              "strong"
+            ],
+            "label": {
+              "zh": "背景降噪",
+              "en": "Background denoise"
+            },
+            "description": {
+              "zh": "生成后降低持续背景杂音；增强模式可能削弱混响和乐器尾音。",
+              "en": "Reduce steady background noise after generation; strong mode may soften reverb and instrument tails."
+            }
+          },
           "steps": {
             "type": "int",
             "default": 50,
@@ -10070,6 +10087,23 @@
             "description": {
               "zh": "默认 auto：对描述+歌词执行 format_sample（官方 Custom 路径）；off 关闭 5Hz LM。",
               "en": "Default auto runs format_sample on caption+lyrics (official Custom path); off disables 5Hz LM."
+            }
+          },
+          "denoise": {
+            "type": "enum",
+            "default": "off",
+            "options": [
+              "off",
+              "mild",
+              "strong"
+            ],
+            "label": {
+              "zh": "背景降噪",
+              "en": "Background denoise"
+            },
+            "description": {
+              "zh": "生成后降低持续背景杂音；增强模式可能削弱混响和乐器尾音。",
+              "en": "Reduce steady background noise after generation; strong mode may soften reverb and instrument tails."
             }
           },
           "steps": {
@@ -10359,6 +10393,23 @@
             "default": 30,
             "min": 5,
             "max": 210
+          },
+          "denoise": {
+            "type": "enum",
+            "default": "off",
+            "options": [
+              "off",
+              "mild",
+              "strong"
+            ],
+            "label": {
+              "zh": "背景降噪",
+              "en": "Background denoise"
+            },
+            "description": {
+              "zh": "生成后降低持续背景杂音；增强模式可能削弱混响和乐器尾音。",
+              "en": "Reduce steady background noise after generation; strong mode may soften reverb and instrument tails."
+            }
           },
           "steps": {
             "type": "int",

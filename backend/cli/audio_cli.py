@@ -34,6 +34,7 @@ def generate(
     seed: int | None = None,
     n: int = 2,
     audio_format: str = "mp3",
+    denoise: str = "off",
     output: str = "",
     project_root: Path | None = None,
 ) -> str:
@@ -63,6 +64,7 @@ def generate(
             seed=seed,
             n=n,
             audio_format=audio_format,
+            denoise=denoise,
         )
 
         if not ctx.audio_engine.supports(model, "create_music"):

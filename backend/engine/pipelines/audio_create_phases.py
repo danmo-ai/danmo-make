@@ -289,6 +289,10 @@ def execute_audio_infer_batch(
             )
         )
 
+        if ctx.request.denoise != "off":
+            exec_ctx.on_log(
+                LogEvent(level="info", message=f"Audio background denoise: {ctx.request.denoise}")
+            )
         out_path = save_audio_waveform(
             pipeline._project_root,
             waveform,
@@ -296,6 +300,7 @@ def execute_audio_infer_batch(
             batch_seed,
             family=family,
             sample_rate=ctx.sample_rate,
+            denoise=ctx.request.denoise,
         )
         n_samples = int(waveform.shape[0]) if hasattr(waveform, "shape") else 0
         dur_written = n_samples / ctx.sample_rate if n_samples else 0.0
@@ -371,6 +376,7 @@ def persist_audio_create(
         "steps": ctx.steps,
         "guidance": ctx.guidance,
         "duration_seconds": ctx.duration,
+        "denoise": ctx.request.denoise,
     }
     lyrics_capture = next((c for c in reversed(lyrics_captures) if c is not None), None)
     if lyrics_capture is not None:
