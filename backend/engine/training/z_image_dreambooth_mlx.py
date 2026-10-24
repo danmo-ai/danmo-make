@@ -35,11 +35,12 @@ from backend.engine.training.lora_layers_mlx import (
 )
 from backend.engine.training.dit_training_loss_mlx import (
     CLASS_PRIOR_LATENT_COUNT,
-    apply_static_sigma_shift,
     combine_instance_prior_loss,
     flow_match_mse,
     merge_prior_cache_tensors,
+    caption_dropout_applies,
     sample_noisy_latent_shifted,
+    sample_shifted_sigmas,
     sample_noisy_latent_turbo,
     sample_prior_latent,
     sample_turbo_sigmas,
@@ -175,6 +176,17 @@ def _encode_dataset_to_cache(
         mx.eval(prior_cap)
         cache.write_prior({"cap": prior_cap})
     return cache.finalize()
+
+
+def _ensure_zimage_uncond_caption(cache: LatentCache, text_encoder: Any) -> Any:
+    """Cache the empty-prompt embedding used by caption dropout."""
+    try:
+        return cache.load_prior(name="uncond")["cap"]
+    except RuntimeError:
+        cap = text_encoder.encode([""])
+        mx.eval(cap)
+        cache.write_prior({"cap": cap}, name="uncond")
+        return cap
 
 
 def _training_loss(
@@ -451,10 +463,16 @@ def _log_training_sigma_distribution(
                 f"inference_σ={_fmt_floats(sigmas)}"
             )
         else:
-            u = mx.random.uniform(shape=(n,), dtype=ctx.float32())
-            s = apply_static_sigma_shift(u, sigma_shift)
+            s = sample_shifted_sigmas(
+                ctx,
+                n,
+                sigma_shift=sigma_shift,
+                sigma_bias=train_runtime.sigma_bias,
+            )
             mx.eval(s)
-            header = f"base static shift={sigma_shift:g}"
+            header = (
+                f"base static shift={sigma_shift:g} bias={train_runtime.sigma_bias}"
+            )
     except Exception as e:  # noqa: BLE001 — diagnostics must never break training
         _log(exec_ctx, "warning", f"[diag] σ distribution probe skipped: {e}")
         return
@@ -727,6 +745,15 @@ def run_z_image_dreambooth_training(
         n_samples = len(pairs) * train_runtime.num_augmentations
     else:
         n_samples = _run_encode()
+    uncond_cap = None
+    if train_runtime.caption_dropout > 0:
+        uncond_cap = _ensure_zimage_uncond_caption(latent_cache, text_encoder)
+        _log(
+            exec_ctx,
+            "info",
+            f"Caption dropout {train_runtime.caption_dropout:.2f}: "
+            "empty prompt on that fraction of steps so scene words cannot explain the face",
+        )
     del vae_enc
     text_encoder.release_weights()
     ctx.clear_cache()
@@ -822,7 +849,7 @@ def run_z_image_dreambooth_training(
                 "warning",
                 "σ sampling is concentrated near pure noise (shift>=5 and/or sigma_bias=high): most "
                 "steps land at σ>0.9 and the 0.3–0.7 band that fixes facial structure is starved; "
-                "identity LoRAs converge poorly. Prefer train_sigma_shift=3 with sigma_bias=uniform.",
+                "identity LoRAs converge poorly. Prefer train_sigma_shift=3 with sigma_bias=sigmoid.",
             )
         if train_runtime.scheme4_turbo_band_mix > 0:
             _log(
@@ -936,6 +963,8 @@ def run_z_image_dreambooth_training(
         return latent_cache.sample_z_image(indices[0])
 
     def loss_fn(x0: mx.array, cap: mx.array) -> mx.array:
+        if uncond_cap is not None and caption_dropout_applies(train_runtime.caption_dropout):
+            cap = uncond_cap
         assistant_was_off = False
         if (
             is_turbo

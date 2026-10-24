@@ -473,11 +473,13 @@ class LoraTrainingRequest(BaseModel):
     caption_mode: Optional[Literal["unified", "per_image"]] = None
     # σ sampling (Z-Image). Base: static shift for training noise levels (None → preset / registry).
     train_sigma_shift: Optional[float] = Field(None, gt=0)
-    sigma_bias: Optional[Literal["uniform", "low", "high"]] = None
+    sigma_bias: Optional[Literal["uniform", "low", "high", "sigmoid"]] = None
     # Turbo: inference-step band (1-indexed, inclusive) sampled continuously + bias.
     timestep_low: Optional[int] = Field(None, ge=1)
     timestep_high: Optional[int] = Field(None, ge=1)
-    timestep_bias: Optional[Literal["uniform", "low", "high"]] = None
+    timestep_bias: Optional[Literal["uniform", "low", "high", "sigmoid"]] = None
+    # Probability of replacing the caption with the empty prompt (AI-Toolkit caption dropout).
+    caption_dropout: Optional[float] = Field(None, ge=0, le=0.5)
     turbo_assistant_off_prob: Optional[float] = Field(None, ge=0, le=1)
     # Face-aware crop (YuNet): auto = concept datasets when the detector is available; on = required.
     face_crop: Optional[Literal["auto", "on", "off"]] = None

@@ -259,7 +259,7 @@
                 </div>
                 <div class="lora-train-page__field">
                   <label class="lora-train-page__label">{{ $t('loraTrain.loraBlocks') }}</label>
-                  <DqInput v-model.number="form.lora_blocks" type="number" min="1" max="64" />
+                  <DqInput v-model.number="form.lora_blocks" type="number" min="-1" max="64" />
                   <p class="lora-train-page__field-hint">{{ $t('loraTrain.customBlocksHint') }}</p>
                 </div>
                 <div class="lora-train-page__field">
@@ -352,7 +352,7 @@
               <div class="lora-train-page__field-grid">
                 <div v-if="form.preset !== 'custom'" class="lora-train-page__field">
                   <label class="lora-train-page__label">{{ $t('loraTrain.loraBlocks') }}</label>
-                  <DqInput v-model.number="form.lora_blocks" type="number" :placeholder="$t('loraTrain.usePresetDefault')" />
+                  <DqInput v-model.number="form.lora_blocks" type="number" min="-1" max="64" :placeholder="$t('loraTrain.usePresetDefault')" />
                 </div>
                 <div class="lora-train-page__field">
                   <label class="lora-train-page__label">{{ $t('loraTrain.loraAlpha') }}</label>
@@ -960,7 +960,10 @@ function applyCustomDefaultsFromQuick() {
   const res = quick.resolution as number[] | undefined;
   if (form.resolution_edge == null) form.resolution_edge = Number(res?.[0]) || 512;
   if (form.progress_steps == null) form.progress_steps = 20;
-  if (form.min_snr_gamma == null) form.min_snr_gamma = 5;
+  if (form.min_snr_gamma == null) {
+    const snr = quick.min_snr_gamma;
+    form.min_snr_gamma = snr == null ? 0 : Number(snr);
+  }
   if (form.lora_blocks == null && quick.lora_blocks != null) {
     form.lora_blocks = Number(quick.lora_blocks);
   }
@@ -1028,7 +1031,9 @@ function buildTrainingBody(): Record<string, unknown> {
     if (form.progress_steps != null && form.progress_steps >= 4) {
       body.progress_steps = form.progress_steps;
     }
-    if (form.lora_blocks != null && form.lora_blocks > 0) body.lora_blocks = form.lora_blocks;
+    if (form.lora_blocks === -1 || (form.lora_blocks != null && form.lora_blocks > 0)) {
+      body.lora_blocks = form.lora_blocks;
+    }
     if (form.num_augmentations != null && form.num_augmentations >= 1) {
       body.num_augmentations = form.num_augmentations;
     }
@@ -1038,9 +1043,9 @@ function buildTrainingBody(): Record<string, unknown> {
   } else {
     const presetRes = presetResolutionBody(form.preset);
     if (presetRes) body.resolution = presetRes;
-    if (form.lora_blocks != null && form.lora_blocks > 0) {
+    if (form.lora_blocks === -1 || (form.lora_blocks != null && form.lora_blocks > 0)) {
       const presetBlocks = Number((modelPresets.value[form.preset] as Record<string, unknown> | undefined)?.lora_blocks);
-      if (!presetBlocks || form.lora_blocks !== presetBlocks) {
+      if (!Number.isFinite(presetBlocks) || form.lora_blocks !== presetBlocks) {
         body.lora_blocks = form.lora_blocks;
       }
     }

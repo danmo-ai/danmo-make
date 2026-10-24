@@ -8747,8 +8747,10 @@ class LoraTrainRuntimeTests(unittest.TestCase):
         self.assertEqual(preset["iterations"], Z_IMAGE_SCHEME4_CORE["iterations"])
         self.assertEqual(preset["lora_rank"], 32)
         self.assertEqual(preset["lora_blocks"], -1)
-        self.assertEqual(preset["sigma_bias"], "uniform")
+        self.assertEqual(preset["sigma_bias"], "sigmoid")
         self.assertEqual(preset["train_sigma_shift"], 3.0)
+        self.assertEqual(preset["caption_dropout"], 0.05)
+        self.assertEqual(preset["timestep_bias"], "sigmoid")
         self.assertEqual(
             preset["lora_module_keys"],
             ["to_q", "to_k", "to_v", "to_out", "w1", "w2", "w3"],
@@ -8957,10 +8959,14 @@ class LoraTrainRuntimeTests(unittest.TestCase):
         from backend.engine.training.lora_layers_mlx import (
             apply_lora_to_zimage_dit,
             iter_lora_linears,
+            list_zimage_lora_blocks,
         )
 
         ctx = MLXContext()
         model = ZImageTransformer(ZImageConfig(), ctx)
+        head = list_zimage_lora_blocks(model, lora_blocks=2)
+        self.assertIs(head[0], model.context_refiner[0])
+        self.assertIs(head[1], model.context_refiner[1])
         apply_lora_to_zimage_dit(
             model,
             rank=4,
@@ -8990,21 +8996,24 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         zturbo = resolve_preset("standard", base_model="z-image-turbo")
         qwen = resolve_preset("standard", base_model="qwen-image")
         self.assertEqual(flux["lora_rank"], 16)
-        self.assertEqual(zimg["lora_rank"], 16)
-        self.assertEqual(zimg["lora_blocks"], 24)
+        self.assertEqual(zimg["lora_rank"], 32)
+        self.assertEqual(zimg["lora_blocks"], -1)
         self.assertTrue(zimg["grad_checkpoint"])
         self.assertEqual(zimg["progress_steps"], 28)
-        self.assertEqual(zimg["sigma_bias"], "uniform")
+        self.assertEqual(zimg["sigma_bias"], "sigmoid")
         self.assertEqual(zimg["train_sigma_shift"], 3.0)
+        self.assertEqual(zimg["caption_dropout"], 0.05)
         self.assertEqual(zimg["val_split"], 0.0)
-        self.assertEqual(zturbo["lora_rank"], 16)
+        self.assertEqual(zturbo["lora_rank"], 32)
+        self.assertEqual(zturbo["lora_blocks"], -1)
         self.assertEqual(zturbo["guidance"], 0.0)
-        # Whole 9-step band, no low-σ bias, assistant always on (see presets.py rationale).
+        # Whole 9-step band, sigmoid (face band), assistant always on (see presets.py rationale).
         self.assertEqual(zturbo["timestep_low"], 1)
         self.assertEqual(zturbo["timestep_high"], 9)
-        self.assertEqual(zturbo["timestep_bias"], "uniform")
+        self.assertEqual(zturbo["timestep_bias"], "sigmoid")
         self.assertEqual(zturbo["turbo_assistant_off_prob"], 0.0)
         self.assertEqual(zturbo["min_snr_gamma"], 0.0)
+        self.assertEqual(zturbo["caption_dropout"], 0.05)
         self.assertEqual(zturbo["turbo_infer_steps"], 9)
         self.assertEqual(zturbo["progress_steps"], 9)
         self.assertNotIn("lora_module_keys", zturbo)
@@ -9012,23 +9021,36 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         self.assertEqual(zturbo["val_every"], 100)
         self.assertEqual(zturbo["prior_loss_weight"], 0.0)
         # Optimizer updates (iterations // grad_accumulate) stay in the reference 1k–3k range.
-        for name, table in (("z-image", zimg), ("z-image-turbo", zturbo)):
+        for name in ("z-image", "z-image-turbo", "qwen-image"):
             for preset_name in ("quick", "standard", "quality"):
                 p = resolve_preset(preset_name, base_model=name)
                 updates = p["iterations"] // p["grad_accumulate"]
                 self.assertGreaterEqual(updates, 1000, msg=f"{name}/{preset_name}")
                 self.assertLessEqual(updates, 3000, msg=f"{name}/{preset_name}")
-        self.assertEqual(qwen["lora_rank"], 16)
+                self.assertEqual(p["min_snr_gamma"], 0.0, msg=f"{name}/{preset_name}")
+        self.assertEqual(qwen["lora_rank"], 32)
+        self.assertEqual(qwen["lora_blocks"], -1)
+        self.assertEqual(qwen["learning_rate"], 2e-4)
+        self.assertEqual(qwen["sigma_bias"], "sigmoid")
+        self.assertEqual(qwen["train_sigma_shift"], 3.0)
+        self.assertEqual(qwen["min_snr_gamma"], 0.0)
+        self.assertEqual(qwen["caption_dropout"], 0.05)
+        self.assertIn("to_out", qwen["lora_module_keys"])
+        self.assertIn("add_q_proj", qwen["lora_module_keys"])
         self.assertEqual(
             resolve_training_resolution("z-image-turbo", zturbo, preset="standard"),
-            (512, 512),
+            (1024, 1024),
         )
         self.assertEqual(
             resolve_training_resolution("z-image", zimg, preset="standard"),
-            (512, 512),
+            (1024, 1024),
         )
         self.assertEqual(
             resolve_training_resolution("qwen-image", qwen, preset="standard"),
+            (1024, 1024),
+        )
+        self.assertEqual(
+            resolve_training_resolution("qwen-image", {}, preset="quick"),
             (512, 512),
         )
 
@@ -9036,7 +9058,8 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         from backend.engine.training.presets import resolve_preset
 
         turbo = resolve_preset("standard", base_model="z-image-turbo")
-        self.assertEqual(turbo["lora_rank"], 16)
+        self.assertEqual(turbo["lora_rank"], 32)
+        self.assertEqual(turbo["lora_blocks"], -1)
         self.assertNotIn("lora_module_keys", turbo)
         self.assertEqual(turbo["timestep_low"], 1)
         self.assertEqual(turbo["learning_rate"], 1e-4)
@@ -9226,6 +9249,52 @@ class LoraTrainingPresetsTests(unittest.TestCase):
             x0, ctx, sigma_shift=6.0, sigma_bias="uniform"
         )
         self.assertGreater(float(mx.mean(t_high)), float(mx.mean(t_uni)))
+
+    def test_sigmoid_bias_keeps_mass_in_face_band(self) -> None:
+        import numpy as np
+
+        from backend.engine.runtime.mlx import MLXContext
+        from backend.engine.training.dit_training_loss_mlx import sample_noisy_latent_shifted
+
+        ctx = MLXContext()
+        x0 = ctx.zeros((2048, 1), dtype=ctx.bfloat16())
+        _, _, t_sig = sample_noisy_latent_shifted(x0, ctx, sigma_shift=3.0, sigma_bias="sigmoid")
+        _, _, t_high = sample_noisy_latent_shifted(x0, ctx, sigma_shift=3.0, sigma_bias="high")
+        sig = np.asarray(t_sig)
+        high = np.asarray(t_high)
+
+        def _mid(arr: np.ndarray) -> float:
+            return float(((arr >= 0.3) & (arr <= 0.7)).mean())
+
+        self.assertGreater(_mid(sig), _mid(high))
+        self.assertGreater(_mid(sig), 0.2)
+
+    def test_qwen_image_out_proj_list_takes_lora(self) -> None:
+        import mlx.nn as nn
+
+        from backend.engine.training.lora_layers_mlx import (
+            LoRALinear,
+            _apply_lora_recursive,
+        )
+
+        class Attn:
+            def __init__(self) -> None:
+                self.to_q = nn.Linear(8, 8, bias=False)
+                self.attn_to_out = [nn.Linear(8, 8, bias=False)]
+                self.to_add_out = nn.Linear(8, 8, bias=False)
+                self.img_mod_linear = nn.Linear(8, 8, bias=False)
+
+        attn = Attn()
+        _apply_lora_recursive(
+            attn,
+            rank=4,
+            module_keys=["to_q", "to_out", "to_add_out"],
+            adapter_cls=LoRALinear,
+        )
+        self.assertIsInstance(attn.to_q, LoRALinear)
+        self.assertIsInstance(attn.attn_to_out[0], LoRALinear)
+        self.assertIsInstance(attn.to_add_out, LoRALinear)
+        self.assertNotIsInstance(attn.img_mod_linear, LoRALinear)
 
     def test_apply_lora_recursive_wraps_matching_linears(self) -> None:
         import mlx.nn as nn

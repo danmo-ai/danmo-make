@@ -48,7 +48,10 @@ def _deterministic_val_loss(
     the training stream first and re-applied afterwards: training stays a deterministic
     function of its initial seed whether or not validation runs.
     """
+    from backend.engine.training.dit_training_loss_mlx import caption_dropout_disabled
+
     resume_seed = int(mx.random.randint(0, 2**31 - 1).item())
+    dropout_token = caption_dropout_disabled.set(True)
     try:
         losses: list[float] = []
         for k, vidx in enumerate(val_indices):
@@ -59,6 +62,7 @@ def _deterministic_val_loss(
             losses.append(float(vloss.item()))
             clear_mlx_training_cache(mlx_ctx)
     finally:
+        caption_dropout_disabled.reset(dropout_token)
         mx.random.seed(resume_seed)
     return sum(losses) / max(1, len(losses))
 
@@ -147,6 +151,7 @@ def run_dit_lora_train_loop(
         f"Training {runtime.iterations} iterations "
         f"(rank={runtime.lora_rank}, type={runtime.train_type}, qlora={runtime.qlora_bits}, "
         f"grad_ckpt={runtime.grad_checkpoint}, min_snr={runtime.min_snr_gamma}, "
+        f"caption_dropout={runtime.caption_dropout:g}, "
         f"prior_w={runtime.prior_loss_weight}, opt={runtime.optimizer_name}) …",
     )
 

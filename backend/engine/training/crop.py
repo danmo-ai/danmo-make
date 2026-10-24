@@ -14,15 +14,19 @@ _MODEL_CROP: dict[str, dict[str, Any]] = {
     },
     "z-image": {
         "vae_scale": 8,
-        "preset_edge": {"scheme4": 512, "quick": 512, "standard": 512, "quality": 512},
+        # 512² is 32×32 tokens after patch-2; a face is ~10 tokens tall and bone structure
+        # disappears. 1024² matches AI-Toolkit / character recipes (64×64 tokens).
+        "preset_edge": {"scheme4": 1024, "quick": 512, "standard": 1024, "quality": 1024},
     },
     "z-image-turbo": {
         "vae_scale": 8,
-        "preset_edge": {"quick": 512, "standard": 512, "quality": 512},
+        "preset_edge": {"quick": 512, "standard": 1024, "quality": 1024},
     },
     "qwen-image": {
         "vae_scale": 16,
-        "preset_edge": {"quick": 512, "standard": 512, "quality": 512},
+        # 512² packs to 16×16 tokens. A face at 30% of the frame is ~5 tokens tall, below
+        # one token per eye. 1024² is 32×32, the smallest grid that can hold a likeness.
+        "preset_edge": {"quick": 512, "standard": 1024, "quality": 1024},
     },
 }
 
