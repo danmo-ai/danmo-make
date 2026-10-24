@@ -359,6 +359,40 @@ def _is_trainable_base_linear(module: Any) -> bool:
     )
 
 
+def _iter_named_children(module: Any):
+    """Direct children, including Linear lists MLX did not register (Qwen ``attn_to_out``)."""
+    if isinstance(module, nn.Module) and not _is_leaf_linear(module):
+        children = dict(module.children())
+        yield from children.items()
+        seen = set(children)
+        for name, val in vars(module).items():
+            if name.startswith("_") or name in seen:
+                continue
+            if isinstance(val, (list, nn.Module)) or _is_trainable_base_linear(val):
+                yield name, val
+        return
+    if not hasattr(module, "__dict__"):
+        return
+    for name, val in vars(module).items():
+        if name.startswith("_"):
+            continue
+        yield name, val
+
+
+def _out_proj_list_selected(parent_name: str | None, module_keys: list[str] | None) -> bool:
+    """Whether anonymous linears in a list (Qwen image ``to_out``) should take LoRA."""
+    if not module_keys:
+        return True
+    if not parent_name:
+        return False
+    if _match_lora_module_key(parent_name, module_keys):
+        return True
+    # QwenAttention stores the image out-projection as ``attn_to_out = [Linear]``.
+    if parent_name == "attn_to_out" and _match_lora_module_key("to_out", module_keys):
+        return True
+    return False
+
+
 def _apply_lora_recursive(
     module: Any,
     rank: int,
@@ -367,13 +401,17 @@ def _apply_lora_recursive(
     dropout: float = 0.0,
     module_keys: list[str] | None = None,
     adapter_cls: type = LoRALinear,
+    parent_name: str | None = None,
 ) -> None:
-    if _is_trainable_base_linear(module):
+    # Adapters and raw linears are leaves. Descending into a LoRALinear would wrap its
+    # inner projection a second time.
+    if _is_leaf_linear(module):
         return
     if isinstance(module, list):
+        wrap = _out_proj_list_selected(parent_name, module_keys)
         for i, item in enumerate(module):
             if _is_trainable_base_linear(item):
-                if not module_keys:
+                if wrap:
                     module[i] = adapter_cls.from_base(
                         item,
                         r=rank,
@@ -390,43 +428,22 @@ def _apply_lora_recursive(
                     adapter_cls=adapter_cls,
                 )
         return
-    if isinstance(module, nn.Module) and not _is_leaf_linear(module):
-        for name, child in module.children().items():
-            if _is_trainable_base_linear(child) and _match_lora_module_key(name, module_keys):
-                setattr(
-                    module,
-                    name,
-                    adapter_cls.from_base(child, r=rank, scale=scale, dropout=dropout),
-                )
-            else:
-                _apply_lora_recursive(
-                    child,
-                    rank,
-                    scale=scale,
-                    dropout=dropout,
-                    module_keys=module_keys,
-                    adapter_cls=adapter_cls,
-                )
-        return
-    if not hasattr(module, "__dict__"):
-        return
-    for name, val in list(vars(module).items()):
-        if name.startswith("_"):
-            continue
-        if _is_trainable_base_linear(val) and _match_lora_module_key(name, module_keys):
+    for name, child in _iter_named_children(module):
+        if _is_trainable_base_linear(child) and _match_lora_module_key(name, module_keys):
             setattr(
                 module,
                 name,
-                adapter_cls.from_base(val, r=rank, scale=scale, dropout=dropout),
+                adapter_cls.from_base(child, r=rank, scale=scale, dropout=dropout),
             )
         else:
             _apply_lora_recursive(
-                val,
+                child,
                 rank,
                 scale=scale,
                 dropout=dropout,
                 module_keys=module_keys,
                 adapter_cls=adapter_cls,
+                parent_name=name,
             )
 
 
@@ -442,16 +459,8 @@ def _walk_dit_nodes(root: Any) -> Any:
         for item in root:
             yield from _walk_dit_nodes(item)
         return
-    if isinstance(root, nn.Module) and not _is_leaf_linear(root):
-        for child in root.children().values():
-            yield from _walk_dit_nodes(child)
-        return
-    if not hasattr(root, "__dict__"):
-        return
-    for name, val in vars(root).items():
-        if name.startswith("_"):
-            continue
-        yield from _walk_dit_nodes(val)
+    for _name, child in _iter_named_children(root):
+        yield from _walk_dit_nodes(child)
 
 
 def _resolve_parent_and_name(root: Any, path: str) -> tuple[Any, str]:
@@ -491,7 +500,7 @@ def _walk_all_linear_paths(root: Any, prefix: str = "") -> list[tuple[Any, str]]
                 visit(item, child)
             return
         if isinstance(node, nn.Module) and not _is_leaf_linear(node):
-            for name, child in node.children().items():
+            for name, child in _iter_named_children(node):
                 child_path = f"{path}.{name}" if path else name
                 visit(child, child_path)
             return
@@ -530,7 +539,7 @@ def _walk_lora_paths(root: Any, prefix: str = "") -> list[tuple[Any, str]]:
                 visit(item, child)
             return
         if isinstance(node, nn.Module) and not _is_adapter_linear(node) and not _is_frozen_assistant_linear(node):
-            for name, child in node.children().items():
+            for name, child in _iter_named_children(node):
                 child_path = f"{path}.{name}" if path else name
                 visit(child, child_path)
             return
@@ -594,7 +603,7 @@ def quantize_frozen_dit_linears(model: Any, *, bits: int, group_size: int = 64) 
                 visit(item)
             return
         if isinstance(obj, nn.Module) and not _is_adapter_linear(obj):
-            for name, child in obj.children().items():
+            for name, child in _iter_named_children(obj):
                 visit(child, obj, name)
             return
         if not hasattr(obj, "__dict__"):
@@ -663,22 +672,28 @@ def list_flux1_lora_blocks(model: Any, *, lora_blocks: int) -> list[Any]:
 
 
 def list_zimage_lora_blocks(model: Any, *, lora_blocks: int) -> list[Any]:
+    """Blocks that receive LoRA, identity-first.
+
+    ``context_refiner`` is where caption tokens are prepared before they meet image tokens,
+    and ``noise_refiner`` sets layout. Taking the deepest main layers only (the old order)
+    learned texture and left the trigger unbound, so faces never stuck. A short budget still
+    includes both refiners, then shallow main layers.
+    """
     dit = getattr(model, "_inner", model)
-    all_blocks: list[Any] = []
-    for layer in reversed(list(dit.layers)):
-        all_blocks.append(layer)
-    for layer in reversed(list(dit.noise_refiner)):
-        all_blocks.append(layer)
-    for layer in reversed(list(dit.context_refiner)):
-        all_blocks.append(layer)
+    all_blocks: list[Any] = [
+        *list(dit.context_refiner),
+        *list(dit.noise_refiner),
+        *list(dit.layers),
+    ]
     n = len(all_blocks) if lora_blocks < 0 else min(lora_blocks, len(all_blocks))
     return all_blocks[:n]
 
 
 def list_qwen_lora_blocks(model: Any, *, lora_blocks: int) -> list[Any]:
+    """Shallow joint blocks first. Early blocks route the trigger onto the face; the tail refines texture."""
     dit = getattr(model, "_inner", model)
     inner = getattr(dit, "dit", dit)
-    all_blocks = list(reversed(list(inner.transformer_blocks)))
+    all_blocks = list(inner.transformer_blocks)
     n = len(all_blocks) if lora_blocks < 0 else min(lora_blocks, len(all_blocks))
     return all_blocks[:n]
 

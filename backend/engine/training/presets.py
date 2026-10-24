@@ -70,12 +70,30 @@ Z_IMAGE_TURBO_INFERENCE: dict[str, Any] = {
     "lora_weight_range": [0.8, 1.0],
 }
 
-# Base training σ: sample uniform u, apply the SD3-style static shift ``train_sigma_shift``.
-# Inference uses shift 6, but training with 6 (let alone 6 + a high bias) puts >60% of samples at
-# σ>0.9 where the input is nearly pure noise and only ~7% in the 0.3–0.7 band that decides facial
-# structure — LoRAs then never bind identity. Shift 3 keeps the inference-like high-σ emphasis
-# while leaving ~30% of supervision in the identity band.
+# Base training σ: draw u, apply the SD3-style static shift ``train_sigma_shift``.
+# Inference uses shift 6, but training with 6 (let alone 6 + a high bias) puts most samples at
+# σ>0.9 where the input is nearly pure noise and almost none in the 0.3–0.7 band that decides
+# facial structure — LoRAs then never bind identity. Shift 3 keeps a high-σ emphasis while leaving
+# room in that band. ``sigma_bias=sigmoid`` (logit-normal) centers the draw on the band instead of
+# spreading it uniformly, which is the character-LoRA timestep used by AI-Toolkit / SD3 trainers.
 Z_IMAGE_BASE_TRAIN_SIGMA_SHIFT = 3.0
+
+# Image and text attention (plus the SwiGLU FFN). Skips adaLN modulation linears, which overfit
+# the timestep and wash identity out. ``to_out`` is the MLX name (diffusers ``to_out.0``).
+Z_IMAGE_LORA_MODULE_KEYS = ["to_q", "to_k", "to_v", "to_out", "w1", "w2", "w3"]
+
+# Qwen-Image joint attention: image stream ``to_*`` / ``to_out`` (stored as ``attn_to_out``) and
+# text stream ``add_*_proj`` / ``to_add_out``. Early blocks bind the trigger; train every block.
+QWEN_IMAGE_LORA_MODULE_KEYS = [
+    "to_q",
+    "to_k",
+    "to_v",
+    "to_out",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
+]
 
 # Iteration counts below are with batch 1; ``iterations // grad_accumulate`` optimizer updates.
 # Reference Z-Image LoRA baselines (AI-Toolkit / DiffSynth) use 2000–3000 updates at batch 1,
@@ -84,8 +102,11 @@ _Z_IMAGE_BASE_COMMON: dict[str, Any] = {
     "learning_rate": 1e-4,
     "guidance": 5.0,
     "progress_steps": 28,
-    "sigma_bias": "uniform",
+    "sigma_bias": "sigmoid",
     "train_sigma_shift": Z_IMAGE_BASE_TRAIN_SIGMA_SHIFT,
+    "lora_module_keys": list(Z_IMAGE_LORA_MODULE_KEYS),
+    # 5% empty-caption steps so scene words cannot fully explain the face (AI-Toolkit default).
+    "caption_dropout": 0.05,
     "optimizer": "adamw",
     # Plain flow-match (no min-SNR ε weighting); keeps high-σ identity + low-σ detail bands.
     "min_snr_gamma": 0.0,
@@ -106,7 +127,7 @@ Z_IMAGE_SCHEME4_CORE: dict[str, Any] = {
     "lora_blocks": -1,
     # MLX attribute is ``to_out`` (sanitize drops diffusers' ``to_out.0``); the matcher also
     # accepts the ``.0`` spelling, but keep the canonical name so all 7 linears get LoRA.
-    "lora_module_keys": ["to_q", "to_k", "to_v", "to_out", "w1", "w2", "w3"],
+    "lora_module_keys": list(Z_IMAGE_LORA_MODULE_KEYS),
     "grad_accumulate": 1,
     "progress_every": 500,
     "checkpoint_every": 500,
@@ -114,7 +135,7 @@ Z_IMAGE_SCHEME4_CORE: dict[str, Any] = {
     "turbo_infer_steps": 8,
     "timestep_low": 1,
     "timestep_high": 8,
-    "timestep_bias": "uniform",
+    "timestep_bias": "sigmoid",
     "grad_checkpoint": True,
 }
 
@@ -134,8 +155,8 @@ Z_IMAGE_PRESETS: dict[str, dict[str, Any]] = {
     "standard": {
         **_Z_IMAGE_BASE_COMMON,
         "iterations": 2000,
-        "lora_rank": 16,
-        "lora_blocks": 24,
+        "lora_rank": 32,
+        "lora_blocks": -1,
         "grad_accumulate": 1,
         "progress_every": 500,
         "checkpoint_every": 500,
@@ -144,51 +165,60 @@ Z_IMAGE_PRESETS: dict[str, dict[str, Any]] = {
     "quality": {
         **_Z_IMAGE_BASE_COMMON,
         "iterations": 3000,
-        "lora_rank": 16,
+        "lora_rank": 32,
         "lora_blocks": -1,
-        "grad_accumulate": 2,
+        "grad_accumulate": 1,
         "progress_every": 500,
         "checkpoint_every": 500,
-        "learning_rate": 5e-5,
         "grad_checkpoint": True,
     },
 }
 
+# Qwen-Image-2512 face prior is sharp and the text encoder is a frozen Qwen2.5-VL. The old Flux
+# preset (rank 16, last 16 of 60 blocks, ~200 optimizer steps, min-SNR γ=5, uniform σ, 512²)
+# only moved clothes and color. Match the 2512 character recipe: rank 32, every block's image
+# and text attention, ~2.5–3k updates, sigmoid σ, shift 3 (full inference μ piles σ>0.9 and
+# starves the face band), caption dropout, 1024 on standard/quality.
+_QWEN_IMAGE_COMMON: dict[str, Any] = {
+    "learning_rate": 2e-4,
+    "optimizer": "adamw",
+    "min_snr_gamma": 0.0,
+    "prior_loss_weight": 0.0,
+    "val_split": 0.0,
+    "val_every": 100,
+    "grad_checkpoint": True,
+    "grad_accumulate": 1,
+    "sigma_bias": "sigmoid",
+    "train_sigma_shift": Z_IMAGE_BASE_TRAIN_SIGMA_SHIFT,
+    "lora_module_keys": list(QWEN_IMAGE_LORA_MODULE_KEYS),
+    "caption_dropout": 0.05,
+}
+
 QWEN_IMAGE_PRESETS: dict[str, dict[str, Any]] = {
     "quick": {
-        "iterations": 400,
-        "lora_rank": 16,
-        "lora_blocks": 12,
-        "grad_accumulate": 4,
-        "progress_every": 200,
-        "checkpoint_every": 200,
-        "learning_rate": 1e-4,
-        "grad_checkpoint": True,
-        "optimizer": "adamw",
-        "min_snr_gamma": 5.0,
-    },
-    "standard": {
-        "iterations": 800,
+        **_QWEN_IMAGE_COMMON,
+        "iterations": 1000,
         "lora_rank": 16,
         "lora_blocks": 16,
-        "grad_accumulate": 4,
-        "progress_every": 400,
-        "checkpoint_every": 400,
         "learning_rate": 1e-4,
-        "optimizer": "adamw",
-        "grad_checkpoint": True,
-        "min_snr_gamma": 5.0,
-        "val_split": 0.1,
-        "val_every": 100,
+        "progress_every": 250,
+        "checkpoint_every": 250,
     },
-    "quality": {
-        "iterations": 1500,
-        "lora_rank": 16,
-        "lora_blocks": 24,
-        "grad_accumulate": 8,
+    "standard": {
+        **_QWEN_IMAGE_COMMON,
+        "iterations": 2500,
+        "lora_rank": 32,
+        "lora_blocks": -1,
         "progress_every": 500,
         "checkpoint_every": 500,
-        "learning_rate": 5e-5,
+    },
+    "quality": {
+        **_QWEN_IMAGE_COMMON,
+        "iterations": 3000,
+        "lora_rank": 32,
+        "lora_blocks": -1,
+        "progress_every": 500,
+        "checkpoint_every": 500,
     },
 }
 
@@ -204,9 +234,11 @@ Z_IMAGE_TURBO_MFLUX_CORE: dict[str, Any] = {
     # Cover the whole 9-step band continuously. Restricting training to steps 4–9 (σ ≤ 0.79)
     # with a low bias never showed the LoRA the first three steps (σ ≈ 1.0 / 0.94 / 0.87) where
     # global layout and facial identity are decided, so faces were not memorized.
+    # sigmoid (logit-normal) keeps most of that band on facial structure instead of the endpoints.
     "timestep_low": 1,
     "timestep_high": 9,
-    "timestep_bias": "uniform",
+    "timestep_bias": "sigmoid",
+    "caption_dropout": 0.05,
     # The Ostris de-distill assistant stays ON for every training step (AI-Toolkit merges it
     # into the base weights). Training part-time on the raw distilled model makes the LoRA
     # spend capacity re-distilling instead of learning the subject.
@@ -233,7 +265,8 @@ Z_IMAGE_TURBO_PRESETS: dict[str, dict[str, Any]] = {
     "standard": {
         **Z_IMAGE_TURBO_MFLUX_CORE,
         "iterations": 2000,
-        "lora_blocks": 24,
+        "lora_rank": 32,
+        "lora_blocks": -1,
         "grad_accumulate": 1,
         "progress_every": 500,
         "checkpoint_every": 500,
@@ -241,8 +274,9 @@ Z_IMAGE_TURBO_PRESETS: dict[str, dict[str, Any]] = {
     "quality": {
         **Z_IMAGE_TURBO_MFLUX_CORE,
         "iterations": 3000,
+        "lora_rank": 32,
         "lora_blocks": -1,
-        "grad_accumulate": 2,
+        "grad_accumulate": 1,
         "progress_every": 500,
         "checkpoint_every": 500,
     },

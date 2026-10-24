@@ -12,6 +12,7 @@ import mlx.nn as nn
 import mlx.optimizers as optim
 from mlx.utils import tree_flatten, tree_unflatten
 
+from backend.engine.training.dit_training_loss_mlx import SIGMA_BIAS_MODES
 from backend.engine.training.face_crop import normalize_face_crop_mode
 from backend.engine.training.presets import (
     FLUX1_TRAIN_MIN_MEMORY_GB,
@@ -83,6 +84,8 @@ class LoraTrainRuntimeConfig:
     train_sigma_shift: float | None
     # Face-aware crop for identity datasets: auto (concept datasets, when detector available) | on | off.
     face_crop: str
+    # Fraction of steps trained on an empty caption so scene words cannot explain the face.
+    caption_dropout: float
 
     @property
     def lora_scale(self) -> float:
@@ -204,8 +207,14 @@ def parse_lora_train_runtime_config(cfg: dict[str, Any], *, defaults: dict[str, 
         )
     for name in ("timestep_bias", "sigma_bias"):
         val = str(merged.get(name) or "uniform").strip().lower()
-        if val not in ("uniform", "low", "high"):
-            raise RuntimeError(f"{name} must be uniform|low|high (got {val!r})")
+        if val not in SIGMA_BIAS_MODES:
+            raise RuntimeError(
+                f"{name} must be {'|'.join(SIGMA_BIAS_MODES)} (got {val!r})"
+            )
+
+    caption_dropout = float(merged.get("caption_dropout") or 0.0)
+    if caption_dropout < 0.0 or caption_dropout > 0.5:
+        raise RuntimeError(f"caption_dropout must be in [0, 0.5] (got {caption_dropout})")
 
     return LoraTrainRuntimeConfig(
         iterations=iterations,
@@ -246,6 +255,7 @@ def parse_lora_train_runtime_config(cfg: dict[str, Any], *, defaults: dict[str, 
         scheme4_turbo_band_mix=float(merged.get("scheme4_turbo_band_mix") or 0.0),
         train_sigma_shift=train_sigma_shift,
         face_crop=normalize_face_crop_mode(merged.get("face_crop")),
+        caption_dropout=caption_dropout,
     )
 
 

@@ -36,7 +36,8 @@ from backend.engine.training.dit_training_loss_mlx import (
     combine_instance_prior_loss,
     flow_match_mse,
     merge_prior_cache_tensors,
-    sample_noisy_latent,
+    caption_dropout_applies,
+    sample_noisy_latent_shifted,
     sample_prior_latent,
 )
 from backend.engine.training.latent_cache_mlx import LatentCache
@@ -172,6 +173,18 @@ def _encode_dataset_to_cache(
     return cache.finalize()
 
 
+def _ensure_qwen_uncond_caption(cache: LatentCache, text_encoder: Any) -> tuple[Any, Any]:
+    """Cache the empty-prompt embedding used by caption dropout."""
+    try:
+        data = cache.load_prior(name="uncond")
+        return data["txt"], data["txt_mask"]
+    except RuntimeError:
+        txt, mask = text_encoder.encode([""])
+        mx.eval(txt, mask)
+        cache.write_prior({"txt": txt, "txt_mask": mask}, name="uncond")
+        return txt, mask
+
+
 def _training_loss(
     model: Any,
     x0: mx.array,
@@ -186,8 +199,12 @@ def _training_loss(
     prior_mask: mx.array | None = None,
     prior_latents: mx.array | None = None,
     prior_loss_weight: float = 0.0,
+    sigma_shift: float = 1.0,
+    sigma_bias: str = "uniform",
 ) -> mx.array:
-    x_t, eps, t = sample_noisy_latent(x0, ctx)
+    x_t, eps, t = sample_noisy_latent_shifted(
+        x0, ctx, sigma_shift=sigma_shift, sigma_bias=sigma_bias
+    )
     pred = model(
         x_t,
         timestep=0,
@@ -203,7 +220,9 @@ def _training_loss(
     if prior_txt is None or prior_mask is None or prior_loss_weight <= 0:
         return inst
     x0p = sample_prior_latent(x0, ctx, prior_latents=prior_latents)
-    x_tp, epsp, tp = sample_noisy_latent(x0p, ctx)
+    x_tp, epsp, tp = sample_noisy_latent_shifted(
+        x0p, ctx, sigma_shift=sigma_shift, sigma_bias=sigma_bias
+    )
     predp = model(
         x_tp,
         timestep=0,
@@ -515,6 +534,25 @@ def run_qwen_image_dreambooth_training(
             crop_windows=crop_windows,
             crop_policy=crop_policy,
         )
+    uncond_txt: Any | None = None
+    uncond_mask: Any | None = None
+    qwen_sigma_shift = float(train_runtime.train_sigma_shift or 3.0)
+    if train_runtime.caption_dropout > 0:
+        uncond_txt, uncond_mask = _ensure_qwen_uncond_caption(latent_cache, text_encoder)
+        _log(
+            exec_ctx,
+            "info",
+            f"Caption dropout {train_runtime.caption_dropout:.2f}: "
+            "empty prompt on that fraction of steps so scene words cannot explain the face",
+        )
+    _log(
+        exec_ctx,
+        "info",
+        f"Qwen-Image training: σ = shift(u) train_sigma_shift={qwen_sigma_shift:g} "
+        f"sigma_bias={train_runtime.sigma_bias} min_snr={train_runtime.min_snr_gamma:g} "
+        f"rank={train_runtime.lora_rank} blocks={train_runtime.lora_blocks} "
+        f"res={resolution[0]}x{resolution[1]}",
+    )
     text_encoder.release_weights()
     ctx.clear_cache()
 
@@ -599,6 +637,12 @@ def run_qwen_image_dreambooth_training(
         return latent_cache.sample_qwen(indices[0])
 
     def loss_fn(x0: mx.array, txt: mx.array, mask: mx.array) -> mx.array:
+        if (
+            uncond_txt is not None
+            and uncond_mask is not None
+            and caption_dropout_applies(train_runtime.caption_dropout)
+        ):
+            txt, mask = uncond_txt, uncond_mask
         return _training_loss(
             train_module,
             x0,
@@ -612,6 +656,8 @@ def run_qwen_image_dreambooth_training(
             prior_mask=prior_mask,
             prior_latents=prior_latents,
             prior_loss_weight=train_runtime.prior_loss_weight if prior_txt is not None else 0.0,
+            sigma_shift=qwen_sigma_shift,
+            sigma_bias=train_runtime.sigma_bias,
         )
 
     def preview_at(step: int) -> None:

@@ -362,14 +362,24 @@ def plan_training_face_crops(
     if not ok:
         if mode == "on":
             raise RuntimeError(f"face_crop=on but face detection is unavailable: {why}")
-        log("warning", f"Face-aware crop skipped ({why}); using portrait-biased cover crop.")
+        log(
+            "warning",
+            f"Face-aware crop skipped ({why}); using portrait-biased cover crop. "
+            "Full-body photos then leave the face on a handful of tokens and the LoRA "
+            "memorizes clothes instead of identity. Install opencv-python-headless, "
+            "or set face_crop=off.",
+        )
         return {}
     try:
         model_path = resolve_face_detector_path(project_root)
     except RuntimeError as exc:
         if mode == "on":
             raise
-        log("warning", f"Face-aware crop skipped: {exc}")
+        log(
+            "warning",
+            f"Face-aware crop skipped: {exc} "
+            "Without a face window the LoRA cannot bind identity on wide shots.",
+        )
         return {}
 
     plans: dict[Path, FaceCropPlan] = {}
