@@ -1696,7 +1696,20 @@ class QwenImageTransformerTests(unittest.TestCase):
         )
         edit_lora = models["qwen-image-edit-2511-lightning-lora"]
         self.assertEqual(edit_lora["base_model"], "qwen-image-edit")
-        self.assertTrue(models["qwen-image-edit"]["parameters"]["lora_support"])
+        edit = models["qwen-image-edit"]
+        self.assertTrue(edit["parameters"]["lora_support"])
+        self.assertTrue(edit["parameters"]["edit_use_picture_prefix"])
+        self.assertTrue(edit["parameters"]["edit_plus_multi_image"])
+        self.assertEqual(edit["parameters"]["edit_max_reference_images"], 3)
+        self.assertEqual(edit["parameters"]["steps"]["default"], 40)
+        self.assertEqual(
+            edit["versions"]["fp16"]["repo_id"],
+            "Qwen/Qwen-Image-Edit-2511",
+        )
+        self.assertEqual(
+            edit["versions"]["mlx-q8"]["repo_id"],
+            "mlx-community/qwen-image-edit-2511-8bit",
+        )
         self.assertIn("v8-bf16", edit_lora["versions"])
 
     def test_qwen_text_encoder_weights_accepts_pre_remapped_encoder_keys(self) -> None:

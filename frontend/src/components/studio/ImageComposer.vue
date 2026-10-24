@@ -55,7 +55,39 @@
             </DqIconButton>
           </ComposerIconTip>
         </div>
-        <ComposerIconTip v-else :content="$t('create.composerTip.refImage')">
+        <div
+          v-for="(img, idx) in extraReferenceImages"
+          v-show="extraReferenceCap > 0"
+          :key="`${img.path}-${idx}`"
+          class="image-composer__ref-pill"
+        >
+          <img :src="img.previewUrl" alt="" />
+          <ComposerIconTip :content="$t('create.composerTip.removeExtraRef')">
+            <DqIconButton
+              type="text"
+              size="sm"
+              :aria-label="$t('common.delete')"
+              @click="$emit('remove-extra-reference', idx)"
+            >
+              <DqIcon :size="10"><Close /></DqIcon>
+            </DqIconButton>
+          </ComposerIconTip>
+        </div>
+        <ComposerIconTip
+          v-if="referenceImage && extraReferenceImages.length < extraReferenceCap"
+          :content="$t('create.composerTip.extraRefImage')"
+        >
+          <DqIconButton
+            type="text"
+            size="sm"
+            class="image-composer__ref-add"
+            :aria-label="$t('create.extraRefImage')"
+            @click="$emit('pick-extra-reference')"
+          >
+            <DqIcon :size="14"><Picture /></DqIcon>
+          </DqIconButton>
+        </ComposerIconTip>
+        <ComposerIconTip v-else-if="!referenceImage" :content="$t('create.composerTip.refImage')">
           <DqIconButton
             type="text"
             size="sm"
@@ -296,6 +328,7 @@ const props = withDefaults(defineProps<{
   hasCustomParams: boolean;
   showNegativePrompt: boolean;
   referenceImage: { previewUrl: string; path: string } | null;
+  extraReferenceImages?: Array<{ previewUrl: string; path: string }>;
   controlImage?: { previewUrl: string; path: string } | null;
   inpaintSourceImage?: { previewUrl: string; path: string } | null;
   inpaintMaskImage?: { previewUrl: string; path: string } | null;
@@ -324,6 +357,7 @@ const props = withDefaults(defineProps<{
   submitting: false,
   embedded: false,
   lockSize: false,
+  extraReferenceImages: () => [],
 });
 
 const emit = defineEmits<{
@@ -337,6 +371,8 @@ const emit = defineEmits<{
   (e: 'generate'): void;
   (e: 'pick-reference'): void;
   (e: 'remove-reference'): void;
+  (e: 'pick-extra-reference'): void;
+  (e: 'remove-extra-reference', index: number): void;
   (e: 'pick-control'): void;
   (e: 'remove-control'): void;
   (e: 'pick-inpaint-source'): void;
@@ -355,6 +391,14 @@ const emit = defineEmits<{
 }>();
 
 const { t: $t } = useI18n();
+
+const extraReferenceCap = computed(() => {
+  const raw = props.currentModelConfig?.parameters as Record<string, unknown> | undefined;
+  if (!raw?.edit_plus_multi_image) return 0;
+  const maxRefs = Number(raw.edit_max_reference_images ?? 1);
+  if (!Number.isFinite(maxRefs)) return 0;
+  return Math.max(0, Math.floor(maxRefs) - 1);
+});
 
 const primaryActionLabel = computed(() => {
   if (props.generateLabel) return props.generateLabel;
@@ -544,6 +588,7 @@ function onStyleCommand(command: string) {
   z-index: 1;
   display: flex;
   align-items: center;
+  gap: 4px;
 }
 
 .image-composer__ref-pill {

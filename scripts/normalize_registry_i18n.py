@@ -92,8 +92,8 @@ DESCRIPTION_OVERRIDES: dict[str, dict[str, str]] = {
         "en": "FLUX.1 Kontext for multimodal conditioned generation and editing.",
     },
     "qwen-image-edit": {
-        "zh": "通义千问 Qwen Image Edit 指令编辑，VL 图文理解 + VAE 参考 latent。",
-        "en": "Qwen Image Edit with VL understanding and VAE reference latents.",
+        "zh": "通义千问 Qwen Image Edit 2511 指令编辑。人物与多人一致性更好，最多三张参考图。",
+        "en": "Qwen Image Edit 2511 instruction edit. Stronger character and multi-person consistency, with up to three reference images.",
     },
     "firered-image-edit-1.1": {
         "zh": "FireRed Image Edit 1.1 指令编辑（仅图生图编辑，不支持文生图），强身份一致性，支持多参考图。",
@@ -196,8 +196,8 @@ DESCRIPTION_OVERRIDES: dict[str, dict[str, str]] = {
         "en": "Qwen Image 2512 LightX2V 4-step distill LoRA (V1.0 BF16). Requires qwen-image FP16 full weights; use 4 steps and CFG 1.0.",
     },
     "qwen-image-edit-2511-lightning-lora": {
-        "zh": "Qwen Image Edit 2511 LightX2V 蒸馏 LoRA（4 步或 8 步 BF16）。需配合 qwen-image-edit FP16 完整版；建议 CFG 1.0。",
-        "en": "Qwen Image Edit 2511 LightX2V distill LoRA (4-step or 8-step BF16). Requires qwen-image-edit FP16; use CFG 1.0.",
+        "zh": "Qwen Image Edit 2511 LightX2V 蒸馏 LoRA（4 步或 8 步 BF16）。需配合 Qwen-Image-Edit-2511 FP16；建议 CFG 1.0。",
+        "en": "Qwen Image Edit 2511 LightX2V distill LoRA (4-step or 8-step BF16). Requires Qwen-Image-Edit-2511 FP16; use CFG 1.0.",
     },
     "bernini-r-14b": {
         "zh": "ByteDance Bernini-R 14B：文生视频、参考生视频、视频编辑与参考+视频编辑（SA-3D RoPE）；各版本均为完整自包含 bundle（DiT + UMT5 + VAE）。",

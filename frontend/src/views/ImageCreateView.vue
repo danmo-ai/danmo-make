@@ -114,6 +114,7 @@
         :has-custom-params="hasCustomParams"
         :show-negative-prompt="!!currentModelConfig?.parameters?.negative_prompt_support"
         :reference-image="referenceImage"
+        :extra-reference-images="extraReferenceImages"
         :control-image="controlImage"
         :inpaint-source-image="inpaintSourceImage"
         :inpaint-mask-image="inpaintMaskImage"
@@ -127,6 +128,8 @@
         @generate="onComposerSubmit"
         @pick-reference="openAssetPicker('reference')"
         @remove-reference="removeReferenceImage"
+        @pick-extra-reference="openAssetPicker('extra_reference')"
+        @remove-extra-reference="removeExtraReferenceImage"
         @pick-control="openAssetPicker('control')"
         @remove-control="removeControlImage"
         @pick-inpaint-source="openAssetPicker('inpaint_source')"
@@ -510,6 +513,7 @@ function persistComposerSnapshot() {
     seed: params.seed != null ? String(params.seed) : undefined,
     mode: imageMode.value,
     reference_path: referenceImage.value?.path || undefined,
+    reference_image_paths: extraReferenceImages.value.map((img) => img.path),
     control_path: controlImage.value?.path || undefined,
     controlnet: params.controlnet ? String(params.controlnet) : undefined,
     controlnet_strength:
@@ -617,6 +621,7 @@ function onCanvasComposerRestore(snapshot: {
   seed?: string;
   mode?: string;
   reference_path?: string;
+  reference_image_paths?: string[];
   control_path?: string;
   controlnet?: string;
   controlnet_strength?: string;
@@ -653,6 +658,13 @@ function onCanvasComposerRestore(snapshot: {
   if (snapshot.reference_path) {
     referenceImage.value = bindComposerImageFromOverlayPath(snapshot.reference_path);
     imageMode.value = 'img2img';
+  }
+  if (snapshot.reference_image_paths?.length) {
+    extraReferenceImages.value = snapshot.reference_image_paths.map((path) =>
+      bindComposerImageFromOverlayPath(path),
+    );
+  } else {
+    extraReferenceImages.value = [];
   }
   if (snapshot.control_path) {
     controlImage.value = bindComposerImageFromOverlayPath(snapshot.control_path);
@@ -704,13 +716,14 @@ function shouldAutoAddToCanvas(): boolean {
 /* ------------------------------------------------------------------ */
 
 const referenceImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
+const extraReferenceImages = ref<Array<{ previewUrl: string; path: string; assetId?: string }>>([]);
 const controlImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
 const inpaintSourceImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
 const inpaintMaskImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
 const showAssetPicker = ref(false);
-const assetPickerMode = ref<'reference' | 'control' | 'inpaint_source' | 'inpaint_mask'>('reference');
+const assetPickerMode = ref<'reference' | 'extra_reference' | 'control' | 'inpaint_source' | 'inpaint_mask'>('reference');
 
-function openAssetPicker(mode: 'reference' | 'control' | 'inpaint_source' | 'inpaint_mask') {
+function openAssetPicker(mode: 'reference' | 'extra_reference' | 'control' | 'inpaint_source' | 'inpaint_mask') {
   assetPickerMode.value = mode;
   showAssetPicker.value = true;
 }
@@ -732,6 +745,47 @@ function onReferencePick({ path, previewUrl }: { path: string; previewUrl: strin
   referenceImage.value = { path, previewUrl, assetId: assetIdFromPickPath(path) };
   showAssetPicker.value = false;
   imageMode.value = 'img2img';
+}
+
+function editPlusExtraCap(): number {
+  const raw = currentModelConfig.value?.parameters as Record<string, unknown> | undefined;
+  if (!raw?.edit_plus_multi_image) return 0;
+  const maxRefs = Number(raw.edit_max_reference_images ?? 1);
+  if (!Number.isFinite(maxRefs)) return 0;
+  return Math.max(0, Math.floor(maxRefs) - 1);
+}
+
+function onExtraReferencePick({ path, previewUrl }: { path: string; previewUrl: string }) {
+  if (!path.startsWith('asset:')) {
+    toast.warning($tt('canvas.controlImageAssetRequired'));
+    return;
+  }
+  const assetId = assetIdFromPickPath(path);
+  const primaryId = referenceImage.value?.assetId
+    || (referenceImage.value?.path.startsWith('asset:')
+      ? referenceImage.value.path.slice('asset:'.length)
+      : '');
+  if (assetId && assetId === primaryId) {
+    showAssetPicker.value = false;
+    return;
+  }
+  if (extraReferenceImages.value.some((img) => img.path === path || (assetId && img.assetId === assetId))) {
+    showAssetPicker.value = false;
+    return;
+  }
+  if (extraReferenceImages.value.length >= editPlusExtraCap()) {
+    showAssetPicker.value = false;
+    return;
+  }
+  extraReferenceImages.value = [
+    ...extraReferenceImages.value,
+    { path, previewUrl, assetId },
+  ];
+  showAssetPicker.value = false;
+}
+
+function removeExtraReferenceImage(index: number) {
+  extraReferenceImages.value = extraReferenceImages.value.filter((_, i) => i !== index);
 }
 
 function onControlPick({ path, previewUrl }: { path: string; previewUrl: string }) {
@@ -760,6 +814,7 @@ function onInpaintMaskPick({ path, previewUrl }: { path: string; previewUrl: str
 
 function onAssetPickerPick(payload: { path: string; previewUrl: string }) {
   if (assetPickerMode.value === 'control') onControlPick(payload);
+  else if (assetPickerMode.value === 'extra_reference') onExtraReferencePick(payload);
   else if (assetPickerMode.value === 'inpaint_source') onInpaintSourcePick(payload);
   else if (assetPickerMode.value === 'inpaint_mask') onInpaintMaskPick(payload);
   else onReferencePick(payload);
@@ -1793,9 +1848,15 @@ function collectExtraReferenceAssetIds(
   const maxRefs = Number(raw?.edit_max_reference_images ?? 1);
   const cap = Math.max(1, maxRefs) - 1;
   const ids: string[] = [];
-  if (controlAssetId && controlAssetId !== sourceAssetId) {
-    ids.push(controlAssetId);
+  const pushId = (id: string | null | undefined) => {
+    const value = String(id || '').trim();
+    if (!value || value === sourceAssetId || ids.includes(value)) return;
+    ids.push(value);
+  };
+  for (const img of extraReferenceImages.value) {
+    pushId(img.assetId || (img.path.startsWith('asset:') ? img.path.slice('asset:'.length) : ''));
   }
+  pushId(controlAssetId);
   return ids.slice(0, cap);
 }
 
