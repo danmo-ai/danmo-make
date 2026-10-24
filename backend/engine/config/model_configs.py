@@ -1257,6 +1257,25 @@ def apply_image_registry_config_overrides(entry: Any, config: Any) -> None:
         config.supports_guidance = bool(sg)
 
 
+def apply_image_version_config_overrides(entry: Any, config: Any, version_key: str | None) -> None:
+    """Copy the selected version block's ``overrides`` onto the family config.
+
+    Registry ``parameters`` do not carry per-version flags. HiDream mlx-q8 sets
+    ``hidream_quantized_no_edit`` only on that version block.
+    """
+    from backend.engine.contracts.pipeline_registry import resolve_version_block
+
+    block = resolve_version_block(entry, version_key)
+    if not isinstance(block, dict):
+        return
+    overrides = block.get("overrides")
+    if not isinstance(overrides, dict):
+        return
+    for key, value in overrides.items():
+        if hasattr(config, key):
+            setattr(config, key, value)
+
+
 def apply_image_bundle_config_merger(config: Any, bundle_root: Path | None) -> None:
     """Registry-driven bundle ``config.json`` merge for image families."""
     merger = str(getattr(config, "bundle_config_merger", "") or "")

@@ -28,7 +28,12 @@
 
       <!-- Bottom-left: Reference image -->
       <div class="image-composer__ref-area">
-        <div v-if="referenceImage" class="image-composer__ref-pill">
+        <div
+          v-if="referenceImage"
+          class="image-composer__ref-pill"
+          :title="$t('create.pictureIndex', { n: 1 })"
+        >
+          <span class="image-composer__ref-index" :aria-label="$t('create.pictureIndex', { n: 1 })">1</span>
           <img :src="referenceImage.previewUrl" alt="ref" />
           <ComposerIconTip
             v-if="referenceAssetId"
@@ -55,7 +60,42 @@
             </DqIconButton>
           </ComposerIconTip>
         </div>
-        <ComposerIconTip v-else :content="$t('create.composerTip.refImage')">
+        <template v-if="extraReferenceCap > 0">
+        <div
+          v-for="(img, idx) in extraReferenceImages"
+          :key="`${img.path}-${idx}`"
+          class="image-composer__ref-pill"
+          :title="$t('create.pictureIndex', { n: idx + 2 })"
+        >
+          <span class="image-composer__ref-index" :aria-label="$t('create.pictureIndex', { n: idx + 2 })">{{ idx + 2 }}</span>
+          <img :src="img.previewUrl" alt="" />
+          <ComposerIconTip :content="$t('create.composerTip.removeExtraRef')">
+            <DqIconButton
+              type="text"
+              size="sm"
+              :aria-label="$t('common.delete')"
+              @click="$emit('remove-extra-reference', idx)"
+            >
+              <DqIcon :size="10"><Close /></DqIcon>
+            </DqIconButton>
+          </ComposerIconTip>
+        </div>
+        </template>
+        <ComposerIconTip
+          v-if="referenceImage && extraReferenceImages.length < extraReferenceCap"
+          :content="$t('create.composerTip.extraRefImage')"
+        >
+          <DqIconButton
+            type="text"
+            size="sm"
+            class="image-composer__ref-add"
+            :aria-label="$t('create.extraRefImage')"
+            @click="$emit('pick-extra-reference')"
+          >
+            <DqIcon :size="14"><Picture /></DqIcon>
+          </DqIconButton>
+        </ComposerIconTip>
+        <ComposerIconTip v-else-if="!referenceImage && !referencesBlocked" :content="$t('create.composerTip.refImage')">
           <DqIconButton
             type="text"
             size="sm"
@@ -200,6 +240,10 @@
           />
         </DqSelect>
 
+        <span
+          v-if="generateBlockReason"
+          class="studio-composer-toolbar__generate-reason"
+        >{{ generateBlockReason }}</span>
         <DqButton
           type="primary"
           size="sm"
@@ -261,7 +305,7 @@ import {
 } from '@danqing/dq-shell';
 import { assetIdFromGalleryPath } from '@/utils/copilotHandoff';
 import { $tt } from '@/utils/i18n';
-import { formatResolutionOptionLabel } from '@/utils/registryParamSchema';
+import { extraReferenceSlotCap, formatResolutionOptionLabel } from '@/utils/registryParamSchema';
 import { appendStyleBoost } from '@/utils/styleBoost';
 
 const props = withDefaults(defineProps<{
@@ -296,6 +340,7 @@ const props = withDefaults(defineProps<{
   hasCustomParams: boolean;
   showNegativePrompt: boolean;
   referenceImage: { previewUrl: string; path: string } | null;
+  extraReferenceImages?: Array<{ previewUrl: string; path: string }>;
   controlImage?: { previewUrl: string; path: string } | null;
   inpaintSourceImage?: { previewUrl: string; path: string } | null;
   inpaintMaskImage?: { previewUrl: string; path: string } | null;
@@ -317,6 +362,10 @@ const props = withDefaults(defineProps<{
   lockSize?: boolean;
   /** Override primary generate button label. */
   generateLabel?: string;
+  /** Selected version cannot take reference images (HiDream mlx-q8). */
+  referencesBlocked?: boolean;
+  /** Shown beside the generate button when references are blocked. */
+  generateBlockReason?: string;
   promptApplyPreview?: string | null;
   successorHint?: { successorId: string; successorName: string } | null;
 }>(), {
@@ -324,6 +373,9 @@ const props = withDefaults(defineProps<{
   submitting: false,
   embedded: false,
   lockSize: false,
+  extraReferenceImages: () => [],
+  referencesBlocked: false,
+  generateBlockReason: '',
 });
 
 const emit = defineEmits<{
@@ -337,6 +389,8 @@ const emit = defineEmits<{
   (e: 'generate'): void;
   (e: 'pick-reference'): void;
   (e: 'remove-reference'): void;
+  (e: 'pick-extra-reference'): void;
+  (e: 'remove-extra-reference', index: number): void;
   (e: 'pick-control'): void;
   (e: 'remove-control'): void;
   (e: 'pick-inpaint-source'): void;
@@ -355,6 +409,12 @@ const emit = defineEmits<{
 }>();
 
 const { t: $t } = useI18n();
+
+const extraReferenceCap = computed(() => {
+  if (props.referencesBlocked) return 0;
+  const raw = props.currentModelConfig?.parameters as Record<string, unknown> | undefined;
+  return extraReferenceSlotCap(raw);
+});
 
 const primaryActionLabel = computed(() => {
   if (props.generateLabel) return props.generateLabel;
@@ -544,6 +604,7 @@ function onStyleCommand(command: string) {
   z-index: 1;
   display: flex;
   align-items: center;
+  gap: 4px;
 }
 
 .image-composer__ref-pill {
@@ -556,11 +617,28 @@ function onStyleCommand(command: string) {
   border: 1px solid var(--dq-border-subtle);
 }
 
+.image-composer__ref-index {
+  min-width: 0.7rem;
+  font-size: 10px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--dq-label-secondary);
+  text-align: center;
+}
+
 .image-composer__ref-pill img {
   width: 20px;
   height: 20px;
   object-fit: cover;
   border-radius: 3px;
+}
+
+.studio-composer-toolbar__generate-reason {
+  max-width: 16rem;
+  font-size: var(--dq-font-size-caption);
+  line-height: 1.3;
+  color: var(--dq-label-secondary);
+  text-align: right;
 }
 
 .image-composer__ref-add {

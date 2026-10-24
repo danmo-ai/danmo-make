@@ -4,7 +4,9 @@
  */
 import {
   buildResolutionSizeOptions,
+  extraReferenceSlotCap,
   pickClosestResolutionPreset,
+  referenceImageSlotCap,
   type ResolutionSizeOption,
 } from './registryParamSchema';
 
@@ -38,5 +40,10 @@ assert(landscapePick === '1280x768', `1280x768 source expected 1280x768, got ${l
 
 const nearPick = pickClosestResolutionPreset(options, 720, 1280);
 assert(nearPick === '704x1280', `720x1280 source expected closest 704x1280, got ${nearPick}`);
+
+assert(referenceImageSlotCap({ strength: { type: 'float', default: 0.4 } }) === 1, 'single slot without multi flag');
+assert(extraReferenceSlotCap({ edit_plus_multi_image: true, edit_max_reference_images: 3 }) === 2, 'qwen extra slots');
+assert(referenceImageSlotCap({ reference_images_support: true, max_reference_images: 3 }) === 3, 'hidream slot cap');
+assert(extraReferenceSlotCap({ edit_max_reference_images: 1 }) === 0, 'boogu stays on the primary image');
 
 console.log('registryParamSchema.unit: ok');

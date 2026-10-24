@@ -3446,16 +3446,16 @@
       "catalog": {
         "media": "image",
         "description": {
-          "zh": "通义千问 Qwen Image Edit 指令编辑，VL 图文理解 + VAE 参考 latent。",
-          "en": "Qwen Image Edit with VL understanding and VAE reference latents."
+          "zh": "通义千问 Qwen Image Edit 2511 指令编辑。人物与多人一致性更好，最多三张参考图。",
+          "en": "Qwen Image Edit 2511 instruction edit. Stronger character and multi-person consistency, with up to three reference images."
         },
         "category": "base_models",
         "commercial_use_allowed": true,
         "type": "diffusion",
         "source": "modelscope",
         "name": {
-          "zh": "Qwen Image Edit",
-          "en": "Qwen Image Edit"
+          "zh": "Qwen Image Edit 2511",
+          "en": "Qwen Image Edit 2511"
         },
         "recommended": false,
         "engine": "danqing-image"
@@ -3499,6 +3499,9 @@
           },
           "edit_use_vl_vision": true,
           "edit_conditioning_latent_concat": true,
+          "edit_use_picture_prefix": true,
+          "edit_plus_multi_image": true,
+          "edit_max_reference_images": 3,
           "scheduler": {
             "default": "flow_match_euler_discrete",
             "options": [
@@ -3509,7 +3512,7 @@
             "type": "enum"
           },
           "steps": {
-            "default": 20,
+            "default": 40,
             "min": 1,
             "max": 50,
             "label": "步数",
@@ -3536,8 +3539,8 @@
             },
             "size": "54GB",
             "default": true,
-            "repo_id": "Qwen/Qwen-Image-Edit",
-            "local_path": "models/Image/qwen-image-edit-fp16",
+            "repo_id": "Qwen/Qwen-Image-Edit-2511",
+            "local_path": "models/Image/qwen-image-edit-2511-fp16",
             "source_type": "full"
           },
           "int8": {
@@ -3547,8 +3550,8 @@
             },
             "size": "35GB",
             "default": false,
-            "repo_id": "Qwen/Qwen-Image-Edit",
-            "local_path": "models/Image/qwen-image-edit-int8",
+            "repo_id": "Qwen/Qwen-Image-Edit-2511",
+            "local_path": "models/Image/qwen-image-edit-2511-int8",
             "source_type": "derived",
             "from_version": "fp16",
             "quantization": {
@@ -3563,8 +3566,8 @@
             },
             "size": "25GB",
             "default": false,
-            "repo_id": "Qwen/Qwen-Image-Edit",
-            "local_path": "models/Image/qwen-image-edit-int4",
+            "repo_id": "Qwen/Qwen-Image-Edit-2511",
+            "local_path": "models/Image/qwen-image-edit-2511-int4",
             "source_type": "derived",
             "from_version": "fp16",
             "quantization": {
@@ -3580,8 +3583,8 @@
             "size": "35GB",
             "default": false,
             "source": "modelscope",
-            "repo_id": "mlx-community/qwen-image-edit-8bit",
-            "local_path": "models/Image/qwen-image-edit-mlx-q8",
+            "repo_id": "mlx-community/qwen-image-edit-2511-8bit",
+            "local_path": "models/Image/qwen-image-edit-2511-mlx-q8",
             "source_type": "prequantized",
             "allow_patterns": [
               "transformer/**",
@@ -3603,7 +3606,7 @@
             "default": false,
             "source": "modelscope",
             "repo_id": "mlx-community/qwen-image-edit-2511-4bit",
-            "local_path": "models/Image/qwen-image-edit-mlx-q4",
+            "local_path": "models/Image/qwen-image-edit-2511-mlx-q4",
             "source_type": "prequantized",
             "allow_patterns": [
               "transformer/**",
@@ -6757,8 +6760,8 @@
       "catalog": {
         "media": "image",
         "description": {
-          "zh": "Qwen Image Edit 2511 LightX2V 蒸馏 LoRA（4 步或 8 步 BF16）。需配合 qwen-image-edit FP16 完整版；建议 CFG 1.0。",
-          "en": "Qwen Image Edit 2511 LightX2V distill LoRA (4-step or 8-step BF16). Requires qwen-image-edit FP16; use CFG 1.0."
+          "zh": "Qwen Image Edit 2511 LightX2V 蒸馏 LoRA（4 步或 8 步 BF16）。需配合 Qwen-Image-Edit-2511 FP16；建议 CFG 1.0。",
+          "en": "Qwen Image Edit 2511 LightX2V distill LoRA (4-step or 8-step BF16). Requires Qwen-Image-Edit-2511 FP16; use CFG 1.0."
         },
         "category": "loras",
         "commercial_use_allowed": true,

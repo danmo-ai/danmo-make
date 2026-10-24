@@ -230,7 +230,7 @@ export interface CanvasComposerSnapshot {
   start_image_path?: string;
   tail_image_path?: string;
   source_video_path?: string;
-  /** Video: Bernini R2V / RV2V reference image paths. */
+  /** Extra reference images: video Bernini R2V / RV2V, or image EditPlus (FireRed / Qwen Edit 2511). */
   reference_image_paths?: string[];
   /** Audio: cover source asset path. */
   cover_source_path?: string;

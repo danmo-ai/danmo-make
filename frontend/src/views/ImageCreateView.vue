@@ -114,6 +114,9 @@
         :has-custom-params="hasCustomParams"
         :show-negative-prompt="!!currentModelConfig?.parameters?.negative_prompt_support"
         :reference-image="referenceImage"
+        :extra-reference-images="extraReferenceImages"
+        :references-blocked="referencesBlocked"
+        :generate-block-reason="generateBlockReason"
         :control-image="controlImage"
         :inpaint-source-image="inpaintSourceImage"
         :inpaint-mask-image="inpaintMaskImage"
@@ -127,6 +130,8 @@
         @generate="onComposerSubmit"
         @pick-reference="openAssetPicker('reference')"
         @remove-reference="removeReferenceImage"
+        @pick-extra-reference="openAssetPicker('extra_reference')"
+        @remove-extra-reference="removeExtraReferenceImage"
         @pick-control="openAssetPicker('control')"
         @remove-control="removeControlImage"
         @pick-inpaint-source="openAssetPicker('inpaint_source')"
@@ -263,7 +268,7 @@ import { usePromptApplyOffer } from '@/composables/usePromptApplyOffer';
 import { useTasksStore } from '@/stores/tasks';
 import { useRegistryStore } from '@/stores/registry';
 import type { SystemInfo, GalleryItem, Task } from '@/types';
-import { applyDefaults, buildResolutionSizeOptions, hasDeviation, parseSizeValue, pickResolutionForModel, strengthDefaultFromRegistry, strengthToSourceFidelity } from '@/utils/registryParamSchema';
+import { applyDefaults, buildResolutionSizeOptions, extraReferenceSlotCap, hasDeviation, parseSizeValue, pickResolutionForModel, referenceImageSlotCap, strengthDefaultFromRegistry, strengthToSourceFidelity } from '@/utils/registryParamSchema';
 import { getImageSizeForModel, migrateLegacyImageLastSize, setImageSizeForModel } from '@/utils/imageSizeStorage';
 
 import { warnIfRiskyMemory } from '@/composables/memoryHint';
@@ -510,6 +515,7 @@ function persistComposerSnapshot() {
     seed: params.seed != null ? String(params.seed) : undefined,
     mode: imageMode.value,
     reference_path: referenceImage.value?.path || undefined,
+    reference_image_paths: extraReferenceImages.value.map((img) => img.path),
     control_path: controlImage.value?.path || undefined,
     controlnet: params.controlnet ? String(params.controlnet) : undefined,
     controlnet_strength:
@@ -617,6 +623,7 @@ function onCanvasComposerRestore(snapshot: {
   seed?: string;
   mode?: string;
   reference_path?: string;
+  reference_image_paths?: string[];
   control_path?: string;
   controlnet?: string;
   controlnet_strength?: string;
@@ -653,6 +660,13 @@ function onCanvasComposerRestore(snapshot: {
   if (snapshot.reference_path) {
     referenceImage.value = bindComposerImageFromOverlayPath(snapshot.reference_path);
     imageMode.value = 'img2img';
+  }
+  if (snapshot.reference_image_paths?.length) {
+    extraReferenceImages.value = snapshot.reference_image_paths.map((path) =>
+      bindComposerImageFromOverlayPath(path),
+    );
+  } else {
+    extraReferenceImages.value = [];
   }
   if (snapshot.control_path) {
     controlImage.value = bindComposerImageFromOverlayPath(snapshot.control_path);
@@ -704,13 +718,14 @@ function shouldAutoAddToCanvas(): boolean {
 /* ------------------------------------------------------------------ */
 
 const referenceImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
+const extraReferenceImages = ref<Array<{ previewUrl: string; path: string; assetId?: string }>>([]);
 const controlImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
 const inpaintSourceImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
 const inpaintMaskImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
 const showAssetPicker = ref(false);
-const assetPickerMode = ref<'reference' | 'control' | 'inpaint_source' | 'inpaint_mask'>('reference');
+const assetPickerMode = ref<'reference' | 'extra_reference' | 'control' | 'inpaint_source' | 'inpaint_mask'>('reference');
 
-function openAssetPicker(mode: 'reference' | 'control' | 'inpaint_source' | 'inpaint_mask') {
+function openAssetPicker(mode: 'reference' | 'extra_reference' | 'control' | 'inpaint_source' | 'inpaint_mask') {
   assetPickerMode.value = mode;
   showAssetPicker.value = true;
 }
@@ -729,9 +744,72 @@ function resolveInpaintAssetId(
 }
 
 function onReferencePick({ path, previewUrl }: { path: string; previewUrl: string }) {
+  if (versionDisallowsReferences()) {
+    toast.warning($tt('create.quantizedNoReference'));
+    showAssetPicker.value = false;
+    return;
+  }
   referenceImage.value = { path, previewUrl, assetId: assetIdFromPickPath(path) };
   showAssetPicker.value = false;
   imageMode.value = 'img2img';
+}
+
+function modelReferenceParameters(): Record<string, unknown> | undefined {
+  return currentModelConfig.value?.parameters as Record<string, unknown> | undefined;
+}
+
+function versionDisallowsReferences(): boolean {
+  const versions = currentModelConfig.value?.versions as
+    | Record<string, { overrides?: Record<string, unknown> }>
+    | undefined;
+  const block = versions?.[String(params.version || '')];
+  return Boolean(block?.overrides?.hidream_quantized_no_edit);
+}
+
+const referencesBlocked = computed(() => versionDisallowsReferences());
+
+const generateBlockReason = computed(() => {
+  if (!referencesBlocked.value) return '';
+  return $tt('create.quantizedNoReference');
+});
+
+function onExtraReferencePick({ path, previewUrl }: { path: string; previewUrl: string }) {
+  if (versionDisallowsReferences()) {
+    toast.warning($tt('create.quantizedNoReference'));
+    showAssetPicker.value = false;
+    return;
+  }
+  if (!path.startsWith('asset:')) {
+    toast.warning($tt('canvas.controlImageAssetRequired'));
+    return;
+  }
+  const assetId = assetIdFromPickPath(path);
+  const primaryId = referenceImage.value?.assetId
+    || (referenceImage.value?.path.startsWith('asset:')
+      ? referenceImage.value.path.slice('asset:'.length)
+      : '');
+  if (assetId && assetId === primaryId) {
+    showAssetPicker.value = false;
+    return;
+  }
+  if (extraReferenceImages.value.some((img) => img.path === path || (assetId && img.assetId === assetId))) {
+    showAssetPicker.value = false;
+    return;
+  }
+  if (extraReferenceImages.value.length >= extraReferenceSlotCap(modelReferenceParameters())) {
+    toast.warning($tt('canvas.referenceLimit', { n: referenceImageSlotCap(modelReferenceParameters()) }));
+    showAssetPicker.value = false;
+    return;
+  }
+  extraReferenceImages.value = [
+    ...extraReferenceImages.value,
+    { path, previewUrl, assetId },
+  ];
+  showAssetPicker.value = false;
+}
+
+function removeExtraReferenceImage(index: number) {
+  extraReferenceImages.value = extraReferenceImages.value.filter((_, i) => i !== index);
 }
 
 function onControlPick({ path, previewUrl }: { path: string; previewUrl: string }) {
@@ -760,6 +838,7 @@ function onInpaintMaskPick({ path, previewUrl }: { path: string; previewUrl: str
 
 function onAssetPickerPick(payload: { path: string; previewUrl: string }) {
   if (assetPickerMode.value === 'control') onControlPick(payload);
+  else if (assetPickerMode.value === 'extra_reference') onExtraReferencePick(payload);
   else if (assetPickerMode.value === 'inpaint_source') onInpaintSourcePick(payload);
   else if (assetPickerMode.value === 'inpaint_mask') onInpaintMaskPick(payload);
   else onReferencePick(payload);
@@ -780,13 +859,51 @@ function removeInpaintMaskImage() {
 
 function onCanvasUseAsRef(payload: { path: string; previewUrl: string; quiet?: boolean }) {
   const { path, previewUrl } = payload;
+  if (versionDisallowsReferences()) {
+    toast.warning($tt('create.quantizedNoReference'));
+    return;
+  }
   if (payload.quiet) {
     const item = galleryItems.value.find((g) => g.path === path);
     if (item) fillComposerFromGalleryItem(item);
+    referenceImage.value = { path, previewUrl, assetId: assetIdFromPickPath(path) };
+    extraReferenceImages.value = [];
+    imageMode.value = 'img2img';
+    return;
   }
-  referenceImage.value = { path, previewUrl, assetId: assetIdFromPickPath(path) };
+  const incomingId = assetIdFromPickPath(path);
+  if (!referenceImage.value) {
+    referenceImage.value = { path, previewUrl, assetId: incomingId };
+    imageMode.value = 'img2img';
+    toast.success($tt('canvas.referenceBound'));
+    return;
+  }
+  const primaryId = referenceImage.value.assetId
+    || (referenceImage.value.path.startsWith('asset:')
+      ? referenceImage.value.path.slice('asset:'.length)
+      : '');
+  if (path === referenceImage.value.path || (incomingId && incomingId === primaryId)) {
+    imageMode.value = 'img2img';
+    return;
+  }
+  const extraCap = extraReferenceSlotCap(modelReferenceParameters());
+  if (extraCap <= 0 || extraReferenceImages.value.length >= extraCap) {
+    toast.warning($tt('canvas.referenceLimit', { n: referenceImageSlotCap(modelReferenceParameters()) }));
+    return;
+  }
+  if (!path.startsWith('asset:')) {
+    toast.warning($tt('canvas.controlImageAssetRequired'));
+    return;
+  }
+  if (extraReferenceImages.value.some((img) => img.path === path || (incomingId && img.assetId === incomingId))) {
+    return;
+  }
+  extraReferenceImages.value = [
+    ...extraReferenceImages.value,
+    { path, previewUrl, assetId: incomingId },
+  ];
   imageMode.value = 'img2img';
-  if (!payload.quiet) toast.success($tt('canvas.referenceBound'));
+  toast.success($tt('canvas.referenceAppended', { n: extraReferenceImages.value.length + 1 }));
 }
 
 function onCanvasUseAsControl(payload: { path: string; previewUrl: string; quiet?: boolean }) {
@@ -799,7 +916,7 @@ function onCanvasUseAsControl(payload: { path: string; previewUrl: string; quiet
   syncCanvasControlOverlay(path);
   if (imageMode.value === 'img2img') {
     imageMode.value = 'text2img';
-    referenceImage.value = null;
+    removeReferenceImage();
   }
   if (!params.controlnet) {
     const key = pickDefaultStructuralControlNet(compatibleControlNets.value);
@@ -822,6 +939,7 @@ function onCanvasUseAsControl(payload: { path: string; previewUrl: string; quiet
 
 function removeReferenceImage() {
   referenceImage.value = null;
+  extraReferenceImages.value = [];
 }
 
 function syncCanvasControlOverlay(path: string | null) {
@@ -868,7 +986,7 @@ function syncCompositorOverlaysOnCanvasEnter() {
 
 function onCanvasOverlayCleared(kind: import('@/types').CanvasOverlayKind) {
   if (kind === 'reference') {
-    referenceImage.value = null;
+    removeReferenceImage();
     if (imageMode.value === 'img2img' && !controlImage.value) {
       imageMode.value = 'text2img';
     }
@@ -882,6 +1000,11 @@ watch(
   () => {
     persistComposerSnapshot();
   }
+);
+
+watch(
+  () => extraReferenceImages.value.map((img) => img.path).join('\n'),
+  () => persistComposerSnapshot(),
 );
 
 watch(
@@ -1283,6 +1406,7 @@ function structuralGuideValidation():
 const canGenerate = computed(() => {
   if (selectedModelNotReady.value) return false;
   if (!String(params.prompt || '').trim()) return false;
+  if (referencesBlocked.value && referenceImage.value) return false;
   if (imageMode.value === 'img2img' && !referenceImage.value) return false;
   if (String(params.controlnet || '') && !structuralGuideValidation().ok) return false;
   return true;
@@ -1718,6 +1842,11 @@ function validateGenerationPreconditions(): boolean {
     $tt,
   });
 
+  if (versionDisallowsReferences() && referenceImage.value) {
+    toast.warning($tt('create.quantizedNoReference'));
+    return false;
+  }
+
   const guideValidation = structuralGuideValidation();
   if (!guideValidation.ok) {
     const guideToastKeys = {
@@ -1779,22 +1908,18 @@ async function prepareGenerationContext(): Promise<GenerationPrepared | null> {
   };
 }
 
-function modelSupportsEditMultiReference(): boolean {
-  const raw = currentModelConfig.value?.parameters as Record<string, unknown> | undefined;
-  return Boolean(raw?.edit_plus_multi_image);
-}
-
-function collectExtraReferenceAssetIds(
-  sourceAssetId: string | null,
-  controlAssetId: string | null,
-): string[] {
-  if (!modelSupportsEditMultiReference()) return [];
-  const raw = currentModelConfig.value?.parameters as Record<string, unknown> | undefined;
-  const maxRefs = Number(raw?.edit_max_reference_images ?? 1);
-  const cap = Math.max(1, maxRefs) - 1;
+function collectExtraReferenceAssetIds(sourceAssetId: string | null): string[] {
+  if (versionDisallowsReferences()) return [];
+  const cap = extraReferenceSlotCap(modelReferenceParameters());
+  if (cap <= 0) return [];
   const ids: string[] = [];
-  if (controlAssetId && controlAssetId !== sourceAssetId) {
-    ids.push(controlAssetId);
+  const pushId = (id: string | null | undefined) => {
+    const value = String(id || '').trim();
+    if (!value || value === sourceAssetId || ids.includes(value)) return;
+    ids.push(value);
+  };
+  for (const img of extraReferenceImages.value) {
+    pushId(img.assetId || (img.path.startsWith('asset:') ? img.path.slice('asset:'.length) : ''));
   }
   return ids.slice(0, cap);
 }
@@ -1837,6 +1962,7 @@ async function submitImageGenerationTask(
         params.strength,
         strengthDefaultFromRegistry(currentModelConfig.value?.parameters as Record<string, unknown> | undefined),
       ),
+      size: `${params.width}x${params.height}`,
       metadata: { ...ctx.meta },
       priority: 'normal',
     };
@@ -1844,7 +1970,7 @@ async function submitImageGenerationTask(
     if (!editEnh.ok) {
       throw new Error($tt('create.inpaintPairRequired'));
     }
-    const extraRefs = collectExtraReferenceAssetIds(ctx.source_asset_id, ctx.control_asset_id);
+    const extraRefs = collectExtraReferenceAssetIds(ctx.source_asset_id);
     if (extraRefs.length) {
       editBody.reference_asset_ids = extraRefs;
     }

@@ -183,19 +183,22 @@ def resolve_qwen_edit_reference_images(
     *,
     max_images: int,
 ) -> list[Image.Image]:
-    """Primary source first, then ``reference_asset_ids`` (deduped, capped)."""
+    """Primary source first, then ``reference_asset_ids``.
+
+    An id past ``max_images``, or a missing file, raises ``RuntimeError``.
+    Output size stays on the source image via ``compute_qwen_edit_dimensions``.
+    """
+    from backend.engine.pipelines.image_reference_assets import (
+        assert_reference_count,
+        ordered_edit_asset_ids,
+        require_asset_file,
+    )
+
+    ids = ordered_edit_asset_ids(request.source_asset_id, request.reference_asset_ids)
+    assert_reference_count(len(ids), max_images)
     images = [primary.convert("RGB")]
-    seen = {request.source_asset_id}
-    cap = max(1, int(max_images))
-    for asset_id in request.reference_asset_ids or []:
-        aid = str(asset_id or "").strip()
-        if not aid or aid in seen:
-            continue
-        seen.add(aid)
-        ref_path = ctx_exec.asset_store.get_file_path(aid)
-        images.append(Image.open(ref_path).convert("RGB"))
-        if len(images) >= cap:
-            break
+    for asset_id in ids[1:]:
+        images.append(Image.open(require_asset_file(ctx_exec.asset_store, asset_id)).convert("RGB"))
     return images
 
 
