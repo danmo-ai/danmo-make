@@ -30,8 +30,15 @@ from backend.engine.codecs import (
 )
 from backend.engine.config.model_configs import (
     apply_image_registry_config_overrides,
+    apply_image_version_config_overrides,
     assert_image_family_contract,
     get_config_class,
+)
+from backend.engine.pipelines.image_reference_assets import (
+    assemble_edit_reference_paths,
+    assert_reference_count,
+    family_reference_cap,
+    require_asset_file,
 )
 
 if TYPE_CHECKING:
@@ -1266,6 +1273,7 @@ def execute_family_image_generator(
     config_cls = get_config_class(family)
     config = config_cls()
     apply_image_registry_config_overrides(entry, config)
+    apply_image_version_config_overrides(entry, config, version_key)
 
     if not uses_family_image_generator(config):
         raise RuntimeError(
@@ -1302,24 +1310,29 @@ def execute_family_image_generator(
 
     ref_paths: list[str] = []
     if is_edit:
-        src_id = getattr(request, "source_asset_id", None)
-        if not src_id:
-            raise RuntimeError("Image edit requires source_asset_id")
-        src = pipeline._asset_store.get_file_path(src_id)
-        if src is None or not src.exists():
-            raise RuntimeError(f"Source image asset not found: {src_id!r}")
-        ref_paths = [str(src)]
+        ref_paths = assemble_edit_reference_paths(
+            pipeline._asset_store,
+            getattr(request, "source_asset_id", None),
+            getattr(request, "reference_asset_ids", None),
+            max_refs=family_reference_cap(config),
+        )
     else:
         ref_ids = list(getattr(request, "reference_asset_ids", None) or [])
         meta = getattr(request, "metadata", None) or {}
         if not ref_ids and isinstance(meta.get("reference_asset_ids"), list):
             ref_ids = [str(x) for x in meta["reference_asset_ids"]]
-        max_refs = int(getattr(config, "hidream_edit_max_refs", 3) or getattr(config, "edit_max_reference_images", 3) or 3)
-        for aid in ref_ids[:max_refs]:
-            p = pipeline._asset_store.get_file_path(aid)
-            if p is None or not p.exists():
-                raise RuntimeError(f"Reference image asset not found: {aid!r}")
-            ref_paths.append(str(p))
+        unique_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for aid in ref_ids:
+            value = str(aid or "").strip()
+            if not value or value in seen_ids:
+                continue
+            seen_ids.add(value)
+            unique_ids.append(value)
+        if unique_ids:
+            assert_reference_count(len(unique_ids), family_reference_cap(config))
+            for aid in unique_ids:
+                ref_paths.append(str(require_asset_file(pipeline._asset_store, aid)))
 
     validate_image_generation_params(
         family=family,

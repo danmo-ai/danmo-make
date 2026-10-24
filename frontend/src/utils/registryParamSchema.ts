@@ -351,6 +351,29 @@ export function img2imgUsesStrength(parameters: Record<string, unknown> | undefi
   return 'strength' in normalizeParamsDef(raw);
 }
 
+/**
+ * How many reference images the composer may hold, including picture 1.
+ * Multi-image edit is ``edit_plus_multi_image`` (Qwen / FireRed) or
+ * ``reference_images_support`` (HiDream). Otherwise only the primary image.
+ */
+export function referenceImageSlotCap(
+  parameters: Record<string, unknown> | undefined | null,
+): number {
+  const raw = parameters || {};
+  const multi = Boolean(raw.edit_plus_multi_image || raw.reference_images_support);
+  if (!multi) return 1;
+  const max = Number(raw.edit_max_reference_images ?? raw.max_reference_images ?? 1);
+  if (!Number.isFinite(max)) return 1;
+  return Math.max(1, Math.floor(max));
+}
+
+/** Extra slots after picture 1. */
+export function extraReferenceSlotCap(
+  parameters: Record<string, unknown> | undefined | null,
+): number {
+  return Math.max(0, referenceImageSlotCap(parameters) - 1);
+}
+
 /** UI 去噪强度 (strength) → edits API ``source_fidelity``（高 strength = 更多改动 = 低 fidelity）。 */
 export function strengthToSourceFidelity(strength: unknown, fallback = 0.4): number {
   const s = Number(strength);

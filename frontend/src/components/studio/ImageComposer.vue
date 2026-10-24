@@ -28,7 +28,12 @@
 
       <!-- Bottom-left: Reference image -->
       <div class="image-composer__ref-area">
-        <div v-if="referenceImage" class="image-composer__ref-pill">
+        <div
+          v-if="referenceImage"
+          class="image-composer__ref-pill"
+          :title="$t('create.pictureIndex', { n: 1 })"
+        >
+          <span class="image-composer__ref-index" :aria-label="$t('create.pictureIndex', { n: 1 })">1</span>
           <img :src="referenceImage.previewUrl" alt="ref" />
           <ComposerIconTip
             v-if="referenceAssetId"
@@ -55,12 +60,14 @@
             </DqIconButton>
           </ComposerIconTip>
         </div>
+        <template v-if="extraReferenceCap > 0">
         <div
           v-for="(img, idx) in extraReferenceImages"
-          v-show="extraReferenceCap > 0"
           :key="`${img.path}-${idx}`"
           class="image-composer__ref-pill"
+          :title="$t('create.pictureIndex', { n: idx + 2 })"
         >
+          <span class="image-composer__ref-index" :aria-label="$t('create.pictureIndex', { n: idx + 2 })">{{ idx + 2 }}</span>
           <img :src="img.previewUrl" alt="" />
           <ComposerIconTip :content="$t('create.composerTip.removeExtraRef')">
             <DqIconButton
@@ -73,6 +80,7 @@
             </DqIconButton>
           </ComposerIconTip>
         </div>
+        </template>
         <ComposerIconTip
           v-if="referenceImage && extraReferenceImages.length < extraReferenceCap"
           :content="$t('create.composerTip.extraRefImage')"
@@ -87,7 +95,7 @@
             <DqIcon :size="14"><Picture /></DqIcon>
           </DqIconButton>
         </ComposerIconTip>
-        <ComposerIconTip v-else-if="!referenceImage" :content="$t('create.composerTip.refImage')">
+        <ComposerIconTip v-else-if="!referenceImage && !referencesBlocked" :content="$t('create.composerTip.refImage')">
           <DqIconButton
             type="text"
             size="sm"
@@ -232,6 +240,10 @@
           />
         </DqSelect>
 
+        <span
+          v-if="generateBlockReason"
+          class="studio-composer-toolbar__generate-reason"
+        >{{ generateBlockReason }}</span>
         <DqButton
           type="primary"
           size="sm"
@@ -293,7 +305,7 @@ import {
 } from '@danqing/dq-shell';
 import { assetIdFromGalleryPath } from '@/utils/copilotHandoff';
 import { $tt } from '@/utils/i18n';
-import { formatResolutionOptionLabel } from '@/utils/registryParamSchema';
+import { extraReferenceSlotCap, formatResolutionOptionLabel } from '@/utils/registryParamSchema';
 import { appendStyleBoost } from '@/utils/styleBoost';
 
 const props = withDefaults(defineProps<{
@@ -350,6 +362,10 @@ const props = withDefaults(defineProps<{
   lockSize?: boolean;
   /** Override primary generate button label. */
   generateLabel?: string;
+  /** Selected version cannot take reference images (HiDream mlx-q8). */
+  referencesBlocked?: boolean;
+  /** Shown beside the generate button when references are blocked. */
+  generateBlockReason?: string;
   promptApplyPreview?: string | null;
   successorHint?: { successorId: string; successorName: string } | null;
 }>(), {
@@ -358,6 +374,8 @@ const props = withDefaults(defineProps<{
   embedded: false,
   lockSize: false,
   extraReferenceImages: () => [],
+  referencesBlocked: false,
+  generateBlockReason: '',
 });
 
 const emit = defineEmits<{
@@ -393,11 +411,9 @@ const emit = defineEmits<{
 const { t: $t } = useI18n();
 
 const extraReferenceCap = computed(() => {
+  if (props.referencesBlocked) return 0;
   const raw = props.currentModelConfig?.parameters as Record<string, unknown> | undefined;
-  if (!raw?.edit_plus_multi_image) return 0;
-  const maxRefs = Number(raw.edit_max_reference_images ?? 1);
-  if (!Number.isFinite(maxRefs)) return 0;
-  return Math.max(0, Math.floor(maxRefs) - 1);
+  return extraReferenceSlotCap(raw);
 });
 
 const primaryActionLabel = computed(() => {
@@ -601,11 +617,28 @@ function onStyleCommand(command: string) {
   border: 1px solid var(--dq-border-subtle);
 }
 
+.image-composer__ref-index {
+  min-width: 0.7rem;
+  font-size: 10px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--dq-label-secondary);
+  text-align: center;
+}
+
 .image-composer__ref-pill img {
   width: 20px;
   height: 20px;
   object-fit: cover;
   border-radius: 3px;
+}
+
+.studio-composer-toolbar__generate-reason {
+  max-width: 16rem;
+  font-size: var(--dq-font-size-caption);
+  line-height: 1.3;
+  color: var(--dq-label-secondary);
+  text-align: right;
 }
 
 .image-composer__ref-add {

@@ -122,6 +122,8 @@ class ImageEditRequest(BaseModel):
     n: int = Field(1, ge=1, le=8)
     steps: Optional[int] = None
     seed: Optional[int] = None
+    # Family generators use this on edit when set. Qwen / FireRed keep source-derived size.
+    size: Optional[str] = None
     # None → 使用注册表 ``parameters.guidance.default``（与参考 CLI 对齐时应对 rewrite 显式传 0）
     guidance: Optional[float] = None
     scheduler: Optional[str] = None

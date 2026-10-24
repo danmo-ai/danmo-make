@@ -1472,6 +1472,87 @@ class LtxWeightTests(unittest.TestCase):
         self.assertIsNotNone(step1x)
         self.assertEqual(step1x.family, "step1x_edit")
 
+    def test_edit_reference_order_cap_and_missing_file(self) -> None:
+        from backend.engine.config.model_configs import BooguImageConfig, HiDreamO1Config
+        from backend.engine.pipelines.image_reference_assets import (
+            assemble_edit_reference_paths,
+            family_reference_cap,
+        )
+
+        self.assertEqual(family_reference_cap(HiDreamO1Config()), 3)
+        self.assertEqual(family_reference_cap(BooguImageConfig()), 1)
+
+        root = Path(tempfile.mkdtemp())
+        files: dict[str, Path] = {}
+        for name in ("a", "b", "c", "d"):
+            path = root / f"{name}.png"
+            path.write_bytes(b"x")
+            files[name] = path
+
+        class _Store:
+            def get_file_path(self, asset_id: str):
+                return files.get(asset_id)
+
+        store = _Store()
+        paths = assemble_edit_reference_paths(store, "a", ["b", "a", "", "c"], max_refs=3)
+        self.assertEqual(paths, [str(files["a"]), str(files["b"]), str(files["c"])])
+
+        with self.assertRaises(RuntimeError) as over:
+            assemble_edit_reference_paths(store, "a", ["b", "c", "d"], max_refs=3)
+        self.assertIn("at most 3", str(over.exception))
+
+        with self.assertRaises(RuntimeError) as missing:
+            assemble_edit_reference_paths(store, "a", ["missing"], max_refs=3)
+        self.assertIn("missing", str(missing.exception))
+
+        files["gone"] = root / "gone.png"
+        with self.assertRaises(RuntimeError) as absent:
+            assemble_edit_reference_paths(store, "gone", None, max_refs=3)
+        self.assertIn("gone", str(absent.exception))
+
+    def test_hidream_q8_version_override_reaches_config(self) -> None:
+        from backend.core.model_registry import ModelRegistry
+        from backend.engine.config.model_configs import (
+            HiDreamO1Config,
+            apply_image_registry_config_overrides,
+            apply_image_version_config_overrides,
+        )
+
+        reg = ModelRegistry.load(
+            Path(__file__).resolve().parents[1] / "default_config" / "models_registry.json"
+        )
+        entry = reg.get("hidream-o1-image-dev")
+        self.assertIsNotNone(entry)
+        cfg = HiDreamO1Config()
+        apply_image_registry_config_overrides(entry, cfg)
+        self.assertFalse(cfg.hidream_quantized_no_edit)
+        apply_image_version_config_overrides(entry, cfg, "mlx-bf16")
+        self.assertFalse(cfg.hidream_quantized_no_edit)
+        apply_image_version_config_overrides(entry, cfg, "mlx-q8")
+        self.assertTrue(cfg.hidream_quantized_no_edit)
+
+    def test_qwen_edit_reference_resolver_fails_loud(self) -> None:
+        from PIL import Image
+
+        from backend.engine.families.qwen.edit_util import resolve_qwen_edit_reference_images
+
+        primary = Image.new("RGB", (8, 8), "red")
+        request = SimpleNamespace(source_asset_id="src", reference_asset_ids=["e1", "e2", "e3"])
+
+        class _Store:
+            def get_file_path(self, asset_id: str):
+                return None
+
+        ctx = SimpleNamespace(asset_store=_Store())
+        with self.assertRaises(RuntimeError) as over:
+            resolve_qwen_edit_reference_images(request, ctx, primary, max_images=3)
+        self.assertIn("at most 3", str(over.exception))
+
+        request.reference_asset_ids = ["e1"]
+        with self.assertRaises(RuntimeError) as missing:
+            resolve_qwen_edit_reference_images(request, ctx, primary, max_images=3)
+        self.assertIn("e1", str(missing.exception))
+
     def test_hidream_o1_mlx_shape_sanity(self) -> None:
         import numpy as np
 
