@@ -179,32 +179,13 @@
         />
       </template>
       <template #controls>
-        <DqSelect
+        <ModelSelect
           v-model="localModel"
-          size="sm"
+          :options="modelOptions"
           variant="ghost"
-          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--model"
-          
           @change="(val: string) => emit('model-change', val)"
-        >
-          <DqOption
-            v-for="item in modelOptions"
-            :key="item.value"
-            :label="item.label"
-            :value="item.value"
-            :disabled="item.disabled"
-          >
-            <DqTag
-              v-if="item.commercialUseAllowed"
-              size="sm"
-              type="success"
-              class="audio-composer__model-badge"
-            >
-              {{ $tt('download.commercialUseBadge') }}
-            </DqTag>
-          </DqOption>
-        </DqSelect>
+        />
 
         <DqSelect
           v-model="localDuration"
@@ -476,6 +457,8 @@ import {
   Refresh,
 } from '@danqing/dq-shell';
 import { $tt } from '@/utils/i18n';
+import ModelSelect from '@/components/model/ModelSelect.vue';
+import type { ModelSelectOption } from '@/utils/modelSelectOption';
 import { useComposerDefaultModel } from '@/composables/useComposerDefaultModel';
 import { isAudioLyricsRequired, audioLyricsRequiredHintKey } from '@/utils/audioLyrics';
 import { useVocalLanguageOptions } from '@/composables/useVocalLanguageOptions';
@@ -493,7 +476,7 @@ const props = defineProps<{
   generating: boolean;
   canGenerate: boolean;
   generateLabel: string;
-  modelOptions: Array<{ label: string; value: string; disabled?: boolean; commercialUseAllowed?: boolean }>;
+  modelOptions: ModelSelectOption[];
   durationOptions: Array<{ label: string; value: number }>;
   styles: Record<string, { applies_to?: string[]; positive?: string; negative?: string; trigger_words?: string; media_scope?: string }>;
   params: Record<string, any>;
@@ -890,13 +873,6 @@ function onPromptKeydown(e: KeyboardEvent) {
   z-index: 1;
   display: flex;
   align-items: center;
-}
-
-.audio-composer__model-badge {
-  font-size: var(--dq-font-size-caption);
-  padding: 0 4px;
-  height: 16px;
-  line-height: 16px;
 }
 
 .audio-composer__preset-btn {

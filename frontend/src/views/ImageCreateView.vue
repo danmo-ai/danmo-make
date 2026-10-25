@@ -183,24 +183,11 @@
       <div v-if="editorMode === 'retouch'" class="studio-retouch-panel">
         <DqPrefPane class="studio-create-pref-pane studio-editor-drawer-pref-pane">
           <DqPrefRow :label="$t('studio.model')">
-            <DqSelect v-model="retouchModelVersion" size="sm" style="width: 100%" :placeholder="$t('studio.selectModel')">
-              <DqOption
-                v-for="item in retouchModelOptions"
-                :key="item.value"
-                :label="item.label"
-                :value="item.value"
-                :disabled="item.disabled"
-              >
-                <DqTag
-                  v-if="item.commercialUseAllowed"
-                  size="sm"
-                  type="success"
-                  class="studio-drawer-model-badge"
-                >
-                  {{ $t('download.commercialUseBadge') }}
-                </DqTag>
-              </DqOption>
-            </DqSelect>
+            <ModelSelect
+              v-model="retouchModelVersion"
+              :options="retouchModelOptions"
+              :placeholder="$t('studio.selectModel')"
+            />
           </DqPrefRow>
         </DqPrefPane>
 
@@ -293,6 +280,8 @@ import StudioLayout from '@/components/studio/StudioLayout.vue';
 import StudioCanvas from '@/components/studio/StudioCanvas.vue';
 import StudioGalleryFilters from '@/components/studio/StudioGalleryFilters.vue';
 import ImageComposer from '@/components/studio/ImageComposer.vue';
+import ModelSelect from '@/components/model/ModelSelect.vue';
+import { modelSelectOption } from '@/utils/modelSelectOption';
 import StudioComposerHost from '@/components/studio/StudioComposerHost.vue';
 import StudioComposeFab from '@/components/studio/StudioComposeFab.vue';
 import AssetPicker from '@/components/asset/AssetPicker.vue';
@@ -1323,12 +1312,7 @@ const filteredModelPickerVersions = computed(() => {
 });
 
 const modelSelectOptions = computed(() => {
-  return filteredModelPickerVersions.value.map((v) => ({
-    label: String(v.name || ''),
-    value: `${v.modelKey}|${v.versionKey}`,
-    disabled: !v.ready,
-    commercialUseAllowed: v.commercialUseAllowed as boolean,
-  }));
+  return filteredModelPickerVersions.value.map((v) => modelSelectOption(v));
 });
 
 const currentModelConfig = computed(() => modelRegistry.value[params.model as string] || null);
@@ -2179,12 +2163,7 @@ const upscaleModelOptions = computed(() => {
       const acts = (v.actions as Record<string, unknown>) || {};
       return imageSupportsUpscale(acts);
     })
-    .map((v) => ({
-      label: String(v.name || ''),
-      value: `${v.modelKey}|${v.versionKey}`,
-      disabled: !v.ready,
-      commercialUseAllowed: v.commercialUseAllowed as boolean,
-    }));
+    .map((v) => modelSelectOption(v));
 });
 const extendModelVersion = ref('');
 const extendModelOptions = computed(() => {
@@ -2194,10 +2173,7 @@ const extendModelOptions = computed(() => {
       return imageSupportsExtend(acts);
     })
     .map((v) => ({
-      label: String(v.name || '') + (!v.ready ? ` (${$tt('common.notReady')})` : ''),
-      value: `${v.modelKey}|${v.versionKey}`,
-      disabled: !v.ready,
-      commercialUseAllowed: v.commercialUseAllowed as boolean,
+      ...modelSelectOption(v, { unreadySuffix: $tt('common.notReady') }),
       isFill: isFillControlNet(String(v.modelKey || '')),
     }));
   rows.sort((a, b) => {
@@ -2247,10 +2223,7 @@ const retouchModelOptions = computed(() => {
       return imageSupportsRetouch(acts);
     })
     .map((v) => ({
-      label: String(v.name || '') + (!v.ready ? ` (${$tt('common.notReady')})` : ''),
-      value: `${v.modelKey}|${v.versionKey}`,
-      disabled: !v.ready,
-      commercialUseAllowed: v.commercialUseAllowed as boolean,
+      ...modelSelectOption(v, { unreadySuffix: $tt('common.notReady') }),
       modelKey: String(v.modelKey || ''),
       isFill: isFillControlNet(String(v.modelKey || '')),
     }));
@@ -2737,20 +2710,5 @@ function onCreatePageKeydown(e: KeyboardEvent) {
 /* 最后一行：底部留白 */
 .studio-image-editor-drawer .studio-editor-drawer-pref-pane .dq-pref-row:last-child {
   padding-bottom: 12px;
-}
-</style>
-
-<style>
-.studio-drawer-model-label {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.studio-drawer-model-badge {
-  flex-shrink: 0;
-  margin-left: 6px;
 }
 </style>

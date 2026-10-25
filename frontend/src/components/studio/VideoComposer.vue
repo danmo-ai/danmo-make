@@ -296,32 +296,13 @@
         />
       </template>
       <template #controls>
-        <DqSelect
+        <ModelSelect
           v-model="localModel"
-          size="sm"
+          :options="modelOptions"
           variant="ghost"
-          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--model"
-          
           @change="(val: string) => emit('model-change', val)"
-        >
-          <DqOption
-            v-for="item in modelOptions"
-            :key="item.value"
-            :label="item.label"
-            :value="item.value"
-            :disabled="item.disabled"
-          >
-            <DqTag
-              v-if="item.commercialUseAllowed"
-              size="sm"
-              type="success"
-              class="video-composer__model-badge"
-            >
-              {{ $tt('download.commercialUseBadge') }}
-            </DqTag>
-          </DqOption>
-        </DqSelect>
+        />
 
         <DqSelect
           v-if="sizeOptions.length > 0"
@@ -584,6 +565,8 @@
 import { ref, computed } from 'vue';
 import { useComposerDefaultModel } from '@/composables/useComposerDefaultModel';
 import ComposerAdvancedCollapsible from './ComposerAdvancedCollapsible.vue';
+import ModelSelect from '@/components/model/ModelSelect.vue';
+import type { ModelSelectOption } from '@/utils/modelSelectOption';
 import ComposerToolbar from './ComposerToolbar.vue';
 import ComposerPromptApplyStrip from './ComposerPromptApplyStrip.vue';
 import ComposerIconTip from './ComposerIconTip.vue';
@@ -629,7 +612,7 @@ const props = defineProps<{
   generating: boolean;
   canGenerate: boolean;
   generateLabel: string;
-  modelOptions: Array<{ label: string; value: string; disabled?: boolean; commercialUseAllowed?: boolean }>;
+  modelOptions: ModelSelectOption[];
   sizeOptions: Array<{ label: string; value: string; pixelLabel?: string }>;
   durationOptions: Array<{ label: string; value: number }>;
   styles: Record<string, { applies_to?: string[]; positive?: string; negative?: string; media_scope?: string }>;

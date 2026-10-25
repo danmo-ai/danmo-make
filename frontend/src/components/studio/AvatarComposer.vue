@@ -73,12 +73,10 @@
 
     <div class="avatar-composer__row">
       <label class="avatar-composer__field-label">{{ $tt('studio.model') }}</label>
-      <DqSelect
+      <ModelSelect
         v-model="localModel"
-        size="sm"
         :options="modelOptions"
         filterable
-        class="avatar-composer__model"
         @change="$emit('model-change')"
       />
     </div>
@@ -167,6 +165,8 @@ import { useComposerDefaultModel } from '@/composables/useComposerDefaultModel';
 import { Close, Microphone, Picture } from '@danqing/dq-shell';
 import { DqSegmented } from '@danqing/dq-ui';
 import { $tt } from '@/utils/i18n';
+import ModelSelect from '@/components/model/ModelSelect.vue';
+import type { ModelSelectOption } from '@/utils/modelSelectOption';
 
 const props = withDefaults(
   defineProps<{
@@ -180,7 +180,7 @@ const props = withDefaults(
     generating?: boolean;
     canGenerate?: boolean;
     generateLabel?: string;
-    modelOptions?: { label: string; value: string; disabled?: boolean }[];
+    modelOptions?: ModelSelectOption[];
     resolutionOptions?: { label: string; value: string }[];
     currentModelConfig?: Record<string, unknown> | null;
     showNegativePrompt?: boolean;

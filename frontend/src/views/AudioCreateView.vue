@@ -162,6 +162,7 @@ import { usePromptApplyOffer } from '@/composables/usePromptApplyOffer';
 
 import { useModelRegistryFilters } from '@/composables/useModelRegistryFilters';
 import { applyModelVersionFilters } from '@/utils/modelPickerFilters';
+import { modelSelectOption } from '@/utils/modelSelectOption';
 import { warnIfRiskyMemory } from '@/composables/memoryHint';
 import type { SystemInfo, Task, GalleryItem } from '@/types';
 import { assetDisplayLabel, previewDisplayCaption } from '@/utils/assetDisplay';
@@ -521,12 +522,7 @@ function applyAudioComposerParams(val: Record<string, unknown>) {
 }
 
 const audioModelSelectOptions = computed(() =>
-  filteredModelPickerVersions.value.map((v) => ({
-    label: String(v.name || ''),
-    value: `${v.modelKey}|${v.versionKey}`,
-    disabled: !v.ready,
-    commercialUseAllowed: v.commercialUseAllowed === true,
-  }))
+  filteredModelPickerVersions.value.map((v) => modelSelectOption(v)),
 );
 
 const coverReferenceMedia = computed(() => {

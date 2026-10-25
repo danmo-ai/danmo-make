@@ -179,32 +179,13 @@
         />
       </template>
       <template #controls>
-        <DqSelect
+        <ModelSelect
           v-model="localModel"
-          size="sm"
+          :options="modelOptions"
           variant="ghost"
-          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--model"
-          
           @change="(val: string) => emit('model-change', val)"
-        >
-          <DqOption
-            v-for="item in modelOptions"
-            :key="item.value"
-            :label="item.label"
-            :value="item.value"
-            :disabled="item.disabled"
-          >
-            <DqTag
-              v-if="item.commercialUseAllowed"
-              size="sm"
-              type="success"
-              class="image-composer__model-badge"
-            >
-              {{ $t('download.commercialUseBadge') }}
-            </DqTag>
-          </DqOption>
-        </DqSelect>
+        />
 
         <DqSelect
           v-if="!isImg2imgMode && !lockSize"
@@ -296,6 +277,8 @@ import ImageComposerAdvancedFields from './ImageComposerAdvancedFields.vue';
 import ComposerPromptApplyStrip from './ComposerPromptApplyStrip.vue';
 import ComposerSuccessorHintStrip from './ComposerSuccessorHintStrip.vue';
 import ComposerIconTip from './ComposerIconTip.vue';
+import ModelSelect from '@/components/model/ModelSelect.vue';
+import type { ModelSelectOption } from '@/utils/modelSelectOption';
 import { useI18n } from 'vue-i18n';
 import {
   Close,
@@ -318,7 +301,7 @@ const props = withDefaults(defineProps<{
   submitting?: boolean;
   generating: boolean;
   canGenerate: boolean;
-  modelOptions: Array<{ label: string; value: string; disabled?: boolean; commercialUseAllowed?: boolean }>;
+  modelOptions: ModelSelectOption[];
   sizeOptions: Array<{ label: string; value: string; pixelLabel?: string }>;
   styles: Record<string, { applies_to?: string[]; positive?: string; negative?: string; trigger_words?: string; media_scope?: string }>;
   params: {
@@ -703,13 +686,6 @@ function onStyleCommand(command: string) {
 @keyframes image-composer-enhance-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
-}
-
-.image-composer__model-badge {
-  font-size: var(--dq-font-size-caption);
-  padding: 0 4px;
-  height: 16px;
-  line-height: 16px;
 }
 
 /* Size option with ratio + pixel */

@@ -1,5 +1,5 @@
 <template>
-  <DqTooltip :content="content" :placement="placement">
+  <DqTooltip :content="content" :placement="placement" :popper-class="popperClass">
     <span class="composer-icon-tip">
       <slot />
     </span>
@@ -11,8 +11,9 @@ withDefaults(
   defineProps<{
     content: string;
     placement?: 'top' | 'bottom' | 'left' | 'right';
+    popperClass?: string;
   }>(),
-  { placement: 'top' },
+  { placement: 'top', popperClass: '' },
 );
 </script>
 
