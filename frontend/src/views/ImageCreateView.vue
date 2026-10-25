@@ -980,6 +980,7 @@ async function loadCompatibleAdapters(modelKey: string) {
   }
   try {
     const loras = await api.settings.getCompatibleLoras(modelKey);
+    if (String(params.model || '') !== modelKey) return;
     compatibleLoras.value = (loras as CompatibleLoraRow[]) || [];
     syncImageLoraSelection();
     await loadCompatibleControlNets(modelKey);
@@ -1447,6 +1448,7 @@ function applySelectedSize(val: string) {
 }
 
 function syncResolutionForModel(modelId?: string) {
+  if (verificationRecipeActive.value) return;
   const mid = modelId || String(params.model || '');
   if (!mid) return;
   migrateLegacyImageLastSize(mid);
@@ -1504,6 +1506,7 @@ watch(imageMode, (newMode, oldMode) => {
 
 watch(selectedSize, (val) => {
   applySelectedSize(val);
+  if (verificationRecipeActive.value) return;
   const mid = String(params.model || '');
   if (mid) setImageSizeForModel(mid, val);
 });
@@ -2008,6 +2011,7 @@ const loadModelRegistry = async () => {
 };
 
 const loadModelDefaults = () => {
+  if (verificationRecipeActive.value) return;
   const config = currentModelConfig.value;
   if (!config || !config.parameters) return;
   applyDefaults(config.parameters as Record<string, unknown>, params);
@@ -2480,6 +2484,7 @@ const loadRecentImages = async () => {
 /* ------------------------------------------------------------------ */
 
 onMounted(async () => {
+  if (route.query.verify === '1') verificationRecipeActive.value = true;
   await loadModelRegistry();
   loadPresets();
   loadRecentImages();
@@ -2513,9 +2518,26 @@ onMounted(async () => {
     if (typeof q.seed === 'string') params.seed = q.seed;
     if (typeof q.scheduler === 'string' && q.scheduler) params.scheduler = q.scheduler;
     if (typeof q.version === 'string' && q.version) params.version = q.version;
-    selectedModelVersion.value = params.version ? `${params.model}|${params.version}` : params.model;
+    const modelKey = String(params.model || '');
+    const readyVersions = filteredModelPickerVersions.value.filter(
+      (row) => row.modelKey === modelKey && row.ready,
+    );
+    const version = readyVersions.find((row) => row.versionKey === params.version) || readyVersions[0];
+    if (version) {
+      params.model = version.modelKey;
+      params.version = version.versionKey;
+      selectedModelVersion.value = `${version.modelKey}|${version.versionKey}`;
+    }
     selectedSize.value = `${params.width}x${params.height}`;
-    await loadCompatibleAdapters(String(params.model));
+    await loadCompatibleAdapters(modelKey);
+    for (const key of ['steps', 'guidance', 'lora_scale', 'width', 'height'] as const) {
+      const value = numberQuery(key);
+      if (value != null) params[key] = value;
+    }
+    if (typeof q.seed === 'string') params.seed = q.seed;
+    if (typeof q.scheduler === 'string' && q.scheduler) params.scheduler = q.scheduler;
+    if (typeof q.lora === 'string' && q.lora) params.lora = q.lora;
+    selectedSize.value = `${params.width}x${params.height}`;
     await nextTick();
     syncImageLoraSelection();
   }

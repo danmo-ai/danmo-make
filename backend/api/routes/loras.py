@@ -16,6 +16,7 @@ from backend.core.contracts import (
     DatasetCreateRequest,
     DatasetCaptionUpdate,
     DatasetHealthVlmRequest,
+    DatasetSkippedImagesRequest,
     DatasetImportAssetsRequest,
     LoraRegisterRequest,
     LoraTrainingRequest,
@@ -91,10 +92,10 @@ def _face_audit_resolution(width: int, height: int) -> tuple[int, int]:
 def dataset_health(dataset_id: str, width: int = 512, height: int = 512):
     root = _paths().get_project_root()
     try:
-        from backend.engine.training.lora_quality import analyze_dataset_health
+        from backend.engine.training.lora_quality import analyze_dataset_health_shared
 
         resolution = _face_audit_resolution(width, height)
-        report = analyze_dataset_health(root, dataset_id, training_resolution=resolution)
+        report = analyze_dataset_health_shared(root, dataset_id, training_resolution=resolution)
         if report.get("faces") is not None:
             report["faces"]["resolution"] = list(resolution)
         report["vision_available"] = get_llm_service().is_vision_available()
@@ -103,6 +104,8 @@ def dataset_health(dataset_id: str, width: int = 512, height: int = 512):
         raise HTTPException(404, detail={"code": "not_found", "message": str(e)}) from e
     except ValueError as e:
         raise HTTPException(400, detail={"code": "invalid_face_audit_resolution", "message": str(e)}) from e
+    except TimeoutError as e:
+        raise HTTPException(503, detail={"code": "face_preflight_busy", "message": str(e)}) from e
 
 
 @router.post("/datasets/{dataset_id}/health/vlm")
@@ -241,6 +244,17 @@ def delete_dataset(dataset_id: str):
     root = _paths().get_project_root()
     try:
         dataset_store.delete_dataset(root, dataset_id)
+    except FileNotFoundError as e:
+        raise HTTPException(404, detail={"code": "not_found", "message": str(e)}) from e
+    except ValueError as e:
+        raise HTTPException(400, detail={"code": "invalid", "message": str(e)}) from e
+
+
+@router.put("/datasets/{dataset_id}/skipped-images")
+def put_skipped_images(dataset_id: str, body: DatasetSkippedImagesRequest):
+    root = _paths().get_project_root()
+    try:
+        return dataset_store.set_skipped_images(root, dataset_id, body.files)
     except FileNotFoundError as e:
         raise HTTPException(404, detail={"code": "not_found", "message": str(e)}) from e
     except ValueError as e:

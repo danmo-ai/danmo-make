@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any, Literal
 
@@ -46,8 +47,9 @@ def _probe_image(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {"ok": False, "reason": "missing"}
     try:
+        # Header size only. Decoding every portrait here stacked with YuNet and dHash
+        # and stalled the API on large identity sets.
         with Image.open(path) as img:
-            img.load()
             w, h = img.size
     except Exception as exc:
         return {"ok": False, "reason": str(exc)}
@@ -277,6 +279,20 @@ def analyze_dataset_health(
                     _hint("captions_long", "warning", count=caption_stats["long"], total=caption_stats["non_empty"])
                 )
                 score -= min(10, caption_stats["long"] * 2)
+            trigger_only = int(caption_stats.get("trigger_only") or 0)
+            if trigger_only >= 3 and caption_stats["non_empty"] and trigger_only * 2 >= caption_stats["non_empty"]:
+                hints.append(
+                    _hint(
+                        "captions_trigger_only",
+                        "warning",
+                        count=trigger_only,
+                        total=caption_stats["non_empty"],
+                    )
+                )
+                score -= min(12, trigger_only)
+                force_fair = True
+            if dataset_store.trigger_looks_like_personal_name(trigger):
+                hints.append(_hint("trigger_looks_like_name", "info", trigger=trigger))
             if caption_mode_auto == "per_image":
                 hints.append(_hint("caption_mode_per_image", "info", count=caption_stats["anchored_short"]))
             elif caption_stats["unique"] > 1 and not caption_stats["long"] and not caption_stats["missing_trigger"]:
@@ -319,6 +335,7 @@ def analyze_dataset_health(
         stats["caption_missing_trigger_count"] = caption_stats["missing_trigger"]
         stats["caption_long_count"] = caption_stats["long"]
         stats["caption_anchored_short_count"] = caption_stats["anchored_short"]
+        stats["caption_trigger_only_count"] = int(caption_stats.get("trigger_only") or 0)
 
     report: dict[str, Any] = {
         "level": level,
@@ -339,6 +356,136 @@ def analyze_dataset_health(
             "tiny_face_px": faces_report.get("tiny_face_px"),
         }
     return report
+
+
+_FACE_COUNT_KEYS = ("crop", "keep", "tiny", "none", "error", "multi")
+_FACE_HINT_CODES = {"faces_too_small", "multiple_faces", "faces_not_detected", "faces_auto_crop", "faces_user_skipped"}
+
+
+def apply_training_skip_overlay(report: dict[str, Any], skipped_rels: list[str]) -> dict[str, Any]:
+    """Drop user-skipped images from gate counts without forgetting why they failed.
+
+    The cached audit still describes every file. Skipped rows keep their action and gain
+    ``skipped`` so the wizard can offer delete or restore.
+    """
+    import copy
+
+    out = copy.deepcopy(report)
+    skipped_full = {str(rel).replace("\\", "/") for rel in skipped_rels}
+    skipped_names = {Path(rel).name for rel in skipped_full}
+    hints = [h for h in (out.get("hints") or []) if h.get("code") not in _FACE_HINT_CODES]
+    faces = out.get("faces")
+    if isinstance(faces, dict) and faces.get("rows"):
+        counts = {key: 0 for key in _FACE_COUNT_KEYS}
+        for row in faces["rows"]:
+            file = str(row.get("file") or "")
+            base = Path(file).name
+            if file in skipped_full or base in skipped_names or f"images/{base}" in skipped_full:
+                row["skipped"] = True
+                continue
+            action = str(row.get("action") or "")
+            if action in counts:
+                counts[action] += 1
+            if row.get("multi") and action != "multi":
+                counts["multi"] += 1
+        faces["counts"] = counts
+        readable = sum(counts[key] for key in ("crop", "keep", "tiny", "none", "error", "multi"))
+        if faces.get("available"):
+            if counts["none"]:
+                hints.append(_hint("faces_not_detected", "error", count=counts["none"], total=readable))
+            if counts["error"]:
+                hints.append(_hint("faces_not_detected", "error", count=counts["error"], total=readable))
+            if counts["tiny"]:
+                hints.append(
+                    _hint(
+                        "faces_too_small",
+                        "error",
+                        count=counts["tiny"],
+                        total=readable,
+                        px=int(faces.get("tiny_face_px") or 0),
+                    )
+                )
+            if counts["multi"]:
+                hints.append(_hint("multiple_faces", "error", count=counts["multi"], total=readable))
+            if counts["crop"]:
+                hints.append(_hint("faces_auto_crop", "info", count=counts["crop"], total=readable))
+        stats = out.setdefault("stats", {})
+        if isinstance(stats, dict):
+            for key, value in counts.items():
+                stats[f"face_{key}_count"] = value
+    if skipped_full:
+        hints.append(_hint("faces_user_skipped", "info", count=len(skipped_full)))
+    out["hints"] = hints
+    out["skipped_images"] = list(skipped_rels)
+    errors = [h for h in hints if h.get("severity") == "error"]
+    warnings = [h for h in hints if h.get("severity") == "warning"]
+    if not errors and out.get("level") == "poor":
+        out["level"] = "fair" if warnings else "good"
+    elif errors and any(h.get("code") in {"faces_too_small", "multiple_faces", "faces_not_detected"} for h in errors):
+        out["level"] = "poor"
+    return out
+
+
+def _health_for_training(workspace_root: Path, dataset_id: str, report: dict[str, Any]) -> dict[str, Any]:
+    return apply_training_skip_overlay(report, dataset_store.active_skipped_rels(workspace_root, dataset_id))
+
+
+_HEALTH_CACHE_LOCK = threading.Lock()
+_HEALTH_CACHE: dict[str, dict[str, Any]] = {}
+_HEALTH_INFLIGHT: dict[str, threading.Event] = {}
+_HEALTH_CACHE_LIMIT = 24
+
+
+def analyze_dataset_health_shared(
+    workspace_root: Path,
+    dataset_id: str,
+    *,
+    training_resolution: tuple[int, int] = (512, 512),
+) -> dict[str, Any]:
+    """One in-flight audit per dataset snapshot; later callers reuse that result.
+
+    The wizard fires health on select and again on “check faces”. Overlapping YuNet
+    calls on the shared detector stalled the API.
+    """
+    pairs = dataset_store.load_dataset_pairs(workspace_root, dataset_id)
+    meta = dataset_store._dataset_meta(workspace_root, dataset_id)
+    fingerprint = dataset_store.training_dataset_fingerprint(pairs)
+    key = (
+        f"{dataset_id}|{fingerprint}|{int(training_resolution[0])}x{int(training_resolution[1])}"
+        f"|{meta.get('kind')}|{meta.get('trigger_word')}"
+    )
+    with _HEALTH_CACHE_LOCK:
+        cached = _HEALTH_CACHE.get(key)
+        if cached is not None:
+            return _health_for_training(workspace_root, dataset_id, cached)
+        event = _HEALTH_INFLIGHT.get(key)
+        if event is None:
+            event = threading.Event()
+            _HEALTH_INFLIGHT[key] = event
+            is_owner = True
+        else:
+            is_owner = False
+    if not is_owner:
+        if not event.wait(timeout=180):
+            raise TimeoutError("Face preflight is still running for this dataset.")
+        with _HEALTH_CACHE_LOCK:
+            cached = _HEALTH_CACHE.get(key)
+        if cached is None:
+            raise RuntimeError("Face preflight failed; retry the check.")
+        return _health_for_training(workspace_root, dataset_id, cached)
+    try:
+        report = analyze_dataset_health(
+            workspace_root, dataset_id, training_resolution=training_resolution
+        )
+        with _HEALTH_CACHE_LOCK:
+            _HEALTH_CACHE[key] = report
+            while len(_HEALTH_CACHE) > _HEALTH_CACHE_LIMIT:
+                _HEALTH_CACHE.pop(next(iter(_HEALTH_CACHE)))
+        return _health_for_training(workspace_root, dataset_id, report)
+    finally:
+        with _HEALTH_CACHE_LOCK:
+            _HEALTH_INFLIGHT.pop(key, None)
+        event.set()
 
 
 def _loss_points(loss_history: list[dict[str, Any]]) -> list[dict[str, float]]:

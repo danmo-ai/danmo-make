@@ -21,7 +21,11 @@ from backend.engine.training.crop import (
     resolve_training_resolution,
     training_allows_flip,
 )
-from backend.engine.training.dataset_store import _dataset_meta, load_training_pairs_unified
+from backend.engine.training.dataset_store import (
+    _dataset_meta,
+    load_training_pairs_unified,
+    skipped_training_log_line,
+)
 from backend.engine.training.face_crop import face_crop_cache_key, plan_training_face_crops
 from backend.engine.training.flux_dreambooth_mlx import _log, _progress, _save_adapter
 from backend.engine.training.lora_layers_mlx import (
@@ -463,6 +467,9 @@ def run_qwen_image_dreambooth_training(
     if len(pairs) < 3:
         raise RuntimeError("Dataset must contain at least 3 images")
     _log(exec_ctx, "info", f"DreamBooth caption: {training_caption!r}")
+    skipped_note = skipped_training_log_line(project_root, request.dataset_id)
+    if skipped_note:
+        _log(exec_ctx, "info", skipped_note)
     dataset_meta = _dataset_meta(project_root, request.dataset_id)
     trigger_word = str(dataset_meta.get("trigger_word") or "").strip()
     resolved_caption_mode = "per_image" if len({str(p or "").strip() for _, p in pairs}) > 1 else "unified"

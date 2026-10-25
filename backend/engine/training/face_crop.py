@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -43,6 +44,8 @@ FACE_ANCHOR_Y = 0.40
 MAX_UPSAMPLE = 1.5
 MIN_FACE_SCORE = 0.70
 _DETECT_MAX_SIDE = 640
+# YuNet's FaceDetectorYN is not safe to call from overlapping health requests.
+_DETECT_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -167,9 +170,10 @@ def _detect_cached(path_key: str, mtime_ns: int, model_path: str) -> tuple[FaceB
 
         img = img.resize((det_w, det_h), Image.BILINEAR)
     bgr = np.ascontiguousarray(np.asarray(img)[:, :, ::-1])
-    det = _detector(model_path)
-    det.setInputSize((det_w, det_h))
-    _, faces = det.detect(bgr)
+    with _DETECT_LOCK:
+        det = _detector(model_path)
+        det.setInputSize((det_w, det_h))
+        _, faces = det.detect(bgr)
     if faces is None or len(faces) == 0:
         return ()
     # YuNet rows: x, y, w, h, 5 landmarks (10 values), score.
@@ -278,7 +282,7 @@ def audit_dataset_faces(
     except RuntimeError as exc:
         return {"available": False, "reason": str(exc), "rows": [], "counts": {}}
 
-    from backend.engine.training.dataset_store import open_rgb_image
+    from PIL import Image
 
     target_h = int(resolution[1])
     tiny_px = min_usable_face_px(target_h)
@@ -287,7 +291,8 @@ def audit_dataset_faces(
     for path in paths:
         row: dict[str, Any] = {"file": path.name, "faces": 0, "action": "none", "window": None}
         try:
-            src_w, src_h = open_rgb_image(path).size
+            with Image.open(path) as img:
+                src_w, src_h = img.size
             row["width"], row["height"] = src_w, src_h
             faces = detect_faces(path, model_path)
         except Exception as exc:

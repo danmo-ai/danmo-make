@@ -506,6 +506,12 @@ class DatasetCaptionUpdate(BaseModel):
     captions: list[dict[str, str]]
 
 
+class DatasetSkippedImagesRequest(BaseModel):
+    """Files kept in the dataset but excluded from the next training run."""
+
+    files: list[str] = Field(default_factory=list)
+
+
 class DatasetImportAssetsRequest(BaseModel):
     asset_ids: list[str] = Field(..., min_length=1)
     default_prompt: str = ""

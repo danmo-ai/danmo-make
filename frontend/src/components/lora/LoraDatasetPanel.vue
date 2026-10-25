@@ -96,10 +96,12 @@
           <div class="lora-dataset-panel__workspace-head-actions">
             <DqTag
               size="sm"
-              :type="imageCount >= minImages ? 'success' : 'warning'"
+              :type="trainingCount >= minImages ? 'success' : 'warning'"
               effect="plain"
             >
-              {{ $t('loraTrain.datasetProgress', { current: imageCount, min: minImages }) }}
+              {{ skippedCount
+                ? $t('loraTrain.datasetProgressTraining', { training: trainingCount, total: imageCount })
+                : $t('loraTrain.datasetProgress', { current: imageCount, min: minImages }) }}
             </DqTag>
             <DqButton
               size="sm"
@@ -112,64 +114,58 @@
           </div>
         </div>
 
-        <DqAlert
-          v-if="datasetKindEdit === 'concept'"
-          type="info"
-          :closable="false"
-          class="lora-dataset-panel__identity-guide"
-          :title="$t('loraTrain.identityGuideTitle')"
-        >
-          <p>{{ $t('loraTrain.identityGuideBody') }}</p>
-        </DqAlert>
-
+        <div class="lora-dataset-panel__meta">
         <div class="lora-dataset-panel__kind-row">
           <label class="lora-dataset-panel__label">{{ $t('loraTrain.datasetKind') }}</label>
           <DqSelect v-model="datasetKindEdit" size="sm" class="lora-dataset-panel__kind-select" @change="saveDatasetKind">
             <DqOption :label="$t('loraTrain.datasetKindConcept')" value="concept" />
             <DqOption :label="$t('loraTrain.datasetKindStyle')" value="style" />
           </DqSelect>
-          <p class="lora-dataset-panel__field-hint">{{ $t('loraTrain.datasetKindDesc') }}</p>
         </div>
 
         <div v-if="datasetKindEdit === 'concept'" class="lora-dataset-panel__field">
           <label class="lora-dataset-panel__label">{{ $t('loraTrain.triggerWord') }}</label>
-          <DqInput
-            v-model="triggerWordEdit"
-            size="sm"
-            :placeholder="$t('loraTrain.triggerWordHint')"
-            @blur="saveTriggerWord"
-          />
-          <p class="lora-dataset-panel__field-hint">{{ $t('loraTrain.triggerWordDesc') }}</p>
-          <DqButton size="sm" type="secondary" :disabled="!triggerWordEdit.trim()" @click="applyTriggerToCaptions">
-            {{ $t('loraTrain.bindTriggerToCaptions') }}
-          </DqButton>
-          <p v-if="datasetHealth" class="lora-dataset-panel__trigger-status" :class="datasetHealthStale ? 'is-warning' : 'is-ready'">
+          <div class="lora-dataset-panel__trigger-row">
+            <DqInput
+              v-model="triggerWordEdit"
+              size="sm"
+              :placeholder="$t('loraTrain.triggerWordHint')"
+              @blur="saveTriggerWord"
+            />
+            <DqButton size="sm" type="secondary" :disabled="!triggerWordEdit.trim()" @click="applyTriggerToCaptions">
+              {{ $t('loraTrain.bindTriggerToCaptions') }}
+            </DqButton>
+          </div>
+          <p v-if="datasetHealthLoading" class="lora-dataset-panel__trigger-status is-warning">
+            {{ $t('loraTrain.facePreflightRunning') }}
+          </p>
+          <p v-else-if="datasetHealth" class="lora-dataset-panel__trigger-status" :class="datasetHealthStale ? 'is-warning' : 'is-ready'">
             {{ datasetHealthStale
               ? $t('loraTrain.facePreflightStale')
               : $t('loraTrain.facePreflightFresh', { resolution: (datasetHealth.faces?.resolution || []).join('×') }) }}
           </p>
-          <p class="lora-dataset-panel__trigger-status" :class="triggerCoverage === imageCount && imageCount > 0 ? 'is-ready' : 'is-warning'">
-            {{ triggerCoverage === imageCount && imageCount > 0
+          <p class="lora-dataset-panel__trigger-status" :class="triggerCoverage === trainingCount && trainingCount > 0 ? 'is-ready' : 'is-warning'">
+            {{ triggerCoverage === trainingCount && trainingCount > 0
               ? $t('loraTrain.triggerCoverageReady', { count: triggerCoverage })
-              : $t('loraTrain.triggerCoverageMissing', { count: imageCount - triggerCoverage, total: imageCount }) }}
+              : $t('loraTrain.triggerCoverageMissing', { count: trainingCount - triggerCoverage, total: trainingCount }) }}
           </p>
         </div>
+        </div>
 
-        <LoraQualityHints
-          v-if="datasetHealth"
-          :report="datasetHealth"
-          mode="dataset"
-          :vision-available="visionAvailable"
-          :vlm-loading="datasetVlmLoading"
-          :dataset-audit-kind="datasetKindEdit"
-          hide-vlm-desc
-          class="lora-dataset-panel__health"
-          @run-vlm="$emit('run-dataset-vlm')"
-        />
+        <details v-if="datasetKindEdit === 'concept'" class="lora-dataset-panel__guide" :open="imageCount < 3">
+          <summary>{{ $t('loraTrain.identityGuideTitle') }}</summary>
+          <p>{{ $t('loraTrain.identityGuideBody') }}</p>
+        </details>
 
+        <div class="lora-dataset-panel__toolbar">
         <div
           class="lora-dataset-panel__dropzone"
-          :class="{ 'is-dragover': dragOver, 'is-disabled': !selectedId, 'is-uploading': uploading }"
+          :class="{
+            'is-dragover': dragOver,
+            'is-disabled': !selectedId,
+            'is-uploading': uploading,
+            'is-compact': imageCount > 0,
+          }"
           @dragover.prevent="dragOver = true"
           @dragleave.prevent="dragOver = false"
           @drop.prevent="onDropFiles"
@@ -179,7 +175,7 @@
           <p class="lora-dataset-panel__dropzone-title">
             {{ uploading ? $t('loraTrain.uploading') : $t('loraTrain.dropzoneTitle') }}
           </p>
-          <p v-if="!uploading" class="lora-dataset-panel__dropzone-hint">{{ $t('loraTrain.dropzoneHint') }}</p>
+          <p v-if="!uploading && !imageCount" class="lora-dataset-panel__dropzone-hint">{{ $t('loraTrain.dropzoneHint') }}</p>
           <input
             ref="uploadInputRef"
             type="file"
@@ -191,7 +187,7 @@
         </div>
 
         <div class="lora-dataset-panel__actions">
-          <DqButton size="sm" type="primary" :loading="preflightLoading" :disabled="!imageCount" @click="runPreflight">
+          <DqButton size="sm" type="primary" :loading="preflightLoading || datasetHealthLoading" :disabled="!imageCount" @click="runPreflight">
             {{ $t('loraTrain.runFacePreflight') }}
           </DqButton>
           <DqButton size="sm" type="secondary" @click="showGalleryImport = true">
@@ -215,9 +211,7 @@
             {{ $t('loraTrain.applyDefaultToAll') }}
           </DqButton>
         </div>
-        <p v-if="selectedDataset?.images?.length" class="lora-dataset-panel__field-hint">
-          {{ $t('loraTrain.autoCaptionDesc') }}
-        </p>
+        </div>
 
         <div v-if="hasVlmMarks" class="lora-dataset-panel__vlm-legend">
           <span class="lora-dataset-panel__vlm-legend-label">{{ $t('loraTrain.quality.vlmMarkLegend') }}</span>
@@ -233,11 +227,47 @@
           <span class="lora-dataset-panel__vlm-legend-item is-face-multi">{{ $t('loraTrain.quality.faceMarkMulti') }}</span>
         </div>
 
+        <div v-if="showGateBar" class="lora-dataset-panel__gate-bar">
+          <p v-if="blockedFiles.length" class="lora-dataset-panel__gate-copy">
+            {{ $t('loraTrain.gateBlockedBar', { count: blockedFiles.length }) }}
+          </p>
+          <p v-else-if="skippedCount" class="lora-dataset-panel__gate-copy">
+            {{ $t('loraTrain.gateSkippedBar', { count: skippedCount }) }}
+          </p>
+          <div class="lora-dataset-panel__gate-bar-actions">
+            <DqButton size="sm" type="secondary" @click="showBlockedOnly = !showBlockedOnly">
+              {{ showBlockedOnly ? $t('loraTrain.gateShowAll') : $t('loraTrain.gateShowBlocked') }}
+            </DqButton>
+            <DqButton
+              v-if="blockedFiles.length"
+              size="sm"
+              type="secondary"
+              :loading="skippingImages"
+              @click="skipFiles(blockedFiles)"
+            >
+              {{ $t('loraTrain.gateSkipAll') }}
+            </DqButton>
+            <DqButton
+              v-if="blockedFiles.length"
+              size="sm"
+              type="danger"
+              :loading="deletingBlocked"
+              @click="deleteBlocked"
+            >
+              {{ $t('loraTrain.gateDeleteAll') }}
+            </DqButton>
+          </div>
+        </div>
+
         <div v-if="selectedDataset?.images?.length" class="lora-dataset-panel__grid">
           <div
-            v-for="img in selectedDataset.images"
+            v-for="img in displayImages"
             :key="img.file"
             class="lora-dataset-panel__cell"
+            :class="{
+              'is-gate-blocked': isGateFailure(img.file) && !isSkipped(img.file),
+              'is-skipped': isSkipped(img.file),
+            }"
           >
             <div
               class="lora-dataset-panel__cell-media"
@@ -281,6 +311,20 @@
                 <DqIcon :size="14"><Close /></DqIcon>
               </DqIconButton>
             </div>
+            <div v-if="isGateFailure(img.file) && !isSkipped(img.file)" class="lora-dataset-panel__gate-actions">
+              <DqButton size="sm" type="secondary" :disabled="skippingImages" @click="skipFiles([img.file])">
+                {{ $t('loraTrain.gateSkip') }}
+              </DqButton>
+              <DqButton size="sm" type="danger" @click="removeImage(img.file)">
+                {{ $t('loraTrain.gateDeleteBlocked') }}
+              </DqButton>
+            </div>
+            <div v-else-if="isSkipped(img.file)" class="lora-dataset-panel__gate-actions">
+              <span class="lora-dataset-panel__gate-skipped">{{ $t('loraTrain.gateSkipped') }}</span>
+              <DqButton size="sm" type="secondary" :disabled="skippingImages" @click="restoreFile(img.file)">
+                {{ $t('loraTrain.gateRestore') }}
+              </DqButton>
+            </div>
             <DqInput
               :model-value="captionEdits[img.file]"
               size="sm"
@@ -292,18 +336,33 @@
         </div>
         <DqEmpty v-else :description="$t('loraTrain.noImages')" />
 
-        <div class="lora-dataset-panel__field">
-          <label class="lora-dataset-panel__label">{{ $t('loraTrain.defaultPrompt') }}</label>
-          <DqInput
-            :model-value="defaultPrompt"
-            type="textarea"
-            :rows="2"
-            :placeholder="$t('loraTrain.defaultPromptHint')"
-            @update:model-value="(v: string) => emit('update:defaultPrompt', v)"
-            @blur="patchDefaultPrompt"
-          />
-          <p class="lora-dataset-panel__field-hint">{{ $t('loraTrain.defaultPromptDesc') }}</p>
-        </div>
+        <LoraQualityHints
+          v-if="datasetHealth"
+          :report="datasetHealth"
+          mode="dataset"
+          fold
+          :vision-available="visionAvailable"
+          :vlm-loading="datasetVlmLoading"
+          :dataset-audit-kind="datasetKindEdit"
+          hide-vlm-desc
+          class="lora-dataset-panel__health"
+          @run-vlm="$emit('run-dataset-vlm')"
+        />
+
+        <details class="lora-dataset-panel__guide">
+          <summary>{{ $t('loraTrain.defaultPrompt') }}</summary>
+          <div class="lora-dataset-panel__field">
+            <DqInput
+              :model-value="defaultPrompt"
+              type="textarea"
+              :rows="2"
+              :placeholder="$t('loraTrain.defaultPromptHint')"
+              @update:model-value="(v: string) => emit('update:defaultPrompt', v)"
+              @blur="patchDefaultPrompt"
+            />
+            <p class="lora-dataset-panel__field-hint">{{ $t('loraTrain.defaultPromptDesc') }}</p>
+          </div>
+        </details>
       </template>
 
       <DqEmpty v-else :description="$t('loraTrain.selectOrCreateDataset')" />
@@ -399,6 +458,7 @@ const props = defineProps<{
   captionEdits: Record<string, string>;
   datasetHealth?: LoraDatasetHealthReport | null;
   datasetHealthStale?: boolean;
+  datasetHealthLoading?: boolean;
   visionAvailable?: boolean;
   datasetVlmLoading?: boolean;
 }>();
@@ -422,6 +482,9 @@ const importingGallery = ref(false);
 const autoCaptioning = ref(false);
 const preflightLoading = ref(false);
 const deletingDataset = ref(false);
+const deletingBlocked = ref(false);
+const skippingImages = ref(false);
+const showBlockedOnly = ref(false);
 const showCreateDialog = ref(false);
 const showGalleryImport = ref(false);
 const newDatasetName = ref('');
@@ -438,11 +501,19 @@ const selectedDataset = computed(() =>
 );
 
 const imageCount = computed(() => selectedDataset.value?.image_count || 0);
+const skippedFiles = computed(() => new Set<string>((selectedDataset.value?.skipped_images || []).map(String)));
+const skippedCount = computed(() => skippedFiles.value.size);
+const trainingCount = computed(() => {
+  const listed = selectedDataset.value?.training_image_count;
+  if (typeof listed === 'number' && !(selectedDataset.value?.images || []).length) return listed;
+  return (selectedDataset.value?.images || []).filter((img: { file: string }) => !skippedFiles.value.has(img.file)).length;
+});
 const triggerCoverage = computed(() => {
   const trigger = triggerWordEdit.value.trim();
   if (!trigger) return 0;
   return (selectedDataset.value?.images || []).filter((img: { file: string; prompt?: string }) =>
-    String(props.captionEdits[img.file] ?? img.prompt ?? '').includes(trigger)
+    !skippedFiles.value.has(img.file)
+    && String(props.captionEdits[img.file] ?? img.prompt ?? '').includes(trigger)
   ).length;
 });
 
@@ -529,6 +600,38 @@ function faceCropBox(file: string): Record<string, string> | null {
     height: `${box.height}%`,
   };
 }
+
+function isSkipped(file: string): boolean {
+  return skippedFiles.value.has(file);
+}
+
+function isGateFailure(file: string): boolean {
+  const row = faceRow(file);
+  if (!row) return false;
+  return row.action === 'tiny' || row.action === 'none' || row.action === 'error' || row.action === 'multi' || !!row.multi;
+}
+
+const blockedFiles = computed(() =>
+  (selectedDataset.value?.images || [])
+    .map((img: { file: string }) => img.file)
+    .filter((file: string) => isGateFailure(file) && !isSkipped(file))
+);
+
+const showGateBar = computed(() =>
+  datasetKindEdit.value === 'concept' && (blockedFiles.value.length > 0 || skippedCount.value > 0)
+);
+
+const displayImages = computed(() => {
+  const images = [...(selectedDataset.value?.images || [])];
+  const rank = (file: string) => {
+    if (isGateFailure(file) && !isSkipped(file)) return 0;
+    if (isSkipped(file)) return 1;
+    return 2;
+  };
+  images.sort((a: { file: string }, b: { file: string }) => rank(a.file) - rank(b.file));
+  if (!showBlockedOnly.value) return images;
+  return images.filter((img: { file: string }) => isGateFailure(img.file) || isSkipped(img.file));
+});
 
 function faceMark(file: string): { kind: 'crop' | 'none' | 'tiny' | 'multi'; label: string; title: string } | null {
   const row = faceRow(file);
@@ -906,6 +1009,65 @@ async function saveTriggerWord() {
   }
 }
 
+async function saveSkipped(files: string[], done: string) {
+  if (!props.selectedId || skippingImages.value) return;
+  skippingImages.value = true;
+  try {
+    const ds = (await api.loras.setSkippedImages(props.selectedId, files)) as Record<string, any>;
+    patchDatasets(props.datasets.map((d) => (d.id === props.selectedId ? { ...d, ...ds } : d)));
+    toast.success(done);
+  } catch (e: unknown) {
+    toast.error(apiErrorMessage(e));
+  } finally {
+    skippingImages.value = false;
+  }
+}
+
+async function skipFiles(files: string[]) {
+  const next = [...skippedFiles.value];
+  for (const file of files) {
+    if (!next.includes(file)) next.push(file);
+  }
+  await saveSkipped(next, t('loraTrain.gateSkipDone', { count: files.length }));
+}
+
+async function restoreFile(file: string) {
+  await saveSkipped(
+    [...skippedFiles.value].filter((item) => item !== file),
+    t('loraTrain.gateRestoreDone')
+  );
+}
+
+async function deleteBlocked() {
+  const files = [...blockedFiles.value];
+  if (!props.selectedId || !files.length || deletingBlocked.value) return;
+  try {
+    await confirm(
+      t('loraTrain.gateDeleteAllConfirm', { count: files.length }),
+      t('loraTrain.gateDeleteAll'),
+      { type: 'warning' }
+    );
+  } catch {
+    return;
+  }
+  deletingBlocked.value = true;
+  try {
+    let ds: Record<string, any> | null = null;
+    for (const file of files) {
+      ds = (await api.loras.deleteDatasetImage(props.selectedId, file)) as Record<string, any>;
+    }
+    const nextCaptions = { ...props.captionEdits };
+    for (const file of files) delete nextCaptions[file];
+    emit('update:captionEdits', nextCaptions);
+    if (ds) patchDatasets(props.datasets.map((d) => (d.id === props.selectedId ? { ...d, ...ds } : d)));
+    toast.success(t('loraTrain.gateDeleteAllDone', { count: files.length }));
+  } catch (e: unknown) {
+    toast.error(apiErrorMessage(e));
+  } finally {
+    deletingBlocked.value = false;
+  }
+}
+
 async function removeImage(file: string) {
   if (!props.selectedId) return;
   try {
@@ -976,8 +1138,45 @@ defineExpose({
   min-height: 380px;
 }
 
-.lora-dataset-panel__identity-guide {
-  margin-bottom: 14px;
+.lora-dataset-panel__guide {
+  border-radius: 12px;
+  border: 0.5px solid var(--dq-border-subtle);
+  background: color-mix(in srgb, var(--dq-bg-base) 55%, var(--dq-fill-secondary));
+  padding: 10px 12px;
+}
+
+.lora-dataset-panel__guide summary {
+  cursor: pointer;
+  font-size: var(--dq-font-size-caption);
+  font-weight: 600;
+  color: var(--dq-label-primary);
+}
+
+.lora-dataset-panel__guide p,
+.lora-dataset-panel__guide .lora-dataset-panel__field {
+  margin: 8px 0 0;
+  font-size: var(--dq-font-size-caption);
+  line-height: 1.5;
+  color: var(--dq-label-secondary);
+}
+
+.lora-dataset-panel__trigger-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lora-dataset-panel__trigger-row :deep(.dq-input),
+.lora-dataset-panel__trigger-row > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.lora-dataset-panel__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
 }
 
 .lora-dataset-panel__trigger-status {
@@ -1136,11 +1335,22 @@ defineExpose({
   gap: 14px;
 }
 
+.lora-dataset-panel__meta {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  gap: 12px 20px;
+  align-items: start;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 0.5px solid var(--dq-border-subtle);
+  background: color-mix(in srgb, var(--dq-bg-base) 55%, var(--dq-fill-secondary));
+}
+
 .lora-dataset-panel__kind-row {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-width: 280px;
+  min-width: 0;
 }
 
 .lora-dataset-panel__kind-select {
@@ -1216,6 +1426,20 @@ defineExpose({
   border-color: var(--dq-accent);
 }
 
+.lora-dataset-panel__dropzone.is-compact {
+  flex: 1 1 220px;
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  min-height: 0;
+}
+
+.lora-dataset-panel__toolbar .lora-dataset-panel__actions {
+  flex: 1 1 280px;
+  justify-content: flex-end;
+}
+
 .lora-dataset-panel__dropzone-icon {
   color: var(--dq-label-tertiary);
 }
@@ -1249,6 +1473,46 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.lora-dataset-panel__cell.is-gate-blocked {
+  padding: 6px;
+  border-radius: var(--dq-radius-group);
+  outline: 1px solid color-mix(in srgb, var(--dq-danger) 55%, transparent);
+}
+
+.lora-dataset-panel__cell.is-skipped {
+  opacity: 0.62;
+}
+
+.lora-dataset-panel__gate-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--dq-radius-group);
+  background: color-mix(in srgb, var(--dq-danger) 12%, var(--dq-bg-base));
+  border: 1px solid color-mix(in srgb, var(--dq-danger) 35%, transparent);
+}
+
+.lora-dataset-panel__gate-copy {
+  margin: 0;
+  font-size: var(--dq-font-size-caption);
+  line-height: 1.45;
+  color: var(--dq-label-primary);
+}
+
+.lora-dataset-panel__gate-bar-actions,
+.lora-dataset-panel__gate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.lora-dataset-panel__gate-skipped {
+  font-size: var(--dq-font-size-caption);
+  color: var(--dq-label-secondary);
 }
 
 .lora-dataset-panel__cell-media {
@@ -1456,5 +1720,29 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+@media (max-width: 860px) {
+  .lora-dataset-panel {
+    flex-direction: column;
+  }
+
+  .lora-dataset-panel__list {
+    width: 100%;
+    max-height: 240px;
+  }
+
+  .lora-dataset-panel__meta {
+    grid-template-columns: 1fr;
+  }
+
+  .lora-dataset-panel__toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .lora-dataset-panel__toolbar .lora-dataset-panel__actions {
+    justify-content: flex-start;
+  }
 }
 </style>

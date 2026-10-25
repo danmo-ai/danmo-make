@@ -124,20 +124,19 @@
         <label>{{ $t('create.guidanceLabel') }}<DqInput v-model.number="verification.guidance" type="number" min="0" max="30" step="0.1" /></label>
       </div>
       <p class="lora-run-detail__verify-recipe">{{ verificationSummary }}</p>
-    </div>
-
-    <div v-if="task?.status === 'completed'" class="lora-run-detail__actions">
-      <DqButton type="primary" :disabled="!verifyLoraId() || !verifyPrompt.trim()" @click="verifyGenerate">
-        {{ $t('loraTrain.verifyGenerate') }}
-      </DqButton>
-      <DqButton
-        v-if="registeredLoraId || verifyLoraId()"
-        size="sm"
-        type="secondary"
-        @click="openModelsUserLorasPage()"
-      >
-        {{ $t('loraTrain.viewInModels') }}
-      </DqButton>
+      <div class="lora-run-detail__actions">
+        <DqButton type="primary" :disabled="!verifyLoraId() || !verifyPrompt.trim()" @click="verifyGenerate">
+          {{ $t('loraTrain.verifyGenerate') }}
+        </DqButton>
+        <DqButton
+          v-if="registeredLoraId || verifyLoraId()"
+          size="sm"
+          type="secondary"
+          @click="openModelsUserLorasPage()"
+        >
+          {{ $t('loraTrain.viewInModels') }}
+        </DqButton>
+      </div>
     </div>
   </div>
 </template>
@@ -689,8 +688,8 @@ onUnmounted(() => {
 .lora-run-detail__actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  padding-top: 4px;
-  border-top: 0.5px solid var(--dq-border-subtle);
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
 }
 </style>

@@ -901,6 +901,7 @@ export const api = {
     async datasetHealth(id: string, resolution?: [number, number]): Promise<unknown> {
       const response = await client.get(`/api/loras/datasets/${encodeURIComponent(id)}/health`, {
         params: resolution ? { width: resolution[0], height: resolution[1] } : undefined,
+        timeout: 120_000,
       });
       return response.data;
     },
@@ -950,6 +951,14 @@ export const api = {
       const response = await client.patch(
         `/api/loras/datasets/${encodeURIComponent(datasetId)}/captions`,
         { captions }
+      );
+      return response.data;
+    },
+
+    async setSkippedImages(datasetId: string, files: string[]): Promise<unknown> {
+      const response = await client.put(
+        `/api/loras/datasets/${encodeURIComponent(datasetId)}/skipped-images`,
+        { files }
       );
       return response.data;
     },

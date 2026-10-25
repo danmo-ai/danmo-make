@@ -122,6 +122,7 @@ def validate_training_request(root: Path, request: Any, *, sched: Any | None = N
         "dataset_fingerprint": dataset_store.training_dataset_fingerprint(pairs),
         "resolved_caption_mode": resolve_request_caption_mode(root, request),
         "training_resolution": list(resolution),
+        "skipped_images": dataset_store.active_skipped_rels(root, request.dataset_id),
     }
 
     new_cfg = resolve_training_config(request.model_dump())

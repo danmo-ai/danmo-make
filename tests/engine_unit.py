@@ -5554,6 +5554,35 @@ class BundleManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "missing weight shard"):
                 assert_bundle_ready_for_family(root, family="qwen3", model_id="qwen3.6-27b")
 
+    def test_qwen3_vl_single_file_ignores_stale_shard_index(self) -> None:
+        import json
+
+        from backend.core.bundle_manifest import assert_bundle_ready_for_family, missing_safetensor_shards
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tokenizer.json").write_text("{}", encoding="utf-8")
+            (root / "model.safetensors").write_bytes(b"x" * (1024 * 1024))
+            (root / "model.safetensors.index.json").write_text(
+                json.dumps(
+                    {
+                        "weight_map": {
+                            "a": "model-00001-of-00002.safetensors",
+                            "b": "model-00002-of-00002.safetensors",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(missing_safetensor_shards(root), [])
+            assert_bundle_ready_for_family(root, family="qwen3_vl", model_id="qwen3-vl-4b-instruct")
+
+            (root / "model-00001-of-00002.safetensors").write_bytes(b"y" * 128)
+            self.assertEqual(
+                missing_safetensor_shards(root),
+                ["model-00002-of-00002.safetensors"],
+            )
+
     def test_scan_components_longcat_nested_layout(self) -> None:
         from backend.core.bundle_manifest import assert_bundle_ready_for_family, scan_components
         from backend.engine.common.bundle.layout import assert_media_bundle_ready
@@ -7978,6 +8007,72 @@ class LoraDatasetStoreTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 dataset_store.get_dataset(root, dataset_id)
 
+    def test_skip_keeps_file_out_of_training_until_restored_or_deleted(self) -> None:
+        from backend.engine.training import dataset_store
+
+        png = (
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+            b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xdb\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ds = dataset_store.create_dataset(root, name="skip", trigger_word="ohwx")
+            out = dataset_store.add_dataset_images(
+                root,
+                ds["id"],
+                [("a.png", png), ("b.png", png), ("c.png", png)],
+            )
+            files = [img["file"] for img in out["images"]]
+            self.assertEqual(len(files), 3)
+            skipped = dataset_store.set_skipped_images(root, ds["id"], [files[0]])
+            self.assertEqual(skipped["skipped_images"], [files[0]])
+            self.assertEqual(skipped["image_count"], 3)
+            self.assertEqual(skipped["training_image_count"], 2)
+            self.assertEqual(len(dataset_store.load_dataset_pairs(root, ds["id"])), 3)
+            trained = dataset_store.load_training_pairs(root, ds["id"])
+            self.assertEqual(len(trained), 2)
+            self.assertNotIn(Path(files[0]).name, {path.name for path, _ in trained})
+            self.assertIn("a.png", dataset_store.skipped_training_log_line(root, ds["id"]))
+            with self.assertRaises(ValueError):
+                dataset_store.set_skipped_images(root, ds["id"], ["images/missing.jpg"])
+            with self.assertRaises(ValueError):
+                dataset_store.validate_dataset_for_training(root, ds["id"])
+            removed = dataset_store.remove_dataset_image(root, ds["id"], files[0])
+            self.assertEqual(removed["skipped_images"], [])
+            self.assertEqual(removed["training_image_count"], 2)
+            self.assertFalse((root / "datasets" / ds["id"] / files[0]).exists())
+
+    def test_skip_overlay_drops_failed_face_from_the_gate(self) -> None:
+        from backend.engine.training.lora_quality import apply_training_skip_overlay
+
+        report = {
+            "level": "poor",
+            "score": 40,
+            "hints": [
+                {"code": "faces_too_small", "severity": "error", "params": {"count": 1, "total": 2, "px": 204}},
+                {"code": "near_duplicates", "severity": "warning", "params": {"count": 1}},
+            ],
+            "stats": {},
+            "faces": {
+                "available": True,
+                "tiny_face_px": 204,
+                "counts": {"tiny": 1, "keep": 1, "crop": 0, "none": 0, "error": 0, "multi": 0},
+                "rows": [
+                    {"file": "bad.jpg", "action": "tiny"},
+                    {"file": "good.jpg", "action": "keep"},
+                ],
+            },
+        }
+        out = apply_training_skip_overlay(report, ["images/bad.jpg"])
+        self.assertEqual(report["faces"]["counts"]["tiny"], 1)
+        self.assertTrue(out["faces"]["rows"][0]["skipped"])
+        self.assertEqual(out["faces"]["rows"][0]["action"], "tiny")
+        self.assertEqual(out["faces"]["counts"]["tiny"], 0)
+        self.assertEqual(out["faces"]["counts"]["keep"], 1)
+        self.assertFalse(any(hint["code"] == "faces_too_small" for hint in out["hints"]))
+        self.assertTrue(any(hint["code"] == "faces_user_skipped" for hint in out["hints"]))
+        self.assertEqual(out["level"], "fair")
+
 
 class LoraQualityTests(unittest.TestCase):
     def test_parse_vlm_audit_output(self) -> None:
@@ -8839,8 +8934,14 @@ class LoraTrainRuntimeTests(unittest.TestCase):
                 encoding="utf-8",
             )
             extras = lora_config_picklist_extras(bundle)
-            self.assertEqual(extras["compose_overrides"]["steps"], 8)
+            self.assertNotIn("compose_overrides", extras)
             self.assertEqual(extras["hint_key"], "studio.loraHint.zImageDistillPatch")
+            on_base = lora_config_picklist_extras(bundle, for_model="z-image")
+            self.assertNotIn("compose_overrides", on_base)
+            self.assertEqual(on_base["hint_key"], "studio.loraHint.zImageSamplerStays")
+            on_turbo = lora_config_picklist_extras(bundle, for_model="z-image-turbo:fp16")
+            self.assertNotIn("compose_overrides", on_turbo)
+            self.assertEqual(on_turbo["hint_key"], "studio.loraHint.zImageDistillPatch")
 
     def test_parse_lora_train_runtime_config_default_scale(self) -> None:
         from backend.engine.training.lora_train_runtime_mlx import parse_lora_train_runtime_config
@@ -9084,6 +9185,24 @@ class LoraTrainingPresetsTests(unittest.TestCase):
             resolve_training_resolution("z-image", cfg, preset="quick"),
             (512, 512),
         )
+
+    def test_training_inference_config_round_trips_its_own_scheme(self) -> None:
+        from backend.engine.training.lora_train_config import training_inference_config
+
+        custom = {"base_model": "z-image", "preset": "custom", "progress_steps": 28, "guidance": 5}
+        first = training_inference_config(custom)
+        self.assertEqual(first["scheme"], "base")
+        again = training_inference_config({**custom, "metadata": {"inference": first}})
+        self.assertEqual(again["scheme"], "base")
+        self.assertEqual(again["model"], first["model"])
+
+        scheme4 = {"base_model": "z-image", "preset": "scheme4"}
+        stored = training_inference_config(scheme4)
+        self.assertEqual(stored["scheme"], "scheme4")
+        replayed = training_inference_config({**scheme4, "metadata": {"inference": stored}})
+        self.assertEqual(replayed["model"], "z-image-turbo")
+        self.assertEqual(replayed["extra_adapters"], ["z-image-turbo-distillpatch-lora:bf16"])
+        self.assertEqual(replayed["steps"], 8)
 
     def test_lora_training_request_accepts_scheme4_preset(self) -> None:
         from backend.core.contracts import LoraTrainingRequest
@@ -9665,9 +9784,7 @@ class LoraTrainingCropTests(unittest.TestCase):
         extras = z_image_turbo_trained_picklist_extras()
         self.assertEqual(extras["hint_key"], Z_IMAGE_TURBO_TRAINED_HINT_KEY)
         self.assertEqual(extras["recommended_lora_scale"], [0.8, 1.0])
-        self.assertEqual(extras["compose_overrides"]["lora_scale"], 0.9)
-        self.assertEqual(extras["compose_overrides"]["steps"], 9)
-        self.assertEqual(extras["compose_overrides"]["guidance"], 0)
+        self.assertEqual(extras["compose_overrides"], {"lora_scale": 0.9})
         self.assertEqual(extras["tags"], ["Turbo"])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -9683,8 +9800,11 @@ class LoraTrainingCropTests(unittest.TestCase):
             )
             s4 = lora_config_picklist_extras(Path(tmp))
             self.assertEqual(s4["hint_key"], "studio.loraHint.zImageDistillPatch")
-            self.assertEqual(s4["compose_overrides"]["lora_scale"], 0.8)
+            self.assertEqual(s4["compose_overrides"], {"lora_scale": 0.8})
             self.assertNotIn("recommended_lora_scale", s4)
+            on_base = lora_config_picklist_extras(Path(tmp), for_model="z-image")
+            self.assertEqual(on_base["compose_overrides"], {"lora_scale": 0.8})
+            self.assertEqual(on_base["hint_key"], "studio.loraHint.zImageSamplerStays")
 
     def test_grad_checkpoint_wraps_plain_python_forward_blocks(self) -> None:
         import mlx.nn as nn
@@ -9975,7 +10095,7 @@ class LoraTrainingContractTests(unittest.TestCase):
                     published = publish_trained_adapter(
                         final_path=checkpoint,
                         output_name="Face",
-                        dest_dir=root / "models" / "Lora" / "Face",
+                        dest_dir=root / "models" / "Lora",
                         config_dir=root / "config",
                         params=params,
                         checkpoint_meta=checkpoint_arg,

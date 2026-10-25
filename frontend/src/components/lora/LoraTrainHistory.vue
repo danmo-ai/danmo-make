@@ -32,21 +32,7 @@
             >
               {{ runOutputName(run) }}
             </span>
-            <span v-if="variant === 'sidebar'" class="lora-train-history__item-badges">
-              <DqTag size="sm" :type="statusType(String(run.status || ''))" effect="plain">
-                {{ statusLabel(String(run.status || '')) }}
-              </DqTag>
-              <DqTag
-                v-if="userLoraForRun(run)"
-                size="sm"
-                type="success"
-                effect="plain"
-                class="lora-train-history__registered"
-              >
-                {{ $t('loraTrain.registeredBadge') }}
-              </DqTag>
-            </span>
-            <template v-else>
+            <template v-if="variant !== 'sidebar'">
               <DqTag size="sm" :type="statusType(String(run.status || ''))" effect="plain">
                 {{ statusLabel(String(run.status || '')) }}
               </DqTag>
@@ -64,6 +50,14 @@
           <span class="lora-train-history__item-meta">
             <span class="lora-train-history__base">{{ runBaseModel(run) }}</span>
             <span class="lora-train-history__sep" aria-hidden="true">·</span>
+            <span
+              v-if="variant === 'sidebar'"
+              class="lora-train-history__state"
+              :class="userLoraForRun(run) ? 'is-registered' : `is-${String(run.status || '')}`"
+            >
+              {{ userLoraForRun(run) ? $t('loraTrain.registeredBadge') : statusLabel(String(run.status || '')) }}
+            </span>
+            <span v-if="variant === 'sidebar'" class="lora-train-history__sep lora-train-history__sep--break" aria-hidden="true">·</span>
             <span class="lora-train-history__when">{{ formatWhen(run) }}</span>
           </span>
         </span>
@@ -370,21 +364,41 @@ defineExpose({
   color: var(--dq-label-tertiary);
 }
 
+.lora-train-history__state.is-registered,
+.lora-train-history__state.is-completed {
+  color: var(--dq-success);
+}
+
+.lora-train-history__state.is-failed {
+  color: var(--dq-danger);
+}
+
+.lora-train-history__state.is-running,
+.lora-train-history__state.is-queued {
+  color: var(--dq-accent);
+}
+
 .lora-train-history--sidebar .lora-train-history__item-meta {
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   min-width: 0;
-  gap: 4px;
+  gap: 2px 4px;
+}
+
+.lora-train-history--sidebar .lora-train-history__sep--break {
+  display: none;
 }
 
 .lora-train-history--sidebar .lora-train-history__base {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .lora-train-history--sidebar .lora-train-history__when {
+  flex-basis: 100%;
   flex-shrink: 0;
 }
 

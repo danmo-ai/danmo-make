@@ -77,7 +77,16 @@ def training_inference_config(params: dict[str, Any]) -> dict[str, Any] | None:
     if requested is not None:
         if not isinstance(requested, dict):
             raise ValueError("metadata.inference must be an object")
-        allowed = {"model", "steps", "guidance", "lora_weight", "scheduler", "extra_adapters"}
+        allowed = {
+            "scheme",
+            "model",
+            "steps",
+            "guidance",
+            "lora_weight",
+            "lora_weight_range",
+            "scheduler",
+            "extra_adapters",
+        }
         unknown = sorted(set(requested) - allowed)
         if unknown:
             raise ValueError(f"metadata.inference contains unsupported keys: {unknown}")
@@ -102,6 +111,16 @@ def training_inference_config(params: dict[str, Any]) -> dict[str, Any] | None:
         raise ValueError("inference.guidance must be in [0, 30]")
     if not 0 <= recipe["lora_weight"] <= 2:
         raise ValueError("inference.lora_weight must be in [0, 2]")
+    scheme = recipe.get("scheme")
+    if scheme is not None and scheme not in {"scheme4", "turbo", "base"}:
+        raise ValueError(f"inference.scheme {scheme!r} is not a known face-LoRA recipe")
+    weight_range = recipe.get("lora_weight_range")
+    if weight_range is not None and not (
+        isinstance(weight_range, list)
+        and len(weight_range) == 2
+        and all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in weight_range)
+    ):
+        raise ValueError("inference.lora_weight_range must be [low, high]")
     return recipe
 
 
@@ -202,7 +221,8 @@ def publish_trained_adapter(
 
     slug = "".join(c if c.isalnum() or c in "-_" else "-" for c in output_name.strip())[:64]
     slug = slug.strip("-") or f"face-lora-{task_id[-8:]}"
-    dest_dir = dest_dir.parent / slug
+    # dest_dir is the user-LoRA root (models/Lora). The registry path is models/Lora/{slug}.
+    dest_dir = dest_dir / slug
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_file = dest_dir / "adapter.safetensors"
     if dest_file.exists() and dest_file.read_bytes() != final_path.read_bytes():

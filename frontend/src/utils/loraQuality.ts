@@ -65,7 +65,8 @@ export type FaceAuditRow = {
   face_px?: number;
   face_frac?: number;
   multi?: boolean;
-  action: FaceAuditAction;
+  action: FaceAuditAction | 'multi';
+  skipped?: boolean;
   /** Training crop window `[left, top, width, height]` in source pixels (when re-framed). */
   window?: number[] | null;
   error?: string;

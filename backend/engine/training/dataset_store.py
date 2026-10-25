@@ -173,6 +173,8 @@ def _summarize_dataset(dataset_id: str, path: Path, meta: dict[str, Any]) -> dic
         if img_rel and (path / img_rel).is_file():
             cover_image = img_rel
             break
+    present = {str(row.get("image") or "") for row in rows}
+    skipped = [rel for rel in _skipped_image_rels(meta) if rel in present]
     return {
         "id": dataset_id,
         "name": meta.get("name") or dataset_id,
@@ -181,6 +183,8 @@ def _summarize_dataset(dataset_id: str, path: Path, meta: dict[str, Any]) -> dic
         "default_prompt": meta.get("default_prompt") or "",
         "nsfw": bool(meta.get("nsfw", False)),
         "image_count": len(rows),
+        "training_image_count": len(rows) - len(skipped),
+        "skipped_images": skipped,
         "cover_image": cover_image,
         "created_at": meta.get("created_at"),
         "updated_at": meta.get("updated_at"),
@@ -348,7 +352,75 @@ def remove_dataset_image(workspace_root: Path, dataset_id: str, file_rel: str) -
     if img_path.is_file():
         img_path.unlink()
     _write_train_jsonl(path / "train.jsonl", rows)
+    meta_path = path / "meta.json"
+    if meta_path.is_file():
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta["skipped_images"] = [rel for rel in _skipped_image_rels(meta) if rel != file_rel]
+        meta["updated_at"] = _now_iso()
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return get_dataset(workspace_root, dataset_id)
+
+
+def _skipped_image_rels(meta: dict[str, Any]) -> list[str]:
+    raw = meta.get("skipped_images") or []
+    if not isinstance(raw, list):
+        return []
+    rels: list[str] = []
+    for item in raw:
+        text = str(item or "").strip().replace("\\", "/")
+        if text and text not in rels:
+            rels.append(text)
+    return rels
+
+
+def active_skipped_rels(workspace_root: Path, dataset_id: str) -> list[str]:
+    """Skip list persisted on the dataset, limited to files that still exist in it."""
+    path = _dataset_dir(datasets_root(workspace_root), dataset_id)
+    present = {row["image"] for row in _read_train_jsonl(path / "train.jsonl")}
+    return [rel for rel in _skipped_image_rels(_dataset_meta(workspace_root, dataset_id)) if rel in present]
+
+
+def set_skipped_images(workspace_root: Path, dataset_id: str, files: list[str]) -> dict[str, Any]:
+    """Keep these files in the dataset, but exclude them from training until restored.
+
+    Unknown paths fail loud. Replacing a photo is delete, then import — this list does not swap bytes.
+    """
+    path = _dataset_dir(datasets_root(workspace_root), dataset_id)
+    meta_path = path / "meta.json"
+    if not meta_path.is_file():
+        raise FileNotFoundError(f"Dataset {dataset_id!r} not found")
+    present = {row["image"] for row in _read_train_jsonl(path / "train.jsonl")}
+    cleaned: list[str] = []
+    unknown: list[str] = []
+    for raw in files:
+        rel = _validate_dataset_file_rel(str(raw or ""))
+        if rel not in present:
+            unknown.append(rel)
+            continue
+        if rel not in cleaned:
+            cleaned.append(rel)
+    if unknown:
+        preview = ", ".join(unknown[:5])
+        more = "" if len(unknown) <= 5 else f" (+{len(unknown) - 5} more)"
+        raise ValueError(f"Cannot skip images that are not in the dataset: {preview}{more}")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["skipped_images"] = cleaned
+    meta["updated_at"] = _now_iso()
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return get_dataset(workspace_root, dataset_id)
+
+
+def skipped_training_log_line(workspace_root: Path, dataset_id: str) -> str:
+    rels = active_skipped_rels(workspace_root, dataset_id)
+    if not rels:
+        return ""
+    names = [Path(rel).name for rel in rels]
+    preview = ", ".join(names[:8])
+    extra = "" if len(names) <= 8 else f" (+{len(names) - 8} more)"
+    return (
+        f"Skipped {len(names)} image(s) kept in the dataset and excluded from this run: "
+        f"{preview}{extra}"
+    )
 
 
 def delete_dataset(workspace_root: Path, dataset_id: str) -> None:
@@ -360,11 +432,11 @@ def delete_dataset(workspace_root: Path, dataset_id: str) -> None:
 
 
 def validate_dataset_for_training(workspace_root: Path, dataset_id: str) -> None:
-    ds = get_dataset(workspace_root, dataset_id)
-    count = int(ds.get("image_count") or 0)
+    count = len(load_training_pairs(workspace_root, dataset_id))
     if count < MIN_DATASET_IMAGES:
         raise ValueError(
-            f"Dataset needs at least {MIN_DATASET_IMAGES} images (has {count})"
+            f"Dataset needs at least {MIN_DATASET_IMAGES} trainable images (has {count}). "
+            "Skipped images stay in the dataset and are not trained."
         )
 
 
@@ -473,7 +545,8 @@ def import_dog6_example(
     return add_dataset_images(workspace_root, dataset_id, files, default_prompt="A photo of sks dog")
 
 
-def load_training_pairs(workspace_root: Path, dataset_id: str) -> list[tuple[Path, str]]:
+def load_dataset_pairs(workspace_root: Path, dataset_id: str) -> list[tuple[Path, str]]:
+    """Every image still stored in the dataset, including ones skipped for training."""
     path = _dataset_dir(datasets_root(workspace_root), dataset_id)
     rows = _read_train_jsonl(path / "train.jsonl")
     pairs: list[tuple[Path, str]] = []
@@ -481,6 +554,19 @@ def load_training_pairs(workspace_root: Path, dataset_id: str) -> list[tuple[Pat
         img_path = path / row["image"]
         if img_path.is_file():
             pairs.append((img_path, row["prompt"]))
+    return pairs
+
+
+def load_training_pairs(workspace_root: Path, dataset_id: str) -> list[tuple[Path, str]]:
+    """Images that will actually be trained. User-skipped files stay on disk and are omitted."""
+    path = _dataset_dir(datasets_root(workspace_root), dataset_id)
+    skipped = set(active_skipped_rels(workspace_root, dataset_id))
+    pairs: list[tuple[Path, str]] = []
+    for img_path, prompt in load_dataset_pairs(workspace_root, dataset_id):
+        rel = img_path.resolve().relative_to(path.resolve()).as_posix()
+        if rel in skipped:
+            continue
+        pairs.append((img_path, prompt))
     return pairs
 
 
@@ -590,6 +676,7 @@ def concept_caption_stats(
         for c in non_empty
         if trig and _caption_contains_trigger(c, trig) and not is_trigger_anchored_short_caption(c, trig)
     )
+    trigger_only = sum(1 for c in non_empty if _caption_is_trigger_only(c, trig))
     return {
         "total": len(captions),
         "non_empty": len(non_empty),
@@ -598,7 +685,27 @@ def concept_caption_stats(
         "anchored_short": anchored_short,
         "missing_trigger": missing_trigger,
         "long": long_count,
+        "trigger_only": trigger_only,
     }
+
+
+def _caption_is_trigger_only(caption: str, trigger: str) -> bool:
+    """True when nothing but the identity token remains (no outfit / pose / background)."""
+    import re
+
+    rest = caption
+    if trigger:
+        rest = rest.replace(trigger, "")
+    rest = re.sub(r"[\s,，。.!！?？、:：;；\-—_]+", "", rest)
+    return len(rest) < 2
+
+
+def trigger_looks_like_personal_name(trigger: str) -> bool:
+    """CJK given names bind clothes and publicity photos; rare tokens do not."""
+    text = (trigger or "").strip()
+    if not text or "_" in text or any(ch.isascii() and ch.isalnum() for ch in text):
+        return False
+    return 2 <= len(text) <= 4 and all("\u4e00" <= ch <= "\u9fff" for ch in text)
 
 
 def detect_caption_mode(
