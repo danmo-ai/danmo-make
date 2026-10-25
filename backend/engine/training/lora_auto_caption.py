@@ -295,9 +295,12 @@ def _looks_like_legacy_template(text: str) -> bool:
 
 
 def resolve_lora_subject_name(meta: dict[str, Any]) -> str:
-    """Explicit trigger used for concept LoRA captions; dataset names are not identities."""
-    trigger = str(meta.get("trigger_word") or "").strip()
-    return trigger if trigger and not _looks_like_legacy_template(trigger) else ""
+    """Keep the complete trigger token, including ``a photo of sks person``.
+
+    Trimming this phrase to ``sks person`` silently changed the identity binding at
+    auto-caption time: stored training prompts no longer matched the dataset trigger.
+    """
+    return str(meta.get("trigger_word") or "").strip()
 
 
 def clean_scene_caption(raw: str, *, subject_name: str = "") -> str:

@@ -224,29 +224,30 @@ def analyze_dataset_health(
                 crop_count = int(counts.get("crop", 0))
                 multi_count = int(counts.get("multi", 0))
                 if none_count:
-                    severity = "error" if none_count * 2 >= readable and none_count >= 2 else "warning"
+                    # Every unusable identity image is a training blocker, not a score hint.
+                    severity = "error"
                     hints.append(_hint("faces_not_detected", severity, count=none_count, total=readable))
                     score -= min(25, none_count * 8)
-                    if none_count >= 2:
-                        force_fair = True
-                    if severity == "error":
-                        force_poor = True
+                    force_poor = True
                 if tiny_count:
                     hints.append(
                         _hint(
                             "faces_too_small",
-                            "warning",
+                            "error",
                             count=tiny_count,
                             total=readable,
                             px=int(faces_report.get("tiny_face_px") or 0),
                         )
                     )
                     score -= min(20, tiny_count * 5)
-                    if tiny_count >= 2:
-                        force_fair = True
+                    force_poor = True
                 if multi_count:
-                    hints.append(_hint("multiple_faces", "warning", count=multi_count, total=readable))
+                    hints.append(_hint("multiple_faces", "error", count=multi_count, total=readable))
                     score -= min(12, multi_count * 4)
+                    force_poor = True
+                if int(counts.get("error", 0)):
+                    hints.append(_hint("faces_not_detected", "error", count=int(counts["error"]), total=readable))
+                    force_poor = True
                 if crop_count:
                     hints.append(_hint("faces_auto_crop", "info", count=crop_count, total=readable))
 
@@ -334,6 +335,8 @@ def analyze_dataset_health(
             "reason": faces_report.get("reason") or "",
             "resolution": list(training_resolution),
             "rows": faces_report.get("rows") or [],
+            "counts": dict(faces_report.get("counts") or {}),
+            "tiny_face_px": faces_report.get("tiny_face_px"),
         }
     return report
 

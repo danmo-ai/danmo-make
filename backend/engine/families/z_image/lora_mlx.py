@@ -5,7 +5,11 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from backend.engine.common.bundle.lora_mlx import adapter_id_weight, merge_lora_adapters_common
-from backend.engine.families.z_image.weights import remap_zimage_lora_keys, z_image_lora_scope_key
+from backend.engine.families.z_image.weights import (
+    remap_zimage_lora_keys,
+    remap_zimage_lora_module_prefix,
+    z_image_lora_scope_key,
+)
 from backend.engine.runtime._base import RuntimeContext
 
 
@@ -86,6 +90,7 @@ def merge_z_image_lora_adapters(
             weights, patch_size=max(1, ps)
         ),
         param_key_for_module=lambda module_name: f"{module_name}.weight",
+        remap_module_prefix=remap_zimage_lora_module_prefix,
         base_model_scope_key=_base_model_scope_key,
         repair_indexed_weights=_repair_indexed_zimage_weights,
         on_log=on_log,

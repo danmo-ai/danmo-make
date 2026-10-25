@@ -112,6 +112,16 @@
           </div>
         </div>
 
+        <DqAlert
+          v-if="datasetKindEdit === 'concept'"
+          type="info"
+          :closable="false"
+          class="lora-dataset-panel__identity-guide"
+          :title="$t('loraTrain.identityGuideTitle')"
+        >
+          <p>{{ $t('loraTrain.identityGuideBody') }}</p>
+        </DqAlert>
+
         <div class="lora-dataset-panel__kind-row">
           <label class="lora-dataset-panel__label">{{ $t('loraTrain.datasetKind') }}</label>
           <DqSelect v-model="datasetKindEdit" size="sm" class="lora-dataset-panel__kind-select" @change="saveDatasetKind">
@@ -130,6 +140,19 @@
             @blur="saveTriggerWord"
           />
           <p class="lora-dataset-panel__field-hint">{{ $t('loraTrain.triggerWordDesc') }}</p>
+          <DqButton size="sm" type="secondary" :disabled="!triggerWordEdit.trim()" @click="applyTriggerToCaptions">
+            {{ $t('loraTrain.bindTriggerToCaptions') }}
+          </DqButton>
+          <p v-if="datasetHealth" class="lora-dataset-panel__trigger-status" :class="datasetHealthStale ? 'is-warning' : 'is-ready'">
+            {{ datasetHealthStale
+              ? $t('loraTrain.facePreflightStale')
+              : $t('loraTrain.facePreflightFresh', { resolution: (datasetHealth.faces?.resolution || []).join('×') }) }}
+          </p>
+          <p class="lora-dataset-panel__trigger-status" :class="triggerCoverage === imageCount && imageCount > 0 ? 'is-ready' : 'is-warning'">
+            {{ triggerCoverage === imageCount && imageCount > 0
+              ? $t('loraTrain.triggerCoverageReady', { count: triggerCoverage })
+              : $t('loraTrain.triggerCoverageMissing', { count: imageCount - triggerCoverage, total: imageCount }) }}
+          </p>
         </div>
 
         <LoraQualityHints
@@ -168,6 +191,9 @@
         </div>
 
         <div class="lora-dataset-panel__actions">
+          <DqButton size="sm" type="primary" :loading="preflightLoading" :disabled="!imageCount" @click="runPreflight">
+            {{ $t('loraTrain.runFacePreflight') }}
+          </DqButton>
           <DqButton size="sm" type="secondary" @click="showGalleryImport = true">
             {{ $t('loraTrain.importGallery') }}
           </DqButton>
@@ -372,6 +398,7 @@ const props = defineProps<{
   defaultPrompt: string;
   captionEdits: Record<string, string>;
   datasetHealth?: LoraDatasetHealthReport | null;
+  datasetHealthStale?: boolean;
   visionAvailable?: boolean;
   datasetVlmLoading?: boolean;
 }>();
@@ -381,6 +408,7 @@ const emit = defineEmits<{
   (e: 'update:defaultPrompt', value: string): void;
   (e: 'update:captionEdits', value: Record<string, string>): void;
   (e: 'datasets-changed', datasets: Array<Record<string, any>>): void;
+  (e: 'preflight-requested'): Promise<void> | void;
   (e: 'run-dataset-vlm'): void;
 }>();
 
@@ -392,6 +420,7 @@ const uploading = ref(false);
 const importingDog6 = ref(false);
 const importingGallery = ref(false);
 const autoCaptioning = ref(false);
+const preflightLoading = ref(false);
 const deletingDataset = ref(false);
 const showCreateDialog = ref(false);
 const showGalleryImport = ref(false);
@@ -409,6 +438,13 @@ const selectedDataset = computed(() =>
 );
 
 const imageCount = computed(() => selectedDataset.value?.image_count || 0);
+const triggerCoverage = computed(() => {
+  const trigger = triggerWordEdit.value.trim();
+  if (!trigger) return 0;
+  return (selectedDataset.value?.images || []).filter((img: { file: string; prompt?: string }) =>
+    String(props.captionEdits[img.file] ?? img.prompt ?? '').includes(trigger)
+  ).length;
+});
 
 const vlmSampleMap = computed(() => {
   if (!props.datasetHealth?.vlm_audited) return new Map<string, VlmImageSample>();
@@ -775,6 +811,44 @@ async function saveCaptions() {
   }
 }
 
+async function saveDraft() {
+  await saveTriggerWord();
+  await saveCaptions();
+  await patchDefaultPrompt();
+}
+
+async function runPreflight() {
+  if (!props.selectedId || preflightLoading.value) return;
+  preflightLoading.value = true;
+  try {
+    await saveTriggerWord();
+    await saveCaptions();
+    await patchDefaultPrompt();
+    await emit('preflight-requested');
+  } finally {
+    preflightLoading.value = false;
+  }
+}
+
+async function applyTriggerToCaptions() {
+  const trigger = triggerWordEdit.value.trim();
+  if (!props.selectedId || !trigger) return;
+  await saveTriggerWord();
+  const captions: Array<{ file: string; prompt: string }> = (selectedDataset.value?.images || []).map((img: { file: string; prompt?: string }) => {
+    const existing = String(props.captionEdits[img.file] ?? img.prompt ?? '').trim();
+    const prompt = existing.includes(trigger) ? existing : `${trigger}, ${existing || 'a detailed portrait of the same person'}`;
+    return { file: img.file, prompt };
+  });
+  try {
+    const ds = await api.loras.updateCaptions(props.selectedId, captions) as Record<string, any>;
+    emit('update:captionEdits', Object.fromEntries(captions.map((item) => [item.file, item.prompt])));
+    patchDatasets(props.datasets.map((d) => (d.id === props.selectedId ? { ...d, ...ds } : d)));
+    toast.success(t('loraTrain.triggerBound'));
+  } catch (e: unknown) {
+    toast.error(apiErrorMessage(e));
+  }
+}
+
 function datasetMetaPatch(name?: string): Record<string, unknown> {
   const kind = datasetKindEdit.value;
   return {
@@ -887,6 +961,7 @@ async function deleteDataset(id: string, name?: string) {
 
 defineExpose({
   refreshDatasetDetail,
+  saveDraft,
   async createDatasetWithName(name: string) {
     newDatasetName.value = name;
     await createDataset();
@@ -900,6 +975,19 @@ defineExpose({
   gap: 16px;
   min-height: 380px;
 }
+
+.lora-dataset-panel__identity-guide {
+  margin-bottom: 14px;
+}
+
+.lora-dataset-panel__trigger-status {
+  margin: 8px 0 0;
+  font-size: var(--dq-font-size-caption);
+  line-height: 1.5;
+}
+
+.lora-dataset-panel__trigger-status.is-ready { color: var(--dq-success); }
+.lora-dataset-panel__trigger-status.is-warning { color: var(--dq-warning); }
 
 .lora-dataset-panel__list {
   width: 248px;

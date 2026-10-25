@@ -8748,7 +8748,7 @@ class LoraTrainRuntimeTests(unittest.TestCase):
         self.assertEqual(preset["lora_rank"], 32)
         self.assertEqual(preset["lora_blocks"], -1)
         self.assertEqual(preset["sigma_bias"], "sigmoid")
-        self.assertEqual(preset["train_sigma_shift"], 3.0)
+        self.assertEqual(preset["train_sigma_shift"], 1.0)
         self.assertEqual(preset["caption_dropout"], 0.05)
         self.assertEqual(preset["timestep_bias"], "sigmoid")
         self.assertEqual(
@@ -9001,7 +9001,7 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         self.assertTrue(zimg["grad_checkpoint"])
         self.assertEqual(zimg["progress_steps"], 28)
         self.assertEqual(zimg["sigma_bias"], "sigmoid")
-        self.assertEqual(zimg["train_sigma_shift"], 3.0)
+        self.assertEqual(zimg["train_sigma_shift"], 1.0)
         self.assertEqual(zimg["caption_dropout"], 0.05)
         self.assertEqual(zimg["val_split"], 0.0)
         self.assertEqual(zturbo["lora_rank"], 32)
@@ -9032,7 +9032,7 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         self.assertEqual(qwen["lora_blocks"], -1)
         self.assertEqual(qwen["learning_rate"], 2e-4)
         self.assertEqual(qwen["sigma_bias"], "sigmoid")
-        self.assertEqual(qwen["train_sigma_shift"], 3.0)
+        self.assertEqual(qwen["train_sigma_shift"], 1.0)
         self.assertEqual(qwen["min_snr_gamma"], 0.0)
         self.assertEqual(qwen["caption_dropout"], 0.05)
         self.assertIn("to_out", qwen["lora_module_keys"])
@@ -9583,12 +9583,34 @@ class LoraTrainingCropTests(unittest.TestCase):
             Path("/d/a.jpg"): FaceCropPlan((10, 20, 300, 300), None, "face_crop"),
             Path("/d/b.jpg"): FaceCropPlan(None, None, "no_face"),
         }
-        key = face_crop_cache_key(plans)
-        self.assertTrue(key.startswith("face:"))
-        self.assertEqual(key, face_crop_cache_key(dict(reversed(list(plans.items())))))
-        self.assertEqual(face_crop_cache_key({Path("/d/b.jpg"): plans[Path("/d/b.jpg")]}), "")
+        key = face_crop_cache_key(plans, mode="auto", kind="concept", allow_flip=False)
+        self.assertTrue(key.startswith("crop:"))
+        self.assertEqual(
+            key,
+            face_crop_cache_key(
+                dict(reversed(list(plans.items()))),
+                mode="auto",
+                kind="concept",
+                allow_flip=False,
+            ),
+        )
+        # Empty / no-window plans still fingerprint the crop policy (mode/kind/flip).
+        no_window = face_crop_cache_key(
+            {Path("/d/b.jpg"): plans[Path("/d/b.jpg")]},
+            mode="auto",
+            kind="concept",
+            allow_flip=False,
+        )
+        self.assertTrue(no_window.startswith("crop:"))
+        self.assertNotEqual(
+            no_window,
+            face_crop_cache_key({}, mode="off", kind="concept", allow_flip=False),
+        )
         moved = {Path("/d/a.jpg"): FaceCropPlan((11, 20, 300, 300), None, "face_crop")}
-        self.assertNotEqual(key, face_crop_cache_key(moved))
+        self.assertNotEqual(
+            key,
+            face_crop_cache_key(moved, mode="auto", kind="concept", allow_flip=False),
+        )
 
         # off / non-concept datasets never touch the detector.
         pairs = [(Path("/nonexistent/x.jpg"), "p")]
@@ -9664,7 +9686,7 @@ class LoraTrainingCropTests(unittest.TestCase):
             self.assertEqual(s4["compose_overrides"]["lora_scale"], 0.8)
             self.assertNotIn("recommended_lora_scale", s4)
 
-    def test_grad_checkpoint_skips_plain_python_blocks(self) -> None:
+    def test_grad_checkpoint_wraps_plain_python_forward_blocks(self) -> None:
         import mlx.nn as nn
 
         from backend.engine.training.lora_layers_mlx import enable_grad_checkpointing_on_blocks
@@ -9673,7 +9695,9 @@ class LoraTrainingCropTests(unittest.TestCase):
             def forward(self, x):
                 return x
 
-        self.assertEqual(enable_grad_checkpointing_on_blocks([PlainBlock(), PlainBlock()]), 0)
+        # Z-Image refiners/layers are plain classes with .forward — must checkpoint.
+        self.assertEqual(enable_grad_checkpointing_on_blocks([PlainBlock(), PlainBlock()]), 2)
+        self.assertTrue(getattr(PlainBlock, "_dq_grad_checkpoint", False))
         self.assertEqual(enable_grad_checkpointing_on_blocks([nn.Linear(4, 4)]), 1)
 
     def test_resolve_dreambooth_caption_prefers_progress_prompt(self) -> None:
@@ -9770,11 +9794,13 @@ class LoraTrainingCropTests(unittest.TestCase):
 
         ctx = MLXContext()
         model = QwenImageTransformer(QwenImageConfig(), ctx)
+        from backend.engine.training.presets import QWEN_IMAGE_LORA_MODULE_KEYS
         _, train_module = prepare_dit_for_lora_training(
             model,
             apply_lora_to_qwen_dit,
             rank=4,
             lora_blocks=1,
+            lora_module_keys=list(QWEN_IMAGE_LORA_MODULE_KEYS),
         )
         from backend.engine.training.qwen_image_dreambooth_mlx import _strip_dit_lora_paths
 
@@ -9785,6 +9811,10 @@ class LoraTrainingCropTests(unittest.TestCase):
             any(k.startswith("transformer_blocks.") and ".lora_A.weight" in k for k in weights),
             "expected DiT module paths in exported LoRA keys",
         )
+        # Identity-first block order: lora_blocks=1 wraps the shallowest block (0),
+        # and Qwen image out-proj exports as diffusers ``to_out.0``.
+        self.assertIn("transformer_blocks.0.attn.to_out.0.lora_A.weight", weights)
+        self.assertNotIn("attn_to_out", "\n".join(weights))
         remapped = remap_qwen_lora_keys(weights)
         self.assertGreater(len(remapped), 0)
         with tempfile.TemporaryDirectory() as tmp:
@@ -9819,9 +9849,14 @@ class ZImageLoraExportTests(unittest.TestCase):
         )
         weights = collect_lora_safetensors(train_module, rank=4)
         weights.pop("lora_rank", None)
+        # Identity-first: lora_blocks=1 trains context_refiner before main layers.
         self.assertTrue(
-            any(k.startswith("layers.") and ".lora_A.weight" in k for k in weights),
-            "expected DiT module paths in exported LoRA keys",
+            any(
+                (k.startswith("context_refiner.") or k.startswith("noise_refiner.") or k.startswith("layers."))
+                and ".lora_A.weight" in k
+                for k in weights
+            ),
+            f"expected DiT module paths in exported LoRA keys, got {sorted(weights)[:8]}",
         )
         remapped = remap_zimage_lora_keys(weights)
         self.assertGreater(len(remapped), 0)
@@ -9830,6 +9865,210 @@ class ZImageLoraExportTests(unittest.TestCase):
             path = Path(tmp) / "adapter.safetensors"
             mx.save_safetensors(str(path), weights)
             _validate_saved_lora(path)
+
+
+class LoraTrainingContractTests(unittest.TestCase):
+    def test_sigmoid_shift_preserves_median_and_sampling_band(self) -> None:
+        import mlx.core as mx
+        import numpy as np
+        from backend.engine.training.dit_training_loss_mlx import sample_shifted_sigmas
+
+        mx.random.seed(42)
+        sigmas = sample_shifted_sigmas(
+            None, 12001, sigma_shift=3.0, sigma_bias="sigmoid"
+        )
+        median = float(np.median(np.array(sigmas)))
+        self.assertAlmostEqual(median, 0.5, delta=0.025)
+        band = float(np.mean(np.array((sigmas >= 0.3) & (sigmas <= 0.7))))
+        self.assertGreater(band, 0.3)
+        forward = 0.5 * 3.0 / (1.0 + (3.0 - 1.0) * 0.5)
+        self.assertGreater(forward - median, 0.2)
+
+    def test_qwen_lora_targets_cover_all_attention_projections(self) -> None:
+        import mlx.core as mx
+        from backend.engine.config.model_configs import QwenImageConfig
+        from backend.engine.families.qwen.transformer_mlx import QwenImageDiTMLX
+        from backend.engine.training.lora_layers_mlx import (
+            LoRALinear,
+            apply_lora_to_qwen_dit,
+            iter_lora_linears_with_paths,
+        )
+        from backend.engine.training.presets import QWEN_IMAGE_LORA_MODULE_KEYS
+
+        class Ctx:
+            @staticmethod
+            def array(v):
+                return mx.array(v)
+
+        cfg = QwenImageConfig(
+            hidden_dim=32, num_heads=2, num_layers=1,
+            in_channels=4, out_channels=4, text_dim=32,
+        )
+        dit = QwenImageDiTMLX(cfg, Ctx())
+        apply_lora_to_qwen_dit(
+            dit,
+            rank=4,
+            lora_blocks=-1,
+            module_keys=list(QWEN_IMAGE_LORA_MODULE_KEYS),
+        )
+        expected = {f"dit.transformer_blocks.0.attn.{key}" for key in (
+            "to_q", "to_k", "to_v", "to_out.0",
+            "add_q_proj", "add_k_proj", "add_v_proj", "to_add_out",
+        )}
+        self.assertEqual({path for _, path in iter_lora_linears_with_paths(dit)}, expected)
+        attention = dit.dit.transformer_blocks[0].attn
+        for attr in ("to_q", "to_k", "to_v", "add_q_proj", "add_k_proj", "add_v_proj", "to_add_out"):
+            self.assertIsInstance(getattr(attention, attr), LoRALinear)
+        self.assertIsInstance(attention.attn_to_out[0], LoRALinear)
+
+    def test_latent_cache_filename_changes_with_family_resolution_and_dtype(self) -> None:
+        from backend.engine.training.latent_cache_mlx import _fingerprint
+
+        base = dict(
+            dataset_id="face",
+            n_pairs=12,
+            num_augmentations=3,
+            resolution=(1024, 1024),
+            family="z_image",
+            caption_mode="per_image",
+            crop_policy="face:abc",
+            dataset_fingerprint="original-bytes-and-captions",
+        )
+        original = _fingerprint(**base)
+        self.assertEqual(original, _fingerprint(**base))
+        for change in (
+            {"family": "qwen_image"},
+            {"resolution": (512, 512)},
+            {"dataset_fingerprint": "changed-image-bytes"},
+            {"caption_mode": "unified"},
+            {"crop_policy": "face:changed"},
+        ):
+            self.assertNotEqual(original, _fingerprint(**{**base, **change}))
+
+    def test_manual_registration_uses_identical_adapter_metadata(self) -> None:
+        import json
+        from backend.engine.training.lora_train_config import publish_trained_adapter
+        from backend.engine.training.user_lora_registry import list_user_loras
+
+        params = {
+            "base_model": "z-image",
+            "preset": "scheme4",
+            "progress_prompt": "ohwx_person, portrait",
+            "lora_alpha": 128,
+        }
+        checkpoint_meta = {
+            "base_model": "z-image",
+            "train_type": "lora",
+            "lora_rank": 32,
+            "lora_alpha": 128,
+            "lora_blocks": -1,
+            "lora_module_keys": ["to_q", "to_k", "to_v", "to_out", "w1", "w2", "w3"],
+            "iteration": 500,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint = root / "best_adapters.safetensors"
+            checkpoint.write_bytes(b"adapter-test")
+            checkpoint.with_suffix(".json").write_text(json.dumps(checkpoint_meta), encoding="utf-8")
+            for checkpoint_arg in (checkpoint_meta, None):
+                with self.subTest(sidecar=checkpoint_arg is None):
+                    published = publish_trained_adapter(
+                        final_path=checkpoint,
+                        output_name="Face",
+                        dest_dir=root / "models" / "Lora" / "Face",
+                        config_dir=root / "config",
+                        params=params,
+                        checkpoint_meta=checkpoint_arg,
+                        dataset_meta={"trigger_word": "ohwx_person"},
+                        auto_register=True,
+                        task_id="tsk_face",
+                    )
+                    config = json.loads((root / "models" / "Lora" / "Face" / "lora_config.json").read_text())
+                    entry = next(item for item in list_user_loras(root / "config") if item["id"] == published["user_lora_id"])
+                    self.assertEqual(config["lora_alpha"], 128)
+                    self.assertEqual(config["family"], "z_image")
+                    self.assertEqual(config["inference"]["extra_adapters"], ["z-image-turbo-distillpatch-lora:bf16"])
+                    self.assertEqual(entry["inference"], config["inference"])
+                    self.assertEqual(entry["lora_alpha"], config["lora_alpha"])
+                    self.assertEqual(entry["train_type"], config["train_type"])
+
+    def test_export_rejects_checkpoint_configuration_mismatch(self) -> None:
+        from backend.engine.training.lora_train_config import adapter_export_config
+
+        meta = {
+            "base_model": "qwen-image",
+            "train_type": "lora",
+            "lora_rank": 32,
+            "lora_alpha": 64,
+            "lora_blocks": -1,
+            "iteration": 100,
+        }
+        with self.assertRaisesRegex(ValueError, "lora_alpha"):
+            adapter_export_config(
+                params={"base_model": "qwen-image", "preset": "standard", "lora_alpha": 128},
+                checkpoint_meta=meta,
+            )
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            adapter_export_config(
+                params={"base_model": "qwen-image", "preset": "standard"},
+                checkpoint_meta={"base_model": "qwen-image"},
+            )
+
+    def test_resume_checkpoint_requires_matching_scale_optimizer_and_rng(self) -> None:
+        import json
+        from backend.engine.training.lora_train_runtime_mlx import resume_checkpoint_incompatibility
+
+        expected = {"lora_rank": 32, "lora_alpha": 32, "lora_blocks": -1, "train_type": "lora"}
+        meta = {**expected, "base_model": "z-image", "iteration": 100}
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = Path(tmp) / "final_adapters.safetensors"
+            checkpoint.write_bytes(b"adapter")
+            checkpoint.with_suffix(".json").write_text(json.dumps(meta), encoding="utf-8")
+            self.assertIn("optimizer", resume_checkpoint_incompatibility(
+                base_model="z-image", adapter_path=checkpoint, expected_config=expected,
+            ) or "")
+            checkpoint.with_name("final_adapters_optimizer.safetensors").write_bytes(b"optimizer")
+            self.assertIn("random", resume_checkpoint_incompatibility(
+                base_model="z-image", adapter_path=checkpoint, expected_config=expected,
+            ) or "")
+            checkpoint.with_name("final_adapters_rng.safetensors").write_bytes(b"rng")
+            self.assertIsNone(resume_checkpoint_incompatibility(
+                base_model="z-image", adapter_path=checkpoint, expected_config=expected,
+            ))
+            self.assertIn("lora_alpha", resume_checkpoint_incompatibility(
+                base_model="z-image", adapter_path=checkpoint,
+                expected_config={**expected, "lora_alpha": 64},
+            ) or "")
+
+    def test_deterministic_validation_restores_mlx_and_python_random_streams(self) -> None:
+        import random
+        import mlx.core as mx
+        from backend.engine.training.lora_train_loop_mlx import _deterministic_val_loss
+
+        def loss_fn(x):
+            del x
+            return mx.array(random.random()) + mx.random.uniform()
+
+        def sample_batch(indices):
+            self.assertEqual(len(indices), 1)
+            return (mx.array([indices[0]], dtype=mx.float32),)
+
+        mx.random.seed(1234)
+        random.seed(1234)
+        expected_mx = mx.random.state
+        expected_python = random.getstate()
+        first = _deterministic_val_loss(loss_fn, sample_batch, [0, 1], mlx_ctx=None)
+        # Compare actual following samples, not just a reseeded deterministic value.
+        mx.random.state = expected_mx
+        random.setstate(expected_python)
+        next_mx = float(mx.random.uniform())
+        next_python = random.random()
+        mx.random.state = expected_mx
+        random.setstate(expected_python)
+        second = _deterministic_val_loss(loss_fn, sample_batch, [0, 1], mlx_ctx=None)
+        self.assertEqual(first, second)
+        self.assertEqual(float(mx.random.uniform()), next_mx)
+        self.assertEqual(random.random(), next_python)
 
 
 class LoraSearchQueryTests(unittest.TestCase):

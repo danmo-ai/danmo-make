@@ -432,6 +432,7 @@ class LoraTrainingRequest(BaseModel):
     base_model: str  # e.g. flux1-dev or flux1-dev:fp16
     dataset_id: str
     progress_prompt: str
+    seed: Optional[int] = Field(None, ge=0, le=2147483647)
     preset: Literal["scheme4", "quick", "standard", "quality", "custom"] = "standard"
     output_name: str = ""
     auto_register: bool = True
@@ -471,7 +472,7 @@ class LoraTrainingRequest(BaseModel):
     early_stop_patience: Optional[int] = Field(None, ge=0)
     fuse_adapters: Optional[bool] = None
     caption_mode: Optional[Literal["unified", "per_image"]] = None
-    # σ sampling (Z-Image). Base: static shift for training noise levels (None → preset / registry).
+    # Base: logit-normal sigmoid is unshifted; static shift only applies to uniform/low/high.
     train_sigma_shift: Optional[float] = Field(None, gt=0)
     sigma_bias: Optional[Literal["uniform", "low", "high", "sigmoid"]] = None
     # Turbo: inference-step band (1-indexed, inclusive) sampled continuously + bias.
@@ -518,6 +519,8 @@ class DatasetAutoCaptionRequest(BaseModel):
 class DatasetHealthVlmRequest(BaseModel):
     max_samples: int = Field(0, ge=0, le=64)
     audit_kind: Optional[Literal["concept", "style"]] = None
+    width: int = Field(512, ge=256, le=2048)
+    height: int = Field(512, ge=256, le=2048)
 
 
 class LoraRegisterRequest(BaseModel):

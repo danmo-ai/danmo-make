@@ -22,8 +22,7 @@ def min_snr_weight(sigma: mx.array, gamma: float) -> mx.array:
     """Per-sample SNR weight for linear flow-matching with x_t = (1-σ)x0 + σε."""
     if gamma <= 0:
         return mx.ones_like(sigma)
-    s = mx.reshape(sigma, (-1,) + (1,) * (sigma.ndim - 1 if sigma.ndim > 1 else 0))
-    s = mx.clip(s, 1e-4, 1.0 - 1e-4)
+    s = mx.clip(sigma, 1e-4, 1.0 - 1e-4)
     snr = mx.square((1.0 - s) / s)
     return mx.minimum(snr, gamma) / mx.maximum(snr, 1e-8)
 
@@ -86,10 +85,11 @@ def _sample_unit_interval(ctx: Any, batch: int, bias: str) -> mx.array:
     and skin texture. ``low`` / ``high`` remap a uniform draw.
     """
     mode = (bias or "uniform").strip().lower()
+    dtype = ctx.float32() if ctx is not None and hasattr(ctx, "float32") else mx.float32
     if mode == "sigmoid":
-        z = mx.random.normal(shape=(int(batch),), dtype=ctx.float32)
+        z = mx.random.normal(shape=(int(batch),), dtype=dtype)
         return mx.sigmoid(z)
-    u = mx.random.uniform(shape=(int(batch),), dtype=ctx.float32)
+    u = mx.random.uniform(shape=(int(batch),), dtype=dtype)
     return _apply_sigma_uniform_bias(u, mode)
 
 
@@ -100,11 +100,18 @@ def sample_shifted_sigmas(
     sigma_shift: float = 1.0,
     sigma_bias: str = "uniform",
 ) -> mx.array:
-    """σ samples actually used by base-DiT training (bias, then static shift)."""
+    """Sample continuous flow-match σ for base-DiT training.
+
+    SD3 logit-normal (``sigmoid``) is itself the timestep distribution, not a
+    uniform draw to be shifted a second time. In particular, neither the forward
+    static shift nor its inverse preserves its median. Keep the standard
+    logit-normal samples unchanged; ``sigma_shift`` only applies to uniform /
+    low / high sampling.
+    """
     u = _sample_unit_interval(ctx, int(batch), sigma_bias)
-    if float(sigma_shift) != 1.0:
-        return apply_static_sigma_shift(u, sigma_shift)
-    return u
+    if str(sigma_bias).strip().lower() == "sigmoid" or float(sigma_shift) == 1.0:
+        return u
+    return apply_static_sigma_shift(u, sigma_shift)
 
 
 def caption_dropout_applies(rate: float) -> bool:

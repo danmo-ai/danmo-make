@@ -898,20 +898,24 @@ export const api = {
       return response.data;
     },
 
-    async datasetHealth(id: string): Promise<unknown> {
-      const response = await client.get(`/api/loras/datasets/${encodeURIComponent(id)}/health`);
+    async datasetHealth(id: string, resolution?: [number, number]): Promise<unknown> {
+      const response = await client.get(`/api/loras/datasets/${encodeURIComponent(id)}/health`, {
+        params: resolution ? { width: resolution[0], height: resolution[1] } : undefined,
+      });
       return response.data;
     },
 
     async datasetHealthVlm(
       id: string,
-      opts?: { maxSamples?: number; auditKind?: 'concept' | 'style' }
+      opts?: { maxSamples?: number; auditKind?: 'concept' | 'style'; resolution?: [number, number] }
     ): Promise<unknown> {
       const response = await client.post(
         `/api/loras/datasets/${encodeURIComponent(id)}/health/vlm`,
         {
           max_samples: opts?.maxSamples ?? 0,
           audit_kind: opts?.auditKind,
+          width: opts?.resolution?.[0] ?? 512,
+          height: opts?.resolution?.[1] ?? 512,
         },
         { timeout: LONG_REQUEST_TIMEOUT_MS }
       );

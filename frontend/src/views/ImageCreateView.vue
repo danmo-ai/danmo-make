@@ -357,6 +357,8 @@ function imageModelRow(config: Record<string, unknown>): boolean {
 /*  Params                                                             */
 /* ------------------------------------------------------------------ */
 
+const verificationExtraAdapters = ref<Array<{ id: string; weight: number }>>([]);
+const verificationRecipeActive = ref(false);
 const params = reactive<Record<string, unknown>>({
   title: '',
   prompt: '',
@@ -1742,6 +1744,7 @@ async function prepareGenerationContext(): Promise<GenerationPrepared | null> {
   const modelStr = params.version ? `${params.model}:${params.version}` : params.model;
   const adapters: Array<{ id: string; weight: number }> = [];
   if (params.lora) adapters.push({ id: String(params.lora), weight: Number(params.lora_scale) || 0.8 });
+  if (verificationRecipeActive.value) adapters.push(...verificationExtraAdapters.value);
   persistComposerSnapshot();
   const meta = buildCanvasMeta();
   if (params.scheduler) meta.scheduler = params.scheduler;
@@ -2491,6 +2494,31 @@ onMounted(async () => {
   if (typeof q.model === 'string' && q.model) params.model = q.model;
   if (typeof q.prompt === 'string' && q.prompt) params.prompt = q.prompt;
   if (typeof q.lora === 'string' && q.lora) params.lora = q.lora;
+  if (q.verify === '1') {
+    // Apply the exported identity recipe, including the frozen acceleration companion.
+    verificationRecipeActive.value = true;
+    verificationExtraAdapters.value = String(q.extra_adapters || '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter((id) => id && id !== String(params.lora || ''))
+      .map((id) => ({ id, weight: 1 }));
+    const numberQuery = (key: string): number | undefined => {
+      const value = Number(q[key]);
+      return q[key] != null && q[key] !== '' && Number.isFinite(value) ? value : undefined;
+    };
+    for (const key of ['steps', 'guidance', 'lora_scale', 'width', 'height'] as const) {
+      const value = numberQuery(key);
+      if (value != null) params[key] = value;
+    }
+    if (typeof q.seed === 'string') params.seed = q.seed;
+    if (typeof q.scheduler === 'string' && q.scheduler) params.scheduler = q.scheduler;
+    if (typeof q.version === 'string' && q.version) params.version = q.version;
+    selectedModelVersion.value = params.version ? `${params.model}|${params.version}` : params.model;
+    selectedSize.value = `${params.width}x${params.height}`;
+    await loadCompatibleAdapters(String(params.model));
+    await nextTick();
+    syncImageLoraSelection();
+  }
 });
 
 onUnmounted(() => {

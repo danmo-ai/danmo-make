@@ -680,6 +680,25 @@ def load_training_pairs_unified(
     return pairs, preview_caption
 
 
+def training_dataset_fingerprint(pairs: list[tuple[Path, str]]) -> str:
+    """Bind latent caches to file bytes, ordering and exact conditioning captions."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    for path, prompt in pairs:
+        digest.update(str(path.name).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(prompt).encode("utf-8"))
+        digest.update(b"\0")
+        stat = path.stat()
+        digest.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode("ascii"))
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _augmentation_rng(path: Path, augmentation_index: int) -> "random.Random":
     """Deterministic per-image jitter RNG (``hash(str)`` is salted per process; crc32 is not)."""
     import random

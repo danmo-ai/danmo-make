@@ -76,6 +76,8 @@ export type FaceAuditReport = {
   reason?: string;
   resolution?: number[];
   rows: FaceAuditRow[];
+  counts?: Record<string, number>;
+  tiny_face_px?: number;
 };
 
 export type LoraDatasetHealthReport = {

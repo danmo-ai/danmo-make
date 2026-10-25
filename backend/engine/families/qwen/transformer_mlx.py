@@ -596,21 +596,10 @@ class QwenImageDiTMLX(TransformerBase):
 
     def _build_param_map(self):
         """MLX ``Module.parameters()`` 返回嵌套 dict/list；展开为与 ``remap_qwen_transformer_weights`` 一致的扁平键。"""
+        from backend.engine.common.model.base import flatten_adapter_parameters
+
         self._param_map.clear()
-
-        def flatten(obj: Any, prefix: str) -> None:
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    p = f"{prefix}.{k}" if prefix else str(k)
-                    flatten(v, p)
-            elif isinstance(obj, list):
-                for i, item in enumerate(obj):
-                    p = f"{prefix}.{i}"
-                    flatten(item, p)
-            else:
-                self._param_map[prefix] = obj
-
-        flatten(self.dit.parameters(), "dit")
+        self._param_map.update(flatten_adapter_parameters(self.dit.parameters(), "dit"))
 
     def parameters(self):
         return list(self._param_map.items())

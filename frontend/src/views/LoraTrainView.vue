@@ -67,6 +67,10 @@
         <DqSurfaceCard class="copilot-page__workspace-card studio-surface-card">
           <!-- Step 1: base model -->
           <div v-show="step === 0" class="lora-train-page__panel lora-train-page__panel--base">
+            <div class="lora-train-page__face-intro">
+              <h2>{{ $t('loraTrain.faceWorkflowTitle') }}</h2>
+              <p>{{ $t('loraTrain.faceWorkflowBody') }}</p>
+            </div>
             <div class="lora-train-page__base-grid">
               <button
                 v-for="m in trainableModels"
@@ -119,12 +123,14 @@
               :default-prompt="form.default_prompt"
               :caption-edits="captionEdits"
               :dataset-health="datasetHealth"
+              :dataset-health-stale="datasetHealthStale || datasetHealth?.faces?.resolution?.join('x') !== activeResolutionKey"
               :vision-available="visionAvailable"
               :dataset-vlm-loading="datasetVlmLoading"
               @update:selected-id="form.dataset_id = $event"
               @update:default-prompt="form.default_prompt = $event"
               @update:caption-edits="onCaptionEditsUpdate"
               @datasets-changed="onDatasetsChanged"
+              @preflight-requested="onFacePreflightRequested"
               @run-dataset-vlm="runDatasetVlmAudit"
             />
           </div>
@@ -134,8 +140,8 @@
             </DqButton>
             <DqButton
               type="primary"
-              :disabled="!canNext(1)"
-              @click="goToStep(2)"
+              :disabled="!faceDatasetReady"
+              @click="goToNextFromDataset"
             >
               {{ $t('common.next') }}
             </DqButton>
@@ -143,6 +149,9 @@
 
           <!-- Step 3: config -->
           <div v-show="step === 2" class="lora-train-page__panel">
+            <DqAlert v-if="isIdentityDataset" type="success" :closable="false" :title="$t('loraTrain.identityRecipeTitle')">
+              <p>{{ $t('loraTrain.identityRecipeBody') }}</p>
+            </DqAlert>
             <DqAlert
               v-if="hasResume"
               type="warning"
@@ -167,14 +176,14 @@
                 class="lora-train-page__preset-card"
                 :class="{
                   'is-selected': form.preset === p,
-                  'is-recommended': p === 'scheme4' && form.base_model === 'z-image',
+                  'is-recommended': p === (form.base_model === 'z-image' ? 'scheme4' : 'standard'),
                 }"
                 @click="form.preset = p"
               >
                 <span class="lora-train-page__preset-name">
                   {{ $t(`loraTrain.preset.${p}`) }}
                   <em
-                    v-if="p === 'scheme4' && form.base_model === 'z-image'"
+                    v-if="p === (form.base_model === 'z-image' ? 'scheme4' : 'standard')"
                     class="lora-train-page__preset-badge"
                   >{{ $t('loraTrain.presetRecommended') }}</em>
                 </span>
@@ -308,7 +317,7 @@
                   <DqSelect v-model="form.face_crop">
                     <DqOption :label="$t('loraTrain.faceCropAuto')" value="auto" />
                     <DqOption :label="$t('loraTrain.faceCropOn')" value="on" />
-                    <DqOption :label="$t('loraTrain.faceCropOff')" value="off" />
+                    <DqOption v-if="!isIdentityDataset" :label="$t('loraTrain.faceCropOff')" value="off" />
                   </DqSelect>
                   <p class="lora-train-page__field-hint">{{ $t('loraTrain.faceCropHint') }}</p>
                 </div>
@@ -326,7 +335,7 @@
             </div>
 
             <div class="lora-train-page__field">
-              <label class="lora-train-page__label">{{ $t('loraTrain.progressPrompt') }}</label>
+              <label class="lora-train-page__label">{{ $t('loraTrain.trainingCaption') }}</label>
               <DqInput v-model="form.progress_prompt" type="textarea" :rows="3" />
               <p class="lora-train-page__field-hint">{{ $t('loraTrain.progressPromptDesc') }}</p>
               <DqAlert
@@ -455,6 +464,16 @@
               </DqButton>
             </DqAlert>
             <p class="lora-train-page__confirm-intro">{{ $t('loraTrain.confirmIntro') }}</p>
+            <ul v-if="isIdentityDataset" class="lora-train-page__identity-checklist">
+              <li
+                v-for="item in identityConfirmChecks"
+                :key="item.key"
+                :class="item.ok ? 'is-ok' : 'is-bad'"
+              >
+                <span class="lora-train-page__identity-check-mark" aria-hidden="true">{{ item.ok ? '✓' : '!' }}</span>
+                <span>{{ item.label }}</span>
+              </li>
+            </ul>
             <LoraQualityHints
               v-if="datasetHealth"
               :report="datasetHealth"
@@ -499,6 +518,10 @@
               </li>
               <li><span>{{ $t('loraTrain.summaryPreset') }}</span><strong>{{ $t(`loraTrain.preset.${form.preset}`) }}</strong></li>
               <li><span>{{ $t('loraTrain.summaryPrompt') }}</span><strong>{{ form.progress_prompt }}</strong></li>
+              <li v-if="datasetHealth?.faces?.resolution">
+                <span>{{ $t('loraTrain.facePreflightSummary') }}</span>
+                <strong>{{ datasetHealth.faces.resolution.join('×') }}</strong>
+              </li>
               <li v-if="effectiveDatasetCaption && effectiveDatasetCaption !== form.progress_prompt.trim()">
                 <span>{{ $t('loraTrain.summaryDatasetCaption') }}</span>
                 <strong>{{ effectiveDatasetCaption }}</strong>
@@ -566,6 +589,8 @@ const applyingResumeSync = ref(false);
 const trainableModels = ref<any[]>([]);
 const datasets = ref<any[]>([]);
 const datasetHealth = ref<LoraDatasetHealthReport | null>(null);
+const datasetHealthStale = ref(true);
+let datasetHealthRequestSeq = 0;
 const datasetVlmLoading = ref(false);
 const visionAvailable = ref(false);
 const requirements = ref<any>(null);
@@ -593,10 +618,10 @@ function clearPriorPreservationFields() {
 }
 
 const stepNavItems = computed(() => [
-  { key: 'base', label: t('loraTrain.stepBase') },
-  { key: 'dataset', label: t('loraTrain.stepDataset') },
-  { key: 'config', label: t('loraTrain.stepConfig') },
-  { key: 'confirm', label: t('loraTrain.stepConfirm') },
+  { key: 'base', label: t('loraTrain.faceStepBase') },
+  { key: 'dataset', label: t('loraTrain.faceStepDataset') },
+  { key: 'config', label: t('loraTrain.faceStepConfig') },
+  { key: 'confirm', label: t('loraTrain.faceStepConfirm') },
 ]);
 
 const form = reactive({
@@ -638,6 +663,39 @@ const form = reactive({
 const selectedDataset = computed(() =>
   datasets.value.find((d) => d.id === form.dataset_id)
 );
+const isIdentityDataset = computed(() => String(selectedDataset.value?.kind || 'concept') !== 'style');
+const faceDatasetReady = computed(() => {
+  if (!selectedDataset.value || (selectedDataset.value.image_count || 0) < 3) return false;
+  if (!isIdentityDataset.value) return true;
+  const trigger = String(selectedDataset.value.trigger_word || '').trim();
+  if (!trigger) return false;
+  const faces = datasetHealth.value?.faces;
+  if (!faces?.available || !datasetHealth.value || datasetHealthStale.value) return false;
+  if ((faces.resolution || []).join('x') !== activeResolutionKey.value) return false;
+  const imageFiles = (selectedDataset.value.images || []).map((img: { file: string }) => img.file);
+  const auditedFiles = (faces.rows || []).map((row: { file: string }) => row.file);
+  if (
+    imageFiles.length !== auditedFiles.length
+    || imageFiles.some((file: string) => !auditedFiles.includes(file))
+  ) {
+    return false;
+  }
+  const counts = faces.counts || {};
+  if (Number(counts.none || 0) + Number(counts.multi || 0) + Number(counts.tiny || 0) + Number(counts.error || 0) > 0) return false;
+  return (selectedDataset.value.images || []).every((img: { file: string; prompt?: string }) =>
+    String(captionEdits[img.file] ?? img.prompt ?? '').includes(trigger)
+  );
+});
+
+function activeTrainingResolution(): [number, number] {
+  if (form.preset !== 'custom') {
+    const res = activePresetDetail.value?.resolution;
+    if (Array.isArray(res) && res.length >= 2) return [Number(res[0]), Number(res[1])];
+  }
+  const edge = Number(form.resolution_edge) || 1024;
+  return [edge, edge];
+}
+const activeResolutionKey = computed(() => activeTrainingResolution().join('x'));
 
 const modelPresets = computed(
   () => presetsByModel.value[form.base_model] || presetsByModel.value['flux1-dev'] || {}
@@ -722,10 +780,51 @@ const wizardSummary = computed(() => {
 
 function stepDone(i: number): boolean {
   if (i === 0) return !!form.base_model && step.value > 0;
-  if (i === 1) return (selectedDataset.value?.image_count || 0) >= 3 && step.value > 1;
-  if (i === 2) return !!form.progress_prompt.trim() && step.value > 2;
+  if (i === 1) return faceDatasetReady.value && step.value > 1;
+  if (i === 2) return !!form.progress_prompt.trim() && (!isIdentityDataset.value || form.progress_prompt.includes(String(selectedDataset.value?.trigger_word || '').trim())) && step.value > 2;
   return false;
 }
+
+const identityConfirmChecks = computed(() => {
+  const faces = datasetHealth.value?.faces;
+  const counts = faces?.counts || {};
+  const trigger = String(selectedDataset.value?.trigger_word || '').trim();
+  const imageCount = selectedDataset.value?.image_count || 0;
+  const blocked =
+    Number(counts.none || 0) + Number(counts.multi || 0) + Number(counts.tiny || 0) + Number(counts.error || 0);
+  return [
+    {
+      key: 'images',
+      ok: imageCount >= 3,
+      label: t('loraTrain.identityCheckImages', { count: imageCount }),
+    },
+    {
+      key: 'trigger',
+      ok: !!trigger && faceDatasetReady.value,
+      label: trigger
+        ? t('loraTrain.identityCheckTrigger', { trigger })
+        : t('loraTrain.identityCheckTriggerMissing'),
+    },
+    {
+      key: 'faces',
+      ok: !!faces?.available && blocked === 0 && !datasetHealthStale.value,
+      label: faces?.available
+        ? t('loraTrain.identityCheckFaces', {
+            ok: Number(counts.keep || 0) + Number(counts.crop || 0),
+            total: imageCount,
+          })
+        : t('loraTrain.identityCheckFacesNeeded'),
+    },
+    {
+      key: 'recipe',
+      ok: !!form.progress_prompt.trim() && (!trigger || form.progress_prompt.includes(trigger)),
+      label: t('loraTrain.identityCheckRecipe', {
+        preset: t(`loraTrain.preset.${form.preset}`),
+        resolution: activeResolutionKey.value.replace('x', '×'),
+      }),
+    },
+  ];
+});
 
 function presetStats(p: string): string {
   const cfg = modelPresets.value[p] as Record<string, unknown> | undefined;
@@ -761,21 +860,23 @@ function confirmImageUrl(file: string): string {
 const maxReachableStep = computed(() => {
   let max = 0;
   if (form.base_model) max = 1;
-  if ((selectedDataset.value?.image_count || 0) >= 3) max = Math.max(max, 2);
+  if (faceDatasetReady.value) max = Math.max(max, 2);
   if (form.progress_prompt.trim()) max = Math.max(max, 3);
   return max;
 });
 
 function canNext(stepIndex: number): boolean {
   if (stepIndex === 0) return !!form.base_model;
-  if (stepIndex === 1) return (selectedDataset.value?.image_count || 0) >= 3;
-  if (stepIndex === 2) return !!form.progress_prompt.trim();
+  if (stepIndex === 1) return faceDatasetReady.value;
+  if (stepIndex === 2) return !!form.progress_prompt.trim() && (!isIdentityDataset.value || form.progress_prompt.includes(String(selectedDataset.value?.trigger_word || '').trim()));
   return true;
 }
 
-const canSubmit = computed(
-  () => canNext(2) && requirements.value?.can_submit !== false
-);
+const canSubmit = computed(() => {
+  if (!faceDatasetReady.value || !canNext(2) || requirements.value?.can_submit === false) return false;
+  if (isIdentityDataset.value && identityConfirmChecks.value.some((item) => !item.ok)) return false;
+  return true;
+});
 
 const hasResume = computed(
   () => !!form.resume_task_id.trim() && !!form.resume_checkpoint.trim()
@@ -848,17 +949,26 @@ function onCaptionEditsUpdate(next: Record<string, string>) {
 
 async function refreshDatasetHealth(id?: string) {
   const dsId = (id || form.dataset_id || '').trim();
+  const resolution = activeTrainingResolution();
+  const requestSeq = ++datasetHealthRequestSeq;
   if (!dsId) {
     datasetHealth.value = null;
+    datasetHealthStale.value = true;
     return;
   }
   try {
-    datasetHealth.value = (await api.loras.datasetHealth(dsId)) as LoraDatasetHealthReport;
+    const report = (await api.loras.datasetHealth(dsId, resolution)) as LoraDatasetHealthReport;
+    if (requestSeq !== datasetHealthRequestSeq || dsId !== form.dataset_id) return;
+    datasetHealth.value = report;
+    datasetHealthStale.value = report.faces?.resolution?.join('x') !== activeResolutionKey.value;
     if (datasetHealth.value?.vision_available != null) {
       visionAvailable.value = Boolean(datasetHealth.value.vision_available);
     }
-  } catch {
+  } catch (e: unknown) {
+    if (requestSeq !== datasetHealthRequestSeq) return;
     datasetHealth.value = null;
+    datasetHealthStale.value = true;
+    toast.error(apiErrorMessage(e));
   }
 }
 
@@ -876,9 +986,12 @@ async function runDatasetVlmAudit() {
   datasetVlmLoading.value = true;
   try {
     const kind = selectedDataset.value?.kind === 'style' ? 'style' : 'concept';
+    const [width, height] = activeTrainingResolution();
     datasetHealth.value = (await api.loras.datasetHealthVlm(form.dataset_id, {
       auditKind: kind,
+      resolution: [width, height],
     })) as LoraDatasetHealthReport;
+    datasetHealthStale.value = datasetHealth.value.faces?.resolution?.join('x') !== activeResolutionKey.value;
     toast.success(t('loraTrain.quality.vlmAuditDone'));
   } catch (e: unknown) {
     toast.error(apiErrorMessage(e));
@@ -888,8 +1001,19 @@ async function runDatasetVlmAudit() {
 }
 
 function onDatasetsChanged(next: any[]) {
+  const before = selectedDataset.value?.images || [];
+  const after = next.find((d) => d.id === form.dataset_id)?.images || [];
+  const changedImages = before.length !== after.length || before.some((img: { file: string; prompt?: string }, index: number) =>
+    img.file !== after[index]?.file || String(img.prompt || '') !== String(after[index]?.prompt || '')
+  );
   datasets.value = next;
-  void refreshDatasetHealth();
+  // Renames/default-template edits do not invalidate pixels, but image/caption edits do.
+  if (changedImages) datasetHealthStale.value = true;
+}
+
+async function onFacePreflightRequested() {
+  await refreshDatasetHealth(form.dataset_id);
+  if (!faceDatasetReady.value) toast.warning(t('loraTrain.faceDatasetGate'));
 }
 
 function selectBase(m: any) {
@@ -952,7 +1076,8 @@ function applyPresetTrainingDefaults() {
 }
 
 function applyCustomDefaultsFromQuick() {
-  const quick = modelPresets.value.quick as Record<string, unknown> | undefined;
+  // Face experiments inherit the identity recipe, not the small smoke-test preset.
+  const quick = (modelPresets.value.standard || modelPresets.value.quick) as Record<string, unknown> | undefined;
   if (!quick) return;
   if (form.iterations == null) form.iterations = Number(quick.iterations) || 400;
   if (form.lora_rank == null) form.lora_rank = Number(quick.lora_rank) || 8;
@@ -966,6 +1091,9 @@ function applyCustomDefaultsFromQuick() {
   }
   if (form.lora_blocks == null && quick.lora_blocks != null) {
     form.lora_blocks = Number(quick.lora_blocks);
+  }
+  if (form.lora_blocks !== -1 && ['z-image', 'qwen-image'].includes(form.base_model)) {
+    form.lora_blocks = -1;
   }
   if (form.num_augmentations == null) form.num_augmentations = 3;
   if (form.grad_accumulate == null) {
@@ -1020,7 +1148,12 @@ function buildTrainingBody(): Record<string, unknown> {
     }
   }
   if (form.compile_step) body.compile_step = true;
-  if (form.face_crop !== 'auto') body.face_crop = form.face_crop;
+  // Identity datasets always train with face crops; style may opt out.
+  if (isIdentityDataset.value) {
+    body.face_crop = form.face_crop === 'on' ? 'on' : 'auto';
+  } else if (form.face_crop !== 'auto') {
+    body.face_crop = form.face_crop;
+  }
 
   if (form.preset === 'custom') {
     if (form.iterations) body.iterations = form.iterations;
@@ -1187,6 +1320,7 @@ function persistDraft() {
 watch(
   () => form.dataset_id,
   async (id) => {
+    datasetHealthStale.value = true;
     if (!id) {
       datasetHealth.value = null;
       return;
@@ -1363,6 +1497,11 @@ watch(() => form.base_model, (mid) => {
   void refreshRequirements();
 });
 
+watch(activeResolutionKey, () => {
+  datasetHealthStale.value = true;
+  if (form.dataset_id && isIdentityDataset.value) void refreshDatasetHealth();
+});
+
 watch(() => form.qlora_bits, () => {
   void refreshRequirements();
 });
@@ -1375,6 +1514,12 @@ watch(() => form.preset, (preset) => {
 async function submitTraining() {
   submitting.value = true;
   try {
+    await datasetPanelRef.value?.saveDraft();
+    if (form.dataset_id) await refreshDatasetHealth();
+    if (!canSubmit.value) {
+      toast.warning(t('loraTrain.faceDatasetGate'));
+      return;
+    }
     const body = buildTrainingBody();
     const res = await api.loras.submitTraining(body);
     const tid = taskIdFromSubmitResponse(res);
@@ -1393,19 +1538,27 @@ async function submitTraining() {
   }
 }
 
+async function goToNextFromDataset() {
+  await datasetPanelRef.value?.saveDraft();
+  if (form.dataset_id && (datasetHealthStale.value || datasetHealth.value?.faces?.resolution?.join('x') !== activeResolutionKey.value)) {
+    await refreshDatasetHealth();
+  }
+  if (!canNext(1)) {
+    toast.warning(t('loraTrain.faceDatasetGate'));
+    return;
+  }
+  goToStep(2);
+}
+
 function startNewTraining() {
   activeRunId.value = '';
   step.value = 0;
 }
 
-function onVerifyGenerate(payload: { prompt: string; loraId: string; baseModel: string }) {
+function onVerifyGenerate(payload: Record<string, unknown>) {
   router.push({
     name: 'image_create',
-    query: {
-      model: payload.baseModel,
-      prompt: payload.prompt,
-      lora: payload.loraId,
-    },
+    query: Object.fromEntries(Object.entries(payload).filter(([, value]) => value != null).map(([key, value]) => [key, Array.isArray(value) ? value.join(',') : String(value)])),
   });
 }
 
@@ -1536,6 +1689,24 @@ onMounted(async () => {
 .lora-train-page__panel--flush {
   max-width: none;
   width: 100%;
+}
+
+.lora-train-page__face-intro {
+  margin-bottom: 22px;
+}
+
+.lora-train-page__face-intro h2 {
+  margin: 0 0 8px;
+  font-size: var(--dq-font-size-headline);
+  color: var(--dq-label-primary);
+}
+
+.lora-train-page__face-intro p {
+  max-width: 760px;
+  margin: 0;
+  font-size: var(--dq-font-size-body);
+  line-height: 1.6;
+  color: var(--dq-label-secondary);
 }
 
 .lora-train-page__base-grid {
@@ -1825,6 +1996,42 @@ onMounted(async () => {
   font-size: var(--dq-font-size-body);
   color: var(--dq-label-secondary);
   line-height: 1.5;
+}
+
+.lora-train-page__identity-checklist {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lora-train-page__identity-checklist li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 0.5px solid var(--dq-border-subtle);
+  font-size: var(--dq-font-size-caption);
+  line-height: 1.45;
+}
+
+.lora-train-page__identity-checklist li.is-ok {
+  background: color-mix(in srgb, var(--dq-success, #34c759) 12%, var(--dq-fill-secondary));
+  color: var(--dq-label-primary);
+}
+
+.lora-train-page__identity-checklist li.is-bad {
+  background: color-mix(in srgb, var(--dq-danger, #ff3b30) 10%, var(--dq-fill-secondary));
+  color: var(--dq-label-primary);
+}
+
+.lora-train-page__identity-check-mark {
+  flex-shrink: 0;
+  width: 1.25rem;
+  font-weight: 700;
 }
 
 .lora-train-page__confirm-health {

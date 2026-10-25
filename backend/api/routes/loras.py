@@ -76,17 +76,33 @@ def get_dataset(dataset_id: str):
         raise HTTPException(404, detail={"code": "not_found", "message": str(e)}) from e
 
 
+def _face_audit_resolution(width: int, height: int) -> tuple[int, int]:
+    from backend.engine.training.crop import align_training_edge
+
+    if not 256 <= width <= 2048 or not 256 <= height <= 2048:
+        raise ValueError("Face-audit resolution must be between 256 and 2048 pixels")
+    return (
+        align_training_edge(width, vae_scale=16),
+        align_training_edge(height, vae_scale=16),
+    )
+
+
 @router.get("/datasets/{dataset_id}/health")
-def dataset_health(dataset_id: str):
+def dataset_health(dataset_id: str, width: int = 512, height: int = 512):
     root = _paths().get_project_root()
     try:
         from backend.engine.training.lora_quality import analyze_dataset_health
 
-        report = analyze_dataset_health(root, dataset_id)
+        resolution = _face_audit_resolution(width, height)
+        report = analyze_dataset_health(root, dataset_id, training_resolution=resolution)
+        if report.get("faces") is not None:
+            report["faces"]["resolution"] = list(resolution)
         report["vision_available"] = get_llm_service().is_vision_available()
         return report
     except FileNotFoundError as e:
         raise HTTPException(404, detail={"code": "not_found", "message": str(e)}) from e
+    except ValueError as e:
+        raise HTTPException(400, detail={"code": "invalid_face_audit_resolution", "message": str(e)}) from e
 
 
 @router.post("/datasets/{dataset_id}/health/vlm")
@@ -121,7 +137,11 @@ async def dataset_health_vlm(dataset_id: str, body: DatasetHealthVlmRequest | No
             resolve_dataset_audit_kind,
         )
 
-        base = analyze_dataset_health(root, dataset_id)
+        resolution = _face_audit_resolution(
+            body.width if body else 512,
+            body.height if body else 512,
+        )
+        base = analyze_dataset_health(root, dataset_id, training_resolution=resolution)
         audit_kind = resolve_dataset_audit_kind(root, dataset_id, audit_kind_override)
         paths = collect_dataset_image_paths(root, dataset_id)
         if not paths:
@@ -148,7 +168,7 @@ async def dataset_health_vlm(dataset_id: str, body: DatasetHealthVlmRequest | No
         texts = await run_vlm_audit_subprocess(
             image_paths=audit_paths,
             model_dir=model_dir,
-            instruction=build_dataset_audit_instruction(audit_kind),
+            instruction=build_dataset_audit_instruction(audit_kind, resolution=resolution),
             worker_memory_gb=worker_mem,
         )
         vlm = compile_portrait_dataset_audit(
@@ -161,6 +181,7 @@ async def dataset_health_vlm(dataset_id: str, body: DatasetHealthVlmRequest | No
             truncated=truncated,
             total_images=len(paths),
             project_root=root,
+            training_resolution=resolution,
         )
         merged = merge_vlm_hints(base, vlm)
         merged["vision_available"] = True
@@ -400,6 +421,8 @@ def _validate_resume_checkpoint(
     *,
     task_id: str | None,
 ) -> None:
+    from backend.engine.training.lora_train_config import resolve_training_config
+
     source_params: dict[str, Any] | None = None
     if task_id:
         row = sched.get_task(task_id)
@@ -407,10 +430,13 @@ def _validate_resume_checkpoint(
             raw = row.get("params")
             if isinstance(raw, dict):
                 source_params = raw
+        else:
+            _raise_resume_incompatible(f"Resume source task not found: {task_id}")
     reason = resume_checkpoint_incompatibility(
         base_model=body.base_model,
         adapter_path=adapter_path,
         source_task_params=source_params,
+        expected_config=resolve_training_config(body.model_dump()),
     )
     if reason:
         _raise_resume_incompatible(reason)
@@ -506,6 +532,14 @@ async def submit_training(
     root = _paths().get_project_root()
     try:
         dataset_store.validate_dataset_for_training(root, body.dataset_id)
+        from backend.engine.training.lora_train_config import training_inference_config
+        from backend.engine.training.training_preflight import validate_training_request
+
+        validate_training_request(root, body, sched=sched)
+        body.metadata = {
+            **body.metadata,
+            "inference": training_inference_config(body.model_dump()),
+        }
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(400, detail={"code": "invalid_dataset", "message": str(e)}) from e
 
@@ -549,7 +583,8 @@ def training_artifacts(task_id: str, sched: TaskScheduler = Depends(get_task_sch
     work = sched.task_work_dir(task_id)
     if not work.is_dir():
         raise HTTPException(404, detail={"code": "not_found", "message": "task work dir not found"})
-    progress_images = sorted(work.glob("*_progress.png"))
+    # Include both Base and Turbo verification previews generated by Scheme 4.
+    progress_images = sorted(work.glob("*_progress*.png"))
     checkpoints = sorted((work / "adapters").glob("*_adapters.safetensors")) if (work / "adapters").is_dir() else []
     loss_path = work / "loss_history.json"
     loss_history = []
@@ -570,19 +605,45 @@ def training_artifacts(task_id: str, sched: TaskScheduler = Depends(get_task_sch
         if dataset_id:
             root = _paths().get_project_root()
             try:
-                dataset_health = analyze_dataset_health(root, dataset_id)
+                stored_resolution = (params.get("metadata") or {}).get("training_resolution")
+                if isinstance(stored_resolution, (list, tuple)) and len(stored_resolution) == 2:
+                    audit_resolution = _face_audit_resolution(
+                        int(stored_resolution[0]), int(stored_resolution[1])
+                    )
+                else:
+                    from backend.engine.training.crop import resolve_training_resolution
+                    from backend.engine.training.lora_train_config import resolve_training_config
+
+                    cfg = resolve_training_config(params)
+                    audit_resolution = resolve_training_resolution(
+                        str(params.get("base_model") or ""), cfg, preset=params.get("preset")
+                    )
+                dataset_health = analyze_dataset_health(
+                    root, dataset_id, training_resolution=audit_resolution
+                )
             except FileNotFoundError:
                 dataset_health = None
         quality = analyze_training_quality(loss_history, dataset_health=dataset_health)
         if quality is not None:
             quality["vision_available"] = vision_available
 
+    task_row = sched.get_task(task_id) or {}
+    params = task_row.get("params") or {}
+    dataset_id = str(params.get("dataset_id") or "").strip()
+    from backend.engine.training.lora_train_config import adapter_export_config, training_inference_config
+
+    dataset_meta = dataset_store._dataset_meta(_paths().get_project_root(), dataset_id) if dataset_id else {}
+    crop_plan_path = work / "crop_plan.json"
+    crop_plan = json.loads(crop_plan_path.read_text(encoding="utf-8")) if crop_plan_path.is_file() else None
     return {
         "progress_images": [p.name for p in progress_images],
         "checkpoints": [p.name for p in checkpoints],
         "loss_history": loss_history,
         "quality": quality,
         "vision_available": vision_available,
+        "inference": training_inference_config(params),
+        "training_contract": adapter_export_config(params=params, dataset_meta=dataset_meta),
+        "crop_plan": crop_plan,
     }
 
 
@@ -638,7 +699,22 @@ async def training_quality_vlm(task_id: str, sched: TaskScheduler = Depends(get_
     if dataset_id:
         root = _paths().get_project_root()
         try:
-            dataset_health = analyze_dataset_health(root, dataset_id)
+            stored_resolution = (params.get("metadata") or {}).get("training_resolution")
+            if isinstance(stored_resolution, (list, tuple)) and len(stored_resolution) == 2:
+                audit_resolution = _face_audit_resolution(
+                    int(stored_resolution[0]), int(stored_resolution[1])
+                )
+            else:
+                from backend.engine.training.crop import resolve_training_resolution
+                from backend.engine.training.lora_train_config import resolve_training_config
+
+                cfg = resolve_training_config(params)
+                audit_resolution = resolve_training_resolution(
+                    str(params.get("base_model") or ""), cfg, preset=params.get("preset")
+                )
+            dataset_health = analyze_dataset_health(
+                root, dataset_id, training_resolution=audit_resolution
+            )
         except FileNotFoundError:
             dataset_health = None
 
@@ -752,41 +828,24 @@ def register_training_checkpoint(
         raise HTTPException(404, detail={"code": "not_found", "message": f"checkpoint {body.checkpoint!r} not found"})
     task_row = sched.get_task(task_id) or {}
     params = task_row.get("params") or {}
-    base_model = str(params.get("base_model") or "flux1-dev").split(":", 1)[0]
     dataset_id = str(params.get("dataset_id") or "").strip()
-    trigger_word = ""
     paths = _paths()
-    if dataset_id:
-        try:
-            trigger_word = str(dataset_store._dataset_meta(paths.get_project_root(), dataset_id).get("trigger_word") or "").strip()
-        except Exception:
-            trigger_word = ""
-    slug = body.name.strip() or f"trained-{task_id[-8:]}"
-    slug = "".join(c if c.isalnum() or c in "-_" else "-" for c in slug)[:64]
-    dest_dir = paths.get_loras_dir() / slug
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    import shutil
+    from backend.engine.training.lora_train_config import publish_trained_adapter
 
-    dest_file = dest_dir / "adapter.safetensors"
-    shutil.copy2(ckpt, dest_file)
-    (dest_dir / "lora_config.json").write_text(
-        json.dumps(
-            {
-                "base_model": base_model,
-                "trigger_word": trigger_word,
-                "task_id": task_id,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    entry = register_user_lora(
-        paths.get_workspace_config_dir(),
-        name=body.name or slug,
-        base_model=base_model,
-        local_path=f"models/Lora/{slug}",
-        trigger_word=trigger_word,
-        task_id=task_id,
-    )
-    return {"user_lora": entry, "adapter_path": str(dest_file)}
+    try:
+        checkpoint_meta = json.loads(ckpt.with_suffix(".json").read_text(encoding="utf-8")) if ckpt.with_suffix(".json").is_file() else {}
+        published = publish_trained_adapter(
+            final_path=ckpt,
+            output_name=body.name or f"trained-{task_id[-8:]}",
+            dest_dir=paths.get_loras_dir(),
+            config_dir=paths.get_workspace_config_dir(),
+            params=params,
+            checkpoint_meta=checkpoint_meta,
+            dataset_meta=dataset_store._dataset_meta(paths.get_project_root(), dataset_id) if dataset_id else {},
+            auto_register=True,
+            task_id=task_id,
+        )
+        entry = next(item for item in list_user_loras(paths.get_workspace_config_dir()) if item["id"] == published["user_lora_id"])
+        return {"user_lora": entry, "adapter_path": published["adapter_path"]}
+    except (RuntimeError, ValueError, OSError, json.JSONDecodeError) as e:
+        raise HTTPException(409, detail={"code": "adapter_export_failed", "message": str(e)}) from e
