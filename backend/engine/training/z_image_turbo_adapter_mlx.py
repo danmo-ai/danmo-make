@@ -13,6 +13,7 @@ from backend.engine.common.bundle.weights import load_safetensors
 from backend.engine.families.z_image.weights import remap_zimage_lora_keys
 from backend.engine.runtime._base import RuntimeContext
 from backend.engine.training.lora_layers_mlx import (
+    DoRALinear,
     FrozenAssistantLinear,
     LoRALinear,
     _dit_inner,
@@ -168,12 +169,14 @@ def install_zimage_turbo_training_assistant(
     path_map = {path: layer for layer, path in _walk_all_linear_paths(dit)}
     assistant_layers: list[Any] = []
     applied = 0
+    unmatched: list[str] = []
 
     for module_name, delta in dense_deltas.items():
         layer = path_map.get(module_name)
         if layer is None:
+            unmatched.append(module_name)
             continue
-        if isinstance(layer, LoRALinear):
+        if isinstance(layer, (LoRALinear, DoRALinear)):
             layer.attach_frozen_assistant_dense(delta, strength=strength)
         elif isinstance(layer, nn.Linear):
             wrapped = FrozenAssistantLinear.wrap_linear_dense(layer, delta, strength=strength)
@@ -183,7 +186,7 @@ def install_zimage_turbo_training_assistant(
             layer = FrozenAssistantLinear.wrap_linear_dense(layer.linear, delta, strength=strength)
             _replace_module_at_path(dit, module_name, layer)
         else:
-            continue
+            raise RuntimeError(f"Unsupported assistant layer {module_name}: {type(layer).__name__}")
         assistant_layers.append(layer)
         applied += 1
 
@@ -192,8 +195,9 @@ def install_zimage_turbo_training_assistant(
             continue
         layer = path_map.get(module_name)
         if layer is None:
+            unmatched.append(module_name)
             continue
-        if isinstance(layer, LoRALinear):
+        if isinstance(layer, (LoRALinear, DoRALinear)):
             layer.attach_frozen_assistant(down, up, alpha, strength=strength)
         elif isinstance(layer, nn.Linear):
             wrapped = FrozenAssistantLinear.wrap_linear(layer, down, up, alpha, strength=strength)
@@ -203,10 +207,15 @@ def install_zimage_turbo_training_assistant(
             layer = FrozenAssistantLinear.wrap_linear(layer.linear, down, up, alpha, strength=strength)
             _replace_module_at_path(dit, module_name, layer)
         else:
-            continue
+            raise RuntimeError(f"Unsupported assistant layer {module_name}: {type(layer).__name__}")
         assistant_layers.append(layer)
         applied += 1
 
+    if unmatched:
+        raise RuntimeError(
+            f"Z-Image-Turbo training adapter has {len(unmatched)} unmatched layers "
+            f"(e.g. {unmatched[:4]}); refusing a partial de-distillation assistant."
+        )
     if applied == 0:
         raise RuntimeError(
             f"Z-Image-Turbo training adapter {adapter_path}: remap produced "

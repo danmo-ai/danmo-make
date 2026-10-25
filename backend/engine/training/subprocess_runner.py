@@ -51,6 +51,38 @@ async def run_lora_training_subprocess(
 ) -> dict[str, Any]:
     work_dir = Path(exec_ctx.work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
+    if request.resume_from:
+        import shutil
+
+        source = Path(request.resume_from)
+        source_work = source.parent.parent
+        if not source.is_file():
+            raise RuntimeError(f"Resume checkpoint is missing: {source}")
+        history = source_work / "loss_history.json"
+        if history.is_file():
+            shutil.copy2(history, work_dir / "loss_history.json")
+        for name in (
+            "best_adapters.safetensors",
+            "best_adapters.json",
+            "best_adapters_optimizer.safetensors",
+            "best_adapters_rng.safetensors",
+        ):
+            source_best = source_work / "adapters" / name
+            if source_best.is_file():
+                target = work_dir / "adapters" / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if source_best.resolve() != target.resolve():
+                    shutil.copy2(source_best, target)
+        provenance = {
+            "source_checkpoint": str(source),
+            "source_work_dir": str(source_work),
+        }
+        meta_path = source.with_suffix(".json")
+        if meta_path.is_file():
+            provenance["source_meta"] = json.loads(meta_path.read_text(encoding="utf-8"))
+        (work_dir / "resume_source.json").write_text(
+            json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
     job_path = work_dir / "lora_worker_job.json"
     result_path = work_dir / "lora_worker_result.json"
     if result_path.is_file():

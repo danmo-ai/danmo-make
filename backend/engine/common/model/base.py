@@ -447,6 +447,54 @@ class TransformerBase:
         _collect_params(self, "", self._param_map)
 
 
+def _alias_adapter_base_weights(flat: dict[str, Any]) -> dict[str, Any]:
+    """Keep ``…to_q.weight`` aliases after LoRA wraps the original Linear."""
+    out = dict(flat)
+    for key, value in flat.items():
+        for leaf in ("weight", "bias", "scales", "biases"):
+            marker = f".linear.{leaf}"
+            if key.endswith(marker):
+                out[f"{key[: -len(marker)]}.{leaf}"] = value
+    return out
+
+
+def flatten_adapter_parameters(obj: Any, prefix: str = "") -> dict[str, Any]:
+    """Flatten base and adapter tensors without losing the original Linear paths.
+
+    MLX freezes the wrapped Linear during training; its parameters must remain in
+    the base-model map for export validation and inference adapter merging.
+    ``Module.parameters()`` yields nested dicts, so also alias from that tree shape.
+    """
+    if isinstance(obj, dict):
+        # LoRALinear.parameters() → {"linear": {"weight": …}, "lora_a": …}
+        if "linear" in obj and ("lora_a" in obj or "lora_b" in obj):
+            out = flatten_adapter_parameters(obj["linear"], f"{prefix}.linear" if prefix else "linear")
+            for name, value in obj.items():
+                if name == "linear":
+                    continue
+                out.update(
+                    flatten_adapter_parameters(value, f"{prefix}.{name}" if prefix else str(name))
+                )
+            return _alias_adapter_base_weights(out)
+        out = {}
+        for key, value in obj.items():
+            out.update(flatten_adapter_parameters(value, f"{prefix}.{key}" if prefix else str(key)))
+        return _alias_adapter_base_weights(out)
+    if isinstance(obj, list):
+        out: dict[str, Any] = {}
+        for index, value in enumerate(obj):
+            out.update(flatten_adapter_parameters(value, f"{prefix}.{index}"))
+        return _alias_adapter_base_weights(out)
+    if all(hasattr(obj, name) for name in ("linear", "lora_a", "lora_b")):
+        out = flatten_adapter_parameters(obj.linear, f"{prefix}.linear")
+        for name in ("lora_a", "lora_b", "magnitude"):
+            value = getattr(obj, name, None)
+            if value is not None:
+                out[f"{prefix}.{name}"] = value
+        return _alias_adapter_base_weights(out)
+    return {prefix: obj}
+
+
 def _assign_param_tensor(param: Any, tensor: Any) -> None:
     """In-place assign checkpoint tensor into a model parameter (MLX array or torch Tensor)."""
     pmod = getattr(param.__class__, "__module__", "")

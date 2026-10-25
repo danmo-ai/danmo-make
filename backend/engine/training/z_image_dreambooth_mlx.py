@@ -24,7 +24,12 @@ from backend.engine.training.crop import (
     resolve_training_resolution,
     training_allows_flip,
 )
-from backend.engine.training.dataset_store import _dataset_meta, load_training_pairs_unified
+from backend.engine.training.dataset_store import (
+    _dataset_meta,
+    load_training_pairs_unified,
+    skipped_training_log_line,
+    training_dataset_fingerprint,
+)
 from backend.engine.training.face_crop import face_crop_cache_key, plan_training_face_crops
 from backend.engine.training.flux_dreambooth_mlx import _load_vae_encoder, _log, _progress, _save_adapter
 from backend.engine.training.lora_layers_mlx import (
@@ -47,7 +52,7 @@ from backend.engine.training.dit_training_loss_mlx import (
     turbo_training_sigmas,
 )
 from backend.engine.training.latent_cache_mlx import LatentCache
-from backend.engine.training.lora_train_loop_mlx import run_dit_lora_train_loop
+from backend.engine.training.lora_train_loop_mlx import preserve_training_random_streams, run_dit_lora_train_loop
 from backend.engine.training.lora_train_runtime_mlx import (
     assert_training_memory,
     parse_lora_train_runtime_config,
@@ -117,6 +122,7 @@ def _encode_dataset_to_cache(
     allow_flip: bool = True,
     crop_windows: dict[Path, tuple[int, int, int, int] | None] | None = None,
     crop_policy: str = "",
+    dataset_fingerprint: str = "",
 ) -> int:
     total_samples = len(pairs) * num_augmentations
     cache.begin(
@@ -128,6 +134,7 @@ def _encode_dataset_to_cache(
         tensor_keys=["latent", "cap"],
         caption_mode=caption_mode,
         crop_policy=crop_policy,
+        dataset_fingerprint=dataset_fingerprint,
     )
     _log(exec_ctx, "info", f"Encoding {len(pairs)} images × {num_augmentations} augmentations …")
     _progress(
@@ -358,6 +365,35 @@ def _ensure_zimage_class_prior_latents(
     turbo: bool = False,
     turbo_steps: int = 8,
 ) -> mx.array | None:
+    # Optional prior generation is not a source of training randomness.
+    with preserve_training_random_streams():
+        return _ensure_zimage_class_prior_latents_isolated(
+            latent_cache=latent_cache,
+            model=model,
+            bundle_root=bundle_root,
+            config=config,
+            class_prompt=class_prompt,
+            resolution=resolution,
+            ctx=ctx,
+            exec_ctx=exec_ctx,
+            turbo=turbo,
+            turbo_steps=turbo_steps,
+        )
+
+
+def _ensure_zimage_class_prior_latents_isolated(
+    *,
+    latent_cache: LatentCache,
+    model: Any,
+    bundle_root: Path,
+    config: Any,
+    class_prompt: str,
+    resolution: tuple[int, int],
+    ctx: Any,
+    exec_ctx: ExecutionContext,
+    turbo: bool = False,
+    turbo_steps: int = 8,
+) -> mx.array | None:
     try:
         prior_data = latent_cache.load_prior()
         if "prior_latents" in prior_data:
@@ -505,6 +541,7 @@ def _log_noise_level_loss(
     try:
         x0, cap = latent_cache.sample_z_image(sample_idx)
     except Exception as e:  # noqa: BLE001
+        # Diagnostics must never make an otherwise valid training run fail.
         _log(exec_ctx, "warning", f"[diag] per-σ loss probe skipped ({label}): {e}")
         return
     levels = (0.1, 0.2, 0.3, 0.5, 0.7, 0.9)
@@ -641,37 +678,16 @@ def run_z_image_dreambooth_training(
     if len(pairs) < 3:
         raise RuntimeError("Dataset must contain at least 3 images")
     _log(exec_ctx, "info", f"DreamBooth caption: {training_caption!r}")
+    skipped_note = skipped_training_log_line(project_root, request.dataset_id)
+    if skipped_note:
+        _log(exec_ctx, "info", skipped_note)
     dataset_meta = _dataset_meta(project_root, request.dataset_id)
-    trigger_word = str(dataset_meta.get("trigger_word") or "").strip()
-
-    unique_caps = {str(p or "").strip() for _, p in pairs}
-    resolved_caption_mode = "per_image" if len(unique_caps) > 1 else "unified"
-    kind = str(dataset_meta.get("kind") or "concept").strip().lower()
-    if kind == "concept" and resolved_caption_mode == "per_image":
-        from backend.engine.training.dataset_store import concept_caption_stats
-
-        cap_stats = concept_caption_stats(pairs, trigger=trigger_word)
-        if cap_stats["long"] or cap_stats["missing_trigger"]:
-            _log(
-                exec_ctx,
-                "warning",
-                f"Concept LoRA is using per_image captions but {cap_stats['long'] + cap_stats['missing_trigger']}/"
-                f"{cap_stats['total']} are long or not trigger-anchored; long VLM captions dilute the trigger "
-                "and often prevent face memorization. Re-run auto-caption (concept template) or set "
-                "caption_mode=unified.",
-            )
-        else:
-            _log(
-                exec_ctx,
-                "info",
-                f"Concept LoRA per_image captions are trigger-anchored and short "
-                f"({cap_stats['anchored_short']}/{cap_stats['total']}); outfit/background stay separable from identity.",
-            )
+    resolved_caption_mode = "unified"
     sample_cap = str(pairs[0][1] or "").strip() if pairs else ""
     _log(
         exec_ctx,
         "info",
-        f"Caption mode: {resolved_caption_mode} ({len(pairs)} images); "
+        f"Caption mode: unified ({len(pairs)} images); "
         f"sample_caption={sample_cap[:120]!r}{'…' if len(sample_cap) > 120 else ''}",
     )
 
@@ -699,16 +715,27 @@ def run_z_image_dreambooth_training(
     allow_flip = training_allows_flip(dataset_meta)
     if not allow_flip:
         _log(exec_ctx, "info", "Concept dataset: horizontal flip augmentation disabled (faces are asymmetric)")
-    face_plans = plan_training_face_crops(
-        pairs,
+    from backend.engine.training.training_preflight import plan_and_write_training_crops
+
+    face_plans = plan_and_write_training_crops(
+        pairs=pairs,
         project_root=project_root,
         resolution=resolution,
         mode=train_runtime.face_crop,
         dataset_meta=dataset_meta,
+        work_dir=work_dir,
         on_log=lambda level, msg: _log(exec_ctx, level, msg),
     )
     crop_windows = {p: plan.window for p, plan in face_plans.items()}
-    crop_policy = face_crop_cache_key(face_plans)
+    crop_policy = face_crop_cache_key(
+        face_plans,
+        mode=train_runtime.face_crop,
+        kind=str(dataset_meta.get("kind") or "concept"),
+        allow_flip=allow_flip,
+    )
+    from backend.engine.training.dataset_store import training_dataset_fingerprint
+
+    dataset_fingerprint = training_dataset_fingerprint(pairs)
 
     def _run_encode() -> int:
         return _encode_dataset_to_cache(
@@ -729,6 +756,7 @@ def run_z_image_dreambooth_training(
             allow_flip=allow_flip,
             crop_windows=crop_windows,
             crop_policy=crop_policy,
+            dataset_fingerprint=dataset_fingerprint,
         )
 
     if latent_cache.is_valid(
@@ -740,6 +768,7 @@ def run_z_image_dreambooth_training(
         n_samples=len(pairs) * train_runtime.num_augmentations,
         caption_mode=resolved_caption_mode,
         crop_policy=crop_policy,
+        dataset_fingerprint=dataset_fingerprint,
     ):
         _log(exec_ctx, "info", "Reusing cached latents from work_dir/latent_cache …")
         n_samples = len(pairs) * train_runtime.num_augmentations
@@ -839,7 +868,8 @@ def run_z_image_dreambooth_training(
         _log(
             exec_ctx,
             "info",
-            f"Base Z-Image training: σ = shift(u) with train_sigma_shift={base_sigma_shift:g}, "
+            f"Base Z-Image training: σ bias={train_runtime.sigma_bias}, "
+            f"uniform-only train_sigma_shift={base_sigma_shift:g}, "
             f"sigma_bias={train_runtime.sigma_bias} (inference scheduler_shift="
             f"{float(registry_scalar_default(entry, 'scheduler_shift', _Z_IMAGE_BASE_SIGMA_SHIFT)):g})",
         )
@@ -849,7 +879,7 @@ def run_z_image_dreambooth_training(
                 "warning",
                 "σ sampling is concentrated near pure noise (shift>=5 and/or sigma_bias=high): most "
                 "steps land at σ>0.9 and the 0.3–0.7 band that fixes facial structure is starved; "
-                "identity LoRAs converge poorly. Prefer train_sigma_shift=3 with sigma_bias=sigmoid.",
+                "identity LoRAs converge poorly. Prefer sigma_bias=sigmoid with train_sigma_shift=1.",
             )
         if train_runtime.scheme4_turbo_band_mix > 0:
             _log(
@@ -864,8 +894,9 @@ def run_z_image_dreambooth_training(
             _log(
                 exec_ctx,
                 "info",
-                "Scheme 4 inference: use z-image-turbo + this LoRA; DistillPatch loads automatically. "
-                "Official acceleration config: 8 steps, cfg_scale=1 (guidance=0), linear scheduler, "
+                "Scheme 4 verification recipe: z-image-turbo + this LoRA + DistillPatch. "
+                "The exported inference recipe adds DistillPatch explicitly. Acceleration config: "
+                "8 steps, cfg_scale=1 (guidance=0), linear scheduler, "
                 "LoRA weight 0.7–0.85.",
             )
 
@@ -941,9 +972,11 @@ def run_z_image_dreambooth_training(
     if train_runtime.prior_loss_weight > 0:
         try:
             prior_cap = latent_cache.load_prior()["cap"]
-        except RuntimeError:
-            _log(exec_ctx, "warning", "Prior preservation requested but prior cache missing; disabled")
-            prior_cap = None
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Prior preservation is enabled but the class/prior latent cache is missing. "
+                "Re-encode the dataset with a class_prompt, or set prior_loss_weight=0."
+            ) from exc
 
     train_pairs, val_pairs = split_train_val_indices(len(pairs), val_split=train_runtime.val_split)
     train_indices = [
@@ -1087,6 +1120,20 @@ def run_z_image_dreambooth_training(
 
     final_path = adapter_dir / "final_adapters.safetensors"
     if best_path is not None and best_path.is_file():
+        import shutil
+
+        optimizer_sources = [
+            best_path.with_name(f"{best_path.stem}{suffix}")
+            for suffix in ("_optimizer.safetensors", "_optimizer.npz")
+        ]
+        if not any(source.is_file() for source in optimizer_sources):
+            raise RuntimeError(f"Best-checkpoint optimizer state is missing: {best_path.name}")
+        for suffix in ("_optimizer.safetensors", "_optimizer.npz", "_rng.safetensors"):
+            source = best_path.with_name(f"{best_path.stem}{suffix}")
+            if suffix == "_rng.safetensors" and not source.is_file():
+                raise RuntimeError(f"Best-checkpoint MLX random state is missing: {source.name}")
+            if source.is_file():
+                shutil.copy2(source, final_path.with_name(f"{final_path.stem}{suffix}"))
         final_path.write_bytes(best_path.read_bytes())
         best_meta = adapter_dir / "best_adapters.json"
         if best_meta.is_file():
@@ -1094,72 +1141,34 @@ def run_z_image_dreambooth_training(
                 best_meta.read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
-    else:
-        meta = {
-            "iteration": train_runtime.iterations,
-            "lora_rank": train_runtime.lora_rank,
-            "base_model": base_model_id,
-            "progress_prompt": progress_prompt,
-            "qlora_bits": train_runtime.qlora_bits,
-            "train_type": train_runtime.train_type,
-        }
-        _save_adapter(final_path, train_module, train_runtime.lora_rank, meta)
     if train_runtime.fuse_adapters:
-        from backend.engine.training.lora_layers_mlx import collect_fused_adapter_deltas
+        from backend.engine.training.lora_layers_mlx import write_fused_adapters_from_published
 
-        fused_path = adapter_dir / "fused_adapters.safetensors"
-        fused = collect_fused_adapter_deltas(train_module)
-        mx.save_safetensors(str(fused_path), fused)
-        fused_path.with_suffix(".json").write_text(
-            json.dumps({"format": "dense_delta", "base_model": base_model_id}, indent=2),
-            encoding="utf-8",
+        write_fused_adapters_from_published(
+            train_module,
+            final_path=final_path,
+            fused_path=adapter_dir / "fused_adapters.safetensors",
+            rank=train_runtime.lora_rank,
+            base_model_id=base_model_id,
         )
     _validate_saved_lora(final_path)
 
-    output_name = (request.output_name or f"{base_model_id}-{request.dataset_id}").strip()
-    slug = "".join(c if c.isalnum() or c in "-_" else "-" for c in output_name)[:64]
-    loras_dir = path_resolver.get_loras_dir()
-    dest_dir = loras_dir / slug
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest_file = dest_dir / "adapter.safetensors"
-    import shutil
+    from backend.engine.training.lora_train_config import publish_trained_adapter
 
-    shutil.copy2(final_path, dest_file)
-    lora_config = {
-        "lora_rank": train_runtime.lora_rank,
-        "lora_blocks": train_runtime.lora_blocks,
-        "base_model": base_model_id,
-        "alpha": train_runtime.lora_alpha,
-        "trigger_word": trigger_word,
-        "training_caption": training_caption,
-    }
-    if is_turbo:
-        lora_config["inference"] = {
-            **Z_IMAGE_TURBO_INFERENCE,
-            "steps": int(train_runtime.turbo_infer_steps),
-        }
-    elif (request.preset or "").strip().lower() == "scheme4":
-        lora_config["inference"] = dict(Z_IMAGE_SCHEME4_INFERENCE)
-    (dest_dir / "lora_config.json").write_text(json.dumps(lora_config, indent=2), encoding="utf-8")
-
-    user_lora_id = ""
-    if request.auto_register:
-        entry_row = register_user_lora(
-            path_resolver.get_workspace_config_dir(),
-            name=output_name,
-            base_model=base_model_id,
-            local_path=f"models/Lora/{slug}",
-            trigger_word=trigger_word,
-            lora_rank=train_runtime.lora_rank,
-            task_id=exec_ctx.task_id,
-        )
-        user_lora_id = entry_row["id"]
-
-    _log(exec_ctx, "success", f"Training complete → {dest_file}")
+    published = publish_trained_adapter(
+        final_path=final_path,
+        checkpoint_meta=json.loads(final_path.with_suffix(".json").read_text(encoding="utf-8")),
+        output_name=request.output_name or f"{base_model_id}-{request.dataset_id}",
+        dest_dir=path_resolver.get_loras_dir(),
+        config_dir=path_resolver.get_workspace_config_dir(),
+        params=request.model_dump(),
+        dataset_meta=dataset_meta,
+        auto_register=request.auto_register,
+        task_id=exec_ctx.task_id,
+    )
+    _log(exec_ctx, "success", f"Training complete → {published['adapter_path']}")
     return {
-        "adapter_path": str(dest_file),
-        "user_lora_id": user_lora_id,
-        "output_name": slug,
+        **published,
         "loss_history": loss_history,
         "training_caption": training_caption,
     }

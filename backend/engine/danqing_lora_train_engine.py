@@ -62,6 +62,17 @@ class DanQingLoraTrainEngine(ILoraTrainEngine):
             raise RuntimeError(
                 f"Base model {mid!r} (family={family!r}) has no LoRA training runner"
             )
+        # CLI and direct engine calls share the REST preflight; no weaker face-training path.
+        from backend.engine.training.dataset_store import validate_dataset_for_training
+        from backend.engine.training.lora_train_config import training_inference_config
+        from backend.engine.training.training_preflight import validate_training_request
+
+        validate_dataset_for_training(self._paths.get_project_root(), request.dataset_id)
+        validate_training_request(self._paths.get_project_root(), request)
+        request.metadata = {
+            **request.metadata,
+            "inference": training_inference_config(request.model_dump()),
+        }
         worker_memory_gb = prepare_host_for_lora_worker(mlx_runtime=self._runtimes.get("mlx"))
         result = await run_lora_training_subprocess(
             runner_family=family,

@@ -102,8 +102,13 @@ def lora_base_compatible(model_base_key: str, lora_entry: Any) -> bool:
     return lora_key == model_key
 
 
-def lora_config_picklist_extras(bundle_dir: Path) -> dict[str, Any]:
-    """Tags / compose_overrides / hint from ``lora_config.json`` (Scheme 4 inference block)."""
+def lora_config_picklist_extras(bundle_dir: Path, for_model: str | None = None) -> dict[str, Any]:
+    """Tags / compose_overrides / hint from ``lora_config.json``.
+
+    Selecting a user LoRA sets its weight only. Steps, CFG, and scheduler stay on
+    the current base model; the inference block is a verification recipe, not a
+    composer overwrite.
+    """
     cfg_path = bundle_dir / "lora_config.json"
     if not cfg_path.is_file():
         return {}
@@ -114,18 +119,42 @@ def lora_config_picklist_extras(bundle_dir: Path) -> dict[str, Any]:
     inference = data.get("inference")
     if not isinstance(inference, dict):
         return {}
-    return _inference_block_picklist_extras(inference)
+    return _inference_block_picklist_extras(inference, for_model=for_model)
 
 
 Z_IMAGE_TURBO_TRAINED_HINT_KEY = "studio.loraHint.zImageTurboTrained"
+Z_IMAGE_SAMPLER_STAYS_HINT_KEY = "studio.loraHint.zImageSamplerStays"
 
 
-def _inference_block_picklist_extras(inference: dict[str, Any]) -> dict[str, Any]:
+def _model_stem(model_id: str | None) -> str:
+    return (model_id or "").split(":", 1)[0].strip()
+
+
+def _inference_sampling_applies(inference: dict[str, Any], for_model: str | None) -> bool:
+    """True when steps/CFG/scheduler from the recipe belong on ``for_model``.
+
+    ``for_model`` empty keeps the full block (callers that are not a composer).
+    Scheme 4 and Turbo recipes target Z-Image-Turbo when ``inference.model`` is omitted.
+    """
+    if not for_model:
+        return True
+    scheme = str(inference.get("scheme") or "").strip().lower()
+    target = _model_stem(str(inference.get("model") or ""))
+    if not target and scheme in {"scheme4", "turbo"}:
+        target = "z-image-turbo"
+    if not target:
+        return True
+    return _model_stem(for_model) == target
+
+
+def _inference_block_picklist_extras(
+    inference: dict[str, Any],
+    *,
+    for_model: str | None = None,
+) -> dict[str, Any]:
     extras: dict[str, Any] = {}
+    recipe_on_this_model = _inference_sampling_applies(inference, for_model)
     overrides: dict[str, Any] = {}
-    for key in ("steps", "guidance", "scheduler"):
-        if key in inference and inference[key] is not None:
-            overrides[key] = inference[key]
     lora_weight = inference.get("lora_weight")
     if isinstance(lora_weight, (int, float)) and not isinstance(lora_weight, bool):
         overrides["lora_scale"] = float(lora_weight)
@@ -143,19 +172,29 @@ def _inference_block_picklist_extras(inference: dict[str, Any]) -> dict[str, Any
     scheme = str(inference.get("scheme") or "").strip().lower()
     if scheme == "scheme4":
         extras["tags"] = ["Scheme 4"]
-        extras["hint_key"] = "studio.loraHint.zImageDistillPatch"
+        extras["hint_key"] = (
+            "studio.loraHint.zImageDistillPatch"
+            if recipe_on_this_model
+            else Z_IMAGE_SAMPLER_STAYS_HINT_KEY
+        )
     elif scheme == "turbo":
         extras["tags"] = ["Turbo"]
-        extras["hint_key"] = Z_IMAGE_TURBO_TRAINED_HINT_KEY
+        extras["hint_key"] = (
+            Z_IMAGE_TURBO_TRAINED_HINT_KEY if recipe_on_this_model else Z_IMAGE_SAMPLER_STAYS_HINT_KEY
+        )
+    elif not recipe_on_this_model and any(
+        key in inference and inference[key] is not None for key in ("steps", "guidance", "scheduler")
+    ):
+        extras["hint_key"] = Z_IMAGE_SAMPLER_STAYS_HINT_KEY
     return extras
 
 
-def z_image_turbo_trained_picklist_extras() -> dict[str, Any]:
+def z_image_turbo_trained_picklist_extras(for_model: str | None = None) -> dict[str, Any]:
     """Picklist extras for user LoRAs trained on Z-Image-Turbo before ``lora_config.json``
     carried an ``inference`` block (same values the trainer writes today)."""
     from backend.engine.training.presets import Z_IMAGE_TURBO_INFERENCE
 
-    return _inference_block_picklist_extras(Z_IMAGE_TURBO_INFERENCE)
+    return _inference_block_picklist_extras(Z_IMAGE_TURBO_INFERENCE, for_model=for_model)
 
 
 def lora_adapter_picklist_row(

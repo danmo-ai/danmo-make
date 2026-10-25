@@ -1,6 +1,36 @@
 <template>
   <div v-if="report && visibleHints.length" class="lora-quality-hints" :class="`is-${report.level}`">
-    <DqAlert :type="alertType" :closable="false" :title="titleText">
+    <details v-if="fold" class="lora-quality-hints__fold" :open="report.level === 'poor'">
+      <summary>{{ titleText }}</summary>
+      <div class="lora-quality-hints__fold-body">
+        <ul class="lora-quality-hints__list">
+          <li
+            v-for="(hint, idx) in visibleHints"
+            :key="`${hint.code}-${idx}`"
+            :class="`is-${hint.severity}`"
+          >
+            <DqTag
+              v-if="hint.source === 'vlm'"
+              size="sm"
+              type="info"
+              effect="plain"
+              class="lora-quality-hints__tag"
+            >
+              VLM
+            </DqTag>
+            {{ hintText(hint) }}
+          </li>
+        </ul>
+        <p v-if="statsLine" class="lora-quality-hints__stats">{{ statsLine }}</p>
+        <p v-if="vlmScoreLine" class="lora-quality-hints__stats">{{ vlmScoreLine }}</p>
+        <div v-if="showVlmAction" class="lora-quality-hints__actions">
+          <DqButton size="sm" type="secondary" :loading="vlmLoading" @click="$emit('run-vlm')">
+            {{ vlmButtonLabel }}
+          </DqButton>
+        </div>
+      </div>
+    </details>
+    <DqAlert v-else :type="alertType" :closable="false" :title="titleText">
       <ul class="lora-quality-hints__list">
         <li
           v-for="(hint, idx) in visibleHints"
@@ -71,6 +101,7 @@ const props = defineProps<{
   vlmLoading?: boolean;
   datasetAuditKind?: 'concept' | 'style';
   hideVlmDesc?: boolean;
+  fold?: boolean;
 }>();
 
 defineEmits<{
@@ -189,6 +220,39 @@ function hintText(hint: LoraQualityHint): string {
 </script>
 
 <style scoped>
+.lora-quality-hints__fold {
+  border-radius: 12px;
+  border: 0.5px solid var(--dq-border-subtle);
+  background: color-mix(in srgb, var(--dq-fill-secondary) 70%, var(--dq-bg-base));
+  padding: 10px 12px;
+}
+
+.lora-quality-hints.is-fair .lora-quality-hints__fold {
+  border-color: color-mix(in srgb, var(--dq-warning) 35%, var(--dq-border-subtle));
+  background: color-mix(in srgb, var(--dq-warning) 8%, var(--dq-bg-base));
+}
+
+.lora-quality-hints.is-poor .lora-quality-hints__fold {
+  border-color: color-mix(in srgb, var(--dq-danger) 40%, var(--dq-border-subtle));
+  background: color-mix(in srgb, var(--dq-danger) 8%, var(--dq-bg-base));
+}
+
+.lora-quality-hints.is-good .lora-quality-hints__fold {
+  border-color: color-mix(in srgb, var(--dq-success) 35%, var(--dq-border-subtle));
+  background: color-mix(in srgb, var(--dq-success) 8%, var(--dq-bg-base));
+}
+
+.lora-quality-hints__fold summary {
+  cursor: pointer;
+  font-size: var(--dq-font-size-caption);
+  font-weight: 600;
+  color: var(--dq-label-primary);
+}
+
+.lora-quality-hints__fold-body {
+  margin-top: 8px;
+}
+
 .lora-quality-hints__list {
   margin: 0;
   padding-left: 1.1rem;

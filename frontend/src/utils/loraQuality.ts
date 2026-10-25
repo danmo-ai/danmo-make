@@ -65,7 +65,8 @@ export type FaceAuditRow = {
   face_px?: number;
   face_frac?: number;
   multi?: boolean;
-  action: FaceAuditAction;
+  action: FaceAuditAction | 'multi';
+  skipped?: boolean;
   /** Training crop window `[left, top, width, height]` in source pixels (when re-framed). */
   window?: number[] | null;
   error?: string;
@@ -76,13 +77,14 @@ export type FaceAuditReport = {
   reason?: string;
   resolution?: number[];
   rows: FaceAuditRow[];
+  counts?: Record<string, number>;
+  tiny_face_px?: number;
 };
 
 export type LoraDatasetHealthReport = {
   level: LoraQualityLevel;
   score: number;
   kind?: 'concept' | 'style';
-  caption_mode_auto?: 'unified' | 'per_image';
   stats: Record<string, number>;
   hints: LoraQualityHint[];
   faces?: FaceAuditReport;

@@ -103,18 +103,40 @@
       </p>
     </div>
 
-    <div v-if="task?.status === 'completed'" class="lora-run-detail__actions">
-      <DqButton type="primary" @click="verifyGenerate">
-        {{ $t('loraTrain.verifyGenerate') }}
-      </DqButton>
-      <DqButton
-        v-if="registeredLoraId || verifyLoraId()"
-        size="sm"
-        type="secondary"
-        @click="openModelsUserLorasPage()"
-      >
-        {{ $t('loraTrain.viewInModels') }}
-      </DqButton>
+    <div v-if="task?.status === 'completed'" class="lora-run-detail__verification">
+      <h4 class="lora-run-detail__section-title">{{ $t('loraTrain.verifyTitle') }}</h4>
+      <p class="lora-run-detail__verify-hint">{{ $t('loraTrain.verifyHint') }}</p>
+      <DqAlert v-if="!verifyLoraId()" type="warning" :closable="false" :title="$t('loraTrain.verifyNeedsRegistration')">
+        <p>{{ $t('loraTrain.verifyCheckpointHint', { checkpoint: selectedCheckpoint }) }}</p>
+      </DqAlert>
+      <DqAlert v-else type="success" :closable="false" :title="$t('loraTrain.verifyCheckpointBound', { checkpoint: selectedCheckpoint || 'final_adapters.safetensors' })" />
+      <DqAlert
+        v-if="verification.extra_adapters?.length"
+        type="info"
+        :closable="false"
+        :title="$t('loraTrain.verifyExtraAdapters', { adapters: verification.extra_adapters.join(', ') })"
+      />
+      <div class="lora-run-detail__verify-grid">
+        <label>{{ $t('loraTrain.progressPrompt') }}<DqInput v-model="verifyPrompt" type="textarea" :rows="3" /></label>
+        <label>{{ $t('studio.seed') }}<DqInput v-model="verification.seed" /></label>
+        <label>{{ $t('create.loraScale') }}<DqInput v-model.number="verification.lora_scale" type="number" min="0" max="2" step="0.05" /></label>
+        <label>{{ $t('create.stepsLabel') }}<DqInput v-model.number="verification.steps" type="number" min="1" max="150" /></label>
+        <label>{{ $t('create.guidanceLabel') }}<DqInput v-model.number="verification.guidance" type="number" min="0" max="30" step="0.1" /></label>
+      </div>
+      <p class="lora-run-detail__verify-recipe">{{ verificationSummary }}</p>
+      <div class="lora-run-detail__actions">
+        <DqButton type="primary" :disabled="!verifyLoraId() || !verifyPrompt.trim()" @click="verifyGenerate">
+          {{ $t('loraTrain.verifyGenerate') }}
+        </DqButton>
+        <DqButton
+          v-if="registeredLoraId || verifyLoraId()"
+          size="sm"
+          type="secondary"
+          @click="openModelsUserLorasPage()"
+        >
+          {{ $t('loraTrain.viewInModels') }}
+        </DqButton>
+      </div>
     </div>
   </div>
 </template>
@@ -134,7 +156,7 @@ import type { LoraTrainingQualityReport } from '@/utils/loraQuality';
 const props = defineProps<{ taskId: string }>();
 const emit = defineEmits<{
   (e: 'back'): void;
-  (e: 'verify', payload: { prompt: string; loraId: string; baseModel: string }): void;
+  (e: 'verify', payload: Record<string, unknown>): void;
 }>();
 
 const { t } = useI18n();
@@ -146,6 +168,10 @@ const selectedCheckpoint = ref('');
 const registerName = ref('');
 const registering = ref(false);
 const registeredLoraId = ref('');
+const verifyPrompt = ref('');
+const registeredRecipe = ref<Record<string, any> | null>(null);
+const registeredCheckpoint = ref('');
+const verification = ref<Record<string, any>>({ seed: '42', steps: 30, guidance: 4, lora_scale: 0.85, width: 1024, height: 1024, model: 'z-image-turbo', scheduler: 'linear' });
 const visionAvailable = ref(false);
 const trainingVlmLoading = ref(false);
 let taskStream: EventSource | null = null;
@@ -262,6 +288,7 @@ async function refreshArtifacts(force = false) {
       const finals = (next as any).checkpoints.filter((c: string) => c.includes('final'));
       selectedCheckpoint.value = finals[finals.length - 1] || (next as any).checkpoints.at(-1);
     }
+    syncVerification();
   } catch {
     if (force) artifacts.value = null;
   }
@@ -344,8 +371,19 @@ function startStream() {
 
 watch(
   () => task.value?.result?.metadata?.user_lora_id,
-  (id) => {
+  async (id) => {
     if (id && !registeredLoraId.value) registeredLoraId.value = String(id);
+    const active = verifyLoraId();
+    if (!active) return;
+    try {
+      const result = await api.loras.listUserAdapters() as { items?: Array<Record<string, any>> };
+      registeredRecipe.value = result.items?.find((item) => item.id === active) || null;
+      syncVerification();
+    } catch (e: unknown) {
+      const err = e as { response?: { data?: { detail?: { message?: string } | string } }; message?: string };
+      const detail = err.response?.data?.detail;
+      toast.error(typeof detail === 'object' && detail?.message ? detail.message : String(detail || err.message || e));
+    }
   },
   { immediate: true }
 );
@@ -361,25 +399,60 @@ watch(
 );
 
 function verifyLoraId(): string {
+  const active = selectedCheckpoint.value || 'final_adapters.safetensors';
+  if (registeredCheckpoint.value && registeredCheckpoint.value !== active) return '';
   return (
     registeredLoraId.value ||
     String(task.value?.result?.metadata?.user_lora_id || task.value?.result?.metadata?.training?.user_lora_id || '')
   );
 }
 
-function verifyGenerate() {
+function verificationRecipe(): Record<string, any> {
+  const params = task.value?.params || {};
+  const registered = registeredCheckpoint.value === (selectedCheckpoint.value || 'final_adapters.safetensors');
+  return (registered && registeredRecipe.value?.inference) || artifacts.value?.inference || params.metadata?.inference || {
+    model: String(params.base_model || 'z-image'),
+    steps: Number(params.progress_steps || 30),
+    guidance: Number(params.guidance || 4),
+    lora_weight: 1,
+    scheduler: 'linear',
+  };
+}
+
+const verificationSummary = computed(() => t('loraTrain.verifyRecipe', {
+  model: verification.value.model,
+  steps: verification.value.steps,
+  guidance: verification.value.guidance,
+  weight: verification.value.lora_scale,
+  width: verification.value.width,
+  height: verification.value.height,
+}));
+
+function syncVerification() {
   const meta = task.value?.result?.metadata?.training || {};
   const params = task.value?.params || {};
-  const caption = String(
-    meta.training_caption ||
-      params.progress_prompt ||
-      meta.progress_prompt ||
-      ''
-  ).trim();
+  if (!verifyPrompt.value) verifyPrompt.value = String(meta.training_caption || params.progress_prompt || '').trim();
+  const recipe = verificationRecipe();
+  verification.value = {
+    ...verification.value,
+    ...recipe,
+    lora_scale: Number(recipe.lora_weight ?? verification.value.lora_scale),
+    extra_adapters: Array.isArray(recipe.extra_adapters) ? recipe.extra_adapters.map(String) : [],
+    seed: '42',
+    width: Number(recipe.width || 1024),
+    height: Number(recipe.height || 1024),
+    model: String(recipe.model || params.base_model || 'z-image'),
+  };
+}
+
+function verifyGenerate() {
+  const checkpoint = selectedCheckpoint.value || 'final_adapters.safetensors';
   emit('verify', {
-    prompt: caption,
-    loraId: verifyLoraId(),
-    baseModel: String(params.base_model || 'flux1-dev'),
+    ...verification.value,
+    prompt: verifyPrompt.value.trim(),
+    lora: verifyLoraId(),
+    verify: '1',
+    checkpoint,
   });
 }
 
@@ -390,8 +463,11 @@ async function registerSelected() {
     const res = (await api.loras.registerCheckpoint(props.taskId, {
       checkpoint: selectedCheckpoint.value,
       name: registerName.value.trim(),
-    })) as { user_lora?: { id?: string } };
+    })) as { user_lora?: Record<string, any> };
     registeredLoraId.value = String(res.user_lora?.id || '');
+    registeredCheckpoint.value = selectedCheckpoint.value;
+    registeredRecipe.value = res.user_lora || null;
+    syncVerification();
     toast.success(t('loraTrain.registerSuccess'));
   } catch (e: any) {
     const msg = e?.response?.data?.detail?.message || e?.message || String(e);
@@ -454,6 +530,44 @@ onUnmounted(() => {
   font-size: var(--dq-font-size-title);
   font-weight: 600;
   color: var(--dq-label-primary);
+}
+
+.lora-run-detail__verification {
+  padding: 14px;
+  border: 0.5px solid var(--dq-border-subtle);
+  border-radius: var(--dq-radius-card);
+  background: color-mix(in srgb, var(--dq-accent) 3%, var(--dq-fill-secondary));
+}
+
+.lora-run-detail__verify-hint,
+.lora-run-detail__verify-recipe {
+  margin: 0 0 12px;
+  color: var(--dq-label-secondary);
+  font-size: var(--dq-font-size-caption);
+  line-height: 1.5;
+}
+
+.lora-run-detail__verify-recipe {
+  margin: 12px 0 0;
+  color: var(--dq-label-tertiary);
+}
+
+.lora-run-detail__verify-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.lora-run-detail__verify-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--dq-font-size-caption);
+  color: var(--dq-label-secondary);
+}
+
+.lora-run-detail__verify-grid label:first-child {
+  grid-column: 1 / -1;
 }
 
 .lora-run-detail__status {
@@ -574,8 +688,8 @@ onUnmounted(() => {
 .lora-run-detail__actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  padding-top: 4px;
-  border-top: 0.5px solid var(--dq-border-subtle);
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
 }
 </style>

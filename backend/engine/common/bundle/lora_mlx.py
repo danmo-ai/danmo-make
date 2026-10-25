@@ -54,9 +54,11 @@ def read_lora_config(bundle: Path) -> dict[str, Any]:
     try:
         with open(config_path, encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
+        if not isinstance(data, dict):
+            raise RuntimeError(f"LoRA config must be a JSON object: {config_path}")
+        return data
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot read LoRA config {config_path}: {exc}") from exc
 
 
 def _weights_use_indexed_lora_keys(weights: dict[str, Any]) -> bool:
@@ -72,6 +74,60 @@ def _apply_config_alpha(
         return groups
     alpha = float(config_alpha)
     return {key: (down, up, alpha) for key, (down, up, _) in groups.items()}
+
+
+def _merge_param_map(model: Any) -> dict[str, Any]:
+    """Use the implementation's map when a delegating stem holds a stale snapshot."""
+    inner = getattr(model, "_inner", None)
+    if inner is not None and hasattr(inner, "_param_map"):
+        return inner._param_map
+    return model._param_map
+
+
+def _apply_dense_delta(model: Any, *, wkey: str, delta: mx.array, ctx: RuntimeContext, bits: Any) -> None:
+    """Apply a dense effective-weight delta, re-quantizing packed layers when needed."""
+    param = _merge_param_map(model)[wkey]
+    from backend.engine.common.model.quantized_lora_mlx import apply_lora_delta_to_weight
+
+    if bits is not None and getattr(bits, "kind", "dense") == "quantized" and bits.bits in (4, 8):
+        apply_lora_delta_to_weight(
+            model=model,
+            wkey=wkey,
+            delta=delta,
+            ctx=ctx,
+            bits=int(bits.bits),
+            group_size=int(getattr(bits, "group_size", 64) or 64),
+        )
+    else:
+        param[:] = (param.astype(mx.float32) + delta).astype(param.dtype)
+
+
+def _dora_effective_delta(
+    *,
+    param: mx.array,
+    down: mx.array,
+    up: mx.array,
+    magnitude: mx.array,
+    scale: float,
+    strength: float,
+    lora_id: str,
+    wkey: str,
+) -> mx.array:
+    """DoRA: ``m * normalize(W + ΔW) - W``; never discard magnitude/normalization."""
+    w = param.astype(mx.float32)
+    v = w + float(scale) * mx.matmul(up.astype(mx.float32), down.astype(mx.float32))
+    norms = mx.sqrt(mx.sum(v * v, axis=1, keepdims=True))
+    if bool(mx.any(norms <= 1e-8).item()):
+        raise RuntimeError(f"DoRA {lora_id!r}: zero direction norm for {wkey}.")
+    m = magnitude.astype(mx.float32)
+    if m.ndim == 2 and m.shape[1] == 1:
+        m = m[:, 0]
+    if m.ndim != 1 or m.shape[0] != w.shape[0]:
+        raise RuntimeError(
+            f"DoRA {lora_id!r}: magnitude shape {tuple(magnitude.shape)} "
+            f"does not match {wkey} output dimension {w.shape[0]}."
+        )
+    return float(strength) * (m[:, None] * (v / mx.maximum(norms, 1e-8)) - w)
 
 
 def orient_lora_pair(
@@ -110,6 +166,7 @@ def merge_lora_adapters_common(
     family_name: str,
     remap_groups: Callable[[dict[str, Any]], dict[str, tuple[mx.array, mx.array, float]]],
     param_key_for_module: Callable[[str], str],
+    remap_module_prefix: Callable[[str], str] | None = None,
     base_model_scope_key: Callable[[str], str] | None = None,
     repair_indexed_weights: Callable[[dict[str, Any], Any, dict[str, Any]], dict[str, Any]] | None = None,
     on_log: Callable[[str, str], None] | None = None,
@@ -193,6 +250,15 @@ def merge_lora_adapters_common(
             for k, v in weights.items()
             if k.endswith(".delta.weight")
         }
+        magnitudes = {
+            key[: -len(".dora_magnitude.weight")]: value
+            for key, value in weights.items()
+            if key.endswith(".dora_magnitude.weight")
+        }
+        if magnitudes and not groups:
+            raise RuntimeError(f"DoRA {lora_id!r}: magnitude tensors have no LoRA factor pairs.")
+        if magnitudes and dense_deltas:
+            raise RuntimeError(f"Adapter {lora_id!r}: DoRA factors cannot be mixed with dense deltas.")
         if not groups and not dense_deltas:
             raise RuntimeError(
                 f"LoRA {lora_id!r}: after key remap no (lora_down, lora_up) pairs were found."
@@ -200,59 +266,104 @@ def merge_lora_adapters_common(
         config_alpha = lora_config.get("lora_alpha", lora_config.get("alpha"))
         if config_alpha is not None and not any(".alpha" in key.lower() for key in weights):
             groups = _apply_config_alpha(groups, config_alpha=float(config_alpha))
+        param_map = _merge_param_map(model)
+        unmatched = [
+            param_key_for_module(name)
+            for name in (*groups.keys(), *dense_deltas.keys())
+            if param_key_for_module(name) not in param_map
+        ]
+        if unmatched:
+            raise RuntimeError(
+                f"LoRA {lora_id!r}: {len(unmatched)} weight groups do not match this transformer "
+                f"(e.g. {unmatched[:4]}). Check base model, architecture and lora_blocks; "
+                "no partial adapter was applied."
+            )
+        magnitude_by_wkey: dict[str, Any] = {}
+        for module_name, magnitude in magnitudes.items():
+            if remap_module_prefix is None:
+                raise RuntimeError(f"DoRA {lora_id!r}: no module prefix remapper is configured.")
+            wkey = param_key_for_module(remap_module_prefix(module_name))
+            if wkey not in param_map or wkey not in {
+                param_key_for_module(name) for name in groups
+            }:
+                raise RuntimeError(f"DoRA {lora_id!r}: unmatched magnitude tensor {module_name!r}.")
+            magnitude_by_wkey[wkey] = magnitude
+        if on_log:
+            on_log(
+                "info",
+                f"lora scale source={mid} alpha={config_alpha if config_alpha is not None else 'tensor-or-rank'} "
+                f"rank={lora_config.get('lora_rank', 'per-tensor')} train_type={lora_config.get('train_type', 'lora')}"
+                + (" dora_effective_weight=yes" if magnitudes else ""),
+            )
         applied = 0
         # [diag] merge telemetry for train/inference comparison
         _group_total = len(groups)
         _dense_total = len(dense_deltas)
         _delta_means: list[mx.array] = []
         _ranks: list[int] = []
+        from backend.engine.common.model.quantized_lora_mlx import inference_mode_from_model
+
+        inference_mode = inference_mode_from_model(model)
         for module_name, delta in dense_deltas.items():
             wkey = param_key_for_module(module_name)
-            if wkey not in model._param_map:
-                continue
-            param = model._param_map[wkey]
             scaled = float(strength) * delta.astype(mx.float32)
             _delta_means.append(mx.mean(mx.abs(scaled)))
-            param[:] = (param.astype(mx.float32) + scaled).astype(param.dtype)
+            _apply_dense_delta(model, wkey=wkey, delta=scaled, ctx=ctx, bits=inference_mode)
             applied += 1
         for module_name, (down, up, alpha) in groups.items():
             wkey = param_key_for_module(module_name)
-            if wkey not in model._param_map:
-                continue
-            param = model._param_map[wkey]
-            out_d, in_d = int(param.shape[0]), int(param.shape[1])
+            param = _merge_param_map(model)[wkey]
+            magnitude = magnitude_by_wkey.get(wkey)
+            # LoRA/DoRA factors are dense ``(out, in)``; packed uint32 layouts must be
+            # dequantized before shape checks and DoRA direction normalization.
+            dense_param = param
+            if str(param.dtype) == "uint32":
+                base = wkey[: -len(".weight")]
+                scales = _merge_param_map(model)[f"{base}.scales"]
+                biases = _merge_param_map(model)[f"{base}.biases"]
+                from backend.engine.common.model.base import _mlx_affine_infer_bits_and_group_size
+
+                qbits, qgroup = _mlx_affine_infer_bits_and_group_size(
+                    param,
+                    scales,
+                    dense_weight_shape=None,
+                    weight_key=wkey,
+                    bundle_affine_bits=(
+                        int(inference_mode.bits)
+                        if inference_mode is not None
+                        and getattr(inference_mode, "kind", "") == "quantized"
+                        and getattr(inference_mode, "bits", None) in (4, 8)
+                        else None
+                    ),
+                )
+                dense_param = ctx.dequantize(
+                    param, scales=scales, biases=biases, group_size=qgroup, bits=qbits
+                )
+            out_d, in_d = int(dense_param.shape[0]), int(dense_param.shape[1])
             d_orient, u_orient, rank = orient_lora_pair(
                 down, up, out_d=out_d, in_d=in_d, lora_id=lora_id, wkey=wkey
             )
             if rank <= 0:
                 raise RuntimeError(f"LoRA {lora_id!r}: invalid rank for {wkey}.")
-            scale = (float(alpha) / float(rank)) * float(strength)
-            delta = mx.matmul(u_orient.astype(mx.float32), d_orient.astype(mx.float32))
-            scaled_delta = scale * delta
-            _delta_means.append(mx.mean(mx.abs(scaled_delta)))
-            _ranks.append(int(rank))
-            from backend.engine.common.model.quantized_lora_mlx import (
-                apply_lora_delta_to_weight,
-                inference_mode_from_model,
-            )
-
-            inference_mode = inference_mode_from_model(model)
-            if (
-                inference_mode is not None
-                and getattr(inference_mode, "kind", "dense") == "quantized"
-                and getattr(inference_mode, "bits", None) in (4, 8)
-            ):
-                apply_lora_delta_to_weight(
-                    model=model,
+            scale = float(alpha) / float(rank)
+            if magnitude is not None:
+                scaled_delta = _dora_effective_delta(
+                    param=dense_param,
+                    down=d_orient,
+                    up=u_orient,
+                    magnitude=magnitude,
+                    scale=scale,
+                    strength=float(strength),
+                    lora_id=lora_id,
                     wkey=wkey,
-                    delta=scaled_delta,
-                    ctx=ctx,
-                    bits=int(inference_mode.bits),
-                    group_size=int(getattr(inference_mode, "group_size", 64) or 64),
                 )
             else:
-                updated = param.astype(mx.float32) + scaled_delta
-                param[:] = updated.astype(param.dtype)
+                scaled_delta = float(strength) * scale * mx.matmul(
+                    u_orient.astype(mx.float32), d_orient.astype(mx.float32)
+                )
+            _delta_means.append(mx.mean(mx.abs(scaled_delta)))
+            _ranks.append(int(rank))
+            _apply_dense_delta(model, wkey=wkey, delta=scaled_delta, ctx=ctx, bits=inference_mode)
             applied += 1
         if applied == 0:
             raise RuntimeError(

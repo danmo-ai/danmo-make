@@ -5554,6 +5554,35 @@ class BundleManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "missing weight shard"):
                 assert_bundle_ready_for_family(root, family="qwen3", model_id="qwen3.6-27b")
 
+    def test_qwen3_vl_single_file_ignores_stale_shard_index(self) -> None:
+        import json
+
+        from backend.core.bundle_manifest import assert_bundle_ready_for_family, missing_safetensor_shards
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tokenizer.json").write_text("{}", encoding="utf-8")
+            (root / "model.safetensors").write_bytes(b"x" * (1024 * 1024))
+            (root / "model.safetensors.index.json").write_text(
+                json.dumps(
+                    {
+                        "weight_map": {
+                            "a": "model-00001-of-00002.safetensors",
+                            "b": "model-00002-of-00002.safetensors",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(missing_safetensor_shards(root), [])
+            assert_bundle_ready_for_family(root, family="qwen3_vl", model_id="qwen3-vl-4b-instruct")
+
+            (root / "model-00001-of-00002.safetensors").write_bytes(b"y" * 128)
+            self.assertEqual(
+                missing_safetensor_shards(root),
+                ["model-00002-of-00002.safetensors"],
+            )
+
     def test_scan_components_longcat_nested_layout(self) -> None:
         from backend.core.bundle_manifest import assert_bundle_ready_for_family, scan_components
         from backend.engine.common.bundle.layout import assert_media_bundle_ready
@@ -7978,6 +8007,72 @@ class LoraDatasetStoreTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 dataset_store.get_dataset(root, dataset_id)
 
+    def test_skip_keeps_file_out_of_training_until_restored_or_deleted(self) -> None:
+        from backend.engine.training import dataset_store
+
+        png = (
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+            b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xdb\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ds = dataset_store.create_dataset(root, name="skip", trigger_word="ohwx")
+            out = dataset_store.add_dataset_images(
+                root,
+                ds["id"],
+                [("a.png", png), ("b.png", png), ("c.png", png)],
+            )
+            files = [img["file"] for img in out["images"]]
+            self.assertEqual(len(files), 3)
+            skipped = dataset_store.set_skipped_images(root, ds["id"], [files[0]])
+            self.assertEqual(skipped["skipped_images"], [files[0]])
+            self.assertEqual(skipped["image_count"], 3)
+            self.assertEqual(skipped["training_image_count"], 2)
+            self.assertEqual(len(dataset_store.load_dataset_pairs(root, ds["id"])), 3)
+            trained = dataset_store.load_training_pairs(root, ds["id"])
+            self.assertEqual(len(trained), 2)
+            self.assertNotIn(Path(files[0]).name, {path.name for path, _ in trained})
+            self.assertIn("a.png", dataset_store.skipped_training_log_line(root, ds["id"]))
+            with self.assertRaises(ValueError):
+                dataset_store.set_skipped_images(root, ds["id"], ["images/missing.jpg"])
+            with self.assertRaises(ValueError):
+                dataset_store.validate_dataset_for_training(root, ds["id"])
+            removed = dataset_store.remove_dataset_image(root, ds["id"], files[0])
+            self.assertEqual(removed["skipped_images"], [])
+            self.assertEqual(removed["training_image_count"], 2)
+            self.assertFalse((root / "datasets" / ds["id"] / files[0]).exists())
+
+    def test_skip_overlay_drops_failed_face_from_the_gate(self) -> None:
+        from backend.engine.training.lora_quality import apply_training_skip_overlay
+
+        report = {
+            "level": "poor",
+            "score": 40,
+            "hints": [
+                {"code": "faces_too_small", "severity": "error", "params": {"count": 1, "total": 2, "px": 204}},
+                {"code": "near_duplicates", "severity": "warning", "params": {"count": 1}},
+            ],
+            "stats": {},
+            "faces": {
+                "available": True,
+                "tiny_face_px": 204,
+                "counts": {"tiny": 1, "keep": 1, "crop": 0, "none": 0, "error": 0, "multi": 0},
+                "rows": [
+                    {"file": "bad.jpg", "action": "tiny"},
+                    {"file": "good.jpg", "action": "keep"},
+                ],
+            },
+        }
+        out = apply_training_skip_overlay(report, ["images/bad.jpg"])
+        self.assertEqual(report["faces"]["counts"]["tiny"], 1)
+        self.assertTrue(out["faces"]["rows"][0]["skipped"])
+        self.assertEqual(out["faces"]["rows"][0]["action"], "tiny")
+        self.assertEqual(out["faces"]["counts"]["tiny"], 0)
+        self.assertEqual(out["faces"]["counts"]["keep"], 1)
+        self.assertFalse(any(hint["code"] == "faces_too_small" for hint in out["hints"]))
+        self.assertTrue(any(hint["code"] == "faces_user_skipped" for hint in out["hints"]))
+        self.assertEqual(out["level"], "fair")
+
 
 class LoraQualityTests(unittest.TestCase):
     def test_parse_vlm_audit_output(self) -> None:
@@ -8093,295 +8188,41 @@ class LoraQualityTests(unittest.TestCase):
         self.assertIn("tiny_face_in_crop", merged["issues"])
         self.assertFalse(merged["suitable_for_training"])
 
-    def test_resolve_lora_subject_name_uses_only_explicit_trigger(self) -> None:
-        from backend.engine.training.lora_auto_caption import resolve_lora_subject_name
+    def test_load_training_pairs_uses_one_caption_and_rejects_per_image(self) -> None:
+        from backend.engine.training import dataset_store
 
-        self.assertEqual(
-            resolve_lora_subject_name({"default_prompt": "陈钰琪", "trigger_word": "", "name": "cyq"}),
-            "",
-        )
-        self.assertEqual(
-            resolve_lora_subject_name({"default_prompt": "陈钰琪", "trigger_word": "starface", "name": "cyq"}),
-            "starface",
-        )
-        self.assertEqual(
-            resolve_lora_subject_name(
-                {
-                    "default_prompt": "A photo of sks person",
-                    "trigger_word": "",
-                    "name": "陈钰琪",
-                }
-            ),
-            "",
-        )
-        self.assertEqual(
-            resolve_lora_subject_name({"default_prompt": "杨紫", "trigger_word": "", "name": "dataset-1"}),
-            "",
-        )
-
-    def test_caption_dataset_image_concept_prefixes_subject_visibly(self) -> None:
-        from pathlib import Path
-
-        from backend.core.contracts import ChatMessage
-        from backend.engine.llm.message_content import flatten_text_content
-        from backend.engine.training.lora_auto_caption import caption_dataset_image
-
-        def fake_analyze(_path: Path, messages: list[ChatMessage]) -> str:
-            user = next((m for m in messages if m.role == "user"), None)
-            blob = flatten_text_content(user.content if user else "")
-            self.assertIn("杨紫", blob)
-            system = next((m for m in messages if m.role == "system"), None)
-            self.assertNotIn("杨紫", flatten_text_content(system.content if system else ""))
-            return "半身照，白色连衣裙，自然光"
-
-        caption = caption_dataset_image(
-            Path("x.jpg"),
-            Path("/tmp/vlm"),
-            audit_kind="concept",
-            subject_name="杨紫",
-            analyze_fn=fake_analyze,
-        )
-        self.assertEqual(caption, "杨紫，半身照，白色连衣裙，自然光")
-
-    def test_caption_dataset_image_without_trigger_does_not_prefix_dataset_name(self) -> None:
-        from pathlib import Path
-
-        from backend.core.contracts import ChatMessage
-        from backend.engine.llm.message_content import flatten_text_content
-        from backend.engine.training.lora_auto_caption import caption_dataset_image
-
-        def fake_analyze(_path: Path, messages: list[ChatMessage]) -> str:
-            user = next((m for m in messages if m.role == "user"), None)
-            self.assertIn("No trigger word configured", flatten_text_content(user.content if user else ""))
-            return "半身照，白色连衣裙，自然光"
-
-        caption = caption_dataset_image(
-            Path("x.jpg"),
-            Path("/tmp/vlm"),
-            audit_kind="concept",
-            subject_name="",
-            analyze_fn=fake_analyze,
-        )
-        self.assertEqual(caption, "半身照，白色连衣裙，自然光")
-
-    def test_caption_dataset_image_strips_subject_from_vlm_output(self) -> None:
-        from pathlib import Path
-
-        from backend.engine.training.lora_auto_caption import caption_dataset_image
-
-        def fake_analyze(_path: Path, _messages: list) -> str:
-            return "陈钰琪 半身照，白色连衣裙，室内自然光"
-
-        caption = caption_dataset_image(
-            Path("x.jpg"),
-            Path("/tmp/vlm"),
-            audit_kind="concept",
-            subject_name="陈钰琪",
-            analyze_fn=fake_analyze,
-        )
-        self.assertEqual(caption, "陈钰琪，半身照，白色连衣裙，室内自然光")
-        self.assertEqual(caption.count("陈钰琪"), 1)
-
-    def test_concept_auto_caption_filters_smoothing_texture_labels(self) -> None:
-        from pathlib import Path
-
-        from backend.core.contracts import ChatMessage
-        from backend.engine.training.lora_auto_caption import (
-            build_concept_auto_caption_instruction,
-            build_concept_caption_messages,
-            caption_dataset_image,
-            normalize_scene_caption,
-        )
-
-        instruction = build_concept_auto_caption_instruction("陈钰琪")
-        self.assertIn("skin texture", instruction.lower())
-        msgs = build_concept_caption_messages("陈钰琪")
-        system = next(m for m in msgs if m.role == "system")
-        user = next(m for m in msgs if m.role == "user")
-        self.assertIn("skin texture", system.content.lower())
-        self.assertIn("陈钰琪", user.content)
-        self.assertNotIn("陈钰琪", system.content)
-        cleaned = normalize_scene_caption(
-            "半身照，光滑皮肤，白色连衣裙，smooth skin，室内自然光",
-            subject_name="陈钰琪",
-        )
-        self.assertEqual(cleaned, "半身照，白色连衣裙，室内自然光")
-
-        def fake_analyze(_path: Path, messages: list[ChatMessage]) -> str:
-            system = next(m for m in messages if m.role == "system")
-            self.assertIn("skin texture", system.content.lower())
-            return "半身照，光滑皮肤，白色连衣裙，smooth skin，室内自然光"
-
-        caption = caption_dataset_image(
-            Path("x.jpg"),
-            Path("/tmp/vlm"),
-            audit_kind="concept",
-            subject_name="陈钰琪",
-            analyze_fn=fake_analyze,
-        )
-        self.assertEqual(caption, "陈钰琪，半身照，白色连衣裙，室内自然光")
-
-    def test_concept_caption_drops_identity_phrases_and_caps_length(self) -> None:
-        from backend.engine.training.lora_auto_caption import (
-            MAX_CONCEPT_CAPTION_PHRASES,
-            build_concept_caption_messages,
-            compose_person_caption,
-            drop_identity_phrases,
-            is_trigger_anchored_short_caption,
-            normalize_scene_caption,
-        )
-
-        system = next(m for m in build_concept_caption_messages("sks") if m.role == "system")
-        self.assertIn("never describe", system.content.lower())
-        self.assertIn("ethnicity", system.content.lower())
-
-        raw = (
-            "close-up portrait, young asian woman with brown eyes and long black hair, white shirt, "
-            "smiling, standing on a beach, golden hour, smooth skin, oval face"
-        )
-        self.assertEqual(
-            normalize_scene_caption(raw, subject_name="sks", concept=True),
-            "close-up portrait, white shirt, smiling, standing on a beach, golden hour",
-        )
-        self.assertEqual(
-            compose_person_caption("小明", "半身照，年轻的亚洲女性，黑色长发，白色衬衫，微笑，站在海边，自然光，双眼皮"),
-            "小明，半身照，白色衬衫，微笑，站在海边，自然光",
-        )
-        # Glasses are an accessory (variable), not an identity feature.
-        self.assertEqual(drop_identity_phrases("黑框眼镜，白色衬衫"), "黑框眼镜，白色衬衫")
-        self.assertEqual(drop_identity_phrases("black glasses, blue eyes, red scarf"), "black glasses, red scarf")
-
-        # Without a trigger word the concept path still filters (concept=True is explicit).
-        self.assertEqual(normalize_scene_caption("brown eyes, red dress", concept=True), "red dress")
-        # Style captions are untouched.
-        self.assertEqual(normalize_scene_caption("brown eyes, red dress"), "brown eyes, red dress")
-
-        long_raw = ", ".join(f"phrase {i}" for i in range(14))
-        capped = normalize_scene_caption(long_raw, subject_name="sks", concept=True)
-        self.assertEqual(len(capped.split(", ")), MAX_CONCEPT_CAPTION_PHRASES)
-
-        self.assertTrue(is_trigger_anchored_short_caption("sks, white shirt, beach", "sks"))
-        self.assertFalse(is_trigger_anchored_short_caption("a photo of a woman", "sks"))
-        self.assertFalse(is_trigger_anchored_short_caption("sks, " + long_raw, "sks"))
-        self.assertFalse(is_trigger_anchored_short_caption("sks", ""))
-
-    def test_detect_caption_mode_concept_per_image_only_when_anchored_and_large(self) -> None:
-        from pathlib import Path
-
-        from backend.engine.training.dataset_store import (
-            CONCEPT_PER_IMAGE_MIN_IMAGES,
-            concept_caption_stats,
-            detect_caption_mode,
-        )
-
-        meta = {"kind": "concept", "trigger_word": "sks"}
-        n = CONCEPT_PER_IMAGE_MIN_IMAGES
-        anchored = [(Path(f"{i}.jpg"), f"sks, outfit {i}, background {i}") for i in range(n)]
-        self.assertEqual(detect_caption_mode(anchored, dataset_meta=meta), "per_image")
-        # Too few images → unified even with perfect captions.
-        self.assertEqual(detect_caption_mode(anchored[: n - 1], dataset_meta=meta), "unified")
-        # One long VLM caption → unified.
-        long_caps = list(anchored)
-        long_caps[0] = (Path("0.jpg"), "sks, " + ", ".join(f"p{i}" for i in range(12)))
-        self.assertEqual(detect_caption_mode(long_caps, dataset_meta=meta), "unified")
-        # Missing trigger → unified.
-        missing = list(anchored)
-        missing[1] = (Path("1.jpg"), "a woman in a park")
-        self.assertEqual(detect_caption_mode(missing, dataset_meta=meta), "unified")
-        # Identical captions → unified (nothing to disentangle).
-        same = [(Path(f"{i}.jpg"), "sks, portrait") for i in range(n)]
-        self.assertEqual(detect_caption_mode(same, dataset_meta=meta), "unified")
-        # No trigger word at all → unified.
-        self.assertEqual(detect_caption_mode(anchored, dataset_meta={"kind": "concept"}), "unified")
-
-        stats = concept_caption_stats(missing + [(Path("e.jpg"), "")], trigger="sks")
-        self.assertEqual(stats["missing_trigger"], 1)
-        self.assertEqual(stats["empty"], 1)
-        self.assertEqual(stats["anchored_short"], n - 1)
-
-    def test_normalize_scene_caption_rejects_exclamation_garbage(self) -> None:
-        from backend.engine.training.lora_auto_caption import normalize_scene_caption
-
-        raw = "!" * 80
-        self.assertEqual(normalize_scene_caption(raw), "")
-
-    def test_caption_dataset_image_retries_after_garbage_vlm_output(self) -> None:
-        from pathlib import Path
-
-        from backend.engine.training.lora_auto_caption import caption_dataset_image
-
-        calls: list[list[ChatMessage]] = []
-
-        def fake_analyze(_path: Path, messages: list[ChatMessage]) -> str:
-            calls.append(messages)
-            if len(calls) == 1:
-                return "!" * 100
-            return "半身照，白色衬衫，室内"
-
-        caption = caption_dataset_image(
-            Path("x.jpg"),
-            Path("/tmp/vlm"),
-            audit_kind="concept",
-            subject_name="陈钰琪",
-            analyze_fn=fake_analyze,
-        )
-        self.assertEqual(caption, "陈钰琪，半身照，白色衬衫，室内")
-        self.assertEqual(len(calls), 2)
-
-    def test_caption_dataset_images_batch_retries_garbage_in_second_pass(self) -> None:
-        from pathlib import Path
-
-        from backend.core.contracts import ChatMessage
-        from backend.engine.training.lora_auto_caption import caption_dataset_images_batch
-
-        calls: list[tuple[int, str]] = []
-
-        def fake_batch(
-            image_paths: list[Path],
-            messages: list[ChatMessage],
-            max_tokens=128,
-            temperature=0.2,
-        ) -> list[str]:
-            del max_tokens, temperature
-            role = next((m.role for m in messages if m.role == "system"), "")
-            calls.append((len(image_paths), role))
-            if len(calls) == 1:
-                return ["!" * 80, "半身照，红色连衣裙"]
-            return ["半身照，白色衬衫"]
-
-        caps = caption_dataset_images_batch(
-            [Path("a.jpg"), Path("b.jpg")],
-            Path("/tmp/vlm"),
-            audit_kind="concept",
-            subject_name="陈钰琪",
-            batch_analyze_fn=fake_batch,
-        )
-        self.assertEqual(caps[0], "陈钰琪，半身照，白色衬衫")
-        self.assertEqual(caps[1], "陈钰琪，半身照，红色连衣裙")
-        self.assertEqual(len(calls), 2)
-
-    def test_vlm_audit_worker_lora_caption_mode(self) -> None:
-        from backend.engine.llm.vlm_audit_worker import run_job
-
-        import backend.engine.training.lora_auto_caption as mod
-
-        original = mod.caption_dataset_images_batch
-        mod.caption_dataset_images_batch = lambda paths, model_dir, **kw: ["陈钰琪，半身照"]
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                model_dir = Path(tmp)
-                out = run_job(
-                    {
-                        "mode": "lora_caption",
-                        "image_paths": [str(Path(tmp) / "a.jpg")],
-                        "model_dir": str(model_dir),
-                        "audit_kind": "concept",
-                        "subject_name": "陈钰琪",
-                    }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ds = dataset_store.create_dataset(
+                root, name="face", kind="concept", trigger_word="ohwx", default_prompt="ohwx, portrait"
+            )
+            ds_dir = dataset_store.datasets_root(root) / ds["id"]
+            (ds_dir / "images").mkdir(exist_ok=True)
+            (ds_dir / "images" / "a.jpg").write_bytes(b"x")
+            (ds_dir / "images" / "b.jpg").write_bytes(b"y")
+            (ds_dir / "train.jsonl").write_text(
+                "\n".join(
+                    __import__("json").dumps(row, ensure_ascii=False)
+                    for row in (
+                        {"image": "images/a.jpg", "prompt": "white dress, park"},
+                        {"image": "images/b.jpg", "prompt": "coat, studio"},
+                    )
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "Per-image"):
+                dataset_store.load_training_pairs_unified(
+                    root, ds["id"], progress_prompt="ohwx, portrait", caption_mode="per_image"
                 )
-        finally:
-            mod.caption_dataset_images_batch = original
-        self.assertEqual(out["captions"], ["陈钰琪，半身照"])
+            pairs, caption = dataset_store.load_training_pairs_unified(
+                root, ds["id"], progress_prompt="ohwx, portrait", caption_mode="unified"
+            )
+            self.assertEqual(caption, "ohwx, portrait")
+            self.assertEqual([prompt for _, prompt in pairs], ["ohwx, portrait", "ohwx, portrait"])
+            with self.assertRaisesRegex(RuntimeError, "trigger_word"):
+                dataset_store.load_training_pairs_unified(
+                    root, ds["id"], progress_prompt="a portrait", caption_mode="auto"
+                )
 
     def test_create_dataset_does_not_use_name_as_default_prompt(self) -> None:
         from backend.engine.training import dataset_store
@@ -8460,7 +8301,7 @@ class LoraQualityTests(unittest.TestCase):
             report = analyze_dataset_health(root, dataset_id, face_audit=False)
             self.assertEqual(report["level"], "good")
             self.assertGreaterEqual(int(report["stats"]["median_short_edge"]), 1080)
-            self.assertEqual(report["caption_mode_auto"], "unified")
+            self.assertNotIn("caption_mode_auto", report)
             self.assertNotIn("faces", report)
 
     def test_analyze_dataset_health_poor_small_images(self) -> None:
@@ -8519,10 +8360,9 @@ class LoraQualityTests(unittest.TestCase):
             report = analyze_dataset_health(root, dataset_id, face_audit=False)
             codes = {h["code"]: h for h in report["hints"]}
             self.assertIn("near_duplicates", codes)
-            self.assertEqual(codes["captions_missing_trigger"]["params"]["count"], 1)
-            self.assertEqual(codes["captions_long"]["params"]["count"], 1)
-            self.assertEqual(report["caption_mode_auto"], "unified")
-            self.assertEqual(report["stats"]["caption_anchored_short_count"], 9)
+            self.assertNotIn("captions_missing_trigger", codes)
+            self.assertNotIn("captions_long", codes)
+            self.assertNotIn("caption_mode_auto", report)
 
     def test_analyze_dataset_health_face_audit_rows(self) -> None:
         from unittest import mock
@@ -8722,17 +8562,6 @@ class LoraTrainRuntimeTests(unittest.TestCase):
                 dataset_meta={},
             )
 
-    def test_resolve_per_image_captions_fails_on_empty_without_fallback(self) -> None:
-        from backend.engine.training.dataset_store import resolve_per_image_captions
-        from pathlib import Path
-
-        with self.assertRaisesRegex(RuntimeError, "empty"):
-            resolve_per_image_captions(
-                [(Path("a.jpg"), "")],
-                progress_prompt="",
-                dataset_meta={},
-            )
-
     def test_z_image_presets_disable_prior_loss(self) -> None:
         from backend.engine.training.presets import resolve_preset
 
@@ -8748,7 +8577,7 @@ class LoraTrainRuntimeTests(unittest.TestCase):
         self.assertEqual(preset["lora_rank"], 32)
         self.assertEqual(preset["lora_blocks"], -1)
         self.assertEqual(preset["sigma_bias"], "sigmoid")
-        self.assertEqual(preset["train_sigma_shift"], 3.0)
+        self.assertEqual(preset["train_sigma_shift"], 1.0)
         self.assertEqual(preset["caption_dropout"], 0.05)
         self.assertEqual(preset["timestep_bias"], "sigmoid")
         self.assertEqual(
@@ -8839,8 +8668,14 @@ class LoraTrainRuntimeTests(unittest.TestCase):
                 encoding="utf-8",
             )
             extras = lora_config_picklist_extras(bundle)
-            self.assertEqual(extras["compose_overrides"]["steps"], 8)
+            self.assertNotIn("compose_overrides", extras)
             self.assertEqual(extras["hint_key"], "studio.loraHint.zImageDistillPatch")
+            on_base = lora_config_picklist_extras(bundle, for_model="z-image")
+            self.assertNotIn("compose_overrides", on_base)
+            self.assertEqual(on_base["hint_key"], "studio.loraHint.zImageSamplerStays")
+            on_turbo = lora_config_picklist_extras(bundle, for_model="z-image-turbo:fp16")
+            self.assertNotIn("compose_overrides", on_turbo)
+            self.assertEqual(on_turbo["hint_key"], "studio.loraHint.zImageDistillPatch")
 
     def test_parse_lora_train_runtime_config_default_scale(self) -> None:
         from backend.engine.training.lora_train_runtime_mlx import parse_lora_train_runtime_config
@@ -9001,7 +8836,7 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         self.assertTrue(zimg["grad_checkpoint"])
         self.assertEqual(zimg["progress_steps"], 28)
         self.assertEqual(zimg["sigma_bias"], "sigmoid")
-        self.assertEqual(zimg["train_sigma_shift"], 3.0)
+        self.assertEqual(zimg["train_sigma_shift"], 1.0)
         self.assertEqual(zimg["caption_dropout"], 0.05)
         self.assertEqual(zimg["val_split"], 0.0)
         self.assertEqual(zturbo["lora_rank"], 32)
@@ -9032,7 +8867,7 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         self.assertEqual(qwen["lora_blocks"], -1)
         self.assertEqual(qwen["learning_rate"], 2e-4)
         self.assertEqual(qwen["sigma_bias"], "sigmoid")
-        self.assertEqual(qwen["train_sigma_shift"], 3.0)
+        self.assertEqual(qwen["train_sigma_shift"], 1.0)
         self.assertEqual(qwen["min_snr_gamma"], 0.0)
         self.assertEqual(qwen["caption_dropout"], 0.05)
         self.assertIn("to_out", qwen["lora_module_keys"])
@@ -9084,6 +8919,24 @@ class LoraTrainingPresetsTests(unittest.TestCase):
             resolve_training_resolution("z-image", cfg, preset="quick"),
             (512, 512),
         )
+
+    def test_training_inference_config_round_trips_its_own_scheme(self) -> None:
+        from backend.engine.training.lora_train_config import training_inference_config
+
+        custom = {"base_model": "z-image", "preset": "custom", "progress_steps": 28, "guidance": 5}
+        first = training_inference_config(custom)
+        self.assertEqual(first["scheme"], "base")
+        again = training_inference_config({**custom, "metadata": {"inference": first}})
+        self.assertEqual(again["scheme"], "base")
+        self.assertEqual(again["model"], first["model"])
+
+        scheme4 = {"base_model": "z-image", "preset": "scheme4"}
+        stored = training_inference_config(scheme4)
+        self.assertEqual(stored["scheme"], "scheme4")
+        replayed = training_inference_config({**scheme4, "metadata": {"inference": stored}})
+        self.assertEqual(replayed["model"], "z-image-turbo")
+        self.assertEqual(replayed["extra_adapters"], ["z-image-turbo-distillpatch-lora:bf16"])
+        self.assertEqual(replayed["steps"], 8)
 
     def test_lora_training_request_accepts_scheme4_preset(self) -> None:
         from backend.core.contracts import LoraTrainingRequest
@@ -9583,12 +9436,34 @@ class LoraTrainingCropTests(unittest.TestCase):
             Path("/d/a.jpg"): FaceCropPlan((10, 20, 300, 300), None, "face_crop"),
             Path("/d/b.jpg"): FaceCropPlan(None, None, "no_face"),
         }
-        key = face_crop_cache_key(plans)
-        self.assertTrue(key.startswith("face:"))
-        self.assertEqual(key, face_crop_cache_key(dict(reversed(list(plans.items())))))
-        self.assertEqual(face_crop_cache_key({Path("/d/b.jpg"): plans[Path("/d/b.jpg")]}), "")
+        key = face_crop_cache_key(plans, mode="auto", kind="concept", allow_flip=False)
+        self.assertTrue(key.startswith("crop:"))
+        self.assertEqual(
+            key,
+            face_crop_cache_key(
+                dict(reversed(list(plans.items()))),
+                mode="auto",
+                kind="concept",
+                allow_flip=False,
+            ),
+        )
+        # Empty / no-window plans still fingerprint the crop policy (mode/kind/flip).
+        no_window = face_crop_cache_key(
+            {Path("/d/b.jpg"): plans[Path("/d/b.jpg")]},
+            mode="auto",
+            kind="concept",
+            allow_flip=False,
+        )
+        self.assertTrue(no_window.startswith("crop:"))
+        self.assertNotEqual(
+            no_window,
+            face_crop_cache_key({}, mode="off", kind="concept", allow_flip=False),
+        )
         moved = {Path("/d/a.jpg"): FaceCropPlan((11, 20, 300, 300), None, "face_crop")}
-        self.assertNotEqual(key, face_crop_cache_key(moved))
+        self.assertNotEqual(
+            key,
+            face_crop_cache_key(moved, mode="auto", kind="concept", allow_flip=False),
+        )
 
         # off / non-concept datasets never touch the detector.
         pairs = [(Path("/nonexistent/x.jpg"), "p")]
@@ -9643,9 +9518,7 @@ class LoraTrainingCropTests(unittest.TestCase):
         extras = z_image_turbo_trained_picklist_extras()
         self.assertEqual(extras["hint_key"], Z_IMAGE_TURBO_TRAINED_HINT_KEY)
         self.assertEqual(extras["recommended_lora_scale"], [0.8, 1.0])
-        self.assertEqual(extras["compose_overrides"]["lora_scale"], 0.9)
-        self.assertEqual(extras["compose_overrides"]["steps"], 9)
-        self.assertEqual(extras["compose_overrides"]["guidance"], 0)
+        self.assertEqual(extras["compose_overrides"], {"lora_scale": 0.9})
         self.assertEqual(extras["tags"], ["Turbo"])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -9661,10 +9534,13 @@ class LoraTrainingCropTests(unittest.TestCase):
             )
             s4 = lora_config_picklist_extras(Path(tmp))
             self.assertEqual(s4["hint_key"], "studio.loraHint.zImageDistillPatch")
-            self.assertEqual(s4["compose_overrides"]["lora_scale"], 0.8)
+            self.assertEqual(s4["compose_overrides"], {"lora_scale": 0.8})
             self.assertNotIn("recommended_lora_scale", s4)
+            on_base = lora_config_picklist_extras(Path(tmp), for_model="z-image")
+            self.assertEqual(on_base["compose_overrides"], {"lora_scale": 0.8})
+            self.assertEqual(on_base["hint_key"], "studio.loraHint.zImageSamplerStays")
 
-    def test_grad_checkpoint_skips_plain_python_blocks(self) -> None:
+    def test_grad_checkpoint_wraps_plain_python_forward_blocks(self) -> None:
         import mlx.nn as nn
 
         from backend.engine.training.lora_layers_mlx import enable_grad_checkpointing_on_blocks
@@ -9673,7 +9549,9 @@ class LoraTrainingCropTests(unittest.TestCase):
             def forward(self, x):
                 return x
 
-        self.assertEqual(enable_grad_checkpointing_on_blocks([PlainBlock(), PlainBlock()]), 0)
+        # Z-Image refiners/layers are plain classes with .forward — must checkpoint.
+        self.assertEqual(enable_grad_checkpointing_on_blocks([PlainBlock(), PlainBlock()]), 2)
+        self.assertTrue(getattr(PlainBlock, "_dq_grad_checkpoint", False))
         self.assertEqual(enable_grad_checkpointing_on_blocks([nn.Linear(4, 4)]), 1)
 
     def test_resolve_dreambooth_caption_prefers_progress_prompt(self) -> None:
@@ -9700,59 +9578,6 @@ class LoraTrainingCropTests(unittest.TestCase):
         )
         self.assertEqual(cap, "a beautiful portrait")
 
-    def test_resolve_per_image_captions_keeps_row_text(self) -> None:
-        from backend.engine.training.dataset_store import resolve_per_image_captions
-        from pathlib import Path
-
-        pairs = [
-            (Path("a.jpg"), "陈钰琪，白色连衣裙"),
-            (Path("b.jpg"), "陈钰琪，古装"),
-        ]
-        out = resolve_per_image_captions(
-            pairs,
-            progress_prompt="陈钰琪",
-            dataset_meta={"trigger_word": "", "default_prompt": "陈钰琪"},
-        )
-        self.assertEqual(out[0][1], "陈钰琪，白色连衣裙")
-        self.assertEqual(out[1][1], "陈钰琪，古装")
-
-    def test_load_training_pairs_fails_when_concept_caption_missing_trigger(self) -> None:
-        from backend.engine.training import dataset_store
-        from pathlib import Path
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            ds = dataset_store.create_dataset(root, name="cyq", kind="concept", trigger_word="陈钰琪")
-            ds_dir = dataset_store.datasets_root(root) / ds["id"]
-            (ds_dir / "images").mkdir(exist_ok=True)
-            (ds_dir / "images" / "a.jpg").write_bytes(b"x")
-            (ds_dir / "train.jsonl").write_text(
-                __import__("json").dumps(
-                    {"image": "images/a.jpg", "prompt": "半身照，白色连衣裙"},
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(RuntimeError, "trigger_word"):
-                dataset_store.load_training_pairs_unified(
-                    root,
-                    ds["id"],
-                    progress_prompt="陈钰琪",
-                    caption_mode="per_image",
-                )
-
-    def test_resolve_per_image_captions_does_not_repeat_progress_prompt_name(self) -> None:
-        from backend.engine.training.dataset_store import resolve_per_image_captions
-        from pathlib import Path
-
-        out = resolve_per_image_captions(
-            [(Path("a.jpg"), "陈钰琪，半身照，白色连衣裙")],
-            progress_prompt="陈钰琪",
-            dataset_meta={"trigger_word": "", "default_prompt": "陈钰琪"},
-        )
-        self.assertEqual(out[0][1].count("陈钰琪"), 1)
-        self.assertEqual(out[0][1], "陈钰琪，半身照，白色连衣裙")
-
     def test_collect_lora_safetensors_remaps_for_qwen_image(self) -> None:
         from backend.engine.runtime.mlx import MLXContext
         from backend.engine.config.model_configs import QwenImageConfig
@@ -9770,11 +9595,13 @@ class LoraTrainingCropTests(unittest.TestCase):
 
         ctx = MLXContext()
         model = QwenImageTransformer(QwenImageConfig(), ctx)
+        from backend.engine.training.presets import QWEN_IMAGE_LORA_MODULE_KEYS
         _, train_module = prepare_dit_for_lora_training(
             model,
             apply_lora_to_qwen_dit,
             rank=4,
             lora_blocks=1,
+            lora_module_keys=list(QWEN_IMAGE_LORA_MODULE_KEYS),
         )
         from backend.engine.training.qwen_image_dreambooth_mlx import _strip_dit_lora_paths
 
@@ -9785,6 +9612,10 @@ class LoraTrainingCropTests(unittest.TestCase):
             any(k.startswith("transformer_blocks.") and ".lora_A.weight" in k for k in weights),
             "expected DiT module paths in exported LoRA keys",
         )
+        # Identity-first block order: lora_blocks=1 wraps the shallowest block (0),
+        # and Qwen image out-proj exports as diffusers ``to_out.0``.
+        self.assertIn("transformer_blocks.0.attn.to_out.0.lora_A.weight", weights)
+        self.assertNotIn("attn_to_out", "\n".join(weights))
         remapped = remap_qwen_lora_keys(weights)
         self.assertGreater(len(remapped), 0)
         with tempfile.TemporaryDirectory() as tmp:
@@ -9819,9 +9650,14 @@ class ZImageLoraExportTests(unittest.TestCase):
         )
         weights = collect_lora_safetensors(train_module, rank=4)
         weights.pop("lora_rank", None)
+        # Identity-first: lora_blocks=1 trains context_refiner before main layers.
         self.assertTrue(
-            any(k.startswith("layers.") and ".lora_A.weight" in k for k in weights),
-            "expected DiT module paths in exported LoRA keys",
+            any(
+                (k.startswith("context_refiner.") or k.startswith("noise_refiner.") or k.startswith("layers."))
+                and ".lora_A.weight" in k
+                for k in weights
+            ),
+            f"expected DiT module paths in exported LoRA keys, got {sorted(weights)[:8]}",
         )
         remapped = remap_zimage_lora_keys(weights)
         self.assertGreater(len(remapped), 0)
@@ -9830,6 +9666,210 @@ class ZImageLoraExportTests(unittest.TestCase):
             path = Path(tmp) / "adapter.safetensors"
             mx.save_safetensors(str(path), weights)
             _validate_saved_lora(path)
+
+
+class LoraTrainingContractTests(unittest.TestCase):
+    def test_sigmoid_shift_preserves_median_and_sampling_band(self) -> None:
+        import mlx.core as mx
+        import numpy as np
+        from backend.engine.training.dit_training_loss_mlx import sample_shifted_sigmas
+
+        mx.random.seed(42)
+        sigmas = sample_shifted_sigmas(
+            None, 12001, sigma_shift=3.0, sigma_bias="sigmoid"
+        )
+        median = float(np.median(np.array(sigmas)))
+        self.assertAlmostEqual(median, 0.5, delta=0.025)
+        band = float(np.mean(np.array((sigmas >= 0.3) & (sigmas <= 0.7))))
+        self.assertGreater(band, 0.3)
+        forward = 0.5 * 3.0 / (1.0 + (3.0 - 1.0) * 0.5)
+        self.assertGreater(forward - median, 0.2)
+
+    def test_qwen_lora_targets_cover_all_attention_projections(self) -> None:
+        import mlx.core as mx
+        from backend.engine.config.model_configs import QwenImageConfig
+        from backend.engine.families.qwen.transformer_mlx import QwenImageDiTMLX
+        from backend.engine.training.lora_layers_mlx import (
+            LoRALinear,
+            apply_lora_to_qwen_dit,
+            iter_lora_linears_with_paths,
+        )
+        from backend.engine.training.presets import QWEN_IMAGE_LORA_MODULE_KEYS
+
+        class Ctx:
+            @staticmethod
+            def array(v):
+                return mx.array(v)
+
+        cfg = QwenImageConfig(
+            hidden_dim=32, num_heads=2, num_layers=1,
+            in_channels=4, out_channels=4, text_dim=32,
+        )
+        dit = QwenImageDiTMLX(cfg, Ctx())
+        apply_lora_to_qwen_dit(
+            dit,
+            rank=4,
+            lora_blocks=-1,
+            module_keys=list(QWEN_IMAGE_LORA_MODULE_KEYS),
+        )
+        expected = {f"dit.transformer_blocks.0.attn.{key}" for key in (
+            "to_q", "to_k", "to_v", "to_out.0",
+            "add_q_proj", "add_k_proj", "add_v_proj", "to_add_out",
+        )}
+        self.assertEqual({path for _, path in iter_lora_linears_with_paths(dit)}, expected)
+        attention = dit.dit.transformer_blocks[0].attn
+        for attr in ("to_q", "to_k", "to_v", "add_q_proj", "add_k_proj", "add_v_proj", "to_add_out"):
+            self.assertIsInstance(getattr(attention, attr), LoRALinear)
+        self.assertIsInstance(attention.attn_to_out[0], LoRALinear)
+
+    def test_latent_cache_filename_changes_with_family_resolution_and_dtype(self) -> None:
+        from backend.engine.training.latent_cache_mlx import _fingerprint
+
+        base = dict(
+            dataset_id="face",
+            n_pairs=12,
+            num_augmentations=3,
+            resolution=(1024, 1024),
+            family="z_image",
+            caption_mode="per_image",
+            crop_policy="face:abc",
+            dataset_fingerprint="original-bytes-and-captions",
+        )
+        original = _fingerprint(**base)
+        self.assertEqual(original, _fingerprint(**base))
+        for change in (
+            {"family": "qwen_image"},
+            {"resolution": (512, 512)},
+            {"dataset_fingerprint": "changed-image-bytes"},
+            {"caption_mode": "unified"},
+            {"crop_policy": "face:changed"},
+        ):
+            self.assertNotEqual(original, _fingerprint(**{**base, **change}))
+
+    def test_manual_registration_uses_identical_adapter_metadata(self) -> None:
+        import json
+        from backend.engine.training.lora_train_config import publish_trained_adapter
+        from backend.engine.training.user_lora_registry import list_user_loras
+
+        params = {
+            "base_model": "z-image",
+            "preset": "scheme4",
+            "progress_prompt": "ohwx_person, portrait",
+            "lora_alpha": 128,
+        }
+        checkpoint_meta = {
+            "base_model": "z-image",
+            "train_type": "lora",
+            "lora_rank": 32,
+            "lora_alpha": 128,
+            "lora_blocks": -1,
+            "lora_module_keys": ["to_q", "to_k", "to_v", "to_out", "w1", "w2", "w3"],
+            "iteration": 500,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint = root / "best_adapters.safetensors"
+            checkpoint.write_bytes(b"adapter-test")
+            checkpoint.with_suffix(".json").write_text(json.dumps(checkpoint_meta), encoding="utf-8")
+            for checkpoint_arg in (checkpoint_meta, None):
+                with self.subTest(sidecar=checkpoint_arg is None):
+                    published = publish_trained_adapter(
+                        final_path=checkpoint,
+                        output_name="Face",
+                        dest_dir=root / "models" / "Lora",
+                        config_dir=root / "config",
+                        params=params,
+                        checkpoint_meta=checkpoint_arg,
+                        dataset_meta={"trigger_word": "ohwx_person"},
+                        auto_register=True,
+                        task_id="tsk_face",
+                    )
+                    config = json.loads((root / "models" / "Lora" / "Face" / "lora_config.json").read_text())
+                    entry = next(item for item in list_user_loras(root / "config") if item["id"] == published["user_lora_id"])
+                    self.assertEqual(config["lora_alpha"], 128)
+                    self.assertEqual(config["family"], "z_image")
+                    self.assertEqual(config["inference"]["extra_adapters"], ["z-image-turbo-distillpatch-lora:bf16"])
+                    self.assertEqual(entry["inference"], config["inference"])
+                    self.assertEqual(entry["lora_alpha"], config["lora_alpha"])
+                    self.assertEqual(entry["train_type"], config["train_type"])
+
+    def test_export_rejects_checkpoint_configuration_mismatch(self) -> None:
+        from backend.engine.training.lora_train_config import adapter_export_config
+
+        meta = {
+            "base_model": "qwen-image",
+            "train_type": "lora",
+            "lora_rank": 32,
+            "lora_alpha": 64,
+            "lora_blocks": -1,
+            "iteration": 100,
+        }
+        with self.assertRaisesRegex(ValueError, "lora_alpha"):
+            adapter_export_config(
+                params={"base_model": "qwen-image", "preset": "standard", "lora_alpha": 128},
+                checkpoint_meta=meta,
+            )
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            adapter_export_config(
+                params={"base_model": "qwen-image", "preset": "standard"},
+                checkpoint_meta={"base_model": "qwen-image"},
+            )
+
+    def test_resume_checkpoint_requires_matching_scale_optimizer_and_rng(self) -> None:
+        import json
+        from backend.engine.training.lora_train_runtime_mlx import resume_checkpoint_incompatibility
+
+        expected = {"lora_rank": 32, "lora_alpha": 32, "lora_blocks": -1, "train_type": "lora"}
+        meta = {**expected, "base_model": "z-image", "iteration": 100}
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = Path(tmp) / "final_adapters.safetensors"
+            checkpoint.write_bytes(b"adapter")
+            checkpoint.with_suffix(".json").write_text(json.dumps(meta), encoding="utf-8")
+            self.assertIn("optimizer", resume_checkpoint_incompatibility(
+                base_model="z-image", adapter_path=checkpoint, expected_config=expected,
+            ) or "")
+            checkpoint.with_name("final_adapters_optimizer.safetensors").write_bytes(b"optimizer")
+            self.assertIn("random", resume_checkpoint_incompatibility(
+                base_model="z-image", adapter_path=checkpoint, expected_config=expected,
+            ) or "")
+            checkpoint.with_name("final_adapters_rng.safetensors").write_bytes(b"rng")
+            self.assertIsNone(resume_checkpoint_incompatibility(
+                base_model="z-image", adapter_path=checkpoint, expected_config=expected,
+            ))
+            self.assertIn("lora_alpha", resume_checkpoint_incompatibility(
+                base_model="z-image", adapter_path=checkpoint,
+                expected_config={**expected, "lora_alpha": 64},
+            ) or "")
+
+    def test_deterministic_validation_restores_mlx_and_python_random_streams(self) -> None:
+        import random
+        import mlx.core as mx
+        from backend.engine.training.lora_train_loop_mlx import _deterministic_val_loss
+
+        def loss_fn(x):
+            del x
+            return mx.array(random.random()) + mx.random.uniform()
+
+        def sample_batch(indices):
+            self.assertEqual(len(indices), 1)
+            return (mx.array([indices[0]], dtype=mx.float32),)
+
+        mx.random.seed(1234)
+        random.seed(1234)
+        expected_mx = mx.random.state
+        expected_python = random.getstate()
+        first = _deterministic_val_loss(loss_fn, sample_batch, [0, 1], mlx_ctx=None)
+        # Compare actual following samples, not just a reseeded deterministic value.
+        mx.random.state = expected_mx
+        random.setstate(expected_python)
+        next_mx = float(mx.random.uniform())
+        next_python = random.random()
+        mx.random.state = expected_mx
+        random.setstate(expected_python)
+        second = _deterministic_val_loss(loss_fn, sample_batch, [0, 1], mlx_ctx=None)
+        self.assertEqual(first, second)
+        self.assertEqual(float(mx.random.uniform()), next_mx)
+        self.assertEqual(random.random(), next_python)
 
 
 class LoraSearchQueryTests(unittest.TestCase):

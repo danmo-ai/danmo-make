@@ -32,8 +32,9 @@ def _fingerprint(
     family: str,
     caption_mode: str = "",
     crop_policy: str = "",
+    dataset_fingerprint: str = "",
 ) -> str:
-    raw = f"{dataset_id}|{n_pairs}|{num_augmentations}|{resolution[0]}x{resolution[1]}|{family}|{caption_mode}"
+    raw = f"{dataset_id}|{n_pairs}|{num_augmentations}|{resolution[0]}x{resolution[1]}|{family}|{caption_mode}|{dataset_fingerprint}"
     if crop_policy:
         raw += f"|{crop_policy}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
@@ -55,6 +56,7 @@ class LatentCache:
         n_samples: int,
         caption_mode: str = "",
         crop_policy: str = "",
+        dataset_fingerprint: str = "",
     ) -> bool:
         if not self.manifest_path.is_file():
             return False
@@ -72,6 +74,7 @@ class LatentCache:
             family=family,
             caption_mode=caption_mode,
             crop_policy=crop_policy,
+            dataset_fingerprint=dataset_fingerprint,
         )
         if manifest.get("fingerprint") != fp:
             return False
@@ -93,6 +96,7 @@ class LatentCache:
         tensor_keys: list[str],
         caption_mode: str = "",
         crop_policy: str = "",
+        dataset_fingerprint: str = "",
     ) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         self._tensor_keys = list(tensor_keys)
@@ -107,6 +111,7 @@ class LatentCache:
                 family=family,
                 caption_mode=caption_mode,
                 crop_policy=crop_policy,
+                dataset_fingerprint=dataset_fingerprint,
             ),
             "family": family,
             "n_pairs": n_pairs,

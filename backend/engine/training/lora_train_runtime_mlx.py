@@ -48,6 +48,7 @@ class LoraTrainRuntimeConfig:
     lora_rank: int
     lora_alpha: int  # LoRA alpha; alpha/rank is the effective scale
     lora_blocks: int
+    seed: int
     learning_rate: float
     grad_accumulate: int
     warmup_steps: int
@@ -79,8 +80,9 @@ class LoraTrainRuntimeConfig:
     sigma_bias: str
     turbo_assistant_off_prob: float
     scheme4_turbo_band_mix: float
-    # Static σ shift used when sampling training noise levels for Base DiTs (None → registry
-    # ``scheduler_shift``). Presets set 3.0 for Z-Image Base; see presets.Z_IMAGE_BASE_TRAIN_SIGMA_SHIFT.
+    # Static σ shift for uniform/low/high Base-DiT sampling (None → registry
+    # ``scheduler_shift``). Standard sigmoid/logit-normal presets set 1.0; see
+    # presets.Z_IMAGE_BASE_TRAIN_SIGMA_SHIFT.
     train_sigma_shift: float | None
     # Face-aware crop for identity datasets: auto (concept datasets, when detector available) | on | off.
     face_crop: str
@@ -199,6 +201,9 @@ def parse_lora_train_runtime_config(cfg: dict[str, Any], *, defaults: dict[str, 
         if train_sigma_shift <= 0:
             raise RuntimeError(f"train_sigma_shift must be > 0 (got {train_sigma_shift})")
 
+    seed = int(merged.get("seed") if merged.get("seed") is not None else 42)
+    if not 0 <= seed <= 2147483647:
+        raise RuntimeError("Training seed must be in [0, 2147483647].")
     timestep_low = int(merged.get("timestep_low") or 1)
     timestep_high = int(merged.get("timestep_high") or 9)
     if timestep_low < 1 or timestep_high < timestep_low:
@@ -222,6 +227,7 @@ def parse_lora_train_runtime_config(cfg: dict[str, Any], *, defaults: dict[str, 
         lora_rank=lora_rank,
         lora_alpha=lora_alpha,
         lora_blocks=int(merged.get("lora_blocks") if merged.get("lora_blocks") is not None else -1),
+        seed=seed,
         learning_rate=float(merged.get("learning_rate") or 1e-4),
         grad_accumulate=grad_accumulate,
         warmup_steps=warmup_steps,
@@ -344,6 +350,7 @@ def resume_checkpoint_incompatibility(
     base_model: str,
     adapter_path: Path,
     source_task_params: dict[str, Any] | None = None,
+    expected_config: dict[str, Any] | None = None,
 ) -> str | None:
     """Return a human-readable reason when a resume checkpoint cannot be used, else None."""
     requested = normalize_base_model_id(base_model)
@@ -360,17 +367,34 @@ def resume_checkpoint_incompatibility(
 
     meta_path = adapter_meta_path(adapter_path)
     if not meta_path.is_file():
-        return None
+        return "Resume checkpoint metadata is missing; cannot verify architecture and adapter scale."
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        return f"Resume checkpoint metadata is unreadable: {exc}"
     meta_base = normalize_base_model_id(str(meta.get("base_model") or ""))
     if meta_base and meta_base != requested:
         return (
             f"Checkpoint was saved for base model {meta_base!r}, "
             f"but this request targets {requested!r}"
         )
+    if int(meta.get("iteration") or 0) <= 0:
+        return "Resume checkpoint has no completed iteration; start a fresh training task."
+    if expected_config:
+        for key in ("lora_rank", "lora_alpha", "lora_blocks", "train_type"):
+            if expected_config.get(key) is None:
+                continue
+            if meta.get(key) is None:
+                return f"Resume checkpoint metadata is missing {key}; cannot verify the resolved training configuration."
+            if str(meta[key]) != str(expected_config[key]):
+                return f"Resume checkpoint {key}={meta[key]!r}, but this request resolved {key}={expected_config[key]!r}."
+        if int(meta.get("iteration") or 0) > 0:
+            if not optimizer_state_path(adapter_path).is_file() and not _legacy_optimizer_state_path(adapter_path).is_file():
+                return "Resume checkpoint has no optimizer state; start a fresh training task instead of resetting optimizer moments silently."
+            if not training_rng_state_path(adapter_path).is_file():
+                return "Resume checkpoint has no MLX random state; start a fresh task to avoid a changed training stream."
+        if expected_config.get("seed") is not None and int(meta.get("seed", 42)) != int(expected_config["seed"]):
+            return "Resume seed differs from the checkpoint; use the original seed to preserve reproducible training and validation."
     return None
 
 
@@ -382,23 +406,57 @@ def _legacy_optimizer_state_path(adapter_path: Path) -> Path:
     return adapter_path.with_name(f"{adapter_path.stem}_optimizer.npz")
 
 
+def training_rng_state_path(adapter_path: Path) -> Path:
+    return adapter_path.with_name(f"{adapter_path.stem}_rng.safetensors")
+
+
+def _snapshot_mlx_rng_state() -> list[Any]:
+    """Copy the current key: MLX's RandomState yields a live mutable tensor."""
+    snapshot = [mx.array(tensor) for tensor in mx.random.state]
+    if not snapshot:
+        raise RuntimeError("MLX random state is empty; cannot preserve the training random stream.")
+    mx.eval(snapshot)
+    return snapshot
+
+
+def _save_training_rng_state(adapter_path: Path) -> None:
+    snapshot = _snapshot_mlx_rng_state()
+    tensors = {f"state_{idx:02d}": tensor for idx, tensor in enumerate(snapshot)}
+    mx.save_safetensors(str(training_rng_state_path(adapter_path)), tensors)
+
+
+def _restore_training_rng_state(adapter_path: Path) -> None:
+    path = training_rng_state_path(adapter_path)
+    if not path.is_file():
+        raise RuntimeError(
+            f"Resume checkpoint has no MLX random state ({path.name}); "
+            "start a fresh task rather than silently changing the training stream."
+        )
+    tensors = mx.load(str(path))
+    keys = sorted(tensors)
+    if not keys:
+        raise RuntimeError(f"Resume random state is empty: {path}")
+    mx.random.state = [tensors[key] for key in keys]
+
+
 def _save_optimizer_state(adapter_path: Path, optimizer: optim.Optimizer) -> None:
     flat = dict(tree_flatten(optimizer.state))
     if not flat:
-        return
+        raise RuntimeError("Optimizer state is empty; cannot create a resumable checkpoint.")
     dest = optimizer_state_path(adapter_path)
     # mlx.savez accepts at most 1024 keyword args; full Z-Image Turbo LoRA exceeds that.
     mx.save_safetensors(str(dest), flat)
 
 
-def _load_optimizer_state(adapter_path: Path, optimizer: optim.Optimizer) -> None:
+def _load_optimizer_state(adapter_path: Path, optimizer: optim.Optimizer) -> bool:
     for path in (optimizer_state_path(adapter_path), _legacy_optimizer_state_path(adapter_path)):
         if not path.is_file():
             continue
         loaded = mx.load(str(path))
         state = tree_unflatten(list(loaded.items()))
         optimizer.state = state
-        return
+        return True
+    return False
 
 
 def save_training_checkpoint(
@@ -419,6 +477,7 @@ def save_training_checkpoint(
         encoding="utf-8",
     )
     _save_optimizer_state(adapter_path, optimizer)
+    _save_training_rng_state(adapter_path)
 
 
 def load_training_checkpoint(
@@ -439,9 +498,17 @@ def load_training_checkpoint(
         meta = __import__("json").loads(meta_path.read_text(encoding="utf-8"))
         start_iter = int(meta.get("iteration") or 0)
 
-    _load_optimizer_state(adapter_path, optimizer)
-    if optimizer_state_path(adapter_path).is_file() or _legacy_optimizer_state_path(adapter_path).is_file():
+    has_optimizer = _load_optimizer_state(adapter_path, optimizer)
+    if start_iter > 0 and not has_optimizer:
+        raise RuntimeError("Resume optimizer state is missing; start a fresh training task.")
+    if has_optimizer and start_iter > 0:
+        # Keep the joined warmup/cosine schedule on the original micro-step position.
+        optimizer.step = mx.array(start_iter, dtype=mx.uint64)
+    if has_optimizer:
         mx.eval(train_module.parameters(), optimizer.state)
+    if start_iter <= 0:
+        raise RuntimeError("Resume checkpoint has no completed iteration; start a fresh training task.")
+    _restore_training_rng_state(adapter_path)
     return start_iter
 
 

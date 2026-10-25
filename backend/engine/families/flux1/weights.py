@@ -189,7 +189,8 @@ def remap_flux1_lora_keys(lora_weights: dict) -> dict[str, tuple[Any, Any, float
     """Group LoRA tensors and map module names to DanQing Flux.1 ``_param_map`` prefixes."""
     from backend.engine.common.bundle.weights import _lora_key_to_module
 
-    default_alpha = 8.0
+    # External LoRAs commonly omit alpha; Kohya/diffusers then mean alpha=rank.
+    default_alpha: float | None = None
     alphas_by_tgt: dict[str, float] = {}
     for key, tensor in lora_weights.items():
         lk = key.lower()
@@ -211,12 +212,12 @@ def remap_flux1_lora_keys(lora_weights: dict) -> dict[str, tuple[Any, Any, float
 
     groups: dict[str, dict[str, Any]] = {}
     for key, tensor in lora_weights.items():
-        if "alpha" in key.lower():
+        kl = key.lower()
+        if "alpha" in kl or "dora_magnitude" in kl or key.endswith(".delta.weight"):
             continue
         module = _lora_key_to_module(key)
         if module not in groups:
             groups[module] = {}
-        kl = key.lower()
         if "lora_down" in kl or ".lora_a." in kl or kl.endswith(".lora_a.weight"):
             groups[module]["down"] = tensor
         elif "lora_up" in kl or ".lora_b." in kl or kl.endswith(".lora_b.weight"):
@@ -225,9 +226,15 @@ def remap_flux1_lora_keys(lora_weights: dict) -> dict[str, tuple[Any, Any, float
     remapped: dict[str, tuple[Any, Any, float]] = {}
     for module, parts in groups.items():
         if "down" not in parts or "up" not in parts:
-            continue
+            raise RuntimeError(
+                f"Flux1 LoRA module {module!r} is missing a down/up factor; "
+                "refusing to apply a partial adapter."
+            )
         down, up = parts["down"], parts["up"]
-        alpha = float(alphas_by_tgt.get(remap_flux1_lora_module_prefix(module), default_alpha))
+        fallback_alpha = default_alpha if default_alpha is not None else float(down.shape[0])
+        alpha = float(
+            alphas_by_tgt.get(remap_flux1_lora_module_prefix(module), fallback_alpha)
+        )
 
         mod = module.replace("diffusion_model.", "")
         m_img = re.match(r"double_blocks\.(\d+)\.img_attn\.qkv", mod)

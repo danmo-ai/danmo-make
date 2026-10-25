@@ -45,8 +45,13 @@ def register_user_lora(
     nsfw: bool = False,
     task_id: str = "",
     source: str = "user_trained",
+    lora_alpha: int | None = None,
+    inference: dict[str, Any] | None = None,
     repo_id: str = "",
     remote_hub_source: str = "",
+    family: str = "",
+    lora_module_keys: list[str] | None = None,
+    train_type: str = "lora",
 ) -> dict[str, Any]:
     path = user_loras_path(config_dir)
     data = _load(path)
@@ -59,6 +64,11 @@ def register_user_lora(
         "local_path": local_path,
         "trigger_word": trigger_word,
         "lora_rank": lora_rank,
+        "lora_alpha": lora_alpha if lora_alpha is not None else lora_rank,
+        "inference": inference or {},
+        "family": family,
+        "train_type": train_type,
+        "lora_module_keys": list(lora_module_keys or []),
         "nsfw": nsfw,
         "source": source,
         "task_id": task_id,

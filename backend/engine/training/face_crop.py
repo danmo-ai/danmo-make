@@ -7,15 +7,15 @@ roughly a third of the frame (head-and-shoulders framing), then scaled to the tr
 
 Detection uses OpenCV's YuNet (``cv2.FaceDetectorYN``), a 230 KB ONNX model fetched once into
 ``{workspace}/models/_aux/face_detection/``. OpenCV is a source-install dependency
-(``opencv-python-headless``) but is excluded from packaged desktop sidecars; ``face_crop=auto``
-therefore logs and keeps the portrait-biased cover crop when the detector is unavailable, while
-``face_crop=on`` fails loud.
+(``opencv-python-headless``) but is excluded from packaged desktop sidecars; Identity runs require the detector and reject a degraded crop at REST/CLI preflight. Style
+runs may use ``face_crop=off``; ``face_crop=on`` fails loud for every dataset kind.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -44,6 +44,8 @@ FACE_ANCHOR_Y = 0.40
 MAX_UPSAMPLE = 1.5
 MIN_FACE_SCORE = 0.70
 _DETECT_MAX_SIDE = 640
+# YuNet's FaceDetectorYN is not safe to call from overlapping health requests.
+_DETECT_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -168,9 +170,10 @@ def _detect_cached(path_key: str, mtime_ns: int, model_path: str) -> tuple[FaceB
 
         img = img.resize((det_w, det_h), Image.BILINEAR)
     bgr = np.ascontiguousarray(np.asarray(img)[:, :, ::-1])
-    det = _detector(model_path)
-    det.setInputSize((det_w, det_h))
-    _, faces = det.detect(bgr)
+    with _DETECT_LOCK:
+        det = _detector(model_path)
+        det.setInputSize((det_w, det_h))
+        _, faces = det.detect(bgr)
     if faces is None or len(faces) == 0:
         return ()
     # YuNet rows: x, y, w, h, 5 landmarks (10 values), score.
@@ -238,10 +241,15 @@ def face_crop_window(
 def plan_face_crop(path: Path, model_path: Path, target: tuple[int, int]) -> FaceCropPlan:
     from backend.engine.training.dataset_store import open_rgb_image
 
-    face = detect_primary_face(path, model_path)
-    if face is None:
+    faces = detect_faces(path, model_path)
+    if not faces:
         return FaceCropPlan(None, None, "no_face")
+    if len(faces) >= 2 and faces[1].h >= 0.4 * faces[0].h:
+        return FaceCropPlan(None, faces[0], "multi_face")
     src_w, src_h = open_rgb_image(Path(path)).size
+    face = faces[0]
+    if face.h < min_usable_face_px(int(target[1])):
+        return FaceCropPlan(None, face, "tiny_face")
     window, reason = face_crop_window(src_w, src_h, face, target)
     return FaceCropPlan(window, face, reason)
 
@@ -274,7 +282,7 @@ def audit_dataset_faces(
     except RuntimeError as exc:
         return {"available": False, "reason": str(exc), "rows": [], "counts": {}}
 
-    from backend.engine.training.dataset_store import open_rgb_image
+    from PIL import Image
 
     target_h = int(resolution[1])
     tiny_px = min_usable_face_px(target_h)
@@ -283,7 +291,8 @@ def audit_dataset_faces(
     for path in paths:
         row: dict[str, Any] = {"file": path.name, "faces": 0, "action": "none", "window": None}
         try:
-            src_w, src_h = open_rgb_image(path).size
+            with Image.open(path) as img:
+                src_w, src_h = img.size
             row["width"], row["height"] = src_w, src_h
             faces = detect_faces(path, model_path)
         except Exception as exc:
@@ -301,6 +310,12 @@ def audit_dataset_faces(
                 row["multi"] = True
         if not faces:
             counts["none"] += 1
+            rows.append(row)
+            continue
+        if row.get("multi"):
+            # A plausible crop of the largest face is not an identity-training pass.
+            # Match plan_face_crop: never present a competing-person image as usable.
+            row["action"] = "multi"
             rows.append(row)
             continue
         face = faces[0]
@@ -324,17 +339,32 @@ def audit_dataset_faces(
     return {"available": True, "reason": "", "rows": rows, "counts": counts, "tiny_face_px": int(tiny_px)}
 
 
-def face_crop_cache_key(plans: dict[Path, FaceCropPlan]) -> str:
-    """Stable digest of the applied windows (for the latent-cache fingerprint)."""
+def face_crop_cache_key(
+    plans: dict[Path, FaceCropPlan],
+    *,
+    mode: str = "auto",
+    kind: str = "concept",
+    allow_flip: bool = False,
+) -> str:
+    """Stable digest of preprocessing policy + applied windows for latent-cache invalidation.
+
+    An empty window list must still distinguish ``face_crop=off`` / style cover crops from
+    ``face_crop=on`` identity runs where every face was already large enough.
+    """
+    mode_n = normalize_face_crop_mode(mode)
+    kind_n = str(kind or "concept").strip().lower() or "concept"
     applied = sorted(
-        (str(Path(p).name), list(plan.window))
+        (str(Path(p).name), list(plan.window) if plan.window is not None else None, plan.reason)
         for p, plan in plans.items()
-        if plan.window is not None
     )
-    if not applied:
-        return ""
-    raw = json.dumps(applied, separators=(",", ":"), sort_keys=True)
-    return "face:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    payload = {
+        "mode": mode_n,
+        "kind": kind_n,
+        "allow_flip": bool(allow_flip),
+        "plans": applied,
+    }
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    return "crop:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def plan_training_face_crops(
@@ -348,9 +378,9 @@ def plan_training_face_crops(
 ) -> dict[Path, FaceCropPlan]:
     """Decide the crop window per training image and log a summary.
 
-    ``auto`` enables face crops for concept (identity) datasets only, and degrades to the plain
-    cover crop — with an explicit warning — when OpenCV / YuNet is unavailable. ``on`` requires
-    the detector (fail loud). ``off`` disables.
+    ``auto`` enables face crops for concept (identity) datasets only. The shared
+    submission preflight rejects missing detection for identity runs. Direct worker
+    execution enforces the same contract; ``on`` also requires detection for style.
     """
     mode = normalize_face_crop_mode(mode)
     log = on_log or (lambda _level, _msg: None)
@@ -360,27 +390,8 @@ def plan_training_face_crops(
 
     ok, why = opencv_face_detector_available()
     if not ok:
-        if mode == "on":
-            raise RuntimeError(f"face_crop=on but face detection is unavailable: {why}")
-        log(
-            "warning",
-            f"Face-aware crop skipped ({why}); using portrait-biased cover crop. "
-            "Full-body photos then leave the face on a handful of tokens and the LoRA "
-            "memorizes clothes instead of identity. Install opencv-python-headless, "
-            "or set face_crop=off.",
-        )
-        return {}
-    try:
-        model_path = resolve_face_detector_path(project_root)
-    except RuntimeError as exc:
-        if mode == "on":
-            raise
-        log(
-            "warning",
-            f"Face-aware crop skipped: {exc} "
-            "Without a face window the LoRA cannot bind identity on wide shots.",
-        )
-        return {}
+        raise RuntimeError(f"face_crop={mode} requires face detection: {why}")
+    model_path = resolve_face_detector_path(project_root)
 
     plans: dict[Path, FaceCropPlan] = {}
     counts = {"face_crop": 0, "face_large_enough": 0, "no_face": 0}
@@ -388,12 +399,15 @@ def plan_training_face_crops(
         try:
             plan = plan_face_crop(img_path, model_path, resolution)
         except Exception as exc:
-            if mode == "on":
-                raise RuntimeError(f"Face detection failed for {img_path.name}: {exc}") from exc
-            log("warning", f"Face detection failed for {img_path.name}: {exc}")
-            plan = FaceCropPlan(None, None, "detect_error")
+            raise RuntimeError(f"Face detection failed for {img_path.name}: {exc}") from exc
         plans[img_path] = plan
         counts[plan.reason] = counts.get(plan.reason, 0) + 1
+        if plan.reason in {"no_face", "detect_error", "multi_face", "tiny_face"}:
+            raise RuntimeError(
+                f"No usable single face in training image {img_path.name} ({plan.reason}); "
+                "remove it or replace it with a sharp single-person portrait. "
+                "Refusing a degraded identity crop."
+            )
         if plan.window is not None and plan.face is not None:
             _l, _t, w, h = plan.window
             log(

@@ -70,13 +70,12 @@ Z_IMAGE_TURBO_INFERENCE: dict[str, Any] = {
     "lora_weight_range": [0.8, 1.0],
 }
 
-# Base training σ: draw u, apply the SD3-style static shift ``train_sigma_shift``.
-# Inference uses shift 6, but training with 6 (let alone 6 + a high bias) puts most samples at
-# σ>0.9 where the input is nearly pure noise and almost none in the 0.3–0.7 band that decides
-# facial structure — LoRAs then never bind identity. Shift 3 keeps a high-σ emphasis while leaving
-# room in that band. ``sigma_bias=sigmoid`` (logit-normal) centers the draw on the band instead of
-# spreading it uniformly, which is the character-LoRA timestep used by AI-Toolkit / SD3 trainers.
-Z_IMAGE_BASE_TRAIN_SIGMA_SHIFT = 3.0
+# Base face training uses the standard SD3 / AI-Toolkit logit-normal σ distribution.
+# It is continuous and median-centred at 0.5. Do not apply an inference static shift
+# to it: forward shift moves the median to 0.75 at shift=3; the inverse moves it to
+# 0.25. Both starve part of the identity band. Uniform-sampling custom recipes may
+# still opt into train_sigma_shift=3 explicitly.
+Z_IMAGE_BASE_TRAIN_SIGMA_SHIFT = 1.0
 
 # Image and text attention (plus the SwiGLU FFN). Skips adaLN modulation linears, which overfit
 # the timestep and wash identity out. ``to_out`` is the MLX name (diffusers ``to_out.0``).
@@ -177,8 +176,8 @@ Z_IMAGE_PRESETS: dict[str, dict[str, Any]] = {
 # Qwen-Image-2512 face prior is sharp and the text encoder is a frozen Qwen2.5-VL. The old Flux
 # preset (rank 16, last 16 of 60 blocks, ~200 optimizer steps, min-SNR γ=5, uniform σ, 512²)
 # only moved clothes and color. Match the 2512 character recipe: rank 32, every block's image
-# and text attention, ~2.5–3k updates, sigmoid σ, shift 3 (full inference μ piles σ>0.9 and
-# starves the face band), caption dropout, 1024 on standard/quality.
+# and text attention, ~2.5–3k updates, standard logit-normal σ, caption dropout,
+# 1024 on standard/quality.
 _QWEN_IMAGE_COMMON: dict[str, Any] = {
     "learning_rate": 2e-4,
     "optimizer": "adamw",
