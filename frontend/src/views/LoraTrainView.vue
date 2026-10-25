@@ -124,7 +124,6 @@
               :selected-id="form.dataset_id"
               :datasets="datasets"
               :default-prompt="form.default_prompt"
-              :caption-edits="captionEdits"
               :dataset-health="datasetHealth"
               :dataset-health-stale="datasetHealthStale || datasetHealth?.faces?.resolution?.join('x') !== activeResolutionKey"
               :dataset-health-loading="datasetHealthLoading"
@@ -132,7 +131,6 @@
               :dataset-vlm-loading="datasetVlmLoading"
               @update:selected-id="form.dataset_id = $event"
               @update:default-prompt="form.default_prompt = $event"
-              @update:caption-edits="onCaptionEditsUpdate"
               @datasets-changed="onDatasetsChanged"
               @preflight-requested="onFacePreflightRequested"
               @run-dataset-vlm="runDatasetVlmAudit"
@@ -544,7 +542,6 @@ const datasetVlmLoading = ref(false);
 const visionAvailable = ref(false);
 const requirements = ref<any>(null);
 const presetsByModel = ref<Record<string, Record<string, Record<string, unknown>>>>({});
-const captionEdits = reactive<Record<string, string>>({});
 const datasetPanelRef = ref<InstanceType<typeof LoraDatasetPanel> | null>(null);
 const historyRef = ref<InstanceType<typeof LoraTrainHistory> | null>(null);
 const { loading: historyLoading, refresh: refreshHistory } = useLoraTrainLibrary();
@@ -657,16 +654,11 @@ const faceDatasetReady = computed(() => {
   return triggerBound.value;
 });
 
-const triggerCoverageCount = computed(() => {
+const triggerBound = computed(() => {
   const trigger = String(selectedDataset.value?.trigger_word || '').trim();
-  if (!trigger) return 0;
-  return trainingImages.value.filter((img: { file: string; prompt?: string }) =>
-    String(captionEdits[img.file] ?? img.prompt ?? '').includes(trigger)
-  ).length;
+  if (!trigger || trainingImages.value.length < 1) return false;
+  return effectiveDatasetCaption.value.includes(trigger);
 });
-const triggerBound = computed(() =>
-  trainingImages.value.length > 0 && triggerCoverageCount.value === trainingImages.value.length
-);
 
 function activeTrainingResolution(): [number, number] {
   if (form.preset !== 'custom') {
@@ -785,7 +777,7 @@ const identityConfirmChecks = computed(() => {
       label: trigger
         ? (triggerBound.value
           ? t('loraTrain.identityCheckTrigger', { trigger })
-          : t('loraTrain.triggerCoverageMissing', { count: imageCount - triggerCoverageCount.value, total: imageCount }))
+          : t('loraTrain.triggerCoverageMissing', { trigger }))
         : t('loraTrain.identityCheckTriggerMissing'),
     },
     {
@@ -926,11 +918,6 @@ function apiErrorMessage(e: unknown): string {
   if (detail && typeof detail === 'object' && detail.message) return detail.message;
   if (typeof detail === 'string') return detail;
   return err?.message || String(e);
-}
-
-function onCaptionEditsUpdate(next: Record<string, string>) {
-  Object.keys(captionEdits).forEach((k) => delete captionEdits[k]);
-  Object.assign(captionEdits, next);
 }
 
 async function refreshDatasetHealth(id?: string) {
@@ -1323,10 +1310,6 @@ watch(
     void refreshDatasetHealth(id);
     try {
       const ds = await api.loras.getDataset(id);
-      Object.keys(captionEdits).forEach((k) => delete captionEdits[k]);
-      for (const img of (ds as any).images || []) {
-        captionEdits[img.file] = img.prompt || '';
-      }
       datasets.value = datasets.value.map((d) => (d.id === id ? { ...d, ...(ds as Record<string, unknown>) } : d));
       const metaPrompt = String((ds as Record<string, unknown>).default_prompt || '').trim();
       if (metaPrompt) {
@@ -1379,10 +1362,6 @@ async function importFromRouteQuery() {
     datasets.value = datasets.value.map((d) =>
       d.id === form.dataset_id ? { ...d, ...(ds as object) } : d
     );
-    Object.keys(captionEdits).forEach((k) => delete captionEdits[k]);
-    for (const img of (ds as any).images || []) {
-      captionEdits[img.file] = img.prompt || form.default_prompt || '';
-    }
     step.value = 1;
     toast.success(t('loraTrain.galleryImported'));
     await refreshDatasetHealth(form.dataset_id);

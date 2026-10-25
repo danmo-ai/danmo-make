@@ -8188,295 +8188,41 @@ class LoraQualityTests(unittest.TestCase):
         self.assertIn("tiny_face_in_crop", merged["issues"])
         self.assertFalse(merged["suitable_for_training"])
 
-    def test_resolve_lora_subject_name_uses_only_explicit_trigger(self) -> None:
-        from backend.engine.training.lora_auto_caption import resolve_lora_subject_name
+    def test_load_training_pairs_uses_one_caption_and_rejects_per_image(self) -> None:
+        from backend.engine.training import dataset_store
 
-        self.assertEqual(
-            resolve_lora_subject_name({"default_prompt": "陈钰琪", "trigger_word": "", "name": "cyq"}),
-            "",
-        )
-        self.assertEqual(
-            resolve_lora_subject_name({"default_prompt": "陈钰琪", "trigger_word": "starface", "name": "cyq"}),
-            "starface",
-        )
-        self.assertEqual(
-            resolve_lora_subject_name(
-                {
-                    "default_prompt": "A photo of sks person",
-                    "trigger_word": "",
-                    "name": "陈钰琪",
-                }
-            ),
-            "",
-        )
-        self.assertEqual(
-            resolve_lora_subject_name({"default_prompt": "杨紫", "trigger_word": "", "name": "dataset-1"}),
-            "",
-        )
-
-    def test_caption_dataset_image_concept_prefixes_subject_visibly(self) -> None:
-        from pathlib import Path
-
-        from backend.core.contracts import ChatMessage
-        from backend.engine.llm.message_content import flatten_text_content
-        from backend.engine.training.lora_auto_caption import caption_dataset_image
-
-        def fake_analyze(_path: Path, messages: list[ChatMessage]) -> str:
-            user = next((m for m in messages if m.role == "user"), None)
-            blob = flatten_text_content(user.content if user else "")
-            self.assertIn("杨紫", blob)
-            system = next((m for m in messages if m.role == "system"), None)
-            self.assertNotIn("杨紫", flatten_text_content(system.content if system else ""))
-            return "半身照，白色连衣裙，自然光"
-
-        caption = caption_dataset_image(
-            Path("x.jpg"),
-            Path("/tmp/vlm"),
-            audit_kind="concept",
-            subject_name="杨紫",
-            analyze_fn=fake_analyze,
-        )
-        self.assertEqual(caption, "杨紫，半身照，白色连衣裙，自然光")
-
-    def test_caption_dataset_image_without_trigger_does_not_prefix_dataset_name(self) -> None:
-        from pathlib import Path
-
-        from backend.core.contracts import ChatMessage
-        from backend.engine.llm.message_content import flatten_text_content
-        from backend.engine.training.lora_auto_caption import caption_dataset_image
-
-        def fake_analyze(_path: Path, messages: list[ChatMessage]) -> str:
-            user = next((m for m in messages if m.role == "user"), None)
-            self.assertIn("No trigger word configured", flatten_text_content(user.content if user else ""))
-            return "半身照，白色连衣裙，自然光"
-
-        caption = caption_dataset_image(
-            Path("x.jpg"),
-            Path("/tmp/vlm"),
-            audit_kind="concept",
-            subject_name="",
-            analyze_fn=fake_analyze,
-        )
-        self.assertEqual(caption, "半身照，白色连衣裙，自然光")
-
-    def test_caption_dataset_image_strips_subject_from_vlm_output(self) -> None:
-        from pathlib import Path
-
-        from backend.engine.training.lora_auto_caption import caption_dataset_image
-
-        def fake_analyze(_path: Path, _messages: list) -> str:
-            return "陈钰琪 半身照，白色连衣裙，室内自然光"
-
-        caption = caption_dataset_image(
-            Path("x.jpg"),
-            Path("/tmp/vlm"),
-            audit_kind="concept",
-            subject_name="陈钰琪",
-            analyze_fn=fake_analyze,
-        )
-        self.assertEqual(caption, "陈钰琪，半身照，白色连衣裙，室内自然光")
-        self.assertEqual(caption.count("陈钰琪"), 1)
-
-    def test_concept_auto_caption_filters_smoothing_texture_labels(self) -> None:
-        from pathlib import Path
-
-        from backend.core.contracts import ChatMessage
-        from backend.engine.training.lora_auto_caption import (
-            build_concept_auto_caption_instruction,
-            build_concept_caption_messages,
-            caption_dataset_image,
-            normalize_scene_caption,
-        )
-
-        instruction = build_concept_auto_caption_instruction("陈钰琪")
-        self.assertIn("skin texture", instruction.lower())
-        msgs = build_concept_caption_messages("陈钰琪")
-        system = next(m for m in msgs if m.role == "system")
-        user = next(m for m in msgs if m.role == "user")
-        self.assertIn("skin texture", system.content.lower())
-        self.assertIn("陈钰琪", user.content)
-        self.assertNotIn("陈钰琪", system.content)
-        cleaned = normalize_scene_caption(
-            "半身照，光滑皮肤，白色连衣裙，smooth skin，室内自然光",
-            subject_name="陈钰琪",
-        )
-        self.assertEqual(cleaned, "半身照，白色连衣裙，室内自然光")
-
-        def fake_analyze(_path: Path, messages: list[ChatMessage]) -> str:
-            system = next(m for m in messages if m.role == "system")
-            self.assertIn("skin texture", system.content.lower())
-            return "半身照，光滑皮肤，白色连衣裙，smooth skin，室内自然光"
-
-        caption = caption_dataset_image(
-            Path("x.jpg"),
-            Path("/tmp/vlm"),
-            audit_kind="concept",
-            subject_name="陈钰琪",
-            analyze_fn=fake_analyze,
-        )
-        self.assertEqual(caption, "陈钰琪，半身照，白色连衣裙，室内自然光")
-
-    def test_concept_caption_drops_identity_phrases_and_caps_length(self) -> None:
-        from backend.engine.training.lora_auto_caption import (
-            MAX_CONCEPT_CAPTION_PHRASES,
-            build_concept_caption_messages,
-            compose_person_caption,
-            drop_identity_phrases,
-            is_trigger_anchored_short_caption,
-            normalize_scene_caption,
-        )
-
-        system = next(m for m in build_concept_caption_messages("sks") if m.role == "system")
-        self.assertIn("never describe", system.content.lower())
-        self.assertIn("ethnicity", system.content.lower())
-
-        raw = (
-            "close-up portrait, young asian woman with brown eyes and long black hair, white shirt, "
-            "smiling, standing on a beach, golden hour, smooth skin, oval face"
-        )
-        self.assertEqual(
-            normalize_scene_caption(raw, subject_name="sks", concept=True),
-            "close-up portrait, white shirt, smiling, standing on a beach, golden hour",
-        )
-        self.assertEqual(
-            compose_person_caption("小明", "半身照，年轻的亚洲女性，黑色长发，白色衬衫，微笑，站在海边，自然光，双眼皮"),
-            "小明，半身照，白色衬衫，微笑，站在海边，自然光",
-        )
-        # Glasses are an accessory (variable), not an identity feature.
-        self.assertEqual(drop_identity_phrases("黑框眼镜，白色衬衫"), "黑框眼镜，白色衬衫")
-        self.assertEqual(drop_identity_phrases("black glasses, blue eyes, red scarf"), "black glasses, red scarf")
-
-        # Without a trigger word the concept path still filters (concept=True is explicit).
-        self.assertEqual(normalize_scene_caption("brown eyes, red dress", concept=True), "red dress")
-        # Style captions are untouched.
-        self.assertEqual(normalize_scene_caption("brown eyes, red dress"), "brown eyes, red dress")
-
-        long_raw = ", ".join(f"phrase {i}" for i in range(14))
-        capped = normalize_scene_caption(long_raw, subject_name="sks", concept=True)
-        self.assertEqual(len(capped.split(", ")), MAX_CONCEPT_CAPTION_PHRASES)
-
-        self.assertTrue(is_trigger_anchored_short_caption("sks, white shirt, beach", "sks"))
-        self.assertFalse(is_trigger_anchored_short_caption("a photo of a woman", "sks"))
-        self.assertFalse(is_trigger_anchored_short_caption("sks, " + long_raw, "sks"))
-        self.assertFalse(is_trigger_anchored_short_caption("sks", ""))
-
-    def test_detect_caption_mode_concept_per_image_only_when_anchored_and_large(self) -> None:
-        from pathlib import Path
-
-        from backend.engine.training.dataset_store import (
-            CONCEPT_PER_IMAGE_MIN_IMAGES,
-            concept_caption_stats,
-            detect_caption_mode,
-        )
-
-        meta = {"kind": "concept", "trigger_word": "sks"}
-        n = CONCEPT_PER_IMAGE_MIN_IMAGES
-        anchored = [(Path(f"{i}.jpg"), f"sks, outfit {i}, background {i}") for i in range(n)]
-        self.assertEqual(detect_caption_mode(anchored, dataset_meta=meta), "per_image")
-        # Too few images → unified even with perfect captions.
-        self.assertEqual(detect_caption_mode(anchored[: n - 1], dataset_meta=meta), "unified")
-        # One long VLM caption → unified.
-        long_caps = list(anchored)
-        long_caps[0] = (Path("0.jpg"), "sks, " + ", ".join(f"p{i}" for i in range(12)))
-        self.assertEqual(detect_caption_mode(long_caps, dataset_meta=meta), "unified")
-        # Missing trigger → unified.
-        missing = list(anchored)
-        missing[1] = (Path("1.jpg"), "a woman in a park")
-        self.assertEqual(detect_caption_mode(missing, dataset_meta=meta), "unified")
-        # Identical captions → unified (nothing to disentangle).
-        same = [(Path(f"{i}.jpg"), "sks, portrait") for i in range(n)]
-        self.assertEqual(detect_caption_mode(same, dataset_meta=meta), "unified")
-        # No trigger word at all → unified.
-        self.assertEqual(detect_caption_mode(anchored, dataset_meta={"kind": "concept"}), "unified")
-
-        stats = concept_caption_stats(missing + [(Path("e.jpg"), "")], trigger="sks")
-        self.assertEqual(stats["missing_trigger"], 1)
-        self.assertEqual(stats["empty"], 1)
-        self.assertEqual(stats["anchored_short"], n - 1)
-
-    def test_normalize_scene_caption_rejects_exclamation_garbage(self) -> None:
-        from backend.engine.training.lora_auto_caption import normalize_scene_caption
-
-        raw = "!" * 80
-        self.assertEqual(normalize_scene_caption(raw), "")
-
-    def test_caption_dataset_image_retries_after_garbage_vlm_output(self) -> None:
-        from pathlib import Path
-
-        from backend.engine.training.lora_auto_caption import caption_dataset_image
-
-        calls: list[list[ChatMessage]] = []
-
-        def fake_analyze(_path: Path, messages: list[ChatMessage]) -> str:
-            calls.append(messages)
-            if len(calls) == 1:
-                return "!" * 100
-            return "半身照，白色衬衫，室内"
-
-        caption = caption_dataset_image(
-            Path("x.jpg"),
-            Path("/tmp/vlm"),
-            audit_kind="concept",
-            subject_name="陈钰琪",
-            analyze_fn=fake_analyze,
-        )
-        self.assertEqual(caption, "陈钰琪，半身照，白色衬衫，室内")
-        self.assertEqual(len(calls), 2)
-
-    def test_caption_dataset_images_batch_retries_garbage_in_second_pass(self) -> None:
-        from pathlib import Path
-
-        from backend.core.contracts import ChatMessage
-        from backend.engine.training.lora_auto_caption import caption_dataset_images_batch
-
-        calls: list[tuple[int, str]] = []
-
-        def fake_batch(
-            image_paths: list[Path],
-            messages: list[ChatMessage],
-            max_tokens=128,
-            temperature=0.2,
-        ) -> list[str]:
-            del max_tokens, temperature
-            role = next((m.role for m in messages if m.role == "system"), "")
-            calls.append((len(image_paths), role))
-            if len(calls) == 1:
-                return ["!" * 80, "半身照，红色连衣裙"]
-            return ["半身照，白色衬衫"]
-
-        caps = caption_dataset_images_batch(
-            [Path("a.jpg"), Path("b.jpg")],
-            Path("/tmp/vlm"),
-            audit_kind="concept",
-            subject_name="陈钰琪",
-            batch_analyze_fn=fake_batch,
-        )
-        self.assertEqual(caps[0], "陈钰琪，半身照，白色衬衫")
-        self.assertEqual(caps[1], "陈钰琪，半身照，红色连衣裙")
-        self.assertEqual(len(calls), 2)
-
-    def test_vlm_audit_worker_lora_caption_mode(self) -> None:
-        from backend.engine.llm.vlm_audit_worker import run_job
-
-        import backend.engine.training.lora_auto_caption as mod
-
-        original = mod.caption_dataset_images_batch
-        mod.caption_dataset_images_batch = lambda paths, model_dir, **kw: ["陈钰琪，半身照"]
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                model_dir = Path(tmp)
-                out = run_job(
-                    {
-                        "mode": "lora_caption",
-                        "image_paths": [str(Path(tmp) / "a.jpg")],
-                        "model_dir": str(model_dir),
-                        "audit_kind": "concept",
-                        "subject_name": "陈钰琪",
-                    }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ds = dataset_store.create_dataset(
+                root, name="face", kind="concept", trigger_word="ohwx", default_prompt="ohwx, portrait"
+            )
+            ds_dir = dataset_store.datasets_root(root) / ds["id"]
+            (ds_dir / "images").mkdir(exist_ok=True)
+            (ds_dir / "images" / "a.jpg").write_bytes(b"x")
+            (ds_dir / "images" / "b.jpg").write_bytes(b"y")
+            (ds_dir / "train.jsonl").write_text(
+                "\n".join(
+                    __import__("json").dumps(row, ensure_ascii=False)
+                    for row in (
+                        {"image": "images/a.jpg", "prompt": "white dress, park"},
+                        {"image": "images/b.jpg", "prompt": "coat, studio"},
+                    )
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "Per-image"):
+                dataset_store.load_training_pairs_unified(
+                    root, ds["id"], progress_prompt="ohwx, portrait", caption_mode="per_image"
                 )
-        finally:
-            mod.caption_dataset_images_batch = original
-        self.assertEqual(out["captions"], ["陈钰琪，半身照"])
+            pairs, caption = dataset_store.load_training_pairs_unified(
+                root, ds["id"], progress_prompt="ohwx, portrait", caption_mode="unified"
+            )
+            self.assertEqual(caption, "ohwx, portrait")
+            self.assertEqual([prompt for _, prompt in pairs], ["ohwx, portrait", "ohwx, portrait"])
+            with self.assertRaisesRegex(RuntimeError, "trigger_word"):
+                dataset_store.load_training_pairs_unified(
+                    root, ds["id"], progress_prompt="a portrait", caption_mode="auto"
+                )
 
     def test_create_dataset_does_not_use_name_as_default_prompt(self) -> None:
         from backend.engine.training import dataset_store
@@ -8555,7 +8301,7 @@ class LoraQualityTests(unittest.TestCase):
             report = analyze_dataset_health(root, dataset_id, face_audit=False)
             self.assertEqual(report["level"], "good")
             self.assertGreaterEqual(int(report["stats"]["median_short_edge"]), 1080)
-            self.assertEqual(report["caption_mode_auto"], "unified")
+            self.assertNotIn("caption_mode_auto", report)
             self.assertNotIn("faces", report)
 
     def test_analyze_dataset_health_poor_small_images(self) -> None:
@@ -8614,10 +8360,9 @@ class LoraQualityTests(unittest.TestCase):
             report = analyze_dataset_health(root, dataset_id, face_audit=False)
             codes = {h["code"]: h for h in report["hints"]}
             self.assertIn("near_duplicates", codes)
-            self.assertEqual(codes["captions_missing_trigger"]["params"]["count"], 1)
-            self.assertEqual(codes["captions_long"]["params"]["count"], 1)
-            self.assertEqual(report["caption_mode_auto"], "unified")
-            self.assertEqual(report["stats"]["caption_anchored_short_count"], 9)
+            self.assertNotIn("captions_missing_trigger", codes)
+            self.assertNotIn("captions_long", codes)
+            self.assertNotIn("caption_mode_auto", report)
 
     def test_analyze_dataset_health_face_audit_rows(self) -> None:
         from unittest import mock
@@ -8813,17 +8558,6 @@ class LoraTrainRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "progress_prompt"):
             resolve_dreambooth_caption(
                 [(Path("a.jpg"), "some caption")],
-                progress_prompt="",
-                dataset_meta={},
-            )
-
-    def test_resolve_per_image_captions_fails_on_empty_without_fallback(self) -> None:
-        from backend.engine.training.dataset_store import resolve_per_image_captions
-        from pathlib import Path
-
-        with self.assertRaisesRegex(RuntimeError, "empty"):
-            resolve_per_image_captions(
-                [(Path("a.jpg"), "")],
                 progress_prompt="",
                 dataset_meta={},
             )
@@ -9843,59 +9577,6 @@ class LoraTrainingCropTests(unittest.TestCase):
             dataset_meta={"trigger_word": "sks"},
         )
         self.assertEqual(cap, "a beautiful portrait")
-
-    def test_resolve_per_image_captions_keeps_row_text(self) -> None:
-        from backend.engine.training.dataset_store import resolve_per_image_captions
-        from pathlib import Path
-
-        pairs = [
-            (Path("a.jpg"), "陈钰琪，白色连衣裙"),
-            (Path("b.jpg"), "陈钰琪，古装"),
-        ]
-        out = resolve_per_image_captions(
-            pairs,
-            progress_prompt="陈钰琪",
-            dataset_meta={"trigger_word": "", "default_prompt": "陈钰琪"},
-        )
-        self.assertEqual(out[0][1], "陈钰琪，白色连衣裙")
-        self.assertEqual(out[1][1], "陈钰琪，古装")
-
-    def test_load_training_pairs_fails_when_concept_caption_missing_trigger(self) -> None:
-        from backend.engine.training import dataset_store
-        from pathlib import Path
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            ds = dataset_store.create_dataset(root, name="cyq", kind="concept", trigger_word="陈钰琪")
-            ds_dir = dataset_store.datasets_root(root) / ds["id"]
-            (ds_dir / "images").mkdir(exist_ok=True)
-            (ds_dir / "images" / "a.jpg").write_bytes(b"x")
-            (ds_dir / "train.jsonl").write_text(
-                __import__("json").dumps(
-                    {"image": "images/a.jpg", "prompt": "半身照，白色连衣裙"},
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(RuntimeError, "trigger_word"):
-                dataset_store.load_training_pairs_unified(
-                    root,
-                    ds["id"],
-                    progress_prompt="陈钰琪",
-                    caption_mode="per_image",
-                )
-
-    def test_resolve_per_image_captions_does_not_repeat_progress_prompt_name(self) -> None:
-        from backend.engine.training.dataset_store import resolve_per_image_captions
-        from pathlib import Path
-
-        out = resolve_per_image_captions(
-            [(Path("a.jpg"), "陈钰琪，半身照，白色连衣裙")],
-            progress_prompt="陈钰琪",
-            dataset_meta={"trigger_word": "", "default_prompt": "陈钰琪"},
-        )
-        self.assertEqual(out[0][1].count("陈钰琪"), 1)
-        self.assertEqual(out[0][1], "陈钰琪，半身照，白色连衣裙")
 
     def test_collect_lora_safetensors_remaps_for_qwen_image(self) -> None:
         from backend.engine.runtime.mlx import MLXContext

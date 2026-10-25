@@ -422,9 +422,8 @@ def run_flux_dreambooth_training(
     if skipped_note:
         _log(exec_ctx, "info", skipped_note)
     dataset_meta = _dataset_meta(project_root, request.dataset_id)
-    trigger_word = str(dataset_meta.get("trigger_word") or "").strip()
-    resolved_caption_mode = "per_image" if len({str(p or "").strip() for _, p in pairs}) > 1 else "unified"
-    _log(exec_ctx, "info", f"Caption mode: {resolved_caption_mode} ({len(pairs)} images)")
+    resolved_caption_mode = "unified"
+    _log(exec_ctx, "info", f"Caption mode: unified ({len(pairs)} images)")
 
     config = get_config_class("flux1")()
     _log(exec_ctx, "info", "Loading VAE encoder and text encoders …")

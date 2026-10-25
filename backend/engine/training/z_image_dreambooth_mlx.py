@@ -682,36 +682,12 @@ def run_z_image_dreambooth_training(
     if skipped_note:
         _log(exec_ctx, "info", skipped_note)
     dataset_meta = _dataset_meta(project_root, request.dataset_id)
-    trigger_word = str(dataset_meta.get("trigger_word") or "").strip()
-
-    unique_caps = {str(p or "").strip() for _, p in pairs}
-    resolved_caption_mode = "per_image" if len(unique_caps) > 1 else "unified"
-    kind = str(dataset_meta.get("kind") or "concept").strip().lower()
-    if kind == "concept" and resolved_caption_mode == "per_image":
-        from backend.engine.training.dataset_store import concept_caption_stats
-
-        cap_stats = concept_caption_stats(pairs, trigger=trigger_word)
-        if cap_stats["long"] or cap_stats["missing_trigger"]:
-            _log(
-                exec_ctx,
-                "warning",
-                f"Concept LoRA is using per_image captions but {cap_stats['long'] + cap_stats['missing_trigger']}/"
-                f"{cap_stats['total']} are long or not trigger-anchored; long VLM captions dilute the trigger "
-                "and often prevent face memorization. Re-run auto-caption (concept template) or set "
-                "caption_mode=unified.",
-            )
-        else:
-            _log(
-                exec_ctx,
-                "info",
-                f"Concept LoRA per_image captions are trigger-anchored and short "
-                f"({cap_stats['anchored_short']}/{cap_stats['total']}); outfit/background stay separable from identity.",
-            )
+    resolved_caption_mode = "unified"
     sample_cap = str(pairs[0][1] or "").strip() if pairs else ""
     _log(
         exec_ctx,
         "info",
-        f"Caption mode: {resolved_caption_mode} ({len(pairs)} images); "
+        f"Caption mode: unified ({len(pairs)} images); "
         f"sample_caption={sample_cap[:120]!r}{'…' if len(sample_cap) > 120 else ''}",
     )
 

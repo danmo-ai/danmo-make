@@ -65,9 +65,6 @@ async def run_vlm_audit_subprocess(
     return [str(t) for t in texts]
 
 
-_LORA_CAPTION_CHUNK_SIZE = 24
-
-
 async def _run_vlm_worker_job(job: dict[str, Any], *, worker_memory_gb: int | None = None) -> dict[str, Any]:
     work_dir = Path(tempfile.gettempdir()) / "dq_vlm_audit" / uuid.uuid4().hex
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -116,38 +113,4 @@ async def _run_vlm_worker_job(job: dict[str, Any], *, worker_memory_gb: int | No
     if payload.get("error"):
         raise RuntimeError(str(payload["error"]))
     return payload
-
-
-async def run_lora_caption_subprocess(
-    *,
-    image_paths: list[Path],
-    model_dir: Path,
-    audit_kind: str = "concept",
-    subject_name: str = "",
-    worker_memory_gb: int | None = None,
-    chunk_size: int = _LORA_CAPTION_CHUNK_SIZE,
-) -> list[str]:
-    """Run LoRA auto-caption in an isolated child process (chunked batch loads)."""
-    if not image_paths:
-        return []
-
-    size = max(1, int(chunk_size))
-    captions: list[str] = []
-    for start in range(0, len(image_paths), size):
-        chunk = image_paths[start : start + size]
-        payload = await _run_vlm_worker_job(
-            {
-                "mode": "lora_caption",
-                "image_paths": [str(p) for p in chunk],
-                "model_dir": str(model_dir),
-                "audit_kind": audit_kind,
-                "subject_name": subject_name,
-            },
-            worker_memory_gb=worker_memory_gb,
-        )
-        chunk_caps = payload.get("captions")
-        if not isinstance(chunk_caps, list) or len(chunk_caps) != len(chunk):
-            raise RuntimeError("VLM caption worker returned invalid payload")
-        captions.extend(str(c) for c in chunk_caps)
-    return captions
 

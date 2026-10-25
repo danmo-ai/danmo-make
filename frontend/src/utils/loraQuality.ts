@@ -85,7 +85,6 @@ export type LoraDatasetHealthReport = {
   level: LoraQualityLevel;
   score: number;
   kind?: 'concept' | 'style';
-  caption_mode_auto?: 'unified' | 'per_image';
   stats: Record<string, number>;
   hints: LoraQualityHint[];
   faces?: FaceAuditReport;

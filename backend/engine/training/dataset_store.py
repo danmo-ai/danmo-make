@@ -321,28 +321,6 @@ def add_dataset_images(
     return get_dataset(workspace_root, dataset_id)
 
 
-def update_dataset_captions(
-    workspace_root: Path,
-    dataset_id: str,
-    captions: list[dict[str, str]],
-) -> dict[str, Any]:
-    path = _dataset_dir(datasets_root(workspace_root), dataset_id)
-    if not (path / "meta.json").is_file():
-        raise FileNotFoundError(f"Dataset {dataset_id!r} not found")
-    rows = _read_train_jsonl(path / "train.jsonl")
-    by_file = {row["image"]: row for row in rows}
-    for item in captions:
-        file_key = item.get("file") or item.get("image")
-        if not file_key or file_key not in by_file:
-            continue
-        by_file[file_key]["prompt"] = str(item.get("prompt") or "")
-    _write_train_jsonl(path / "train.jsonl", list(by_file.values()))
-    meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
-    meta["updated_at"] = _now_iso()
-    (path / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    return get_dataset(workspace_root, dataset_id)
-
-
 def remove_dataset_image(workspace_root: Path, dataset_id: str, file_rel: str) -> dict[str, Any]:
     file_rel = _validate_dataset_file_rel(file_rel)
     path = _dataset_dir(datasets_root(workspace_root), dataset_id)
@@ -459,6 +437,10 @@ def import_dataset_from_assets(
     """Copy gallery/canvas assets into a training dataset."""
     if not asset_ids:
         raise ValueError("asset_ids must not be empty")
+    if asset_captions:
+        raise ValueError(
+            "Per-image captions are not used. Set default_prompt; every image trains with that one caption."
+        )
     files: list[tuple[str, bytes]] = []
     prompts: list[str] = []
     path = _dataset_dir(datasets_root(workspace_root), dataset_id)
@@ -466,7 +448,10 @@ def import_dataset_from_assets(
         raise FileNotFoundError(f"Dataset {dataset_id!r} not found")
     meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
     fallback = (default_prompt if default_prompt is not None else meta.get("default_prompt") or "").strip()
-    caps = asset_captions or {}
+    if not fallback:
+        fallback = str(meta.get("trigger_word") or "").strip()
+    if not fallback:
+        raise ValueError("Set the dataset training caption (default_prompt) before importing images.")
     for raw in asset_ids:
         aid = _normalize_asset_id(raw)
         if not aid:
@@ -477,13 +462,8 @@ def import_dataset_from_assets(
         suffix = src.suffix.lower()
         if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
             raise ValueError(f"Asset {aid!r} is not an image ({suffix or 'unknown'})")
-        cap = caps.get(raw) or caps.get(aid) or caps.get(f"asset:{aid}") or fallback
-        if not str(cap or "").strip():
-            raise ValueError(
-                f"Asset {aid!r}: no caption. Set dataset default_prompt or provide asset_captions."
-            )
         files.append((src.name, src.read_bytes()))
-        prompts.append(cap)
+        prompts.append(fallback)
     if not files:
         raise ValueError("No valid image assets to import")
     return add_dataset_images(
@@ -604,9 +584,9 @@ def _validate_concept_trigger_captions(
         preview = ", ".join(missing[:5])
         more = "" if len(missing) <= 5 else f" (+{len(missing) - 5} more)"
         raise RuntimeError(
-            f"Concept LoRA training captions must visibly include trigger_word {trigger!r}; "
-            f"{len(missing)}/{len(pairs)} caption(s) are missing it: {preview}{more}. "
-            "Run VLM auto-caption again or edit captions before training."
+            f"Concept LoRA training caption must visibly include trigger_word {trigger!r}; "
+            f"{len(missing)}/{len(pairs)} image(s) would train without it: {preview}{more}. "
+            "Put the trigger word in progress_prompt or the dataset training caption."
         )
 
 
@@ -628,123 +608,12 @@ def resolve_dreambooth_caption(
     return unified
 
 
-def resolve_per_image_captions(
-    pairs: list[tuple[Path, str]],
-    *,
-    progress_prompt: str,
-    dataset_meta: dict[str, Any],
-) -> list[tuple[Path, str]]:
-    """Per-image captions exactly as stored; blanks may use progress/default prompt only."""
-    fallback = (progress_prompt or "").strip() or (dataset_meta.get("default_prompt") or "").strip()
-    out: list[tuple[Path, str]] = []
-    missing: list[str] = []
-    for path, cap in pairs:
-        text = str(cap or "").strip() or fallback
-        if not text:
-            missing.append(path.name)
-        out.append((path, text))
-    if missing:
-        preview = ", ".join(missing[:5])
-        more = "" if len(missing) <= 5 else f" (+{len(missing) - 5} more)"
-        raise RuntimeError(
-            f"{len(missing)}/{len(pairs)} training caption(s) are empty: {preview}{more}. "
-            "Fill per-image captions or set progress_prompt / dataset default_prompt."
-        )
-    return out
-
-
-# Below this many images, per-image captions add caption noise faster than they add
-# outfit/background disentanglement; unified trigger-only captions win.
-CONCEPT_PER_IMAGE_MIN_IMAGES = 15
-
-
-def concept_caption_stats(
-    pairs: list[tuple[Path, str]],
-    *,
-    trigger: str,
-) -> dict[str, Any]:
-    """Summarise how per-image captions of a concept dataset relate to the trigger word."""
-    from backend.engine.training.lora_auto_caption import is_trigger_anchored_short_caption
-
-    captions = [str(p or "").strip() for _, p in pairs]
-    non_empty = [c for c in captions if c]
-    trig = (trigger or "").strip()
-    anchored_short = sum(1 for c in non_empty if is_trigger_anchored_short_caption(c, trig))
-    missing_trigger = sum(1 for c in non_empty if trig and not _caption_contains_trigger(c, trig))
-    long_count = sum(
-        1
-        for c in non_empty
-        if trig and _caption_contains_trigger(c, trig) and not is_trigger_anchored_short_caption(c, trig)
-    )
-    trigger_only = sum(1 for c in non_empty if _caption_is_trigger_only(c, trig))
-    return {
-        "total": len(captions),
-        "non_empty": len(non_empty),
-        "empty": len(captions) - len(non_empty),
-        "unique": len(set(non_empty)),
-        "anchored_short": anchored_short,
-        "missing_trigger": missing_trigger,
-        "long": long_count,
-        "trigger_only": trigger_only,
-    }
-
-
-def _caption_is_trigger_only(caption: str, trigger: str) -> bool:
-    """True when nothing but the identity token remains (no outfit / pose / background)."""
-    import re
-
-    rest = caption
-    if trigger:
-        rest = rest.replace(trigger, "")
-    rest = re.sub(r"[\s,，。.!！?？、:：;；\-—_]+", "", rest)
-    return len(rest) < 2
-
-
 def trigger_looks_like_personal_name(trigger: str) -> bool:
     """CJK given names bind clothes and publicity photos; rare tokens do not."""
     text = (trigger or "").strip()
     if not text or "_" in text or any(ch.isascii() and ch.isalnum() for ch in text):
         return False
     return 2 <= len(text) <= 4 and all("\u4e00" <= ch <= "\u9fff" for ch in text)
-
-
-def detect_caption_mode(
-    pairs: list[tuple[Path, str]],
-    *,
-    dataset_meta: dict[str, Any] | None = None,
-) -> str:
-    """Auto-detect caption mode when the training request leaves ``caption_mode`` on auto.
-
-    **Concept / face LoRA** (``kind=concept``): ``per_image`` only when the dataset is large
-    enough (``CONCEPT_PER_IMAGE_MIN_IMAGES``) and *every* caption is trigger-anchored and short
-    (``<trigger>, outfit, pose, background`` — no identity description); this lets the LoRA
-    disentangle outfit / background from the face. Otherwise ``unified`` — bind identity to the
-    trigger / ``progress_prompt`` only, since long VLM captions dilute the trigger in Qwen3
-    embeddings and prevent face memorization.
-
-    **Style / other kinds**: ``per_image`` when most captions differ (typical VLM output).
-    """
-    kind = str((dataset_meta or {}).get("kind") or "concept").strip().lower()
-    if kind == "concept":
-        trigger = str((dataset_meta or {}).get("trigger_word") or "").strip()
-        if not trigger or len(pairs) < CONCEPT_PER_IMAGE_MIN_IMAGES:
-            return "unified"
-        stats = concept_caption_stats(pairs, trigger=trigger)
-        if stats["empty"] or stats["missing_trigger"] or stats["long"]:
-            return "unified"
-        if stats["unique"] > max(1, stats["non_empty"] * 0.5):
-            return "per_image"
-        return "unified"
-    if len(pairs) < 2:
-        return "unified"
-    captions = [str(p or "").strip() for _, p in pairs]
-    non_empty = [c for c in captions if c]
-    if not non_empty:
-        return "unified"
-    unique = set(non_empty)
-    if len(unique) > max(1, len(non_empty) * 0.5):
-        return "per_image"
-    return "unified"
 
 
 def load_training_pairs_unified(
@@ -754,12 +623,16 @@ def load_training_pairs_unified(
     progress_prompt: str,
     caption_mode: str = "unified",
 ) -> tuple[list[tuple[Path, str]], str]:
-    """Load training pairs; ``unified`` uses one caption, ``per_image`` keeps row captions.
+    """Load training pairs. Every image uses one caption.
 
-    When *caption_mode* is ``None`` or ``"auto"``, the function inspects the
-    dataset to decide: if most images carry distinct captions (e.g. from VLM
-    auto-captioning), ``per_image`` is selected; otherwise ``unified``.
+    Stored per-image text is not the training signal. An explicit ``per_image``
+    request fails instead of being rewritten into that one caption.
     """
+    raw_mode = (caption_mode or "unified").strip().lower()
+    if raw_mode == "per_image":
+        raise RuntimeError(
+            "Per-image captions are not used. Set progress_prompt; every image trains with that caption."
+        )
     pairs_raw = load_training_pairs(workspace_root, dataset_id)
     if not pairs_raw:
         return [], ""
@@ -769,19 +642,6 @@ def load_training_pairs_unified(
         progress_prompt=progress_prompt,
         dataset_meta=meta,
     )
-    raw_mode = (caption_mode or "auto").strip().lower()
-    if raw_mode in ("auto", "none", ""):
-        mode = detect_caption_mode(pairs_raw, dataset_meta=meta)
-    else:
-        mode = raw_mode
-    if mode == "per_image":
-        pairs = resolve_per_image_captions(
-            pairs_raw,
-            progress_prompt=progress_prompt,
-            dataset_meta=meta,
-        )
-        _validate_concept_trigger_captions(pairs, dataset_meta=meta)
-        return pairs, preview_caption
     pairs = [(path, preview_caption) for path, _ in pairs_raw]
     _validate_concept_trigger_captions(pairs, dataset_meta=meta)
     return pairs, preview_caption

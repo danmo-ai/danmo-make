@@ -132,8 +132,13 @@
               :placeholder="$t('loraTrain.triggerWordHint')"
               @blur="saveTriggerWord"
             />
-            <DqButton size="sm" type="secondary" :disabled="!triggerWordEdit.trim()" @click="applyTriggerToCaptions">
-              {{ $t('loraTrain.bindTriggerToCaptions') }}
+            <DqButton
+              v-if="triggerWordEdit.trim() && !captionHasTrigger"
+              size="sm"
+              type="secondary"
+              @click="writeTriggerIntoCaption"
+            >
+              {{ $t('loraTrain.bindTriggerToCaption') }}
             </DqButton>
           </div>
           <p v-if="datasetHealthLoading" class="lora-dataset-panel__trigger-status is-warning">
@@ -144,11 +149,31 @@
               ? $t('loraTrain.facePreflightStale')
               : $t('loraTrain.facePreflightFresh', { resolution: (datasetHealth.faces?.resolution || []).join('×') }) }}
           </p>
-          <p class="lora-dataset-panel__trigger-status" :class="triggerCoverage === trainingCount && trainingCount > 0 ? 'is-ready' : 'is-warning'">
-            {{ triggerCoverage === trainingCount && trainingCount > 0
-              ? $t('loraTrain.triggerCoverageReady', { count: triggerCoverage })
-              : $t('loraTrain.triggerCoverageMissing', { count: trainingCount - triggerCoverage, total: trainingCount }) }}
+          <p
+            v-if="triggerWordEdit.trim()"
+            class="lora-dataset-panel__trigger-status"
+            :class="captionHasTrigger ? 'is-ready' : 'is-warning'"
+          >
+            {{ captionHasTrigger
+              ? $t('loraTrain.triggerCoverageReady', { trigger: triggerWordEdit.trim() })
+              : $t('loraTrain.triggerCoverageMissing', { trigger: triggerWordEdit.trim() }) }}
           </p>
+          <p v-else class="lora-dataset-panel__trigger-status is-warning">
+            {{ $t('loraTrain.identityCheckTriggerMissing') }}
+          </p>
+        </div>
+
+        <div class="lora-dataset-panel__field">
+          <label class="lora-dataset-panel__label">{{ $t('loraTrain.defaultPrompt') }}</label>
+          <DqInput
+            :model-value="defaultPrompt"
+            type="textarea"
+            :rows="2"
+            :placeholder="$t('loraTrain.defaultPromptHint')"
+            @update:model-value="(v: string) => emit('update:defaultPrompt', v)"
+            @blur="patchDefaultPrompt"
+          />
+          <p class="lora-dataset-panel__field-hint">{{ $t('loraTrain.defaultPromptDesc') }}</p>
         </div>
         </div>
 
@@ -192,23 +217,6 @@
           </DqButton>
           <DqButton size="sm" type="secondary" @click="showGalleryImport = true">
             {{ $t('loraTrain.importGallery') }}
-          </DqButton>
-          <DqButton
-            size="sm"
-            type="secondary"
-            :disabled="!selectedDataset?.images?.length"
-            :loading="autoCaptioning"
-            @click="runAutoCaption"
-          >
-            {{ $t('loraTrain.autoCaption') }}
-          </DqButton>
-          <DqButton
-            size="sm"
-            type="secondary"
-            :disabled="!selectedDataset?.images?.length || !defaultPrompt.trim()"
-            @click="applyDefaultToAll"
-          >
-            {{ $t('loraTrain.applyDefaultToAll') }}
           </DqButton>
         </div>
         </div>
@@ -325,13 +333,6 @@
                 {{ $t('loraTrain.gateRestore') }}
               </DqButton>
             </div>
-            <DqInput
-              :model-value="captionEdits[img.file]"
-              size="sm"
-              :placeholder="$t('loraTrain.captionPlaceholder')"
-              @update:model-value="(v: string) => setCaption(img.file, v)"
-              @blur="saveCaptions"
-            />
           </div>
         </div>
         <DqEmpty v-else :description="$t('loraTrain.noImages')" />
@@ -348,21 +349,6 @@
           class="lora-dataset-panel__health"
           @run-vlm="$emit('run-dataset-vlm')"
         />
-
-        <details class="lora-dataset-panel__guide">
-          <summary>{{ $t('loraTrain.defaultPrompt') }}</summary>
-          <div class="lora-dataset-panel__field">
-            <DqInput
-              :model-value="defaultPrompt"
-              type="textarea"
-              :rows="2"
-              :placeholder="$t('loraTrain.defaultPromptHint')"
-              @update:model-value="(v: string) => emit('update:defaultPrompt', v)"
-              @blur="patchDefaultPrompt"
-            />
-            <p class="lora-dataset-panel__field-hint">{{ $t('loraTrain.defaultPromptDesc') }}</p>
-          </div>
-        </details>
       </template>
 
       <DqEmpty v-else :description="$t('loraTrain.selectOrCreateDataset')" />
@@ -455,7 +441,6 @@ const props = defineProps<{
   selectedId: string;
   datasets: Array<Record<string, any>>;
   defaultPrompt: string;
-  captionEdits: Record<string, string>;
   datasetHealth?: LoraDatasetHealthReport | null;
   datasetHealthStale?: boolean;
   datasetHealthLoading?: boolean;
@@ -466,7 +451,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:selectedId', id: string): void;
   (e: 'update:defaultPrompt', value: string): void;
-  (e: 'update:captionEdits', value: Record<string, string>): void;
   (e: 'datasets-changed', datasets: Array<Record<string, any>>): void;
   (e: 'preflight-requested'): Promise<void> | void;
   (e: 'run-dataset-vlm'): void;
@@ -479,7 +463,6 @@ const dragOver = ref(false);
 const uploading = ref(false);
 const importingDog6 = ref(false);
 const importingGallery = ref(false);
-const autoCaptioning = ref(false);
 const preflightLoading = ref(false);
 const deletingDataset = ref(false);
 const deletingBlocked = ref(false);
@@ -508,13 +491,10 @@ const trainingCount = computed(() => {
   if (typeof listed === 'number' && !(selectedDataset.value?.images || []).length) return listed;
   return (selectedDataset.value?.images || []).filter((img: { file: string }) => !skippedFiles.value.has(img.file)).length;
 });
-const triggerCoverage = computed(() => {
+const captionHasTrigger = computed(() => {
   const trigger = triggerWordEdit.value.trim();
-  if (!trigger) return 0;
-  return (selectedDataset.value?.images || []).filter((img: { file: string; prompt?: string }) =>
-    !skippedFiles.value.has(img.file)
-    && String(props.captionEdits[img.file] ?? img.prompt ?? '').includes(trigger)
-  ).length;
+  if (!trigger) return false;
+  return props.defaultPrompt.includes(trigger);
 });
 
 const vlmSampleMap = computed(() => {
@@ -721,10 +701,6 @@ function selectDataset(id: string) {
   emit('update:selectedId', id);
 }
 
-function setCaption(file: string, value: string) {
-  emit('update:captionEdits', { ...props.captionEdits, [file]: value });
-}
-
 function datasetImageUrl(file: string): string {
   if (!props.selectedId || !file) return '';
   return api.loras.datasetImageUrl(props.selectedId, file);
@@ -743,11 +719,8 @@ function openUploadPicker() {
 
 async function refreshDatasetDetail(id: string) {
   const ds = (await api.loras.getDataset(id)) as Record<string, any>;
-  const captions: Record<string, string> = {};
-  for (const img of ds.images || []) {
-    captions[img.file] = img.prompt || props.defaultPrompt || '';
-  }
-  emit('update:captionEdits', captions);
+  const prompt = String(ds.default_prompt || '').trim();
+  if (prompt) emit('update:defaultPrompt', prompt);
   patchDatasets(props.datasets.map((d) => (d.id === id ? { ...d, ...ds } : d)));
 }
 
@@ -802,28 +775,6 @@ function openCreateDialog() {
 
 function removePendingAsset(path: string) {
   pendingGalleryAssets.value = pendingGalleryAssets.value.filter((p) => p !== path);
-}
-
-async function applyDefaultToAll() {
-  if (!props.selectedId || !props.defaultPrompt.trim()) return;
-  const prompt = props.defaultPrompt.trim();
-  const captions = (selectedDataset.value?.images || []).map((img: { file: string }) => ({
-    file: img.file,
-    prompt,
-  }));
-  if (!captions.length) return;
-  try {
-    const ds = (await api.loras.updateCaptions(props.selectedId, captions)) as Record<string, any>;
-    const next: Record<string, string> = {};
-    for (const img of ds.images || []) {
-      next[img.file] = img.prompt || prompt;
-    }
-    emit('update:captionEdits', next);
-    patchDatasets(props.datasets.map((d) => (d.id === props.selectedId ? { ...d, ...ds } : d)));
-    toast.success(t('loraTrain.applyDefaultDone'));
-  } catch (e: unknown) {
-    toast.error(apiErrorMessage(e));
-  }
 }
 
 async function uploadFiles(files: File[]) {
@@ -885,38 +836,8 @@ async function confirmGalleryImport() {
   }
 }
 
-async function runAutoCaption() {
-  if (!props.selectedId) return;
-  autoCaptioning.value = true;
-  try {
-    const ds = (await api.loras.autoCaption(props.selectedId)) as Record<string, any>;
-    const captions: Record<string, string> = { ...props.captionEdits };
-    for (const img of ds.images || []) {
-      captions[img.file] = img.prompt || '';
-    }
-    emit('update:captionEdits', captions);
-    patchDatasets(props.datasets.map((d) => (d.id === props.selectedId ? { ...d, ...ds } : d)));
-    toast.success(t('loraTrain.autoCaptionDone'));
-  } catch (e: unknown) {
-    toast.error(apiErrorMessage(e));
-  } finally {
-    autoCaptioning.value = false;
-  }
-}
-
-async function saveCaptions() {
-  if (!props.selectedId) return;
-  const captions = Object.entries(props.captionEdits).map(([file, prompt]) => ({ file, prompt }));
-  try {
-    await api.loras.updateCaptions(props.selectedId, captions);
-  } catch (e: unknown) {
-    toast.error(apiErrorMessage(e));
-  }
-}
-
 async function saveDraft() {
   await saveTriggerWord();
-  await saveCaptions();
   await patchDefaultPrompt();
 }
 
@@ -925,7 +846,6 @@ async function runPreflight() {
   preflightLoading.value = true;
   try {
     await saveTriggerWord();
-    await saveCaptions();
     await patchDefaultPrompt();
     await emit('preflight-requested');
   } finally {
@@ -933,18 +853,18 @@ async function runPreflight() {
   }
 }
 
-async function applyTriggerToCaptions() {
+async function writeTriggerIntoCaption() {
   const trigger = triggerWordEdit.value.trim();
-  if (!props.selectedId || !trigger) return;
+  if (!props.selectedId || !trigger || props.defaultPrompt.includes(trigger)) return;
   await saveTriggerWord();
-  const captions: Array<{ file: string; prompt: string }> = (selectedDataset.value?.images || []).map((img: { file: string; prompt?: string }) => {
-    const existing = String(props.captionEdits[img.file] ?? img.prompt ?? '').trim();
-    const prompt = existing.includes(trigger) ? existing : `${trigger}, ${existing || 'a detailed portrait of the same person'}`;
-    return { file: img.file, prompt };
-  });
+  const current = props.defaultPrompt.trim();
+  const next = current ? `${trigger}, ${current}` : trigger;
+  emit('update:defaultPrompt', next);
   try {
-    const ds = await api.loras.updateCaptions(props.selectedId, captions) as Record<string, any>;
-    emit('update:captionEdits', Object.fromEntries(captions.map((item) => [item.file, item.prompt])));
+    const ds = (await api.loras.patchDataset(props.selectedId, {
+      ...datasetMetaPatch(),
+      default_prompt: next,
+    })) as Record<string, any>;
     patchDatasets(props.datasets.map((d) => (d.id === props.selectedId ? { ...d, ...ds } : d)));
     toast.success(t('loraTrain.triggerBound'));
   } catch (e: unknown) {
@@ -1056,9 +976,6 @@ async function deleteBlocked() {
     for (const file of files) {
       ds = (await api.loras.deleteDatasetImage(props.selectedId, file)) as Record<string, any>;
     }
-    const nextCaptions = { ...props.captionEdits };
-    for (const file of files) delete nextCaptions[file];
-    emit('update:captionEdits', nextCaptions);
     if (ds) patchDatasets(props.datasets.map((d) => (d.id === props.selectedId ? { ...d, ...ds } : d)));
     toast.success(t('loraTrain.gateDeleteAllDone', { count: files.length }));
   } catch (e: unknown) {
@@ -1081,9 +998,6 @@ async function removeImage(file: string) {
   }
   try {
     const ds = (await api.loras.deleteDatasetImage(props.selectedId, file)) as Record<string, any>;
-    const nextCaptions = { ...props.captionEdits };
-    delete nextCaptions[file];
-    emit('update:captionEdits', nextCaptions);
     patchDatasets(props.datasets.map((d) => (d.id === props.selectedId ? { ...d, ...ds } : d)));
     toast.success(t('loraTrain.removeImageDone'));
   } catch (e: unknown) {
@@ -1111,7 +1025,6 @@ async function deleteDataset(id: string, name?: string) {
     patchDatasets(next);
     if (props.selectedId === datasetId) {
       emit('update:selectedId', next[0]?.id || '');
-      emit('update:captionEdits', {});
     }
     toast.success(t('loraTrain.deleteDatasetDone'));
   } catch (e: unknown) {

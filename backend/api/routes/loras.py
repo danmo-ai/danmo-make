@@ -12,9 +12,7 @@ from backend.api.deps import get_asset_store, get_engine_registry, get_llm_servi
 from backend.core import task_kinds as TK
 from backend.core.container import get_container
 from backend.core.contracts import (
-    DatasetAutoCaptionRequest,
     DatasetCreateRequest,
-    DatasetCaptionUpdate,
     DatasetHealthVlmRequest,
     DatasetSkippedImagesRequest,
     DatasetImportAssetsRequest,
@@ -230,15 +228,6 @@ async def upload_dataset_images(
         raise HTTPException(400, detail={"code": "invalid", "message": str(e)}) from e
 
 
-@router.patch("/datasets/{dataset_id}/captions")
-def patch_captions(dataset_id: str, body: DatasetCaptionUpdate):
-    root = _paths().get_project_root()
-    try:
-        return dataset_store.update_dataset_captions(root, dataset_id, body.captions)
-    except FileNotFoundError as e:
-        raise HTTPException(404, detail={"code": "not_found", "message": str(e)}) from e
-
-
 @router.delete("/datasets/{dataset_id}", status_code=204)
 def delete_dataset(dataset_id: str):
     root = _paths().get_project_root()
@@ -284,95 +273,11 @@ def import_dataset_assets(dataset_id: str, body: DatasetImportAssetsRequest, sto
             body.asset_ids,
             resolve_asset_path=_resolve,
             default_prompt=body.default_prompt,
-            asset_captions=body.captions,
         )
     except FileNotFoundError as e:
         raise HTTPException(404, detail={"code": "not_found", "message": str(e)}) from e
     except ValueError as e:
         raise HTTPException(400, detail={"code": "invalid", "message": str(e)}) from e
-
-
-@router.post("/datasets/{dataset_id}/auto-caption")
-async def auto_caption_dataset(
-    dataset_id: str,
-    body: DatasetAutoCaptionRequest,
-):
-    """Generate captions for dataset images using the vision LLM (isolated subprocess)."""
-    service = get_llm_service()
-    if not service.is_available():
-        raise HTTPException(
-            503,
-            detail={"code": "llm_unavailable", "message": "LLM model not installed. Install via Models page."},
-        )
-    if not service.is_vision_available():
-        raise HTTPException(
-            503,
-            detail={"code": "vision_unavailable", "message": "Vision model not available for auto-caption."},
-        )
-    root = _paths().get_project_root()
-    try:
-        ds = dataset_store.get_dataset(root, dataset_id)
-    except FileNotFoundError as e:
-        raise HTTPException(404, detail={"code": "not_found", "message": str(e)}) from e
-    targets = [img for img in ds.get("images") or [] if img.get("exists")]
-    if body.files:
-        allow = set(body.files)
-        targets = [img for img in targets if img.get("file") in allow]
-    if not targets:
-        raise HTTPException(400, detail={"code": "invalid", "message": "No images to caption"})
-    audit_kind = str(ds.get("kind") or "concept").strip().lower()
-    if audit_kind not in ("concept", "style"):
-        audit_kind = "concept"
-    from backend.core.container import get_container
-    from backend.engine.llm.vlm_subprocess import run_lora_caption_subprocess
-    from backend.engine.memory_policy import prepare_host_for_vlm_audit
-    from backend.engine.training.lora_auto_caption import resolve_lora_subject_name
-
-    meta = {
-        "name": ds.get("name") or "",
-        "kind": audit_kind,
-        "trigger_word": ds.get("trigger_word") or "",
-        "default_prompt": ds.get("default_prompt") or "",
-    }
-    subject_name = resolve_lora_subject_name(meta) if audit_kind == "concept" else ""
-    image_paths: list[Path] = []
-    file_keys: list[str] = []
-    for img in targets:
-        file_rel = str(img.get("file") or "")
-        img_path = root / "datasets" / dataset_id / file_rel
-        if not img_path.is_file():
-            continue
-        image_paths.append(img_path)
-        file_keys.append(file_rel)
-    if not image_paths:
-        raise HTTPException(400, detail={"code": "invalid", "message": "No readable images to caption"})
-
-    model_dir = service._resolve_vision_model_path()
-    mlx_runtime = None
-    try:
-        runtimes = get_container().try_resolve_named("gpu_runtimes") or {}
-        if isinstance(runtimes, dict):
-            mlx_runtime = runtimes.get("mlx")
-    except Exception:
-        mlx_runtime = None
-    worker_mem = prepare_host_for_vlm_audit(mlx_runtime=mlx_runtime)
-    try:
-        prompts = await run_lora_caption_subprocess(
-            image_paths=image_paths,
-            model_dir=model_dir,
-            audit_kind=audit_kind,
-            subject_name=subject_name,
-            worker_memory_gb=worker_mem,
-        )
-    except RuntimeError as e:
-        raise HTTPException(503, detail={"code": "caption_failed", "message": str(e)}) from e
-
-    captions = [{"file": file_key, "prompt": prompt.strip()} for file_key, prompt in zip(file_keys, prompts, strict=False)]
-    if not captions:
-        raise HTTPException(400, detail={"code": "invalid", "message": "Caption generation produced no results"})
-    result = dataset_store.update_dataset_captions(root, dataset_id, captions)
-
-    return result
 
 
 @router.post("/datasets/import-dog6", status_code=201)

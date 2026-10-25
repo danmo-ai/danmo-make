@@ -17,7 +17,7 @@ const API_BASE = '';
 
 /** Default REST timeout; generation/training use task SSE — not this client. */
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-/** Dataset auto-caption (vision LLM per image) and bulk uploads can run many minutes. */
+/** Dataset uploads and other bulk jobs can run many minutes. */
 const LONG_REQUEST_TIMEOUT_MS = 600_000;
 /** Single-round local LLM (prompt enhance, lyrics, vision caption) — includes cold model load. */
 const LLM_REQUEST_TIMEOUT_MS = 180_000;
@@ -947,14 +947,6 @@ export const api = {
       return response.data;
     },
 
-    async updateCaptions(datasetId: string, captions: Array<{ file: string; prompt: string }>): Promise<unknown> {
-      const response = await client.patch(
-        `/api/loras/datasets/${encodeURIComponent(datasetId)}/captions`,
-        { captions }
-      );
-      return response.data;
-    },
-
     async setSkippedImages(datasetId: string, files: string[]): Promise<unknown> {
       const response = await client.put(
         `/api/loras/datasets/${encodeURIComponent(datasetId)}/skipped-images`,
@@ -980,21 +972,11 @@ export const api = {
     async importAssets(
       datasetId: string,
       assetIds: string[],
-      defaultPrompt?: string,
-      captions?: Record<string, string>
+      defaultPrompt?: string
     ): Promise<unknown> {
       const response = await client.post(
         `/api/loras/datasets/${encodeURIComponent(datasetId)}/import-assets`,
-        { asset_ids: assetIds, default_prompt: defaultPrompt || '', captions: captions || {} }
-      );
-      return response.data;
-    },
-
-    async autoCaption(datasetId: string, files?: string[]): Promise<unknown> {
-      const response = await client.post(
-        `/api/loras/datasets/${encodeURIComponent(datasetId)}/auto-caption`,
-        { files: files || [] },
-        { timeout: LONG_REQUEST_TIMEOUT_MS }
+        { asset_ids: assetIds, default_prompt: defaultPrompt || '' }
       );
       return response.data;
     },

@@ -471,6 +471,7 @@ class LoraTrainingRequest(BaseModel):
     prior_loss_weight: Optional[float] = Field(None, ge=0)
     early_stop_patience: Optional[int] = Field(None, ge=0)
     fuse_adapters: Optional[bool] = None
+    # per_image is rejected at submit time. Every image trains with progress_prompt.
     caption_mode: Optional[Literal["unified", "per_image"]] = None
     # Base: logit-normal sigmoid is unshifted; static shift only applies to uniform/low/high.
     train_sigma_shift: Optional[float] = Field(None, gt=0)
@@ -502,10 +503,6 @@ class DatasetCreateRequest(BaseModel):
     nsfw: bool = False
 
 
-class DatasetCaptionUpdate(BaseModel):
-    captions: list[dict[str, str]]
-
-
 class DatasetSkippedImagesRequest(BaseModel):
     """Files kept in the dataset but excluded from the next training run."""
 
@@ -515,11 +512,6 @@ class DatasetSkippedImagesRequest(BaseModel):
 class DatasetImportAssetsRequest(BaseModel):
     asset_ids: list[str] = Field(..., min_length=1)
     default_prompt: str = ""
-    captions: dict[str, str] = Field(default_factory=dict)
-
-
-class DatasetAutoCaptionRequest(BaseModel):
-    files: list[str] = Field(default_factory=list)
 
 
 class DatasetHealthVlmRequest(BaseModel):

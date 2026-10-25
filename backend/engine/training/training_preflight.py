@@ -10,12 +10,14 @@ from backend.engine.training.face_crop import opencv_face_detector_available
 
 
 def resolve_request_caption_mode(root: Path, request: Any) -> str:
-    pairs = dataset_store.load_training_pairs(root, request.dataset_id)
-    meta = dataset_store._dataset_meta(root, request.dataset_id)
-    requested = str(getattr(request, "caption_mode", None) or "auto").lower()
-    if requested in {"unified", "per_image"}:
-        return requested
-    return dataset_store.detect_caption_mode(pairs, dataset_meta=meta)
+    """Training always uses one caption. ``per_image`` is rejected, not rewritten."""
+    del root
+    requested = str(getattr(request, "caption_mode", None) or "").strip().lower()
+    if requested == "per_image":
+        raise ValueError(
+            "Per-image captions are not used. Training uses one caption (progress_prompt) for every image."
+        )
+    return "unified"
 
 
 def _assert_resume_same_identity(
@@ -41,9 +43,15 @@ def _assert_resume_same_identity(
             raise ValueError(f"Resume checkpoint is incompatible: {key} changed from the source run.")
     old_pairs = dataset_store.load_training_pairs(root, request.dataset_id)
     old_cap = str(old_params.get("progress_prompt") or "")
-    old_mode = str(old_params.get("caption_mode") or "auto")
+    old_mode = str(old_params.get("caption_mode") or "").strip().lower()
+    old_meta = old_params.get("metadata") if isinstance(old_params.get("metadata"), dict) else {}
+    resolved_old = str(old_meta.get("resolved_caption_mode") or "").strip().lower()
+    if old_mode == "per_image" or resolved_old == "per_image":
+        raise ValueError(
+            "This run used per-image captions, which are no longer trained. Start a fresh task."
+        )
     _, old_caption = dataset_store.load_training_pairs_unified(
-        root, request.dataset_id, progress_prompt=old_cap, caption_mode=old_mode
+        root, request.dataset_id, progress_prompt=old_cap, caption_mode="unified"
     )
     if old_caption != caption or old_params.get("progress_prompt") != request.progress_prompt:
         raise ValueError("Resume requires the original trigger/training caption, not a changed identity binding.")
@@ -70,11 +78,12 @@ def validate_training_request(root: Path, request: Any, *, sched: Any | None = N
     meta = dataset_store._dataset_meta(root, request.dataset_id)
     cfg = resolve_training_config(request.model_dump())
     resolution = resolve_training_resolution(request.base_model, cfg, preset=request.preset)
+    caption_mode = resolve_request_caption_mode(root, request)
     pairs, caption = dataset_store.load_training_pairs_unified(
         root,
         request.dataset_id,
         progress_prompt=request.progress_prompt,
-        caption_mode=str(getattr(request, "caption_mode", None) or "auto"),
+        caption_mode=caption_mode,
     )
     kind = str(meta.get("kind") or "concept")
     trigger = str(meta.get("trigger_word") or "").strip()
@@ -120,7 +129,7 @@ def validate_training_request(root: Path, request: Any, *, sched: Any | None = N
     request.metadata = {
         **(getattr(request, "metadata", None) or {}),
         "dataset_fingerprint": dataset_store.training_dataset_fingerprint(pairs),
-        "resolved_caption_mode": resolve_request_caption_mode(root, request),
+        "resolved_caption_mode": caption_mode,
         "training_resolution": list(resolution),
         "skipped_images": dataset_store.active_skipped_rels(root, request.dataset_id),
     }

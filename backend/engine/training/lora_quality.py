@@ -98,7 +98,7 @@ def analyze_dataset_health(
     face_audit: bool = True,
     training_resolution: tuple[int, int] = (512, 512),
 ) -> dict[str, Any]:
-    """Scan dataset images for resolution / integrity / face-framing / caption issues before training."""
+    """Scan dataset images for resolution, integrity, and face framing before training."""
     ds = dataset_store.get_dataset(workspace_root, dataset_id)
     path = dataset_store.datasets_root(workspace_root) / dataset_id
     rows = ds.get("images") or []
@@ -110,16 +110,11 @@ def analyze_dataset_health(
     suspicious_count = 0
     small_600 = 0
     small_512 = 0
-    empty_caption = 0
     short_edges: list[int] = []
     readable_paths: list[Path] = []
-    caption_pairs: list[tuple[Path, str]] = []
 
     for row in rows:
         file_rel = str(row.get("file") or "")
-        caption = str(row.get("prompt") or "").strip()
-        if not caption:
-            empty_caption += 1
         if _suspicious_filename(file_rel):
             suspicious_count += 1
         img_path = path / file_rel
@@ -131,7 +126,6 @@ def analyze_dataset_health(
                 broken_count += 1
             continue
         readable_paths.append(img_path)
-        caption_pairs.append((img_path, caption))
         se = int(probe["short_edge"])
         short_edges.append(se)
         if se < _SHORT_EDGE_SMALL:
@@ -201,13 +195,7 @@ def analyze_dataset_health(
         score -= 12
         force_fair = True
 
-    if empty_caption:
-        hints.append(_hint("empty_captions", "warning", count=empty_caption, total=total))
-        score -= min(15, empty_caption * 3)
-
     faces_report: dict[str, Any] | None = None
-    caption_stats: dict[str, Any] | None = None
-    caption_mode_auto = ""
     if kind == "concept":
         if face_audit and readable_paths:
             from backend.engine.training.face_crop import audit_dataset_faces
@@ -258,52 +246,8 @@ def analyze_dataset_health(
             hints.append(_hint("near_duplicates", "warning", count=len(dup_pairs)))
             score -= min(12, len(dup_pairs) * 3)
 
-        if trigger and caption_pairs:
-            caption_stats = dataset_store.concept_caption_stats(caption_pairs, trigger=trigger)
-            caption_mode_auto = dataset_store.detect_caption_mode(
-                caption_pairs, dataset_meta={"kind": kind, "trigger_word": trigger}
-            )
-            if caption_stats["missing_trigger"]:
-                hints.append(
-                    _hint(
-                        "captions_missing_trigger",
-                        "warning",
-                        count=caption_stats["missing_trigger"],
-                        total=caption_stats["non_empty"],
-                        trigger=trigger,
-                    )
-                )
-                score -= min(15, caption_stats["missing_trigger"] * 3)
-            if caption_stats["long"]:
-                hints.append(
-                    _hint("captions_long", "warning", count=caption_stats["long"], total=caption_stats["non_empty"])
-                )
-                score -= min(10, caption_stats["long"] * 2)
-            trigger_only = int(caption_stats.get("trigger_only") or 0)
-            if trigger_only >= 3 and caption_stats["non_empty"] and trigger_only * 2 >= caption_stats["non_empty"]:
-                hints.append(
-                    _hint(
-                        "captions_trigger_only",
-                        "warning",
-                        count=trigger_only,
-                        total=caption_stats["non_empty"],
-                    )
-                )
-                score -= min(12, trigger_only)
-                force_fair = True
-            if dataset_store.trigger_looks_like_personal_name(trigger):
-                hints.append(_hint("trigger_looks_like_name", "info", trigger=trigger))
-            if caption_mode_auto == "per_image":
-                hints.append(_hint("caption_mode_per_image", "info", count=caption_stats["anchored_short"]))
-            elif caption_stats["unique"] > 1 and not caption_stats["long"] and not caption_stats["missing_trigger"]:
-                hints.append(
-                    _hint(
-                        "caption_mode_unified_small",
-                        "info",
-                        count=total,
-                        recommended=dataset_store.CONCEPT_PER_IMAGE_MIN_IMAGES,
-                    )
-                )
+        if trigger and dataset_store.trigger_looks_like_personal_name(trigger):
+            hints.append(_hint("trigger_looks_like_name", "info", trigger=trigger))
         elif not trigger:
             hints.append(_hint("missing_trigger_word", "error"))
             score -= 20
@@ -324,18 +268,12 @@ def analyze_dataset_health(
         "suspicious_filename_count": suspicious_count,
         "small_600_count": small_600,
         "small_512_count": small_512,
-        "empty_caption_count": empty_caption,
         "median_short_edge": median_short,
         "min_short_edge": min_short,
     }
     if faces_report and faces_report.get("available"):
         for key, value in (faces_report.get("counts") or {}).items():
             stats[f"face_{key}_count"] = int(value)
-    if caption_stats:
-        stats["caption_missing_trigger_count"] = caption_stats["missing_trigger"]
-        stats["caption_long_count"] = caption_stats["long"]
-        stats["caption_anchored_short_count"] = caption_stats["anchored_short"]
-        stats["caption_trigger_only_count"] = int(caption_stats.get("trigger_only") or 0)
 
     report: dict[str, Any] = {
         "level": level,
@@ -344,8 +282,6 @@ def analyze_dataset_health(
         "stats": stats,
         "hints": hints,
     }
-    if caption_mode_auto:
-        report["caption_mode_auto"] = caption_mode_auto
     if faces_report is not None:
         report["faces"] = {
             "available": bool(faces_report.get("available")),
