@@ -18,6 +18,7 @@ _ENGINE_TEST_MODULES = (
     "tests.test_engine_sessions_unit",
     "tests.setup_unit",
     "tests.llm_model_resolve_unit",
+    "tests.ltx25_ref2va_unit",
 )
 
 

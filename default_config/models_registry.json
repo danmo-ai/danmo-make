@@ -7313,8 +7313,8 @@
       "catalog": {
         "media": "video",
         "description": {
-          "zh": "Lightricks LTX-2.5 22B 蒸馏版，8+3 步两阶段，原生 4K 音视频。安装时自动转换为 MLX；推荐 64GB+ 统一内存。",
-          "en": "Lightricks LTX-2.5 22B distilled A/V DiT; 8+3-step two-stage, native 4K audio+video. Auto-converted to MLX on install; 64GB+ unified memory recommended."
+          "zh": "Lightricks LTX-2.5 22B 蒸馏版，8+3 步两阶段，原生 4K 音视频。参考模式最多 4 张主体静帧加 1 张背景，并可为前两张主体各配一段音频；需另装多主体参考 LoRA。安装时自动转换为 MLX；推荐 64GB+ 统一内存。",
+          "en": "Lightricks LTX-2.5 22B distilled A/V DiT; 8+3-step two-stage, native 4K audio+video. Reference mode takes up to 4 subject stills plus 1 background, and up to 2 audio clips paired with the first subjects; install the multi-subject reference LoRA. Auto-converted to MLX on install; 64GB+ unified memory recommended."
         },
         "category": "video_models",
         "commercial_use_allowed": false,
@@ -7413,6 +7413,17 @@
             "type": "int"
           },
           "negative_prompt_support": false,
+          "ref2va": {
+            "enabled": true,
+            "kinds": ["image", "audio"],
+            "max_images": 5,
+            "max_videos": 0,
+            "max_audios": 2,
+            "max_total": 7,
+            "paired_audio": true,
+            "background_is_last_image": true,
+            "hint_key": "create.ref2vaHintStills"
+          },
           "long_video_support": false,
           "default_scheduler": "flow_match_euler",
           "resolution_presets": {
@@ -7519,6 +7530,74 @@
               "zh": "魔搭镜像无需授权；原始仓库为 Hugging Face gated（Lightricks/LTX-2.5，需同意条款）。",
               "en": "ModelScope mirror requires no auth; the original gated Hugging Face repo is Lightricks/LTX-2.5."
             }
+          }
+        }
+      }
+    },
+    "ltx25-msr-lora": {
+      "catalog": {
+        "media": "video",
+        "description": {
+          "zh": "LTX 2.5 多主体参考 LoRA：最多 4 张主体静帧加 1 张背景，并可为前两张主体各配一段音频。需已安装 ltx-2.5-distilled。",
+          "en": "LTX 2.5 multi-subject reference LoRA: up to 4 subject stills plus 1 background, with up to 2 audio clips paired to the first subjects. Requires ltx-2.5-distilled."
+        },
+        "category": "loras",
+        "commercial_use_allowed": false,
+        "type": "lora",
+        "source": "huggingface",
+        "name": {
+          "zh": "LTX 2.5 多主体参考 LoRA",
+          "en": "LTX 2.5 Multi-Subject Reference LoRA"
+        },
+        "recommended": false,
+        "base_model": "ltx-2.5-distilled",
+        "engine": "danqing-video",
+        "metadata": {
+          "lora": {
+            "tags": [
+              "ref2va",
+              "msr"
+            ]
+          }
+        }
+      },
+      "runtime": {
+        "family": "ltx25",
+        "backends": [
+          "mlx"
+        ]
+      },
+      "actions": {},
+      "ui": {
+        "parameters": {
+          "lora_scale": {
+            "default": 1.0,
+            "min": 0.0,
+            "max": 2.0,
+            "step": 0.1,
+            "label": "LoRA强度",
+            "type": "float",
+            "fixed": true,
+            "note": "参考 LoRA 保持 1.0"
+          }
+        }
+      },
+      "distribution": {
+        "versions": {
+          "v2": {
+            "name": {
+              "zh": "V2",
+              "en": "V2"
+            },
+            "size": "2.22GB",
+            "default": true,
+            "source": "huggingface",
+            "repo_id": "LiconStudio/LTX-2.5-Multiple-Subject-Reference",
+            "local_path": "models/Lora/LTX-2.5/ltx25-msr-v2",
+            "source_type": "full",
+            "allow_patterns": [
+              "LTX-2.5-Licon-MSR-V2.safetensors"
+            ]
           }
         }
       }
@@ -9367,7 +9446,17 @@
           },
           "negative_prompt_support": false,
           "video_edit_source_mode": "first_frame",
-          "h3_ref2va_support": true,
+          "ref2va": {
+            "enabled": true,
+            "kinds": ["image", "video", "audio"],
+            "max_images": 9,
+            "max_videos": 3,
+            "max_audios": 3,
+            "max_total": 12,
+            "paired_audio": false,
+            "background_is_last_image": false,
+            "hint_key": "create.ref2vaHintPacked"
+          },
           "resolution_presets": {
             "default": "1344x768",
             "options": [

@@ -94,7 +94,10 @@ def _transpose_conv_layouts(component: str, weights: dict[str, mx.array]) -> dic
                 if t.ndim == 5:
                     t = t.transpose(0, 2, 3, 4, 1)
             elif component == "audio_vae":
-                if key.startswith("audio_vae.decoder.") and t.ndim == 4:
+                if (
+                    key.startswith(("audio_vae.decoder.", "audio_vae.encoder."))
+                    and t.ndim == 4
+                ):
                     t = t.transpose(0, 2, 3, 1)
                 elif key.startswith("vocoder."):
                     if t.ndim == 3:

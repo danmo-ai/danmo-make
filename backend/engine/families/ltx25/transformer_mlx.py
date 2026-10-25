@@ -800,6 +800,12 @@ def _register_linear(param_map: dict[str, Any], prefix: str, linear: nn.Linear) 
     bias = getattr(linear, "bias", None)
     if bias is not None:
         param_map[f"{prefix}.bias"] = bias
+    scales = getattr(linear, "scales", None)
+    if scales is not None:
+        param_map[f"{prefix}.scales"] = scales
+    biases = getattr(linear, "biases", None)
+    if biases is not None:
+        param_map[f"{prefix}.biases"] = biases
 
 
 def _register_attention(param_map: dict[str, Any], prefix: str, attn: LTX25Attention) -> None:
@@ -1017,4 +1023,5 @@ def load_ltx25_x0_model(
         inference_mode=inference_mode,
     )
     _materialize(transformer.model.scale_shift_table)
+    transformer.x0_model._ltx25_stem = transformer
     return transformer.x0_model

@@ -19,9 +19,10 @@ def inference_mode_from_model(model: Any) -> Any | None:
 
 def _is_quantized_affine_weight(weight: Any) -> bool:
     dtype = getattr(weight, "dtype", None)
-    name = str(getattr(dtype, "name", dtype) or "")
+    # mlx.core.Dtype has no ``.name``; ``str(dtype)`` is ``mlx.core.uint32``.
+    label = str(getattr(dtype, "name", None) or dtype or "").lower()
     shape = getattr(weight, "shape", ())
-    return name == "uint32" and len(shape) == 2
+    return "uint32" in label and len(shape) == 2
 
 
 def _rebind_module_at_base(root: Any, base: str, module: Any) -> None:

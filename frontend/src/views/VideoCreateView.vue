@@ -124,9 +124,11 @@
         :extra-reference-media="extraReferenceMedia"
         :show-bernini-references="showBerniniReferences"
         :bernini-ref-max="berniniRefMax"
-        :show-h3-ref2va="showH3Ref2VA"
+        :showH3Ref2VA="showH3Ref2VA"
         :h3-media-refs="h3MediaRefMedia"
         :h3-ref-max="h3Ref2vaMax"
+        :h3-ref-kinds="h3RefKinds"
+        :h3-ref-hint="h3RefHint"
         :current-model-config="currentModelConfig"
         :compatible-loras="composerCompatibleLoras"
         :model-not-ready="selectedModelNotReady"
@@ -317,9 +319,10 @@ import {
   animateReferenceAcceptKind,
   berniniMaxReferenceImages,
   galleryPathIsVideo,
-  H3_REF2VA_MAX_REFERENCES,
+  ref2vaSpec,
+  ref2vaSubjectCount,
   supportsBerniniReferenceImages,
-  supportsH3Ref2VA,
+  supportsRef2VA,
   videoRequiresSourceVideo,
   videoSupportsVideoEdit,
 } from '@/utils/videoEditSource';
@@ -1079,12 +1082,17 @@ const showH3RefPicker = ref(false);
 const h3RefPickKind = ref<'image' | 'video' | 'audio'>('image');
 type H3MediaRefRow = { kind: 'image' | 'video' | 'audio'; path: string; previewUrl: string };
 const h3MediaRefs = ref<H3MediaRefRow[]>([]);
-const h3Ref2vaMax = H3_REF2VA_MAX_REFERENCES;
+const ref2vaLimits = computed(() =>
+  ref2vaSpec(currentModelConfig.value?.parameters as Record<string, unknown> | undefined),
+);
+const h3Ref2vaMax = computed(() => ref2vaLimits.value.maxTotal);
+const h3RefKinds = computed(() => ref2vaLimits.value.kinds);
+const h3RefHint = computed(() => $tt(ref2vaLimits.value.hintKey));
 
 const showH3Ref2VA = computed(() => {
   return (
     videoWorkMode.value === 'ref2va' &&
-    supportsH3Ref2VA(currentModelConfig.value?.parameters as Record<string, unknown> | undefined)
+    supportsRef2VA(currentModelConfig.value?.parameters as Record<string, unknown> | undefined)
   );
 });
 
@@ -1097,8 +1105,12 @@ const h3RefPickerTitle = computed(() => {
 });
 
 function onPickH3Reference(kind: 'image' | 'video' | 'audio') {
-  if (h3MediaRefs.value.length >= h3Ref2vaMax) {
-    toast.warning($tt('video.berniniRefMax', { n: h3Ref2vaMax }));
+  const spec = ref2vaLimits.value;
+  if (!spec.kinds.includes(kind)) return;
+  const count = h3MediaRefs.value.filter((row) => row.kind === kind).length;
+  const cap = kind === 'image' ? spec.maxImages : kind === 'video' ? spec.maxVideos : spec.maxAudios;
+  if (h3MediaRefs.value.length >= h3Ref2vaMax.value || count >= cap) {
+    toast.warning($tt('video.berniniRefMax', { n: h3Ref2vaMax.value }));
     return;
   }
   h3RefPickKind.value = kind;
@@ -1106,7 +1118,7 @@ function onPickH3Reference(kind: 'image' | 'video' | 'audio') {
 }
 
 function onH3RefPick(payload: { path: string; previewUrl: string }) {
-  if (h3MediaRefs.value.length >= h3Ref2vaMax) {
+  if (h3MediaRefs.value.length >= h3Ref2vaMax.value) {
     showH3RefPicker.value = false;
     return;
   }
@@ -1475,9 +1487,9 @@ const videoWorkSegmentOptions = computed(() => {
     opts.push({ label: $tt('video.modeAnimate'), value: 'animate' });
   }
   if (
-    supportsH3Ref2VA(currentModelConfig.value?.parameters as Record<string, unknown> | undefined)
+    supportsRef2VA(currentModelConfig.value?.parameters as Record<string, unknown> | undefined)
   ) {
-    opts.push({ label: $tt('create.h3Ref2vaMode'), value: 'ref2va' });
+    opts.push({ label: $tt('create.ref2vaMode'), value: 'ref2va' });
   }
   if (allVersions.value.some((v) => videoVersionSupportsEdit(v))) {
     opts.push({ label: $tt('video.modeEdit'), value: 'edit' });
@@ -1502,7 +1514,7 @@ const videoVersionsForMode = computed(() => {
     }
     if (videoWorkMode.value === 'ref2va') {
       const cfg = modelRegistry.value[v.modelKey] as { parameters?: Record<string, unknown> } | undefined;
-      return videoSupportsCreate(acts) && supportsH3Ref2VA(cfg?.parameters);
+      return videoSupportsCreate(acts) && supportsRef2VA(cfg?.parameters);
     }
     return videoSupportsCreate(acts);
   });
@@ -1554,6 +1566,10 @@ const videoModelSelectOptions = computed(() => {
 });
 
 const currentModelConfig = computed(() => modelRegistry.value[params.model] || null);
+
+watch(ref2vaLimits, (spec) => {
+  h3MediaRefs.value = h3MediaRefs.value.filter((row) => spec.kinds.includes(row.kind));
+});
 
 const assetPickerAcceptKind = computed(() => {
   if (videoWorkMode.value === 'edit') return 'video' as const;
@@ -2117,12 +2133,29 @@ const startGeneration = async (options: StartGenerationOptions = {}) => {
     return;
   }
   if (videoWorkMode.value === 'ref2va') {
-    if (!h3MediaRefs.value.length) {
-      toast.warning($tt('create.h3Ref2vaNeedRefs'));
+    const spec = ref2vaLimits.value;
+    const images = h3MediaRefs.value.filter((row) => row.kind === 'image').length;
+    const videos = h3MediaRefs.value.filter((row) => row.kind === 'video').length;
+    const audios = h3MediaRefs.value.filter((row) => row.kind === 'audio').length;
+    if (videos > 0 && !spec.kinds.includes('video')) {
+      toast.warning($tt('create.ref2vaNoVideo'));
       return;
     }
-    if (h3MediaRefs.value.every((r) => r.kind === 'audio')) {
-      toast.warning($tt('create.h3Ref2vaAudioOnly'));
+    if (spec.pairedAudio) {
+      if (images < 1) {
+        toast.warning($tt('create.ref2vaNeedImage'));
+        return;
+      }
+      if (audios > ref2vaSubjectCount(images, spec)) {
+        toast.warning($tt('create.ref2vaAudioNeedsImage'));
+        return;
+      }
+    } else if (!h3MediaRefs.value.length || images + videos < 1) {
+      toast.warning(
+        images + videos < 1 && audios
+          ? $tt('create.ref2vaAudioOnly')
+          : $tt('create.ref2vaNeedRefs'),
+      );
       return;
     }
   }
@@ -2361,7 +2394,7 @@ watch(videoWorkMode, (mode) => {
   } else if (mode === 'edit') {
     ok = videoVersionSupportsEdit({ modelKey: params.model, actions: acts });
   } else if (mode === 'ref2va') {
-    ok = videoSupportsCreate(acts) && supportsH3Ref2VA(cfg?.parameters as Record<string, unknown>);
+    ok = videoSupportsCreate(acts) && supportsRef2VA(cfg?.parameters as Record<string, unknown>);
   } else {
     ok = videoSupportsCreate(acts);
   }

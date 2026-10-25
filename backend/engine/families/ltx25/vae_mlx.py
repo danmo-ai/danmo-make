@@ -747,6 +747,129 @@ class _AudioStage(nn.Module):
             self.upsample = upsample
 
 
+class _AudioDownsample(nn.Module):
+    """Stride-2 downsample with the official causal pad (not the resnet conv pad)."""
+
+    def __init__(self, channels: int, causality_axis: str = "height"):
+        super().__init__()
+        self.causality_axis = causality_axis
+        self.conv = nn.Conv2d(channels, channels, kernel_size=3, stride=2, padding=0)
+
+    def __call__(self, x: mx.array) -> mx.array:
+        if self.causality_axis == "none":
+            pad = (0, 1, 0, 1)
+        elif self.causality_axis == "width":
+            pad = (2, 0, 0, 1)
+        elif self.causality_axis == "height":
+            pad = (0, 1, 2, 0)
+        elif self.causality_axis == "width_compatibility":
+            pad = (1, 0, 0, 1)
+        else:
+            raise RuntimeError(f"Invalid causality_axis: {self.causality_axis!r}")
+        left, right, top, bottom = pad
+        x = mx.pad(x, [(0, 0), (0, 0), (top, bottom), (left, right)])
+        y = mx.conv2d(x.transpose(0, 2, 3, 1), self.conv.weight, stride=2)
+        if getattr(self.conv, "bias", None) is not None:
+            y = y + self.conv.bias
+        return y.transpose(0, 3, 1, 2)
+
+
+class LTX25AudioEncoder(nn.Module):
+    """Config-driven audio VAE encoder (log-mel → latent).
+
+    Mirrors the official LTX-2 ``AudioEncoder``: ``num_res_blocks`` (not +1)
+    per level, optional attention, and a stride-2 downsample on every level
+    except the last. ``double_z`` keeps the mean half of ``conv_out``.
+    """
+
+    def __init__(self, cfg: dict[str, Any]):
+        super().__init__()
+        ddconfig = cfg.get("ddconfig", {})
+        self.ch = int(ddconfig.get("ch", 128))
+        in_channels = int(ddconfig.get("in_channels", ddconfig.get("out_ch", 2)))
+        ch_mult = tuple(int(x) for x in ddconfig.get("ch_mult", (1, 2, 4)))
+        num_res_blocks = int(ddconfig.get("num_res_blocks", 2))
+        attn_resolutions = {int(x) for x in ddconfig.get("attn_resolutions", [])}
+        resolution = int(ddconfig.get("resolution", 256))
+        z_channels = int(ddconfig.get("z_channels", 8))
+        norm_type = str(ddconfig.get("norm_type", "pixel"))
+        causality_axis = str(ddconfig.get("causality_axis", "height"))
+        mid_block_add_attention = bool(ddconfig.get("mid_block_add_attention", True))
+        self.double_z = bool(ddconfig.get("double_z", True))
+        self.sample_rate = int(cfg.get("sample_rate") or ddconfig.get("sample_rate") or 16000)
+        self.mel_hop_length = int(cfg.get("mel_hop_length") or ddconfig.get("mel_hop_length") or 160)
+        self.n_fft = int(cfg.get("n_fft") or ddconfig.get("n_fft") or 1024)
+        self.mel_bins = int(ddconfig.get("mel_bins") or cfg.get("mel_bins") or 64)
+        self.z_channels = z_channels
+
+        self.per_channel_statistics_mean = mx.zeros((self.ch,))
+        self.per_channel_statistics_std = mx.ones((self.ch,))
+        self.conv_in = _AudioCausalConv2d(in_channels, self.ch, 3, causality_axis=causality_axis)
+
+        self.down: list[Any] = []
+        curr_res = resolution
+        in_ch_mult = (1, *ch_mult)
+        for level, mult in enumerate(ch_mult):
+            block_in = self.ch * in_ch_mult[level]
+            block_out = self.ch * mult
+            stage_blocks: list[Any] = []
+            stage_attns: list[Any] = []
+            for _ in range(num_res_blocks):
+                stage_blocks.append(
+                    _AudioResnetBlock(block_in, block_out, norm_type=norm_type, causality_axis=causality_axis)
+                )
+                block_in = block_out
+                if curr_res in attn_resolutions:
+                    stage_attns.append(_AudioAttnBlock(block_in, norm_type=norm_type))
+            downsample = None
+            if level != len(ch_mult) - 1:
+                downsample = _AudioDownsample(block_in, causality_axis=causality_axis)
+                curr_res //= 2
+            self.down.append(_AudioStage(stage_blocks, stage_attns, None))
+            if downsample is not None:
+                self.down[-1].downsample = downsample
+
+        self.mid = nn.Module()
+        self.mid.block_1 = _AudioResnetBlock(block_in, norm_type=norm_type, causality_axis=causality_axis)
+        self.mid.attn_1 = (
+            _AudioAttnBlock(block_in, norm_type=norm_type) if mid_block_add_attention else _IdentityAudio()
+        )
+        self.mid.block_2 = _AudioResnetBlock(block_in, norm_type=norm_type, causality_axis=causality_axis)
+
+        conv_out_channels = z_channels * 2 if self.double_z else z_channels
+        self.norm_out = _AudioGroupNorm(32, block_in) if norm_type == "group" else _AudioPixelNorm()
+        self.conv_out = _AudioCausalConv2d(block_in, conv_out_channels, 3, causality_axis=causality_axis)
+
+    def encode(self, spectrogram: mx.array) -> mx.array:
+        """Log-mel ``(B, C, T, mel_bins)`` → latent ``(B, 8, T', 16)``."""
+        output_dtype = spectrogram.dtype
+        x = spectrogram.astype(mx.bfloat16)
+        x = self.conv_in(x)
+        for stage in self.down:
+            for idx, blk in enumerate(stage.block):
+                x = blk(x)
+                if idx < len(stage.attn):
+                    x = stage.attn[idx](x)
+            if getattr(stage, "downsample", None) is not None:
+                x = stage.downsample(x)
+        x = self.mid.block_2(self.mid.attn_1(self.mid.block_1(x)))
+        x = self.conv_out(nn.silu(self.norm_out(x)))
+        if self.double_z:
+            x = mx.split(x, 2, axis=1)[0]
+        b, c, t, f = x.shape
+        patched = x.transpose(0, 2, 3, 1).reshape(b, t, c * f)
+        mean = self.per_channel_statistics_mean.reshape(1, 1, -1)
+        std = self.per_channel_statistics_std.reshape(1, 1, -1)
+        if int(patched.shape[-1]) != int(mean.shape[-1]):
+            raise RuntimeError(
+                "LTX 2.5 audio encoder latent width "
+                f"{int(patched.shape[-1])} does not match per-channel stats {int(mean.shape[-1])}."
+            )
+        patched = (patched - mean) / (std + 1e-6)
+        latent = patched.reshape(b, t, f, c).transpose(0, 3, 1, 2)
+        return latent.astype(output_dtype)
+
+
 class LTX25AudioDecoder(nn.Module):
     """Config-driven audio VAE decoder (latent → log-mel spectrogram)."""
 
@@ -1215,8 +1338,8 @@ def _normalize_vae_keys(weights: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, tensor in weights.items():
         nk = key
-        nk = nk.replace(".per_channel_statistics.std-of-means", ".per_channel_statistics_std")
-        nk = nk.replace(".per_channel_statistics.mean-of-means", ".per_channel_statistics_mean")
+        nk = nk.replace("per_channel_statistics.std-of-means", "per_channel_statistics_std")
+        nk = nk.replace("per_channel_statistics.mean-of-means", "per_channel_statistics_mean")
         nk = nk.replace(".time_embedder.timestep_embedder.", ".time_embedder.")
         nk = nk.replace(".last_time_embedder.timestep_embedder.", ".last_time_embedder.")
         if nk == "std-of-means":
@@ -1275,6 +1398,41 @@ def load_ltx25_video_encoder(bundle_root: Path, *, load_fn: Any | None = None) -
     missing = [k for k in params if k not in weights]
     if missing:
         raise RuntimeError(f"LTX 2.5 video VAE encoder weights missing: {missing[:8]}")
+    encoder.load_weights(list(weights.items()), strict=False)
+    return encoder
+
+
+def _torch_conv2d_weights_to_mlx(weights: dict[str, Any]) -> dict[str, Any]:
+    """Transpose encoder convs that ingest left in PyTorch ``(O, I, kH, kW)`` layout."""
+    out: dict[str, Any] = {}
+    for key, tensor in weights.items():
+        if key.endswith(".weight") and getattr(tensor, "ndim", 0) == 4:
+            shape = tuple(int(dim) for dim in tensor.shape)
+            if shape[2] in (1, 3) and shape[3] in (1, 3) and shape[1] not in (1, 3):
+                tensor = tensor.transpose(0, 2, 3, 1)
+        out[key] = tensor
+    return out
+
+
+def load_ltx25_audio_encoder(bundle_root: Path, *, load_fn: Any | None = None) -> LTX25AudioEncoder:
+    cfg = get_audio_config(bundle_root)
+    encoder = LTX25AudioEncoder(cfg)
+    weights = _torch_conv2d_weights_to_mlx(
+        _strip_component_prefix(
+            _load_bundle_weights(bundle_root, _AUDIO_VAE_FILE, "", load_fn=load_fn),
+            component="encoder",
+            vae_prefix="audio_vae.",
+        )
+    )
+    params = _flat_param_map(encoder)
+    missing = [k for k in params if k not in weights]
+    if missing:
+        raise RuntimeError(
+            "LTX 2.5 audio VAE encoder weights are missing from this bundle "
+            f"({missing[:8]}). Ref2VA audio references need the encoder half of "
+            f"{_AUDIO_VAE_FILE}. Re-run the LTX 2.5 install ingest if the source "
+            "checkpoint contains ``audio_vae.encoder.*``."
+        )
     encoder.load_weights(list(weights.items()), strict=False)
     return encoder
 

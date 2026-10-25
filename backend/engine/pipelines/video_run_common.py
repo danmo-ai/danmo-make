@@ -841,7 +841,7 @@ def execute_family_video_generator(pipeline,
         if media_refs and "media_references" in gen_sig:
             if image_path or last_frame_path:
                 raise RuntimeError(
-                    "MiniMax-H3 Ref2VA media_references cannot be combined with "
+                    "Ref2VA media_references cannot be combined with "
                     "first/last keyframes (source_asset_id / tail_asset_id)."
                 )
             resolved_refs: list[tuple[str, str]] = []

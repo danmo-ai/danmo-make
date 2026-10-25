@@ -31,6 +31,7 @@ class LTX25GeneratorProto(Protocol):
         step_distill: bool,
         image_path: str | None,
         negative_prompt: str = "",
+        media_references: list[tuple[str, str]] | None = None,
         on_log: Any | None,
         on_progress: Any | None = None,
     ) -> str: ...
@@ -43,6 +44,8 @@ def create_ltx25_generator(
     config: LTX25Config | None = None,
     entry: Any | None = None,
     version_key: str | None = None,
+    project_root: Path | None = None,
+    registry: Any | None = None,
 ) -> LTX25GeneratorProto:
     require_mlx_ctx(ctx, feature="LTX 2.5")
     if not bundle_root.is_dir():
@@ -53,6 +56,8 @@ def create_ltx25_generator(
         config=config,
         entry=entry,
         version_key=version_key,
+        project_root=project_root,
+        registry=registry,
     )
 
 

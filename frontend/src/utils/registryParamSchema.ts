@@ -11,7 +11,7 @@ export type NormalizedParamSpec = RawParamSpec & { type: InferredParamType };
 
 export function inferType(spec: unknown, key?: string): InferredParamType {
   if (!spec || typeof spec !== 'object') return 'skip';
-  if (key === 'resolution_presets') return 'skip';
+  if (key === 'resolution_presets' || key === 'ref2va') return 'skip';
   const s = spec as RawParamSpec;
   if (typeof s.type === 'string') return s.type as InferredParamType;
   if (typeof s.default === 'boolean' || (key && String(key).endsWith('_support'))) {

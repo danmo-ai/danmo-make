@@ -413,14 +413,20 @@ class LTX25MlxGenerator:
         *,
         entry: Any | None = None,
         version_key: str | None = None,
+        project_root: Path | None = None,
+        registry: Any | None = None,
     ):
         self.ctx = ctx
         self.bundle_root = Path(bundle_root)
         self.config = config or LTX25Config()
         self._registry_entry = entry
         self._version_key = version_key
+        self._project_root = Path(project_root) if project_root is not None else None
+        self._registry = registry
         self._encoder: LTX25PromptEncoder | None = None
         self._dit: LTX25X0Model | None = None
+        self._msr_merged = False
+        self._msr: Any | None = None
 
     def load(self) -> None:
         """No-op — components load lazily in ``generate_and_save``."""
@@ -429,7 +435,16 @@ class LTX25MlxGenerator:
         if on_log:
             on_log(level, message)
 
-    def _load_dit(self, on_log: Callable[[str, str], None] | None = None) -> LTX25X0Model:
+    def _load_dit(
+        self,
+        on_log: Callable[[str, str], None] | None = None,
+        *,
+        msr: bool = False,
+    ) -> LTX25X0Model:
+        if self._dit is not None and self._msr_merged != msr:
+            self._dit = None
+            self._msr = None
+            self._msr_merged = False
         if self._dit is None:
             self._log(on_log, "info", "Loading LTX 2.5 distilled transformer")
             self._dit = load_ltx25_x0_model(
@@ -441,6 +456,96 @@ class LTX25MlxGenerator:
                 load_fn=getattr(self.ctx, "load_weights", None),
             )
         return self._dit
+
+    def _ensure_msr(self, on_log: Callable[[str, str], None] | None) -> Any:
+        from backend.engine.contracts.pipeline_registry import resolve_version_block
+        from backend.engine.families.ltx25.ref2va_mlx import merge_msr_lora, resolve_msr_lora_path
+
+        if self._msr_merged and self._msr is not None:
+            return self._msr
+        if self._project_root is None or self._registry is None:
+            raise RuntimeError("LTX 2.5 Ref2VA needs the model registry to locate the MSR LoRA.")
+        weight_path = resolve_msr_lora_path(project_root=self._project_root, registry=self._registry)
+        block = resolve_version_block(self._registry_entry, self._version_key) if self._registry_entry else None
+        quant = dict((block or {}).get("quantization") or {})
+        bits = int(quant.get("bits") or 0) or None
+        group_size = int(quant.get("group_size") or 64)
+        stem = getattr(self._dit, "_ltx25_stem", None)
+        if stem is None:
+            raise RuntimeError("LTX 2.5 transformer stem is missing; cannot merge the MSR LoRA.")
+        self._log(on_log, "info", f"Merging MSR reference LoRA ({weight_path.name})")
+        self._msr = merge_msr_lora(
+            stem,
+            weight_path=weight_path,
+            ctx=self.ctx,
+            bits=bits,
+            group_size=group_size,
+            on_log=on_log,
+        )
+        self._msr_merged = True
+        return self._msr
+
+    def _bind_references(
+        self,
+        video_state: LatentState,
+        audio_state: LatentState,
+        *,
+        pixel_h: int,
+        pixel_w: int,
+        msr: Any,
+        on_log: Callable[[str, str], None] | None,
+    ) -> tuple[LatentState, LatentState, int, int]:
+        from backend.engine.families.ltx25.ref2va_mlx import (
+            append_clean_tokens,
+            default_reference_frames,
+            encode_audio_references,
+            encode_image_guides,
+            prepare_reference_list,
+        )
+        from backend.engine.families.ltx25.vae_mlx import load_ltx25_audio_encoder, load_ltx25_video_encoder
+
+        prepared = prepare_reference_list(getattr(self, "_media_references", None) or [])
+        load_fn = getattr(self.ctx, "load_weights", None)
+        video_encoder = load_ltx25_video_encoder(self.bundle_root, load_fn=load_fn)
+        frames = default_reference_frames()
+        tokens, positions, count = encode_image_guides(
+            self.ctx,
+            image_paths=prepared.image_paths,
+            background_index=prepared.background_index,
+            pixel_h=pixel_h,
+            pixel_w=pixel_w,
+            reference_frames=frames,
+            video_encoder=video_encoder,
+            image_slots=msr.image_slots,
+            fps=float(getattr(self, "_ref_fps", 24.0)),
+        )
+        video_state = append_clean_tokens(self.ctx, video_state, tokens, positions, prepend=False)
+        audio_count = 0
+        if prepared.audio_paths:
+            if not msr.has_audio_slots:
+                raise RuntimeError(
+                    "Audio references need the AVref MSR LoRA (paired with the first subject images)."
+                )
+            audio_encoder = load_ltx25_audio_encoder(self.bundle_root, load_fn=load_fn)
+            a_tokens, a_positions, audio_count = encode_audio_references(
+                self.ctx,
+                audio_paths=prepared.audio_paths,
+                image_slot_count=len(prepared.image_paths),
+                audio_encoder=audio_encoder,
+                audio_slots=msr.audio_slots,
+                slot_duration=float(msr.slot_duration),
+                end_margin=float(msr.end_margin),
+            )
+            audio_state = append_clean_tokens(
+                self.ctx, audio_state, a_tokens, a_positions, prepend=True,
+            )
+        self._log(
+            on_log,
+            "info",
+            f"Ref2VA: {len(prepared.image_paths)} image guide(s), {len(prepared.audio_paths)} audio, "
+            f"{frames} frames @ {pixel_w}x{pixel_h}",
+        )
+        return video_state, audio_state, count, audio_count
 
     def _encode_prompts(
         self,
@@ -468,6 +573,7 @@ class LTX25MlxGenerator:
         step_distill: bool,
         image_path: str | None,
         negative_prompt: str = "",
+        media_references: list[tuple[str, str]] | None = None,
         on_log: Callable[[str, str], None] | None = None,
         on_progress: Callable[..., None] | None = None,
     ) -> str:
@@ -482,6 +588,11 @@ class LTX25MlxGenerator:
             )
         if negative_prompt:
             raise RuntimeError("LTX 2.5 distilled sampling does not use a negative prompt.")
+        if media_references and image_path:
+            raise RuntimeError(
+                "LTX 2.5 Ref2VA cannot be combined with a first-frame image. "
+                "Clear the start frame, or clear the references."
+            )
         _assert_resolution(height, width)
         num_frames = _snap_frames(max(1, int(num_frames)))
         if num_frames < 9:
@@ -508,7 +619,10 @@ class LTX25MlxGenerator:
 
         video_embeds, audio_embeds = self._encode_prompts(prompt, on_log=on_log)
         _materialize(ctx, video_embeds, audio_embeds)
-        dit = self._load_dit(on_log=on_log)
+        dit = self._load_dit(on_log=on_log, msr=bool(media_references))
+        self._media_references = list(media_references or [])
+        self._ref_fps = float(fps)
+        msr = self._ensure_msr(on_log) if media_references else None
         load_fn = getattr(ctx, "load_weights", None)
 
         # --- Stage 1 (half resolution, ancestral Euler) ---
@@ -542,6 +656,17 @@ class LTX25MlxGenerator:
             seed=seed + 1,
             sigma=1.0,
         )
+        guide_tokens = 0
+        audio_ref_tokens = 0
+        if msr is not None:
+            video_state, audio_state, guide_tokens, audio_ref_tokens = self._bind_references(
+                video_state,
+                audio_state,
+                pixel_h=stage1_h,
+                pixel_w=stage1_w,
+                msr=msr,
+                on_log=on_log,
+            )
         _materialize(ctx, video_state.latent, audio_state.latent)
 
         self._log(on_log, "info", f"Stage 1: {stage1_w}x{stage1_h} {num_frames}f @ {fps}fps ({stage1_steps} steps)")
@@ -564,6 +689,10 @@ class LTX25MlxGenerator:
 
         # --- Spatial latent upsampler x2 ---
         self._log(on_log, "info", "Upsampling stage-1 latent x2")
+        if guide_tokens:
+            video_x = video_x[:, :-guide_tokens]
+        if audio_ref_tokens:
+            audio_x = audio_x[:, audio_ref_tokens:]
         video_patchifier = VideoLatentPatchifier()
         video_latent_5d = video_patchifier.unpatchify(video_x[:1], (f_lat, h_lat, w_lat), ctx)
         video_latent_5d = upsample_video_latent(self.bundle_root, video_latent_5d, load_fn=load_fn)
@@ -600,6 +729,17 @@ class LTX25MlxGenerator:
             sigma=STAGE_2_SIGMAS[0],
             initial_latent=audio_x,
         )
+        guide_tokens = 0
+        audio_ref_tokens = 0
+        if msr is not None:
+            video_state2, audio_state2, guide_tokens, audio_ref_tokens = self._bind_references(
+                video_state2,
+                audio_state2,
+                pixel_h=height,
+                pixel_w=width,
+                msr=msr,
+                on_log=on_log,
+            )
         _materialize(ctx, video_state2.latent, audio_state2.latent)
 
         self._log(on_log, "info", f"Stage 2: {width}x{height} refine ({stage2_steps} steps)")
@@ -622,6 +762,10 @@ class LTX25MlxGenerator:
 
         # --- Decode + mux ---
         self._log(on_log, "info", "Decoding video + audio latents and muxing mp4")
+        if guide_tokens:
+            video_x = video_x[:, :-guide_tokens]
+        if audio_ref_tokens:
+            audio_x = audio_x[:, audio_ref_tokens:]
         video_latent = video_patchifier.unpatchify(video_x[:1], (f_lat2, h_lat2, w_lat2), ctx)
         audio_patchifier = AudioPatchifier()
         audio_latent = audio_patchifier.unpatchify(audio_x[:1])
@@ -633,6 +777,8 @@ class LTX25MlxGenerator:
         # (~12GB) no longer need to be resident. Reloaded lazily on next use.
         self._dit = None
         self._encoder = None
+        self._msr = None
+        self._msr_merged = False
         import gc
 
         gc.collect()

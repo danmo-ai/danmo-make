@@ -38,7 +38,7 @@
         :rows="promptRows"
         :placeholder="promptPlaceholder"
         resize="none"
-        class="video-composer__prompt"
+        :class="['video-composer__prompt', { 'video-composer__prompt--ref-hint': showH3Ref2VA && h3RefHint }]"
         @keydown="onKeydown"
       />
       <!-- Reference media inside textarea: start/tail/source video + Bernini refs -->
@@ -195,7 +195,7 @@
             </div>
           </div>
           <template v-if="h3MediaRefs.length < h3RefMax">
-            <ComposerIconTip :content="$t('create.h3AddRefImage')">
+            <ComposerIconTip v-if="h3RefAllows('image')" :content="h3RefHint || $t('create.h3AddRefImage')">
               <DqIconButton
                 type="text"
                 size="sm"
@@ -206,7 +206,7 @@
                 <DqIcon :size="14"><Picture /></DqIcon>
               </DqIconButton>
             </ComposerIconTip>
-            <ComposerIconTip :content="$t('create.h3AddRefVideo')">
+            <ComposerIconTip v-if="h3RefAllows('video')" :content="$t('create.h3AddRefVideo')">
               <DqIconButton
                 type="text"
                 size="sm"
@@ -217,7 +217,7 @@
                 <DqIcon :size="14"><VideoCamera /></DqIcon>
               </DqIconButton>
             </ComposerIconTip>
-            <ComposerIconTip :content="$t('create.h3AddRefAudio')">
+            <ComposerIconTip v-if="h3RefAllows('audio')" :content="h3RefHint || $t('create.h3AddRefAudio')">
               <DqIconButton
                 type="text"
                 size="sm"
@@ -229,6 +229,7 @@
               </DqIconButton>
             </ComposerIconTip>
           </template>
+          <span v-if="h3RefHint" class="video-composer__ref-hint">{{ h3RefHint }}</span>
         </template>
       </div>
 
@@ -666,6 +667,8 @@ const props = defineProps<{
   showH3Ref2VA?: boolean;
   h3MediaRefs?: Array<{ kind: 'image' | 'video' | 'audio'; path: string; previewUrl: string }>;
   h3RefMax?: number;
+  h3RefKinds?: Array<'image' | 'video' | 'audio'>;
+  h3RefHint?: string;
   modelNotReady?: boolean;
   modelNotReadyName?: string;
   workModeOptions?: Array<{ label: string; value: string }>;
@@ -796,6 +799,14 @@ const showH3Ref2VA = computed(() => Boolean(props.showH3Ref2VA) && props.workMod
 const h3MediaRefs = computed(() => props.h3MediaRefs || []);
 
 const h3RefMax = computed(() => props.h3RefMax ?? 12);
+
+const h3RefKinds = computed(() => props.h3RefKinds ?? ['image', 'video', 'audio']);
+
+const h3RefHint = computed(() => props.h3RefHint || '');
+
+function h3RefAllows(kind: 'image' | 'video' | 'audio'): boolean {
+  return h3RefKinds.value.includes(kind);
+}
 
 const showRefArea = computed(
   () => needsReferenceInput.value || showBerniniReferences.value || showH3Ref2VA.value,
@@ -1060,6 +1071,17 @@ function onKeydown(e: KeyboardEvent) {
   height: 20px;
   object-fit: cover;
   border-radius: 3px;
+}
+
+.video-composer__prompt--ref-hint {
+  padding-bottom: 56px;
+}
+
+.video-composer__ref-hint {
+  flex: 1 0 100%;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--dq-label-tertiary);
 }
 
 .video-composer__ref-add {
