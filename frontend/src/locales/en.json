@@ -821,6 +821,12 @@
     "extraRefImage": "Another reference",
     "pictureIndex": "Picture {n}",
     "quantizedNoReference": "This 8-bit version cannot use reference images. Switch to BF16.",
+    "referenceHint": {
+      "instruct": "Up to {n} reference images. Instruction edit can keep the subject.",
+      "instructOne": "One reference image. Instruction edit changes that image.",
+      "redraw": "One reference image. Strength redraws the whole image.",
+      "redrawMany": "Up to {n} reference images. Strength redraws the whole image."
+    },
     "img2imgFromGallery": "Source image loaded from Works; switched to Edit image.",
     "optional": "(optional)",
     "addRefImage": "Add Ref Image",

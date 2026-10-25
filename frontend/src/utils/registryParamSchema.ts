@@ -353,18 +353,36 @@ export function img2imgUsesStrength(parameters: Record<string, unknown> | undefi
 
 /**
  * How many reference images the composer may hold, including picture 1.
- * Multi-image edit is ``edit_plus_multi_image`` (Qwen / FireRed) or
- * ``reference_images_support`` (HiDream). Otherwise only the primary image.
+ * The integer is the contract: ``edit_max_reference_images``, else
+ * ``max_reference_images``. No declared integer means a single image.
  */
 export function referenceImageSlotCap(
   parameters: Record<string, unknown> | undefined | null,
 ): number {
   const raw = parameters || {};
-  const multi = Boolean(raw.edit_plus_multi_image || raw.reference_images_support);
-  if (!multi) return 1;
-  const max = Number(raw.edit_max_reference_images ?? raw.max_reference_images ?? 1);
-  if (!Number.isFinite(max)) return 1;
+  const declared = Object.prototype.hasOwnProperty.call(raw, 'edit_max_reference_images')
+    ? raw.edit_max_reference_images
+    : Object.prototype.hasOwnProperty.call(raw, 'max_reference_images')
+      ? raw.max_reference_images
+      : undefined;
+  if (declared == null || declared === '') return 1;
+  const max = Number(declared);
+  if (!Number.isFinite(max) || max <= 0) return 1;
   return Math.max(1, Math.floor(max));
+}
+
+/** Instruction edit keeps the subject. Redraw blends the whole reference by strength. */
+export function referenceUse(
+  parameters: Record<string, unknown> | undefined | null,
+  actions?: Record<string, unknown> | null,
+): 'instruct' | 'redraw' {
+  const raw = parameters || {};
+  if (raw.edit_use_vl_vision || raw.edit_conditioning_concat || raw.reference_images_support) {
+    return 'instruct';
+  }
+  const rewrite = Boolean(actions && Object.prototype.hasOwnProperty.call(actions, 'rewrite'));
+  if (raw.image_pipeline_shape === 'family_generator' && rewrite) return 'instruct';
+  return 'redraw';
 }
 
 /** Extra slots after picture 1. */
