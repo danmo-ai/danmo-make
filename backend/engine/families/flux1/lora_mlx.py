@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from backend.engine.common.bundle.lora_mlx import merge_lora_adapters_common
-from backend.engine.families.flux1.weights import remap_flux1_lora_keys
+from backend.engine.families.flux1.weights import remap_flux1_lora_keys, remap_flux1_lora_module_prefix
 from backend.engine.runtime._base import RuntimeContext
 
 
@@ -29,5 +29,6 @@ def merge_flux1_lora_adapters(
         family_name="Flux1",
         remap_groups=remap_flux1_lora_keys,
         param_key_for_module=lambda module_name: f"{module_name}.weight",
+        remap_module_prefix=remap_flux1_lora_module_prefix,
         on_log=on_log,
     )

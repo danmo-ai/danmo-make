@@ -332,8 +332,11 @@
 
       <!-- User-trained LoRAs -->
       <div v-if="activeCategory === 'trained_loras'" class="trained-loras-page">
-        <div class="page-header models-page__page-header">
-          <h2 class="page-title">{{ $t('download.myTrainedLoras') }}</h2>
+        <div class="trained-loras-page__header">
+          <div class="trained-loras-page__heading">
+            <h2 class="page-title">{{ $t('download.myTrainedLoras') }}</h2>
+            <p class="trained-loras-page__hint">{{ $t('download.trainedLorasHint') }}</p>
+          </div>
           <div class="page-actions models-page__actions">
             <DqButton
               size="sm"
@@ -368,7 +371,7 @@
             />
           </DqCol>
         </DqRow>
-        <div v-else class="trained-loras-page__empty">
+        <div v-else-if="!userLorasRefreshing" class="trained-loras-page__empty">
           <DqEmpty :description="$t('download.noUserLoras')" />
           <DqButton type="primary" @click="goToLoraTrain">
             {{ $t('loraTrain.startTraining') }}
@@ -866,14 +869,36 @@ async function refreshUserLoras() {
   }
 }
 
-function verifyUserLora(ul: { id?: string; base_model?: string }) {
-  router.push({
-    name: 'image_create',
-    query: {
-      model: String(ul.base_model || 'flux1-dev'),
-      lora: String(ul.id || ''),
-    },
-  });
+function verifyUserLora(ul: {
+  id?: string;
+  base_model?: string;
+  trigger_word?: string;
+  inference?: {
+    scheme?: string;
+    model?: string;
+    steps?: number;
+    guidance?: number;
+    lora_weight?: number;
+    scheduler?: string;
+    extra_adapters?: string[];
+  };
+}) {
+  const inference = ul.inference || {};
+  const query: Record<string, string> = {
+    verify: '1',
+    model: String(inference.model || ul.base_model || 'flux1-dev'),
+    lora: String(ul.id || ''),
+    width: '1024',
+    height: '1024',
+  };
+  if (ul.trigger_word) query.prompt = String(ul.trigger_word);
+  if (inference.steps != null) query.steps = String(inference.steps);
+  if (inference.guidance != null) query.guidance = String(inference.guidance);
+  if (inference.lora_weight != null) query.lora_scale = String(inference.lora_weight);
+  if (inference.scheduler) query.scheduler = String(inference.scheduler);
+  const extras = (inference.extra_adapters || []).map((id) => String(id).trim()).filter(Boolean);
+  if (extras.length) query.extra_adapters = extras.join(',');
+  void router.push({ name: 'image_create', query });
 }
 
 function userLoraBaseModelLabel(modelId: string | undefined): string {
@@ -1522,11 +1547,47 @@ onUnmounted(() => {
   font-family: var(--dq-font-mono);
   font-size: var(--dq-font-size-caption);
 }
+.trained-loras-page__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.trained-loras-page__heading {
+  min-width: 0;
+}
+
+.trained-loras-page__heading .page-title {
+  font-size: var(--dq-font-size-title);
+}
+
+.trained-loras-page :deep(.model-grid > .dq-col),
+.trained-loras-page :deep(.model-grid > .models-page__col-mb) {
+  display: flex;
+  flex-direction: column;
+}
+
+.trained-loras-page :deep(.user-lora-card) {
+  flex: 1 1 auto;
+  width: 100%;
+}
+
+.trained-loras-page__hint {
+  margin: 6px 0 0;
+  max-width: 640px;
+  font-size: var(--dq-font-size-caption);
+  line-height: 1.5;
+  color: var(--dq-label-tertiary);
+}
+
 .trained-loras-page__empty {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 12px 0 24px;
+  padding: 28px 0 24px;
 }
 </style>

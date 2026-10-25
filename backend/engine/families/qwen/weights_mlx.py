@@ -1197,7 +1197,9 @@ def remap_qwen_lora_module_prefix(hf_stem: str) -> str:
     m = re.sub(r"\.txt_mlp\.net\.2$", ".txt_ff.mlp_out", m)
     m = re.sub(r"\.img_mod\.1$", ".img_mod_linear", m)
     m = re.sub(r"\.txt_mod\.1$", ".txt_mod_linear", m)
-    m = re.sub(r"\.attn\.to_out\.0$", ".attn.attn_to_out.0", m)
+    # Accept diffusers to_out.0, legacy Studio to_out and direct MLX attn_to_out.0.
+    # The anonymous list index is part of the model's actual parameter path.
+    m = re.sub(r"\.attn\.(?:to_out|attn_to_out)(?:\.0)?$", ".attn.attn_to_out.0", m)
     if m.endswith(".weight"):
         m = m[: -len(".weight")].rstrip(".")
     elif m.endswith(".bias"):
@@ -1207,7 +1209,9 @@ def remap_qwen_lora_module_prefix(hf_stem: str) -> str:
 
 def remap_qwen_lora_keys(lora_weights: dict) -> dict[str, tuple[Any, Any, float]]:
     """Group LoRA tensors; map module names to DanQing ``QwenImageTransformer._param_map`` prefixes (no ``dit.``)."""
-    default_alpha = 8.0
+    # Safetensors alpha is optional; use alpha=rank when omitted, not an
+    # unrelated legacy rank-8 value. Studio writes an explicit alpha on export.
+    default_alpha: float | None = None
     alphas_by_tgt: dict[str, float] = {}
     for key, tensor in lora_weights.items():
         lk = key.lower()
@@ -1249,11 +1253,15 @@ def remap_qwen_lora_keys(lora_weights: dict) -> dict[str, tuple[Any, Any, float]
     out: dict[str, tuple[Any, Any, float]] = {}
     for hf_stem, parts in groups.items():
         if "down" not in parts or "up" not in parts:
-            continue
+            raise RuntimeError(
+                f"Qwen LoRA module {hf_stem!r} is missing a down/up factor; "
+                "refusing to apply a partial adapter."
+            )
         tgt = remap_qwen_lora_module_prefix(hf_stem)
         if not tgt:
-            continue
-        alpha = float(alphas_by_tgt.get(tgt, default_alpha))
+            raise RuntimeError(f"Qwen LoRA module {hf_stem!r} has no valid target prefix.")
+        fallback_alpha = default_alpha if default_alpha is not None else float(parts["down"].shape[0])
+        alpha = float(alphas_by_tgt.get(tgt, fallback_alpha))
         out[tgt] = (parts["down"], parts["up"], alpha)
     return out
 

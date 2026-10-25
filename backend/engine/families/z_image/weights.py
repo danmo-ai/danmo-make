@@ -149,7 +149,9 @@ def remap_zimage_lora_keys(lora_weights: dict, patch_size: int = 2) -> dict[str,
     """Group LoRA tensors and map module names to DanQing Z-Image ``_param_map`` prefixes (no ``.weight``)."""
     from backend.engine.common.bundle.weights import _lora_key_to_module
 
-    default_alpha = 8.0
+    # Safetensors alpha is optional; Kohya/diffusers use alpha=rank when omitted.
+    # Studio always writes its trained alpha explicitly; never assume rank=8.
+    default_alpha: float | None = None
     alphas_by_tgt: dict[str, float] = {}
     for key, tensor in lora_weights.items():
         lk = key.lower()
@@ -171,12 +173,12 @@ def remap_zimage_lora_keys(lora_weights: dict, patch_size: int = 2) -> dict[str,
 
     groups: dict[str, dict[str, Any]] = {}
     for key, tensor in lora_weights.items():
-        if "alpha" in key.lower():
+        kl = key.lower()
+        if "alpha" in kl or "dora_magnitude" in kl or key.endswith(".delta.weight"):
             continue
         module = _lora_key_to_module(key)
         if module not in groups:
             groups[module] = {}
-        kl = key.lower()
         if "lora_down" in kl or "lora_a." in kl or "lora_a_weight" in kl:
             groups[module]["down"] = tensor
         elif "lora_up" in kl or "lora_b." in kl or "lora_b_weight" in kl:
@@ -185,12 +187,16 @@ def remap_zimage_lora_keys(lora_weights: dict, patch_size: int = 2) -> dict[str,
     out: dict[str, tuple[Any, Any, float]] = {}
     for module, parts in groups.items():
         if "down" not in parts or "up" not in parts:
-            continue
+            raise RuntimeError(
+                f"Z-Image LoRA module {module!r} is missing a down/up factor; "
+                "refusing to apply a partial adapter."
+            )
         down, up = parts["down"], parts["up"]
         tgt = remap_zimage_lora_module_prefix(module, patch_size)
         if not tgt:
-            continue
-        alpha = float(alphas_by_tgt.get(tgt, default_alpha))
+            raise RuntimeError(f"Z-Image LoRA module {module!r} has no valid target prefix.")
+        fallback_alpha = default_alpha if default_alpha is not None else float(down.shape[0])
+        alpha = float(alphas_by_tgt.get(tgt, fallback_alpha))
         out[tgt] = (down, up, alpha)
     return out
 

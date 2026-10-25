@@ -35,7 +35,7 @@ AuditKind = Literal["concept", "style"]
 
 MAX_VLM_DATASET_IMAGES = 48
 
-_CONCEPT_DATASET_AUDIT_INSTRUCTION = """You audit ONE image for DreamBooth **person/face** LoRA training at **512×512 cover crop**.
+_CONCEPT_DATASET_AUDIT_INSTRUCTION = """You audit ONE image for DreamBooth **person/face** LoRA training at **{width}×{height} cover crop with optional face reframing**.
 Score harshly — attractive photos can still be useless for face LoRA if the face is tiny after crop.
 
 Score 1-2 when: full-body/distant shot, landscape/wide framing with small face, short edge under ~800px, multiple people, heavy blur/occlusion/watermark.
@@ -68,10 +68,16 @@ ISSUES: comma-separated tags from blurry,style_not_visible,wrong_palette,artifac
 REASON: one concise sentence (use Chinese if appropriate)"""
 
 
-def build_dataset_audit_instruction(audit_kind: str = "concept") -> str:
+def build_dataset_audit_instruction(
+    audit_kind: str = "concept",
+    *,
+    resolution: tuple[int, int] = (512, 512),
+) -> str:
     if audit_kind == "style":
         return _STYLE_DATASET_AUDIT_INSTRUCTION
-    return _CONCEPT_DATASET_AUDIT_INSTRUCTION
+    return _CONCEPT_DATASET_AUDIT_INSTRUCTION.format(
+        width=int(resolution[0]), height=int(resolution[1])
+    )
 
 
 def build_progress_audit_instruction(progress_prompt: str, *, audit_kind: str = "concept") -> str:

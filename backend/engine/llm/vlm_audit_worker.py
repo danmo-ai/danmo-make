@@ -30,15 +30,7 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
     registry_model_id = str(job.get("registry_model_id") or settings.default_model_vlm)
 
     if mode == "lora_caption":
-        from backend.engine.training.lora_auto_caption import caption_dataset_images_batch
-
-        captions = caption_dataset_images_batch(
-            image_paths,
-            model_dir,
-            audit_kind=str(job.get("audit_kind") or "concept"),
-            subject_name=str(job.get("subject_name") or ""),
-        )
-        return {"captions": captions}
+        raise RuntimeError("Per-image VLM captions are not supported. Train with one caption.")
 
     from backend.engine.llm.vlm_http import analyze_image_files_batch
 

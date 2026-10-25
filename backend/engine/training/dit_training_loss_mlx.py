@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import contextvars
 from typing import Any, Callable
 
 import mlx.core as mx
+
+# Validation loss must not randomly drop captions, or checkpoint selection compares different conditionings.
+caption_dropout_disabled: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "dq_lora_caption_dropout_disabled",
+    default=False,
+)
+
+SIGMA_BIAS_MODES = ("uniform", "low", "high", "sigmoid")
 
 CLASS_PRIOR_LATENT_COUNT = 16
 
@@ -13,8 +22,7 @@ def min_snr_weight(sigma: mx.array, gamma: float) -> mx.array:
     """Per-sample SNR weight for linear flow-matching with x_t = (1-σ)x0 + σε."""
     if gamma <= 0:
         return mx.ones_like(sigma)
-    s = mx.reshape(sigma, (-1,) + (1,) * (sigma.ndim - 1 if sigma.ndim > 1 else 0))
-    s = mx.clip(s, 1e-4, 1.0 - 1e-4)
+    s = mx.clip(sigma, 1e-4, 1.0 - 1e-4)
     snr = mx.square((1.0 - s) / s)
     return mx.minimum(snr, gamma) / mx.maximum(snr, 1e-8)
 
@@ -69,6 +77,52 @@ def _apply_sigma_uniform_bias(u: mx.array, bias: str) -> mx.array:
     return u
 
 
+def _sample_unit_interval(ctx: Any, batch: int, bias: str) -> mx.array:
+    """Draw ``u ∈ (0, 1)`` for flow-match σ.
+
+    ``sigmoid`` is the SD3 logit-normal / AI-Toolkit sigmoid timestep: ``sigmoid(N(0, 1))``
+    piles samples around 0.5, the band that fixes facial structure, with tails into layout
+    and skin texture. ``low`` / ``high`` remap a uniform draw.
+    """
+    mode = (bias or "uniform").strip().lower()
+    dtype = ctx.float32() if ctx is not None and hasattr(ctx, "float32") else mx.float32
+    if mode == "sigmoid":
+        z = mx.random.normal(shape=(int(batch),), dtype=dtype)
+        return mx.sigmoid(z)
+    u = mx.random.uniform(shape=(int(batch),), dtype=dtype)
+    return _apply_sigma_uniform_bias(u, mode)
+
+
+def sample_shifted_sigmas(
+    ctx: Any,
+    batch: int,
+    *,
+    sigma_shift: float = 1.0,
+    sigma_bias: str = "uniform",
+) -> mx.array:
+    """Sample continuous flow-match σ for base-DiT training.
+
+    SD3 logit-normal (``sigmoid``) is itself the timestep distribution, not a
+    uniform draw to be shifted a second time. In particular, neither the forward
+    static shift nor its inverse preserves its median. Keep the standard
+    logit-normal samples unchanged; ``sigma_shift`` only applies to uniform /
+    low / high sampling.
+    """
+    u = _sample_unit_interval(ctx, int(batch), sigma_bias)
+    if str(sigma_bias).strip().lower() == "sigmoid" or float(sigma_shift) == 1.0:
+        return u
+    return apply_static_sigma_shift(u, sigma_shift)
+
+
+def caption_dropout_applies(rate: float) -> bool:
+    """True on a training step that should condition on the empty caption."""
+    if float(rate) <= 0.0 or caption_dropout_disabled.get():
+        return False
+    import random
+
+    return random.random() < float(rate)
+
+
 def sample_noisy_latent_shifted(
     x0: mx.array,
     ctx: Any,
@@ -81,12 +135,11 @@ def sample_noisy_latent_shifted(
     Plain uniform σ sampling under-trains the high-σ (structure / identity) region that a
     shifted inference schedule spends most of its steps in, so trained LoRAs fail to bind
     identity (faces). Applying the same shift at training time concentrates supervision
-    where inference actually denoises.
+    where inference actually denoises. ``sigma_bias=sigmoid`` then keeps a fat share of
+    that mass in the 0.3–0.7 facial-structure band instead of piling it at pure noise.
     """
     b = x0.shape[0]
-    u = mx.random.uniform(shape=(b,), dtype=ctx.float32())
-    u = _apply_sigma_uniform_bias(u, sigma_bias)
-    t = apply_static_sigma_shift(u, sigma_shift) if float(sigma_shift) != 1.0 else u
+    t = sample_shifted_sigmas(ctx, b, sigma_shift=sigma_shift, sigma_bias=sigma_bias)
     eps = mx.random.normal(x0.shape, dtype=ctx.bfloat16())
     sigma = mx.reshape(t, (b,) + (1,) * (x0.ndim - 1)).astype(ctx.bfloat16())
     x_t = (1.0 - sigma) * x0 + sigma * eps
@@ -163,8 +216,7 @@ def sample_turbo_sigmas(
     u_lo, u_hi = turbo_band_unshifted_range(
         infer_steps=infer_steps, timestep_low=timestep_low, timestep_high=timestep_high
     )
-    v = mx.random.uniform(shape=(int(batch),), dtype=ctx.float32())
-    v = _apply_sigma_uniform_bias(v, timestep_bias)
+    v = _sample_unit_interval(ctx, int(batch), timestep_bias)
     u = u_lo + v * (u_hi - u_lo)
     u = mx.clip(u, 1e-3, 1.0)
     mu = turbo_sigma_shift_mu(width, height)

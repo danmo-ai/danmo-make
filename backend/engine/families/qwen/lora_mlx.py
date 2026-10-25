@@ -5,7 +5,10 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from backend.engine.common.bundle.lora_mlx import merge_lora_adapters_common
-from backend.engine.families.qwen.weights_mlx import remap_qwen_lora_keys
+from backend.engine.families.qwen.weights_mlx import (
+    remap_qwen_lora_keys,
+    remap_qwen_lora_module_prefix,
+)
 from backend.engine.runtime._base import RuntimeContext
 
 
@@ -52,6 +55,7 @@ def merge_qwen_image_lora_adapters(
         family_name="Qwen Image",
         remap_groups=remap_qwen_lora_keys,
         param_key_for_module=lambda module_name: f"dit.{module_name}.weight",
+        remap_module_prefix=remap_qwen_lora_module_prefix,
         base_model_scope_key=_base_model_scope_key,
         repair_indexed_weights=_repair_indexed_qwen_weights,
         on_log=on_log,

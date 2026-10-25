@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any
 
 import mlx.core as mx
@@ -288,9 +289,53 @@ class DoRALinear(nn.Module):
             shape=(input_dims, r),
         )
         self.lora_b = mx.zeros(shape=(r, output_dims))
+        self.assistant_lora_a: mx.array | None = None
+        self.assistant_lora_b: mx.array | None = None
+        self.assistant_dense: mx.array | None = None
+        self.assistant_scale = 1.0
+        self.assistant_enabled = False
+
+    def attach_frozen_assistant(
+        self,
+        down: mx.array,
+        up: mx.array,
+        alpha: float,
+        *,
+        strength: float = 1.0,
+        lora_id: str = "zimage-turbo-training-adapter",
+    ) -> None:
+        out_d, in_d = int(self.linear.weight.shape[0]), int(self.linear.weight.shape[1])
+        self.assistant_lora_a, self.assistant_lora_b, self.assistant_scale = _frozen_assistant_lora_factors(
+            down, up, out_d=out_d, in_d=in_d, alpha=alpha, strength=strength, lora_id=lora_id,
+        )
+        self.assistant_dense = None
+        self.assistant_enabled = True
+        _freeze_assistant_params(self)
+
+    def attach_frozen_assistant_dense(self, delta: mx.array, *, strength: float = 1.0) -> None:
+        out_d, in_d = int(self.linear.weight.shape[0]), int(self.linear.weight.shape[1])
+        if tuple(delta.shape) != (out_d, in_d):
+            raise RuntimeError(f"Assistant delta {tuple(delta.shape)} does not match weight {(out_d, in_d)}")
+        self.assistant_dense = float(strength) * delta.astype(mx.float32)
+        self.assistant_lora_a = None
+        self.assistant_lora_b = None
+        self.assistant_scale = 1.0
+        self.assistant_enabled = True
+        _freeze_assistant_params(self)
+
+    def _assistant_delta(self) -> mx.array:
+        if not self.assistant_enabled:
+            return mx.zeros_like(self.linear.weight, dtype=mx.float32)
+        if self.assistant_dense is not None:
+            return mx.stop_gradient(self.assistant_dense)
+        if self.assistant_lora_a is None or self.assistant_lora_b is None:
+            raise RuntimeError("Frozen assistant LoRA tensors are missing")
+        return mx.stop_gradient(
+            (self.assistant_lora_a @ self.assistant_lora_b).T * self.assistant_scale
+        )
 
     def effective_weight(self) -> mx.array:
-        w = self.linear.weight
+        w = self.linear.weight.astype(mx.float32) + self._assistant_delta()
         delta = (self.lora_a @ self.lora_b).T * self.scale
         v = w + delta
         norms = mx.sqrt(mx.sum(v * v, axis=1, keepdims=True)) + 1e-8
@@ -359,6 +404,40 @@ def _is_trainable_base_linear(module: Any) -> bool:
     )
 
 
+def _iter_named_children(module: Any):
+    """Direct children, including Linear lists MLX did not register (Qwen ``attn_to_out``)."""
+    if isinstance(module, nn.Module) and not _is_leaf_linear(module):
+        children = dict(module.children())
+        yield from children.items()
+        seen = set(children)
+        for name, val in vars(module).items():
+            if name.startswith("_") or name in seen:
+                continue
+            if isinstance(val, (list, nn.Module)) or _is_trainable_base_linear(val):
+                yield name, val
+        return
+    if not hasattr(module, "__dict__"):
+        return
+    for name, val in vars(module).items():
+        if name.startswith("_"):
+            continue
+        yield name, val
+
+
+def _out_proj_list_selected(parent_name: str | None, module_keys: list[str] | None) -> bool:
+    """Whether anonymous linears in a list (Qwen image ``to_out``) should take LoRA."""
+    if not module_keys:
+        return True
+    if not parent_name:
+        return False
+    if _match_lora_module_key(parent_name, module_keys):
+        return True
+    # QwenAttention stores the image out-projection as ``attn_to_out = [Linear]``.
+    if parent_name == "attn_to_out" and _match_lora_module_key("to_out", module_keys):
+        return True
+    return False
+
+
 def _apply_lora_recursive(
     module: Any,
     rank: int,
@@ -367,13 +446,17 @@ def _apply_lora_recursive(
     dropout: float = 0.0,
     module_keys: list[str] | None = None,
     adapter_cls: type = LoRALinear,
-) -> None:
-    if _is_trainable_base_linear(module):
+    parent_name: str | None = None,
+) -> list[Any] | None:
+    # Adapters and raw linears are leaves. Descending into a LoRALinear would wrap its
+    # inner projection a second time.
+    if _is_leaf_linear(module):
         return
     if isinstance(module, list):
+        wrap = _out_proj_list_selected(parent_name, module_keys)
         for i, item in enumerate(module):
             if _is_trainable_base_linear(item):
-                if not module_keys:
+                if wrap:
                     module[i] = adapter_cls.from_base(
                         item,
                         r=rank,
@@ -389,45 +472,30 @@ def _apply_lora_recursive(
                     module_keys=module_keys,
                     adapter_cls=adapter_cls,
                 )
-        return
-    if isinstance(module, nn.Module) and not _is_leaf_linear(module):
-        for name, child in module.children().items():
-            if _is_trainable_base_linear(child) and _match_lora_module_key(name, module_keys):
-                setattr(
-                    module,
-                    name,
-                    adapter_cls.from_base(child, r=rank, scale=scale, dropout=dropout),
-                )
-            else:
-                _apply_lora_recursive(
-                    child,
-                    rank,
-                    scale=scale,
-                    dropout=dropout,
-                    module_keys=module_keys,
-                    adapter_cls=adapter_cls,
-                )
-        return
-    if not hasattr(module, "__dict__"):
-        return
-    for name, val in list(vars(module).items()):
-        if name.startswith("_"):
-            continue
-        if _is_trainable_base_linear(val) and _match_lora_module_key(name, module_keys):
+        return module
+    for name, child in _iter_named_children(module):
+        if _is_trainable_base_linear(child) and _match_lora_module_key(name, module_keys):
             setattr(
                 module,
                 name,
-                adapter_cls.from_base(val, r=rank, scale=scale, dropout=dropout),
+                adapter_cls.from_base(child, r=rank, scale=scale, dropout=dropout),
             )
         else:
-            _apply_lora_recursive(
-                val,
+            replacement = _apply_lora_recursive(
+                child,
                 rank,
                 scale=scale,
                 dropout=dropout,
                 module_keys=module_keys,
                 adapter_cls=adapter_cls,
+                parent_name=name,
             )
+            if isinstance(child, list) and replacement is not None:
+                # MLX nn.Module.__getattr__ materializes a fresh list container on
+                # every access. Mutating ``child[i]`` therefore updates a temporary
+                # list and silently leaves Qwen's real attn_to_out[0] untrained.
+                # Reassign the whole list so MLX registers the adapter in the DiT.
+                setattr(module, name, replacement)
 
 
 def _dit_inner(model: Any) -> Any:
@@ -442,16 +510,8 @@ def _walk_dit_nodes(root: Any) -> Any:
         for item in root:
             yield from _walk_dit_nodes(item)
         return
-    if isinstance(root, nn.Module) and not _is_leaf_linear(root):
-        for child in root.children().values():
-            yield from _walk_dit_nodes(child)
-        return
-    if not hasattr(root, "__dict__"):
-        return
-    for name, val in vars(root).items():
-        if name.startswith("_"):
-            continue
-        yield from _walk_dit_nodes(val)
+    for _name, child in _iter_named_children(root):
+        yield from _walk_dit_nodes(child)
 
 
 def _resolve_parent_and_name(root: Any, path: str) -> tuple[Any, str]:
@@ -491,7 +551,7 @@ def _walk_all_linear_paths(root: Any, prefix: str = "") -> list[tuple[Any, str]]
                 visit(item, child)
             return
         if isinstance(node, nn.Module) and not _is_leaf_linear(node):
-            for name, child in node.children().items():
+            for name, child in _iter_named_children(node):
                 child_path = f"{path}.{name}" if path else name
                 visit(child, child_path)
             return
@@ -510,7 +570,7 @@ def _walk_all_linear_paths(root: Any, prefix: str = "") -> list[tuple[Any, str]]
 def set_training_assistant_enabled(layers: list[Any], *, enabled: bool) -> None:
     """Toggle frozen turbo training assistants on attached layers."""
     for layer in layers:
-        if isinstance(layer, (LoRALinear, FrozenAssistantLinear)):
+        if isinstance(layer, (LoRALinear, DoRALinear, FrozenAssistantLinear)):
             layer.assistant_enabled = enabled
 
 
@@ -530,7 +590,7 @@ def _walk_lora_paths(root: Any, prefix: str = "") -> list[tuple[Any, str]]:
                 visit(item, child)
             return
         if isinstance(node, nn.Module) and not _is_adapter_linear(node) and not _is_frozen_assistant_linear(node):
-            for name, child in node.children().items():
+            for name, child in _iter_named_children(node):
                 child_path = f"{path}.{name}" if path else name
                 visit(child, child_path)
             return
@@ -553,8 +613,20 @@ def iter_lora_linears(model: Any) -> list[Any]:
     return layers
 
 
+def _canonical_lora_export_path(path: str) -> str:
+    """Qwen stores to_out[0] as attn_to_out; use the diffusers path in saved LoRAs."""
+    if path.endswith(".attn.attn_to_out.0"):
+        # Diffusers and remap_qwen_lora_module_prefix both use ``to_out.0``.
+        # Dropping the list index would make every output projection unmatchable.
+        return f"{path[:-len('.attn.attn_to_out.0')]}.attn.to_out.0"
+    return path
+
+
 def iter_lora_linears_with_paths(model: Any) -> list[tuple[Any, str]]:
-    entries = _walk_lora_paths(_dit_inner(model))
+    entries = [
+        (layer, _canonical_lora_export_path(path))
+        for layer, path in _walk_lora_paths(_dit_inner(model))
+    ]
     if not entries:
         raise RuntimeError("No LoRA layers found on DiT after apply_lora")
     return entries
@@ -594,7 +666,7 @@ def quantize_frozen_dit_linears(model: Any, *, bits: int, group_size: int = 64) 
                 visit(item)
             return
         if isinstance(obj, nn.Module) and not _is_adapter_linear(obj):
-            for name, child in obj.children().items():
+            for name, child in _iter_named_children(obj):
                 visit(child, obj, name)
             return
         if not hasattr(obj, "__dict__"):
@@ -615,42 +687,40 @@ def quantize_frozen_dit_linears(model: Any, *, bits: int, group_size: int = 64) 
 
 
 def grad_checkpoint(layer: Any) -> None:
-    """Enable gradient checkpointing for all instances of *layer*'s type."""
+    """Checkpoint a block's forward pass without changing its public API.
+
+    Flux/Qwen blocks are ``nn.Module`` (``__call__``). Z-Image refiners/layers are
+    plain Python classes that expose ``forward`` — both must recompute activations.
+    """
     layer_cls = type(layer)
     if getattr(layer_cls, "_dq_grad_checkpoint", False):
         return
-    fn = layer_cls.__call__
+    if isinstance(layer, nn.Module):
+        method_name = "__call__"
+        fn = layer_cls.__call__
+    elif callable(getattr(layer_cls, "forward", None)):
+        method_name = "forward"
+        fn = layer_cls.forward
+    else:
+        raise RuntimeError(
+            f"Gradient checkpointing requires nn.Module or a .forward method, "
+            f"got {layer_cls.__name__}; refusing to claim memory savings for an inactive implementation."
+        )
+    checkpointed = mx.checkpoint(fn)
 
     def checkpointed_fn(model: Any, *args: Any, **kwargs: Any) -> Any:
-        def inner_fn(params: Any, *inner_args: Any, **inner_kwargs: Any) -> Any:
-            model.update(params)
-            return fn(model, *inner_args, **inner_kwargs)
-
-        return mx.checkpoint(inner_fn)(model.trainable_parameters(), *args, **kwargs)
+        return checkpointed(model, *args, **kwargs)
 
     checkpointed_fn._dq_grad_checkpoint = True  # type: ignore[attr-defined]
-    layer_cls.__call__ = checkpointed_fn
+    setattr(layer_cls, method_name, checkpointed_fn)
+    layer_cls._dq_grad_checkpoint = True
 
 
 def enable_grad_checkpointing_on_blocks(blocks: list[Any]) -> int:
-    """Patch ``nn.Module`` block classes for checkpointing; return how many classes were patched.
-
-    Plain-Python DiT blocks (e.g. Z-Image ``ZImageTransformerBlock``) are invoked via ``.forward``
-    and have no ``trainable_parameters`` / ``update``; patching ``__call__`` would be a silent
-    no-op, so they are skipped and the caller logs that grad_checkpoint is inactive.
-    """
-    seen: set[type] = set()
-    patched = 0
+    """Enable real activation recomputation for each selected block type."""
     for block in blocks:
-        cls = type(block)
-        if cls in seen:
-            continue
-        seen.add(cls)
-        if not isinstance(block, nn.Module):
-            continue
         grad_checkpoint(block)
-        patched += 1
-    return patched
+    return len(blocks)
 
 
 def list_flux1_lora_blocks(model: Any, *, lora_blocks: int) -> list[Any]:
@@ -658,29 +728,44 @@ def list_flux1_lora_blocks(model: Any, *, lora_blocks: int) -> list[Any]:
     joint = list(dit.transformer_blocks)
     single = list(dit.single_transformer_blocks)
     all_blocks = list(reversed(joint + single))
-    n = len(all_blocks) if lora_blocks < 0 else min(lora_blocks, len(all_blocks))
-    return all_blocks[:n]
+    if lora_blocks == -1:
+        return all_blocks
+    if lora_blocks < 1 or lora_blocks > len(all_blocks):
+        raise RuntimeError(f"lora_blocks must be -1 or 1..{len(all_blocks)} (got {lora_blocks})")
+    return all_blocks[:lora_blocks]
 
 
 def list_zimage_lora_blocks(model: Any, *, lora_blocks: int) -> list[Any]:
+    """Blocks that receive LoRA, identity-first.
+
+    ``context_refiner`` is where caption tokens are prepared before they meet image tokens,
+    and ``noise_refiner`` sets layout. Taking the deepest main layers only (the old order)
+    learned texture and left the trigger unbound, so faces never stuck. A short budget still
+    includes both refiners, then shallow main layers.
+    """
     dit = getattr(model, "_inner", model)
-    all_blocks: list[Any] = []
-    for layer in reversed(list(dit.layers)):
-        all_blocks.append(layer)
-    for layer in reversed(list(dit.noise_refiner)):
-        all_blocks.append(layer)
-    for layer in reversed(list(dit.context_refiner)):
-        all_blocks.append(layer)
-    n = len(all_blocks) if lora_blocks < 0 else min(lora_blocks, len(all_blocks))
-    return all_blocks[:n]
+    all_blocks: list[Any] = [
+        *list(dit.context_refiner),
+        *list(dit.noise_refiner),
+        *list(dit.layers),
+    ]
+    if lora_blocks == -1:
+        return all_blocks
+    if lora_blocks < 1 or lora_blocks > len(all_blocks):
+        raise RuntimeError(f"lora_blocks must be -1 or 1..{len(all_blocks)} (got {lora_blocks})")
+    return all_blocks[:lora_blocks]
 
 
 def list_qwen_lora_blocks(model: Any, *, lora_blocks: int) -> list[Any]:
+    """Shallow joint blocks first. Early blocks route the trigger onto the face; the tail refines texture."""
     dit = getattr(model, "_inner", model)
     inner = getattr(dit, "dit", dit)
-    all_blocks = list(reversed(list(inner.transformer_blocks)))
-    n = len(all_blocks) if lora_blocks < 0 else min(lora_blocks, len(all_blocks))
-    return all_blocks[:n]
+    all_blocks = list(inner.transformer_blocks)
+    if lora_blocks == -1:
+        return all_blocks
+    if lora_blocks < 1 or lora_blocks > len(all_blocks):
+        raise RuntimeError(f"lora_blocks must be -1 or 1..{len(all_blocks)} (got {lora_blocks})")
+    return all_blocks[:lora_blocks]
 
 
 class DiTLoRATrainModule(nn.Module):
@@ -702,6 +787,50 @@ def build_lora_train_module(model: Any) -> DiTLoRATrainModule:
     return DiTLoRATrainModule(model, iter_lora_linears_with_paths(model))
 
 
+def _assert_full_attention_coverage(
+    model: Any,
+    *,
+    module_keys: list[str] | None,
+    lora_blocks: int,
+) -> None:
+    """Verify real module-tree coverage for the shipped full-block face presets."""
+    if lora_blocks != -1 or not module_keys:
+        return
+    keys = {_normalize_lora_module_key(key) for key in module_keys}
+    expected: tuple[str, list[Any]] | None = None
+    if "add_q_proj" in keys:
+        blocks = list_qwen_lora_blocks(model, lora_blocks=-1)
+        required = {"to_q", "to_k", "to_v", "to_out", "add_q_proj", "add_k_proj", "add_v_proj", "to_add_out"}
+        expected = (f"Qwen {len(blocks)} blocks × 8 attention projections", blocks)
+    elif {"to_q", "to_k", "to_v", "to_out"}.issubset(keys):
+        blocks = list_zimage_lora_blocks(model, lora_blocks=-1)
+        if not blocks or type(blocks[0]).__module__.split(".")[-2] != "z_image":
+            return
+        required = {"to_q", "to_k", "to_v", "to_out"}
+        expected = (f"Z-Image {len(blocks)} blocks (both refiners + main layers)", blocks)
+    if expected is None:
+        return
+    label, blocks = expected
+    missing: list[str] = []
+    for index, block in enumerate(blocks):
+        paths = {
+            (path.rsplit(".", 1)[0] if path.rsplit(".", 1)[-1].isdigit() else path)
+            .replace(".attn_to_out", ".to_out")
+            for _, path in _walk_lora_paths(block)
+        }
+        absent = sorted(
+            key for key in required
+            if not any(path == key or path.endswith(f".{key}") for path in paths)
+        )
+        if absent:
+            missing.append(f"block {index}: {','.join(absent)}")
+    if missing:
+        raise RuntimeError(
+            f"LoRA full-block coverage failed for {label}: {missing[:6]}. "
+            "Refusing to train an incomplete face adapter."
+        )
+
+
 def prepare_dit_for_lora_training(
     model: Any,
     apply_lora_fn: Any,
@@ -717,6 +846,8 @@ def prepare_dit_for_lora_training(
     qlora_bits = lora_kw.get("qlora_bits")
     grad_checkpoint = bool(lora_kw.get("grad_checkpoint") or False)
     train_type = str(lora_kw.get("train_type") or "lora").strip().lower()
+    if train_type == "dora" and qlora_bits in (4, 8):
+        raise RuntimeError("DoRA requires a dequantized base weight; use LoRA with qlora_bits.")
 
     if train_type == "dora" and lora_dropout > 0:
         import logging
@@ -744,15 +875,9 @@ def prepare_dit_for_lora_training(
         if list_lora_blocks_fn is None:
             raise RuntimeError("grad_checkpoint requires list_lora_blocks_fn for this DiT family")
         blocks = list_lora_blocks_fn(model, lora_blocks=lora_blocks)
-        if enable_grad_checkpointing_on_blocks(blocks) == 0 and blocks:
-            import logging
-
-            logging.getLogger("danqing.lora").warning(
-                "grad_checkpoint requested but %s blocks are not nn.Module (called via .forward); "
-                "checkpointing is inactive for this DiT family (memory only, results unaffected).",
-                type(blocks[0]).__name__,
-            )
+        enable_grad_checkpointing_on_blocks(blocks)
     train_module = build_lora_train_module(model)
+    _assert_full_attention_coverage(model, module_keys=module_keys, lora_blocks=lora_blocks)
     mx.eval(train_module.parameters())
     return model, train_module
 
@@ -841,6 +966,8 @@ def repair_indexed_lora_weights(
             continue
         passthrough[key] = tensor
     for idx, path in enumerate(module_paths):
+        if f"{path}.lora_A.weight" in flat or f"{path}.lora_B.weight" in flat:
+            continue
         a_key = f"lora_{idx}.lora_A.weight"
         b_key = f"lora_{idx}.lora_B.weight"
         if a_key not in flat or b_key not in flat:
@@ -904,8 +1031,6 @@ def apply_lora_to_qwen_dit(
             module_keys=module_keys,
             adapter_cls=adapter_cls,
         )
-    if hasattr(inner, "_build_param_map"):
-        inner._build_param_map()
     if hasattr(dit, "_build_param_map"):
         dit._build_param_map()
     if hasattr(model, "_inner") and hasattr(dit, "_param_map"):
@@ -922,7 +1047,7 @@ def apply_lora_to_zimage_dit(
     module_keys: list[str] | None = None,
     train_type: str = "lora",
 ) -> None:
-    """Replace Linear layers in the last ``lora_blocks`` Z-Image DiT blocks with LoRA."""
+    """Attach LoRA to Z-Image's live plain-Python DiT block tree."""
     lora_scale = float(1.0 if scale is None else scale)
     adapter_cls = DoRALinear if train_type == "dora" else LoRALinear
     dit = getattr(model, "_inner", model)
@@ -935,9 +1060,15 @@ def apply_lora_to_zimage_dit(
             module_keys=module_keys,
             adapter_cls=adapter_cls,
         )
-    if hasattr(dit, "_build_param_map"):
-        dit._build_param_map()
-    if hasattr(model, "_inner") and hasattr(dit, "_param_map"):
+    # ``TransformerBase``'s legacy map points at the replaced Linear objects;
+    # update it through the adapter-aware collector without dropping frozen weights.
+    from backend.engine.common.model.base import flatten_adapter_parameters
+
+    dit._param_map = flatten_adapter_parameters(dit.parameters(), "")
+    for name in ("x_pad_token", "cap_pad_token"):
+        if hasattr(dit, name):
+            dit._param_map[name] = getattr(dit, name)
+    if hasattr(model, "_inner"):
         model._param_map = dit._param_map
 
 
@@ -1036,3 +1167,24 @@ def collect_fused_adapter_deltas(model: Any) -> dict[str, mx.array]:
     if not out:
         raise RuntimeError("No adapter layers found for fused export")
     return out
+
+
+def write_fused_adapters_from_published(
+    train_module: Any,
+    *,
+    final_path: Path,
+    fused_path: Path,
+    rank: int,
+    base_model_id: str,
+) -> None:
+    """Fuse the published (best/final) adapter, not the last in-memory step."""
+    import json
+
+    if not final_path.is_file():
+        raise RuntimeError(f"Cannot fuse adapters; published weights missing: {final_path}")
+    load_lora_into_train_module(train_module, final_path, rank=rank)
+    mx.save_safetensors(str(fused_path), collect_fused_adapter_deltas(train_module))
+    fused_path.with_suffix(".json").write_text(
+        json.dumps({"format": "dense_delta", "base_model": base_model_id, "source": final_path.name}, indent=2),
+        encoding="utf-8",
+    )

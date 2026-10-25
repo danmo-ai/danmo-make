@@ -175,12 +175,22 @@ def _rel_path(bundle_root: Path, path: Path) -> str:
         return str(path)
 
 
+# MLX 4-bit mirrors often ship one ``model.safetensors`` plus an upstream index that
+# still names multi-GB shards. Those shards are not this bundle. A partial shard set
+# (at least one shard present) stays a hard failure.
+_SINGLE_FILE_REPLACES_INDEX_MIN_BYTES = 1_048_576
+
+
 def missing_safetensor_shards(
     bundle_root: Path,
     *,
     index_name: str = "model.safetensors.index.json",
 ) -> list[str]:
-    """Return shard filenames listed in the safetensors index but absent on disk."""
+    """Return shard filenames listed in the safetensors index but absent on disk.
+
+    When every listed shard is absent and a real root ``model.safetensors`` is present,
+    the index does not describe the files on disk and is ignored.
+    """
     if not bundle_root.is_dir():
         return []
     index_path = bundle_root / index_name
@@ -194,7 +204,12 @@ def missing_safetensor_shards(
     if not isinstance(weight_map, dict) or not weight_map:
         return []
     expected = sorted({str(name) for name in weight_map.values() if str(name).strip()})
-    return [name for name in expected if not (bundle_root / name).is_file()]
+    missing = [name for name in expected if not (bundle_root / name).is_file()]
+    if missing and len(missing) == len(expected):
+        single = bundle_root / "model.safetensors"
+        if single.is_file() and single.stat().st_size >= _SINGLE_FILE_REPLACES_INDEX_MIN_BYTES:
+            return []
+    return missing
 
 
 def scan_components(bundle_root: Path) -> dict[str, list[str]]:
