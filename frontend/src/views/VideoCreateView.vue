@@ -267,6 +267,7 @@ import { warnIfRiskyMemory } from '@/composables/memoryHint';
 import { pickDefaultVersionKey, resolveDefaultModelRegistryKey } from '@/utils/defaultModelSettings';
 import { useModelRegistryFilters, reconcileVersionPickerSelection } from '@/composables/useModelRegistryFilters';
 import { applyModelVersionFilters } from '@/utils/modelPickerFilters';
+import { modelSelectOption } from '@/utils/modelSelectOption';
 import AssetPicker from '@/components/asset/AssetPicker.vue';
 import GalleryPreviewDialog from '@/components/gallery/GalleryPreviewDialog.vue';
 import { previewDisplayCaption } from '@/utils/assetDisplay';
@@ -903,12 +904,7 @@ const upscaleModelVersion = ref('');
 const upscaleModelOptions = computed(() =>
   allVersions.value
     .filter((v) => videoSupportsUpscale(v.actions || {}))
-    .map((v) => ({
-      label: String(v.name || ''),
-      value: `${v.modelKey}|${v.versionKey}`,
-      disabled: !v.ready,
-      commercialUseAllowed: v.commercialUseAllowed as boolean,
-    })),
+    .map((v) => modelSelectOption(v)),
 );
 
 function resolveUpscaleModelVersion(preferred?: string): string {
@@ -1557,12 +1553,7 @@ const videoModelPickerVersions = computed(() => {
 });
 
 const videoModelSelectOptions = computed(() => {
-  return videoModelPickerVersions.value.map((v) => ({
-    label: String(v.name || ''),
-    value: `${v.modelKey}|${v.versionKey}`,
-    disabled: !v.ready,
-    commercialUseAllowed: v.commercialUseAllowed as boolean,
-  }));
+  return videoModelPickerVersions.value.map((v) => modelSelectOption(v));
 });
 
 const currentModelConfig = computed(() => modelRegistry.value[params.model] || null);

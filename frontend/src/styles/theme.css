@@ -5105,6 +5105,57 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
  min-width: 0;
 }
 
+/* Model picker stays one row. Capability text lives on the info tip. */
+.studio-model-field {
+ display: flex;
+ flex-direction: row;
+ align-items: center;
+ gap: 2px;
+ min-width: 0;
+ width: 100%;
+}
+
+.studio-model-field__select {
+ flex: 1 1 auto;
+ min-width: 0;
+ width: auto;
+}
+
+.studio-model-field__tip {
+ flex: 0 0 auto;
+ color: var(--dq-label-tertiary);
+}
+
+.studio-model-field__tip-mark {
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ width: 14px;
+ height: 14px;
+ border: 1px solid currentColor;
+ border-radius: 999px;
+ font-size: 10px;
+ font-weight: 600;
+ font-style: italic;
+ font-family: Georgia, "Times New Roman", serif;
+ line-height: 1;
+}
+
+.studio-model-option__badge {
+ flex-shrink: 0;
+ margin-left: 6px;
+ font-size: var(--dq-font-size-caption);
+ padding: 0 4px;
+ height: 16px;
+ line-height: 16px;
+}
+
+.studio-model-tip {
+ max-width: 22rem;
+ white-space: normal;
+ line-height: 1.45;
+}
+
 .studio-composer-toolbar__select--size,
 .studio-composer-toolbar__select--duration {
  flex: 1 1 calc(50% - 4px);

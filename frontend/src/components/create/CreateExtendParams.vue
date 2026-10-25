@@ -1,33 +1,23 @@
 <script setup lang="ts">
 // @ts-nocheck
+import ModelSelect from '@/components/model/ModelSelect.vue';
+
 defineProps<{
   params: Record<string, unknown>;
   modelValue?: string;
-  modelOptions?: Array<{ label: string; value: string; disabled?: boolean; commercialUseAllowed?: boolean }>;
+  modelOptions?: Array<{ label: string; value: string; disabled?: boolean; commercialUseAllowed?: boolean; description?: string }>;
 }>();
 </script>
 
 <template>
   <DqPrefPane class="studio-create-pref-pane studio-editor-drawer-pref-pane">
     <DqPrefRow :label="$t('studio.model')">
-      <DqSelect :model-value="modelValue" @update:model-value="$emit('update:modelValue', $event)" size="sm" style="width: 100%" :placeholder="$t('studio.selectModel')">
-        <DqOption
-          v-for="item in (modelOptions || [])"
-          :key="item.value"
-          :label="item.label"
-          :value="item.value"
-          :disabled="item.disabled"
-        >
-          <DqTag
-            v-if="item.commercialUseAllowed"
-            size="sm"
-            type="success"
-            class="studio-drawer-model-badge"
-          >
-            {{ $t('download.commercialUseBadge') }}
-          </DqTag>
-        </DqOption>
-      </DqSelect>
+      <ModelSelect
+        :model-value="modelValue"
+        :options="modelOptions || []"
+        :placeholder="$t('studio.selectModel')"
+        @update:model-value="$emit('update:modelValue', $event)"
+      />
     </DqPrefRow>
 
     <DqPrefRow :label="$t('create.extendDirections')">

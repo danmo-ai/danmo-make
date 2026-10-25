@@ -111,11 +111,12 @@
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, inject, type Ref } from 'vue';
 import { toast } from '@/utils/feedback';
 import { api, taskIdFromSubmitResponse } from '@/utils/api';
-import { $tt, $mvn } from '@/utils/i18n';
+import { $tt, $md, $mvn } from '@/utils/i18n';
 import { useTasksStore } from '@/stores/tasks';
 import { useRegistryStore } from '@/stores/registry';
 import { useModelRegistryFilters } from '@/composables/useModelRegistryFilters';
 import { applyModelVersionFilters } from '@/utils/modelPickerFilters';
+import { modelSelectOption } from '@/utils/modelSelectOption';
 import { warnIfRiskyMemory } from '@/composables/memoryHint';
 import { useStudioGallery } from '@/composables/useStudioGallery';
 import { useComposerDrawer } from '@/composables/useComposerDrawer';
@@ -230,6 +231,7 @@ const allAvatarVersions = computed(() => {
         modelKey,
         versionKey,
         name: $mvn(modelKey, config as any, versionConfig as any),
+        description: $md(config as any),
         ready: status.ready,
         recommended: (config as any).recommended && (versionConfig as any).default,
         commercialUseAllowed: (config as any).commercial_use_allowed === true,
@@ -256,12 +258,7 @@ const avatarModelPickerVersions = computed(() => {
 });
 
 const avatarModelSelectOptions = computed(() =>
-  avatarModelPickerVersions.value.map((v) => ({
-    label: String(v.name || ''),
-    value: `${v.modelKey}|${v.versionKey}`,
-    disabled: !v.ready,
-    commercialUseAllowed: v.commercialUseAllowed as boolean,
-  })),
+  avatarModelPickerVersions.value.map((v) => modelSelectOption(v)),
 );
 
 const currentModelConfig = computed(() => (modelRegistry.value[params.model] as Record<string, unknown>) || null);
