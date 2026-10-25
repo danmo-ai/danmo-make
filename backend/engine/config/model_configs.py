@@ -1205,7 +1205,10 @@ _IMAGE_BUNDLE_CONFIG_MERGERS: dict[str, Any] = {
 
 def apply_image_registry_config_overrides(entry: Any, config: Any) -> None:
     """Apply registry ``ui.parameters`` scalars onto a family config dataclass."""
-    from backend.engine.contracts.pipeline_registry import registry_scalar_default
+    from backend.engine.contracts.pipeline_registry import (
+        reference_slot_cap_from_parameters,
+        registry_scalar_default,
+    )
 
     for param_key in (
         "text_encoder_out_layers",
@@ -1255,6 +1258,11 @@ def apply_image_registry_config_overrides(entry: Any, config: Any) -> None:
     sg = registry_scalar_default(entry, "supports_guidance", None)
     if sg is not None:
         config.supports_guidance = bool(sg)
+    # One integer for the UI and for HiDream. ``max_reference_images`` is the
+    # registry name on that family; generation reads ``hidream_edit_max_refs``.
+    cap = reference_slot_cap_from_parameters(getattr(entry, "parameters", None))
+    if cap is not None and hasattr(config, "hidream_edit_max_refs"):
+        config.hidream_edit_max_refs = cap
 
 
 def apply_image_version_config_overrides(entry: Any, config: Any, version_key: str | None) -> None:

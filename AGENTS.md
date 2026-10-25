@@ -434,6 +434,17 @@ Workflow: import → select node → Composer fills params → generate lands in
 
 ---
 
+## Cursor Cloud
+
+Cloud Agent VMs are Linux x86_64 and have no NVIDIA GPU. `make dev` still has to boot.
+
+- `scripts/start.sh` requires **Python 3.11** on `PATH` (`python3.11`). Ubuntu 24.04 ships 3.12; install 3.11 from the deadsnakes PPA (`python3.11`, `python3.11-venv`, `python3.11-dev`).
+- Frontend `file:../../dq-ui` resolves the sibling repo [danmo-ai/dq-ui](https://github.com/danmo-ai/dq-ui). Check it out next to this repo and build it (`npm install && npm run build` in `dq-ui`, same as `.github/workflows/release.yml`) before `npm install` in `frontend/`. If the repo parent directory is not writable, clone to `~/dq-ui` and symlink that path.
+- `requirements-linux.txt` pins `mlx[cuda]`, which needs an NVIDIA driver. On a CPU-only VM, install `requirements.txt` plus `mlx[cpu]>=0.32.3`, `mlx-lm`, `mlx-vlm`, and `platformdirs` (weight-cache import; not pinned in `requirements.txt`). `import mlx` then succeeds and the API registers the MLX backend. Image and video generation still need Metal or NVIDIA; do not treat a generation failure here as a broken install.
+- Native packages used at runtime: `libsndfile1`, `espeak-ng` (phonemizer), `fonts-noto-cjk` (default UI locale is Chinese).
+- `make dev` serves the API on **7800** and Vite on **5800**.
+- `make verify-engine-stack` governance checks do not need a GPU. Once MLX imports, some unit tests continue into paths that need torch, diffusers, or a CJK font, and `resolve_use_mlx_compile` stays off when `platform.machine()` is not `arm64`.
+
 ## Reference
 
 - [README.md](README.md) — user documentation (EN + 中文)

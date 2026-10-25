@@ -822,6 +822,12 @@
     "extraRefImage": "再加一张参考图",
     "pictureIndex": "图 {n}",
     "quantizedNoReference": "当前 8-bit 量化版不能使用参考图，请改用 BF16。",
+    "referenceHint": {
+      "instruct": "最多 {n} 张参考图，按指令改图，可保持人物。",
+      "instructOne": "1 张参考图，按指令改这张图。",
+      "redraw": "1 张参考图，按强度重绘整张图。",
+      "redrawMany": "最多 {n} 张参考图，按强度重绘整张图。"
+    },
     "img2imgFromGallery": "已从作品库载入源图，并切换到「改图」",
     "optional": "（可选）",
     "addRefImage": "添加参考图",

@@ -38,6 +38,31 @@ def registry_scalar_default(entry: Any, key: str, fallback: Any) -> Any:
     return spec  # direct value (list / int / str etc.), not wrapped in dict
 
 
+def reference_slot_cap_from_parameters(parameters: Any) -> int | None:
+    """How many reference images the registry declares, including picture 1.
+
+    ``edit_max_reference_images`` wins over ``max_reference_images``. A missing
+    key means the model did not declare a cap (callers keep a single slot).
+    """
+    if not isinstance(parameters, dict):
+        return None
+    for key in ("edit_max_reference_images", "max_reference_images"):
+        if key not in parameters:
+            continue
+        value = parameters[key]
+        if isinstance(value, dict):
+            if "default" not in value:
+                continue
+            value = value["default"]
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            return count
+    return None
+
+
 def resolve_version_block(entry: Any, version_key: str | None) -> dict | None:
     raw = getattr(entry, "raw", {}) or {}
     versions = raw.get("versions") or {}

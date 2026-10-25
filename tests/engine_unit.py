@@ -1530,6 +1530,20 @@ class LtxWeightTests(unittest.TestCase):
         self.assertFalse(cfg.hidream_quantized_no_edit)
         apply_image_version_config_overrides(entry, cfg, "mlx-q8")
         self.assertTrue(cfg.hidream_quantized_no_edit)
+        self.assertEqual(cfg.hidream_edit_max_refs, 3)
+
+    def test_reference_cap_maps_onto_hidream_edit_max_refs(self) -> None:
+        from backend.engine.config.model_configs import HiDreamO1Config, apply_image_registry_config_overrides
+
+        entry = SimpleNamespace(parameters={"max_reference_images": 2, "reference_images_support": True})
+        cfg = HiDreamO1Config()
+        apply_image_registry_config_overrides(entry, cfg)
+        self.assertEqual(cfg.hidream_edit_max_refs, 2)
+
+        preferred = SimpleNamespace(parameters={"edit_max_reference_images": 4, "max_reference_images": 2})
+        cfg_preferred = HiDreamO1Config()
+        apply_image_registry_config_overrides(preferred, cfg_preferred)
+        self.assertEqual(cfg_preferred.hidream_edit_max_refs, 4)
 
     def test_qwen_edit_reference_resolver_fails_loud(self) -> None:
         from PIL import Image

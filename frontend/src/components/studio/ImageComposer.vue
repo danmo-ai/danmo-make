@@ -168,6 +168,8 @@
     />
     </div>
 
+    <p v-if="referenceUseHint" class="image-composer__reference-hint">{{ referenceUseHint }}</p>
+
     <!-- Toolbar -->
     <ComposerToolbar>
       <template #mode>
@@ -288,7 +290,7 @@ import {
 } from '@danqing/dq-shell';
 import { assetIdFromGalleryPath } from '@/utils/copilotHandoff';
 import { $tt } from '@/utils/i18n';
-import { extraReferenceSlotCap, formatResolutionOptionLabel } from '@/utils/registryParamSchema';
+import { extraReferenceSlotCap, formatResolutionOptionLabel, referenceImageSlotCap, referenceUse } from '@/utils/registryParamSchema';
 import { appendStyleBoost } from '@/utils/styleBoost';
 
 const props = withDefaults(defineProps<{
@@ -397,6 +399,22 @@ const extraReferenceCap = computed(() => {
   if (props.referencesBlocked) return 0;
   const raw = props.currentModelConfig?.parameters as Record<string, unknown> | undefined;
   return extraReferenceSlotCap(raw);
+});
+
+const referenceUseHint = computed(() => {
+  if (props.generateBlockReason) return '';
+  const raw = props.currentModelConfig?.parameters as Record<string, unknown> | undefined;
+  const actions = props.currentModelConfig?.actions as Record<string, unknown> | undefined;
+  const count = referenceImageSlotCap(raw);
+  const use = referenceUse(raw, actions);
+  if (use === 'instruct') {
+    return count > 1
+      ? $t('create.referenceHint.instruct', { n: count })
+      : $t('create.referenceHint.instructOne');
+  }
+  return count > 1
+    ? $t('create.referenceHint.redrawMany', { n: count })
+    : $t('create.referenceHint.redraw');
 });
 
 const primaryActionLabel = computed(() => {
@@ -614,6 +632,13 @@ function onStyleCommand(command: string) {
   height: 20px;
   object-fit: cover;
   border-radius: 3px;
+}
+
+.image-composer__reference-hint {
+  margin: 0 2px 6px;
+  font-size: var(--dq-font-size-caption);
+  line-height: 1.35;
+  color: var(--dq-label-tertiary);
 }
 
 .studio-composer-toolbar__generate-reason {
