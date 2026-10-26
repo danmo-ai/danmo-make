@@ -1,7 +1,7 @@
+use crate::product;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
-use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use danmo_catalog::Catalog;
@@ -11,42 +11,70 @@ use danmo_contracts::{
 };
 use danmo_engine::{audio_create, image_create, upscale, video_create, BackendKind};
 use danmo_schedule::Scheduler;
+use danmo_store::AssetRow;
 use serde_json::{json, Value};
 use std::convert::Infallible;
-use std::path::PathBuf;
+use std::path::{Path as FsPath, PathBuf};
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 #[derive(Clone)]
-pub struct AppState {
-    scheduler: Scheduler,
-    backend: BackendKind,
-    registry: PathBuf,
+pub(crate) struct AppState {
+    pub(crate) scheduler: Scheduler,
+    pub(crate) backend: BackendKind,
+    pub(crate) registry: PathBuf,
+    pub(crate) workspace: PathBuf,
+    pub(crate) outputs: PathBuf,
 }
 
 pub fn router(db: &std::path::Path, registry: &std::path::Path) -> Router {
     let backend = BackendKind::from_env().unwrap_or(BackendKind::Cpu);
+    let workspace = workspace_of(db);
+    let outputs = std::env::var("DANQING_OUTPUT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| workspace.join("outputs"));
     let scheduler = Scheduler::open(db, true).expect("open task db");
     let state = AppState {
         scheduler,
         backend,
         registry: registry.to_path_buf(),
+        workspace,
+        outputs,
     };
     spawn_worker(state.clone());
     Router::new()
         .route("/api/system/health", get(health))
         .route("/api/registry", get(registry_route))
         .route("/api/queue", get(queue))
-        .route("/api/tasks", get(list_tasks))
-        .route("/api/tasks/:id", get(get_task))
         .route("/api/tasks/:id/stream", get(stream_task))
         .route("/api/images/generations", post(image_generations))
         .route("/api/images/edits", post(image_edits))
         .route("/api/images/upscales", post(image_upscales))
         .route("/api/videos/generations", post(video_generations))
+        .route("/api/videos/edits", post(video_edits))
+        .route("/api/videos/upscales", post(video_upscales))
+        .route("/api/videos/avatars", post(video_avatars))
+        .route("/api/videos/avatars/script", post(video_avatar_script))
         .route("/api/audios/generations", post(audio_generations))
+        .route("/api/audios/edits", post(audio_edits))
+        .merge(product::routes())
+        .fallback(product::spa)
         .with_state(state)
+}
+
+fn workspace_of(db: &FsPath) -> PathBuf {
+    if let Ok(path) = std::env::var("DANQING_WORKSPACE") {
+        return PathBuf::from(path);
+    }
+    match db.parent() {
+        Some(parent) if parent.file_name().and_then(|name| name.to_str()) == Some("db") => parent
+            .parent()
+            .map(|path| path.to_path_buf())
+            .unwrap_or_else(|| parent.to_path_buf()),
+        Some(parent) => parent.to_path_buf(),
+        None => PathBuf::from("."),
+    }
 }
 
 fn spawn_worker(state: AppState) {
@@ -83,7 +111,11 @@ fn run_task(
             | "image.edit"
             | "image.upscale"
             | "video.generation"
+            | "video.edit"
+            | "video.upscale"
+            | "video.avatar"
             | "audio.generation"
+            | "audio.edit"
     );
     let bundle = if needs_bundle {
         Some(gguf_bundle(&state.registry, model)?)
@@ -96,14 +128,20 @@ fn run_task(
                 serde_json::from_value(params.get("request").cloned().unwrap_or(json!({})))
                     .map_err(|e| e.to_string())?;
             let bundle = bundle.ok_or_else(|| "missing GGUF bundle".to_string())?;
+            let task_id = params
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let out = image_create(&request, family, &bundle, state.backend, |step, steps| {
                 let _ = state.scheduler.progress(
-                    params.get("task_id").and_then(|v| v.as_str()).unwrap_or(""),
+                    &task_id,
                     step as f64 / steps as f64,
                     &format!("step {step}/{steps}"),
                 );
             })
             .map_err(|e| e.to_string())?;
+            let asset_ids = persist_preview(state, &task_id, model, params, &out)?;
             Ok(json!({
                 "family": out.family,
                 "steps": out.steps,
@@ -111,6 +149,7 @@ fn run_task(
                 "width": out.width,
                 "height": out.height,
                 "latent_len": out.latents.len(),
+                "asset_ids": asset_ids,
             }))
         }
         "image.edit" | "image.upscale" => {
@@ -129,8 +168,73 @@ fn run_task(
                 .map(|_| json!({"ok": true}))
                 .map_err(|e| e.to_string())
         }
+        "video.edit" | "video.upscale" | "video.avatar" | "audio.edit" => {
+            let bundle = bundle.ok_or_else(|| "missing GGUF bundle".to_string())?;
+            danmo_engine::assert_gguf_bundle(&bundle).map_err(|e| e.to_string())?;
+            Err(format!("{family} graph is not built"))
+        }
         other => Err(format!("unsupported task kind {other}")),
     }
+}
+
+fn persist_preview(
+    state: &AppState,
+    task_id: &str,
+    model: &str,
+    params: &Value,
+    out: &danmo_engine::RunOutput,
+) -> Result<Vec<String>, String> {
+    if out.preview_png.is_empty() {
+        return Ok(Vec::new());
+    }
+    let preview_dir = state.outputs.join("previews");
+    std::fs::create_dir_all(&preview_dir).map_err(|err| err.to_string())?;
+    std::fs::write(preview_dir.join(format!("{task_id}.png")), &out.preview_png)
+        .map_err(|err| err.to_string())?;
+    let id = product::new_id("ast_");
+    let asset_dir = state.outputs.join("assets");
+    std::fs::create_dir_all(&asset_dir).map_err(|err| err.to_string())?;
+    let path = asset_dir.join(format!("{id}.png"));
+    std::fs::write(&path, &out.preview_png).map_err(|err| err.to_string())?;
+    let (width, height) = png_size(&out.preview_png);
+    let request = params.get("request").cloned().unwrap_or(json!({}));
+    let metadata = json!({
+        "prompt": request.get("prompt").and_then(|v| v.as_str()).unwrap_or(""),
+        "title": request.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+        "model": model,
+        "requested_size": request.get("size").and_then(|v| v.as_str()).unwrap_or(""),
+        "decode": "decoder.conv.weight",
+    });
+    state
+        .scheduler
+        .insert_asset(&AssetRow {
+            id: id.clone(),
+            kind: "image".into(),
+            mime_type: "image/png".into(),
+            file_path: path.display().to_string(),
+            thumbnail_path: None,
+            width: Some(width),
+            height: Some(height),
+            duration_seconds: None,
+            source_task_id: Some(task_id.to_string()),
+            source_action: Some("create".into()),
+            metadata: metadata.to_string(),
+            created_at: String::new(),
+            parent_asset_id: None,
+            relation_type: None,
+            group_id: None,
+        })
+        .map_err(|err| err.to_string())?;
+    Ok(vec![id])
+}
+
+fn png_size(png: &[u8]) -> (i64, i64) {
+    if png.len() < 24 {
+        return (0, 0);
+    }
+    let width = u32::from_be_bytes(png[16..20].try_into().unwrap_or([0, 0, 0, 0]));
+    let height = u32::from_be_bytes(png[20..24].try_into().unwrap_or([0, 0, 0, 0]));
+    (width as i64, height as i64)
 }
 
 fn gguf_bundle(registry: &std::path::Path, model: &str) -> Result<PathBuf, String> {
@@ -179,33 +283,8 @@ async fn registry_route(
     Ok(Json(catalog.public_registry()))
 }
 
-async fn queue(State(state): State<AppState>) -> Json<Value> {
-    let _ = &state;
-    Json(json!({ "queue_image_first": state.scheduler.queue_image_first }))
-}
-
-async fn list_tasks() -> Json<Value> {
-    Json(json!({ "tasks": [] }))
-}
-
-async fn get_task(State(state): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    match state.scheduler.get(&id) {
-        Ok(Some(row)) => (
-            StatusCode::OK,
-            Json(json!({
-                "id": row.id,
-                "kind": row.kind,
-                "model": row.model_id,
-                "status": row.status,
-                "progress": row.progress,
-                "error": row.error_message,
-                "result": row.result,
-            })),
-        )
-            .into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, "task not found").into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
-    }
+async fn queue(State(state): State<AppState>) -> Result<Json<Value>, product::ApiError> {
+    product::queue_body(&state).map(Json)
 }
 
 async fn stream_task(
@@ -222,20 +301,38 @@ async fn stream_task(
                     .await;
                 break;
             };
+            let progress = json!({
+                "progress": row.progress,
+                "message": "denoise",
+            });
             let _ = tx
                 .send(Ok(Event::default()
                     .event("progress")
-                    .data(row.progress.to_string())))
+                    .data(progress.to_string())))
                 .await;
-            if row.status == "succeeded" || row.status == "failed" || row.status == "cancelled" {
+            let status = json!({
+                "status": row.status,
+                "progress": row.progress,
+            });
+            let _ = tx
+                .send(Ok(Event::default()
+                    .event("status")
+                    .data(status.to_string())))
+                .await;
+            if row.status == "completed" || row.status == "failed" || row.status == "cancelled" {
                 let payload = row
                     .result
-                    .unwrap_or_else(|| row.error_message.unwrap_or_default());
+                    .as_deref()
+                    .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                    .unwrap_or(Value::Null);
                 let _ = tx
-                    .send(Ok(Event::default().event("result").data(payload)))
+                    .send(Ok(Event::default()
+                        .event("result")
+                        .data(payload.to_string())))
                     .await;
+                let done = json!({ "status": row.status });
                 let _ = tx
-                    .send(Ok(Event::default().event("done").data(row.status)))
+                    .send(Ok(Event::default().event("done").data(done.to_string())))
                     .await;
                 break;
             }
@@ -269,7 +366,7 @@ mod tests {
             let bytes = response.into_body().collect().await.unwrap().to_bytes();
             last = serde_json::from_slice(&bytes).unwrap();
             let status = last["status"].as_str().unwrap_or("");
-            if status == "succeeded" || status == "failed" {
+            if status == "completed" || status == "failed" {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(40)).await;
@@ -333,7 +430,26 @@ mod tests {
         let accepted: Value = serde_json::from_slice(&bytes).unwrap();
         let id = accepted["id"].as_str().unwrap();
         let task = wait_terminal(&app, id).await;
-        assert_eq!(task["status"], "succeeded", "task {task}");
+        assert_eq!(task["status"], "completed", "task {task}");
+        let ids = task["result"]["asset_ids"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(ids.len(), 1, "task {task}");
+        let assets = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/assets")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(assets.status(), StatusCode::OK);
+        let bytes = assets.into_body().collect().await.unwrap().to_bytes();
+        let listed: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(listed["items"][0]["id"], ids[0]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -377,6 +493,122 @@ mod tests {
         assert_eq!(task["status"], "failed", "task {task}");
         let err = task["error"].as_str().unwrap_or("");
         assert!(err.contains("Re-download"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn spa_reads_tasks_canvas_and_settings() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-spa-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let registry = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../default_config/models_registry.json");
+        let app = router(&dir.join("studio.db"), &registry);
+
+        let settings = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(settings.status(), StatusCode::OK);
+        let bytes = settings.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["language"], "zh");
+        assert_eq!(body["queue_image_first"], true);
+
+        let system = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/settings/system")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(system.status(), StatusCode::OK);
+        let bytes = system.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["env_ready"], true);
+        assert_eq!(body["runtime"], "ggml");
+
+        let queue = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/queue")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = queue.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(body["running"].is_array());
+        assert!(body["queued"].is_array());
+
+        let created = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/canvas/sessions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"media":"image","title":"desk"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+        let bytes = created.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let id = body["id"].as_str().unwrap();
+        assert_eq!(body["title"], "desk");
+
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/canvas/sessions?media=image")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = listed.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["items"][0]["id"], id);
+
+        let convert = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/download/convert")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(convert.status(), StatusCode::BAD_REQUEST);
+        let bytes = convert.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            body["detail"].as_str().unwrap_or("").contains("GGUF"),
+            "{body}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -465,6 +697,84 @@ async fn video_generations(
         &body.priority,
     )?;
     Ok((StatusCode::ACCEPTED, accepted))
+}
+
+async fn video_edits(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
+    accept_value(&state, "video.edit", &body)
+}
+
+async fn video_upscales(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
+    accept_value(&state, "video.upscale", &body)
+}
+
+async fn video_avatars(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
+    accept_value(&state, "video.avatar", &body)
+}
+
+async fn video_avatar_script(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
+    accept_value(&state, "video.avatar", &body)
+}
+
+async fn audio_edits(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
+    accept_value(&state, "audio.edit", &body)
+}
+
+fn accept_value(
+    state: &AppState,
+    kind: &str,
+    body: &Value,
+) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
+    let model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if model.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "model is required".into()));
+    }
+    let priority = body
+        .get("priority")
+        .and_then(|v| v.as_str())
+        .unwrap_or("normal");
+    let catalog =
+        Catalog::open(&state.registry).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let entry = catalog
+        .model(&model)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let id = Uuid::new_v4().to_string();
+    let params = json!({
+        "task_id": id,
+        "family": entry.family,
+        "request": body,
+    });
+    let prio = if priority == "high" { 10 } else { 100 };
+    state
+        .scheduler
+        .submit(&id, kind, &entry.id, &params.to_string(), prio)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(TaskAccepted {
+            id,
+            status: "queued".into(),
+            kind: kind.into(),
+        }),
+    ))
 }
 
 async fn audio_generations(

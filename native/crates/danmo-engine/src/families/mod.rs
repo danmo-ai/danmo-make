@@ -2,7 +2,7 @@
 
 mod flux2;
 
-pub use flux2::{Flux2Config, Flux2Denoise};
+pub use flux2::{weight_layout, write_smoke_bundle, Flux2Config, Flux2Denoise};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Media {
@@ -158,6 +158,7 @@ pub fn all_specs() -> &'static [FamilySpec] {
 pub struct DitImageRun {
     pub latents: Vec<f32>,
     pub graph_computes: u32,
+    pub preview_png: Vec<u8>,
 }
 
 /// Factory row for Shape A image families. The pipeline does not match on family ids.

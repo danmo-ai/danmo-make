@@ -20,6 +20,7 @@ danmo-engine = { path = "../danmo-engine" }
 danmo-contracts = { path = "../danmo-contracts" }
 danmo-catalog = { path = "../danmo-catalog" }
 danmo-schedule = { path = "../danmo-schedule" }
+danmo-store = { path = "../danmo-store" }
 axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

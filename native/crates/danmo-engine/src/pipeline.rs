@@ -27,6 +27,7 @@ pub struct RunOutput {
     pub graph_computes: u32,
     pub width: u32,
     pub height: u32,
+    pub preview_png: Vec<u8>,
 }
 
 fn shape_name(shape: Shape) -> &'static str {
@@ -81,6 +82,7 @@ pub fn image_create(
                 graph_computes: done.graph_computes,
                 width,
                 height,
+                preview_png: done.preview_png,
             })
         }
         shape => Err(EngineError::GraphNotBuilt {

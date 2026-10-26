@@ -1,7 +1,6 @@
 //! Installed bundle: `transformer.gguf`, `text_encoder.gguf`, `vae.gguf`,
 //! tokenizer, and `bundle.manifest.json`. Old MLX directories are refused.
 
-use super::gguf::write_f32_gguf;
 use super::WeightError;
 use serde::Deserialize;
 use std::fs;
@@ -168,51 +167,4 @@ fn contains_safetensors(dir: &Path) -> bool {
         false
     }
     walk(dir, 0)
-}
-
-/// Tiny bf16-tier bundle whose DiT file contains `velocity.weight` under that exact name.
-pub fn write_smoke_bundle(dir: &Path, dim: i64) -> Result<(), WeightError> {
-    fs::create_dir_all(dir).map_err(|err| WeightError::Open {
-        path: dir.display().to_string(),
-        detail: err.to_string(),
-    })?;
-    let n = (dim as usize).saturating_mul(dim as usize);
-    let mut weight = vec![0f32; n];
-    for i in 0..dim as usize {
-        weight[i * dim as usize + i] = 0.1;
-    }
-    write_f32_gguf(
-        &dir.join("transformer.gguf"),
-        "velocity.weight",
-        dim,
-        dim,
-        &weight,
-    )?;
-    write_f32_gguf(
-        &dir.join("text_encoder.gguf"),
-        "token_embed.weight",
-        1,
-        1,
-        &[0.0],
-    )?;
-    write_f32_gguf(&dir.join("vae.gguf"), "decoder.conv.weight", 1, 1, &[1.0])?;
-    fs::write(dir.join("tokenizer.json"), "{}\n").map_err(|err| WeightError::Open {
-        path: dir.display().to_string(),
-        detail: err.to_string(),
-    })?;
-    let manifest = r#"{
-  "format": "gguf",
-  "quant": "bf16",
-  "files": {
-    "transformer": "transformer.gguf",
-    "text_encoder": "text_encoder.gguf",
-    "vae": "vae.gguf"
-  }
-}
-"#;
-    fs::write(dir.join("bundle.manifest.json"), manifest).map_err(|err| WeightError::Open {
-        path: dir.display().to_string(),
-        detail: err.to_string(),
-    })?;
-    Ok(())
 }

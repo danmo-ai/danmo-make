@@ -98,6 +98,10 @@ impl GgufWeights {
         Ok(values)
     }
 
+    pub fn shape(&self, name: &str) -> Result<[i64; 4], WeightError> {
+        Ok(self.lookup(name)?.1.ne)
+    }
+
     fn lookup(&self, name: &str) -> Result<(&Part, &TensorLoc), WeightError> {
         for part in &self.parts {
             if let Some(loc) = part.tensors.get(name) {
@@ -223,6 +227,13 @@ fn shape_matches(got: &[i64; 4], expected: &[i64]) -> bool {
     true
 }
 
+pub struct F32Tensor<'a> {
+    pub name: &'a str,
+    pub ne0: i64,
+    pub ne1: i64,
+    pub data: &'a [f32],
+}
+
 pub fn write_f32_gguf(
     path: &Path,
     name: &str,
@@ -230,21 +241,43 @@ pub fn write_f32_gguf(
     ne1: i64,
     data: &[f32],
 ) -> Result<(), WeightError> {
+    write_f32_tensors(
+        path,
+        &[F32Tensor {
+            name,
+            ne0,
+            ne1,
+            data,
+        }],
+    )
+}
+
+pub fn write_f32_tensors(path: &Path, tensors: &[F32Tensor<'_>]) -> Result<(), WeightError> {
     // Kept in sync with -DGGML_MAX_NAME=256 in danmo-ggml-sys/build.rs.
     const MAX_NAME: usize = 256;
-    if name.len() >= MAX_NAME {
-        return Err(WeightError::NameTooLong {
-            name: name.to_string(),
-            max: MAX_NAME - 1,
+    if tensors.is_empty() {
+        return Err(WeightError::Open {
+            path: path.display().to_string(),
+            detail: "no tensors to write".into(),
         });
     }
-    let expect = (ne0 as usize).saturating_mul(ne1 as usize);
-    if data.len() != expect || ne0 <= 0 || ne1 <= 0 {
-        return Err(WeightError::Shape {
-            name: name.to_string(),
-            expected: vec![ne0, ne1],
-            got: vec![data.len() as i64],
-        });
+    let mut bytes = 0usize;
+    for tensor in tensors {
+        if tensor.name.len() >= MAX_NAME {
+            return Err(WeightError::NameTooLong {
+                name: tensor.name.to_string(),
+                max: MAX_NAME - 1,
+            });
+        }
+        let expect = (tensor.ne0 as usize).saturating_mul(tensor.ne1 as usize);
+        if tensor.data.len() != expect || tensor.ne0 <= 0 || tensor.ne1 <= 0 {
+            return Err(WeightError::Shape {
+                name: tensor.name.to_string(),
+                expected: vec![tensor.ne0, tensor.ne1],
+                got: vec![tensor.data.len() as i64],
+            });
+        }
+        bytes = bytes.saturating_add(tensor.data.len() * 4);
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| WeightError::Open {
@@ -252,10 +285,6 @@ pub fn write_f32_gguf(
             detail: err.to_string(),
         })?;
     }
-    let c_name = CString::new(name).map_err(|_| WeightError::Open {
-        path: path.display().to_string(),
-        detail: "tensor name is not a C string".into(),
-    })?;
     let path_string = path.display().to_string();
     let c_path = CString::new(path_string.as_str()).map_err(|_| WeightError::Open {
         path: path_string,
@@ -263,7 +292,7 @@ pub fn write_f32_gguf(
     })?;
     unsafe {
         let params = g::ggml_init_params {
-            mem_size: 8 * 1024 * 1024,
+            mem_size: bytes.saturating_add(16 * 1024 * 1024),
             mem_buffer: std::ptr::null_mut(),
             no_alloc: false,
         };
@@ -274,24 +303,6 @@ pub fn write_f32_gguf(
                 detail: "ggml_init failed".into(),
             });
         }
-        let tensor = g::ggml_new_tensor_2d(ctx, g::ggml_type_GGML_TYPE_F32, ne0, ne1);
-        if tensor.is_null() {
-            g::ggml_free(ctx);
-            return Err(WeightError::Open {
-                path: path.display().to_string(),
-                detail: "ggml_new_tensor_2d failed".into(),
-            });
-        }
-        g::ggml_set_name(tensor, c_name.as_ptr());
-        let dst = g::ggml_get_data_f32(tensor);
-        if dst.is_null() {
-            g::ggml_free(ctx);
-            return Err(WeightError::Open {
-                path: path.display().to_string(),
-                detail: "tensor has no data".into(),
-            });
-        }
-        std::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
         let gctx = g::gguf_init_empty();
         if gctx.is_null() {
             g::ggml_free(ctx);
@@ -300,7 +311,41 @@ pub fn write_f32_gguf(
                 detail: "gguf_init_empty failed".into(),
             });
         }
-        g::gguf_add_tensor(gctx, tensor);
+        for tensor in tensors {
+            let c_name = match CString::new(tensor.name) {
+                Ok(name) => name,
+                Err(_) => {
+                    g::gguf_free(gctx);
+                    g::ggml_free(ctx);
+                    return Err(WeightError::Open {
+                        path: path.display().to_string(),
+                        detail: "tensor name is not a C string".into(),
+                    });
+                }
+            };
+            let created =
+                g::ggml_new_tensor_2d(ctx, g::ggml_type_GGML_TYPE_F32, tensor.ne0, tensor.ne1);
+            if created.is_null() {
+                g::gguf_free(gctx);
+                g::ggml_free(ctx);
+                return Err(WeightError::Open {
+                    path: path.display().to_string(),
+                    detail: format!("ggml_new_tensor_2d failed for {}", tensor.name),
+                });
+            }
+            g::ggml_set_name(created, c_name.as_ptr());
+            let dst = g::ggml_get_data_f32(created);
+            if dst.is_null() {
+                g::gguf_free(gctx);
+                g::ggml_free(ctx);
+                return Err(WeightError::Open {
+                    path: path.display().to_string(),
+                    detail: format!("{} has no data", tensor.name),
+                });
+            }
+            std::ptr::copy_nonoverlapping(tensor.data.as_ptr(), dst, tensor.data.len());
+            g::gguf_add_tensor(gctx, created);
+        }
         let ok = g::gguf_write_to_file(gctx, c_path.as_ptr(), false);
         g::gguf_free(gctx);
         g::ggml_free(ctx);

@@ -220,6 +220,7 @@ dependencies = [
  "danmo-contracts",
  "danmo-engine",
  "danmo-schedule",
+ "danmo-store",
  "http-body-util",
  "serde",
  "serde_json",

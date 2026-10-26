@@ -54,6 +54,10 @@ impl Catalog {
         Self { root }
     }
 
+    pub fn root(&self) -> &Value {
+        &self.root
+    }
+
     pub fn model(&self, id: &str) -> Result<ModelEntry, CatalogError> {
         let bare = id.split(':').next().unwrap_or(id);
         let models = self

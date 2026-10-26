@@ -4,13 +4,13 @@ mod pipeline;
 pub mod runtime;
 mod weights;
 
-pub use families::{all_specs, spec, FamilySpec, Flux2Config, Flux2Denoise, Media, Shape};
+pub use families::{
+    all_specs, spec, weight_layout, write_smoke_bundle, FamilySpec, Flux2Config, Flux2Denoise,
+    Media, Shape,
+};
 pub use pipeline::{audio_create, image_create, upscale, video_create, EngineError, RunOutput};
 pub use runtime::{identity_probe, BackendKind, GgmlContext};
-pub use weights::{
-    assert_gguf_bundle, lora_base_name, write_f32_gguf, write_smoke_bundle, GgufWeights,
-    WeightError,
-};
+pub use weights::{assert_gguf_bundle, lora_base_name, write_f32_gguf, GgufWeights, WeightError};
 
 #[cfg(test)]
 mod tests {
@@ -122,19 +122,25 @@ mod tests {
         let out = image_create(&req, "flux2", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
         assert_eq!(out.graph_computes, 1);
         assert!(out.latents.iter().all(|v| v.is_finite()));
+        assert_eq!(&out.preview_png[..8], b"\x89PNG\r\n\x1a\n");
 
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
         let config = Flux2Config::smoke();
-        let mut model = Flux2Denoise::build(&ctx, config).unwrap();
+        let seq_img = (64 / config.vae_scale) * (64 / config.vae_scale);
+        let mut model = Flux2Denoise::build(&ctx, config, seq_img as i64).unwrap();
         let weights = GgufWeights::open(&dir.join("transformer.gguf")).unwrap();
-        let w = weights
-            .f32_exact("velocity.weight", &[config.inner_dim, config.inner_dim])
-            .unwrap();
-        model.load_f32("velocity.weight", &w).unwrap();
+        assert!(weights.contains("transformer_blocks.0.attn.to_q.weight"));
+        assert!(!weights.contains("velocity.weight"));
+        for (name, ne0, ne1) in weight_layout(config) {
+            let data = weights.f32_exact(&name, &[ne0, ne1]).unwrap();
+            model.load_f32(&name, &data).unwrap();
+        }
+        let txt = vec![0.1f32; config.joint_attention_dim as usize];
         let mut ticks = 0u32;
         let latents = model
             .denoise(
-                vec![0.2; config.inner_dim as usize],
+                vec![0.2; model.latent_len()],
+                &txt,
                 3,
                 64,
                 64,
@@ -146,7 +152,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ticks, 3);
-        assert_eq!(model.graph_computes(), 3);
+        assert_eq!(model.graph_computes(), 6);
         assert!(latents.iter().all(|v| v.is_finite()));
         let _ = std::fs::remove_dir_all(&dir);
     }

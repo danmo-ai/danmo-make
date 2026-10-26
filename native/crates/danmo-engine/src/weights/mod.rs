@@ -4,8 +4,8 @@
 mod bundle;
 mod gguf;
 
-pub use bundle::{assert_gguf_bundle, write_smoke_bundle};
-pub use gguf::{write_f32_gguf, GgufWeights};
+pub use bundle::assert_gguf_bundle;
+pub use gguf::{write_f32_gguf, write_f32_tensors, F32Tensor, GgufWeights};
 
 use thiserror::Error;
 
@@ -41,6 +41,8 @@ pub enum WeightError {
     Duplicate { name: String, path: String },
     #[error("tensor name {name} is longer than GGML_MAX_NAME ({max})")]
     NameTooLong { name: String, max: usize },
+    #[error("{0}")]
+    NotBuilt(String),
     #[error(transparent)]
     Runtime(#[from] crate::runtime::RuntimeError),
 }

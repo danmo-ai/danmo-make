@@ -22,6 +22,8 @@ pub enum RuntimeError {
         expected: usize,
         got: usize,
     },
+    #[error("{0}")]
+    Message(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +221,98 @@ impl<'a> GraphBuilder<'a> {
         unsafe { g::ggml_soft_max(self.ctx, a) }
     }
 
+    pub fn norm(&self, a: *mut g::ggml_tensor, eps: f32) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_norm(self.ctx, a, eps) }
+    }
+
+    pub fn swiglu(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_swiglu(self.ctx, a) }
+    }
+
+    pub fn concat(
+        &self,
+        a: *mut g::ggml_tensor,
+        b: *mut g::ggml_tensor,
+        dim: i32,
+    ) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_concat(self.ctx, a, b, dim) }
+    }
+
+    pub fn transpose(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_transpose(self.ctx, a) }
+    }
+
+    pub fn cont(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_cont(self.ctx, a) }
+    }
+
+    pub fn reshape_2d(&self, a: *mut g::ggml_tensor, ne0: i64, ne1: i64) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_reshape_2d(self.ctx, a, ne0, ne1) }
+    }
+
+    pub fn reshape_3d(
+        &self,
+        a: *mut g::ggml_tensor,
+        ne0: i64,
+        ne1: i64,
+        ne2: i64,
+    ) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_reshape_3d(self.ctx, a, ne0, ne1, ne2) }
+    }
+
+    pub fn view_2d(
+        &self,
+        a: *mut g::ggml_tensor,
+        ne0: i64,
+        ne1: i64,
+        nb1: usize,
+        offset: usize,
+    ) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_view_2d(self.ctx, a, ne0, ne1, nb1, offset) }
+    }
+
+    /// Interleaved-pair RoPE. `pos` is I32 `[n_token]`. `freq_base` is 2000 for Flux2.
+    pub fn rope(
+        &self,
+        a: *mut g::ggml_tensor,
+        pos: *mut g::ggml_tensor,
+        n_dims: i32,
+        freq_base: f32,
+    ) -> *mut g::ggml_tensor {
+        unsafe {
+            g::ggml_rope_ext(
+                self.ctx,
+                a,
+                pos,
+                std::ptr::null_mut(),
+                n_dims,
+                0,
+                0,
+                freq_base,
+                1.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+            )
+        }
+    }
+
+    pub fn i32_1d(&mut self, name: &str, ne0: i64, input: bool) -> *mut g::ggml_tensor {
+        unsafe {
+            let t = g::ggml_new_tensor_1d(self.ctx, g::ggml_type_GGML_TYPE_I32, ne0);
+            name_tensor(t, name);
+            if input {
+                g::ggml_set_input(t);
+                self.inputs.push(NamedTensor {
+                    name: name.to_string(),
+                    tensor: t,
+                });
+            }
+            t
+        }
+    }
+
     /// Finish the graph. `reserve` + `alloc` happen once; later steps only write inputs.
     pub fn finish(self, output: *mut g::ggml_tensor) -> Result<ReusedGraph, RuntimeError> {
         unsafe {
@@ -281,6 +375,28 @@ impl ReusedGraph {
             .ok_or_else(|| RuntimeError::MissingInput(name.to_string()))?;
         let nbytes = unsafe { g::ggml_nbytes(tensor) };
         let got = data.len() * std::mem::size_of::<f32>();
+        if nbytes != got {
+            return Err(RuntimeError::SizeMismatch {
+                name: name.to_string(),
+                expected: nbytes,
+                got,
+            });
+        }
+        unsafe {
+            g::ggml_backend_tensor_set(tensor, data.as_ptr().cast(), 0, nbytes);
+        }
+        Ok(())
+    }
+
+    pub fn set_i32(&self, name: &str, data: &[i32]) -> Result<(), RuntimeError> {
+        let tensor = self
+            .inputs
+            .iter()
+            .find(|t| t.name == name)
+            .map(|t| t.tensor)
+            .ok_or_else(|| RuntimeError::MissingInput(name.to_string()))?;
+        let nbytes = unsafe { g::ggml_nbytes(tensor) };
+        let got = data.len() * std::mem::size_of::<i32>();
         if nbytes != got {
             return Err(RuntimeError::SizeMismatch {
                 name: name.to_string(),
