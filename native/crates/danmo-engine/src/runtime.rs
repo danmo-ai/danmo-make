@@ -260,6 +260,67 @@ impl<'a> GraphBuilder<'a> {
         unsafe { g::ggml_reshape_3d(self.ctx, a, ne0, ne1, ne2) }
     }
 
+    pub fn reshape_4d(
+        &self,
+        a: *mut g::ggml_tensor,
+        ne0: i64,
+        ne1: i64,
+        ne2: i64,
+        ne3: i64,
+    ) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_reshape_4d(self.ctx, a, ne0, ne1, ne2, ne3) }
+    }
+
+    pub fn permute(
+        &self,
+        a: *mut g::ggml_tensor,
+        axis0: i32,
+        axis1: i32,
+        axis2: i32,
+        axis3: i32,
+    ) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_permute(self.ctx, a, axis0, axis1, axis2, axis3) }
+    }
+
+    pub fn sub(&self, a: *mut g::ggml_tensor, b: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_sub(self.ctx, a, b) }
+    }
+
+    pub fn view_3d(
+        &self,
+        a: *mut g::ggml_tensor,
+        ne0: i64,
+        ne1: i64,
+        ne2: i64,
+        nb1: usize,
+        nb2: usize,
+        offset: usize,
+    ) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_view_3d(self.ctx, a, ne0, ne1, ne2, nb1, nb2, offset) }
+    }
+
+    pub fn f32_3d(
+        &mut self,
+        name: &str,
+        ne0: i64,
+        ne1: i64,
+        ne2: i64,
+        input: bool,
+    ) -> *mut g::ggml_tensor {
+        unsafe {
+            let t = g::ggml_new_tensor_3d(self.ctx, g::ggml_type_GGML_TYPE_F32, ne0, ne1, ne2);
+            name_tensor(t, name);
+            if input {
+                g::ggml_set_input(t);
+                self.inputs.push(NamedTensor {
+                    name: name.to_string(),
+                    tensor: t,
+                });
+            }
+            t
+        }
+    }
+
     pub fn view_2d(
         &self,
         a: *mut g::ggml_tensor,
@@ -317,7 +378,7 @@ impl<'a> GraphBuilder<'a> {
     pub fn finish(self, output: *mut g::ggml_tensor) -> Result<ReusedGraph, RuntimeError> {
         unsafe {
             g::ggml_set_output(output);
-            let graph = g::ggml_new_graph(self.ctx);
+            let graph = g::ggml_new_graph_custom(self.ctx, 8192, false);
             if graph.is_null() {
                 g::ggml_free(self.ctx);
                 return Err(RuntimeError::Init);

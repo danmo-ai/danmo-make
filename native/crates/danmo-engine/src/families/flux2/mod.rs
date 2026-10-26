@@ -20,12 +20,6 @@ pub fn run(
     let files = assert_gguf_bundle(bundle)?;
     let loaded = GgufWeights::open_parts(&files.transformer)?;
     let config = config_from_weights(&loaded)?;
-    if config.num_heads != 1 {
-        return Err(WeightError::NotBuilt(format!(
-            "flux2 attention for {} heads is not built",
-            config.num_heads
-        )));
-    }
     let scale = config.vae_scale.max(1);
     if width % scale != 0 || height % scale != 0 {
         return Err(WeightError::NotBuilt(format!(
@@ -35,13 +29,13 @@ pub fn run(
     let grid_w = (width / scale) as i64;
     let grid_h = (height / scale) as i64;
     let seq_img = grid_w * grid_h;
+    let txt = text_tokens(&files.text_encoder, config.joint_attention_dim)?;
     let ctx = crate::runtime::GgmlContext::new(backend)?;
-    let mut denoise = transformer::Flux2Denoise::build(&ctx, config, seq_img)?;
+    let mut denoise = transformer::Flux2Denoise::build(&ctx, config, grid_w, grid_h)?;
     for (name, ne0, ne1) in weight_layout(config) {
         let data = loaded.f32_exact(&name, &[ne0, ne1])?;
         denoise.load_f32(&name, &data)?;
     }
-    let txt = text_tokens(&files.text_encoder, config.joint_attention_dim)?;
     let latent = vec![0.1f32; denoise.latent_len()];
     let latents = denoise.denoise(
         latent,
@@ -81,11 +75,16 @@ fn config_from_weights(weights: &GgufWeights) -> Result<Flux2Config, WeightError
             got: vec![context[0], context[1], freq[0], freq[1]],
         });
     }
-    let (heads, head) = if dim >= 128 && dim % 128 == 0 {
-        (dim / 128, 128)
-    } else {
-        (1, dim)
-    };
+    let norm = weights.shape("transformer_blocks.0.attn.norm_q.weight")?;
+    let head = norm[0];
+    if head < 1 || norm[1] != 1 || dim % head != 0 {
+        return Err(WeightError::Shape {
+            name: "transformer_blocks.0.attn.norm_q.weight".into(),
+            expected: vec![head.max(1), 1],
+            got: vec![norm[0], norm[1], dim],
+        });
+    }
+    let heads = dim / head;
     let layers = count_blocks(weights, "transformer_blocks", "attn.to_q.weight");
     let singles = count_blocks(
         weights,
@@ -181,11 +180,15 @@ fn decode_preview(
 
 /// Tiny bf16-tier bundle whose DiT file uses Flux2 parameter names.
 pub fn write_smoke_bundle(dir: &Path, dim: i64) -> Result<(), WeightError> {
+    write_config_bundle(dir, Flux2Config::from_dim(dim))
+}
+
+/// Same files as [`write_smoke_bundle`], with an explicit head split.
+pub fn write_config_bundle(dir: &Path, config: Flux2Config) -> Result<(), WeightError> {
     std::fs::create_dir_all(dir).map_err(|err| WeightError::Open {
         path: dir.display().to_string(),
         detail: err.to_string(),
     })?;
-    let config = Flux2Config::from_dim(dim);
     let layout = weight_layout(config);
     let owned: Vec<(String, i64, i64, Vec<f32>)> = layout
         .iter()

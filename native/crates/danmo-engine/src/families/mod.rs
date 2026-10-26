@@ -2,7 +2,9 @@
 
 mod flux2;
 
-pub use flux2::{weight_layout, write_smoke_bundle, Flux2Config, Flux2Denoise};
+pub use flux2::{
+    weight_layout, write_config_bundle, write_smoke_bundle, Flux2Config, Flux2Denoise,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Media {

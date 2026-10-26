@@ -5,8 +5,8 @@ pub mod runtime;
 mod weights;
 
 pub use families::{
-    all_specs, spec, weight_layout, write_smoke_bundle, FamilySpec, Flux2Config, Flux2Denoise,
-    Media, Shape,
+    all_specs, spec, weight_layout, write_config_bundle, write_smoke_bundle, FamilySpec,
+    Flux2Config, Flux2Denoise, Media, Shape,
 };
 pub use pipeline::{audio_create, image_create, upscale, video_create, EngineError, RunOutput};
 pub use runtime::{identity_probe, BackendKind, GgmlContext};
@@ -126,8 +126,8 @@ mod tests {
 
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
         let config = Flux2Config::smoke();
-        let seq_img = (64 / config.vae_scale) * (64 / config.vae_scale);
-        let mut model = Flux2Denoise::build(&ctx, config, seq_img as i64).unwrap();
+        let grid = (64 / config.vae_scale) as i64;
+        let mut model = Flux2Denoise::build(&ctx, config, grid, grid).unwrap();
         let weights = GgufWeights::open(&dir.join("transformer.gguf")).unwrap();
         assert!(weights.contains("transformer_blocks.0.attn.to_q.weight"));
         assert!(!weights.contains("velocity.weight"));
@@ -154,6 +154,18 @@ mod tests {
         assert_eq!(ticks, 3);
         assert_eq!(model.graph_computes(), 6);
         assert!(latents.iter().all(|v| v.is_finite()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flux2_multi_head_denoise_is_finite() {
+        let dir = scratch("flux2-heads");
+        let config = Flux2Config::with_heads(16, 2);
+        write_config_bundle(&dir, config).unwrap();
+        let out = image_create(&request(), "flux2", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert_eq!(out.graph_computes, 1);
+        assert!(out.latents.iter().all(|v| v.is_finite()));
+        assert_eq!(&out.preview_png[..8], b"\x89PNG\r\n\x1a\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

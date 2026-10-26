@@ -17,7 +17,7 @@ pub struct Flux2Config {
 }
 
 impl Flux2Config {
-    /// 4B Klein defaults. Multi-head attention is rejected until that graph is built.
+    /// 4B Klein defaults. Head dim 128 uses four RoPE axes of 32.
     pub fn klein_4b() -> Self {
         Self {
             in_channels: 128,
@@ -38,6 +38,14 @@ impl Flux2Config {
     /// One image token stream at dim 4, one double block and one single block.
     pub fn smoke() -> Self {
         Self::from_dim(4)
+    }
+
+    /// `heads` splits `dim`. Head dim is `dim / heads` and must divide evenly.
+    pub fn with_heads(dim: i64, heads: i64) -> Self {
+        let mut config = Self::from_dim(dim);
+        config.num_heads = heads;
+        config.attn_head_dim = dim / heads.max(1);
+        config
     }
 
     pub fn from_dim(dim: i64) -> Self {
