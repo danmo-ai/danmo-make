@@ -5,7 +5,10 @@ mod bundle;
 mod gguf;
 
 pub use bundle::assert_gguf_bundle;
-pub use gguf::{write_f32_gguf, write_f32_tensors, F32Tensor, GgufWeights};
+pub use gguf::{
+    matmul_type, quantize_q8_0, type_block, write_f32_gguf, write_f32_tensors, write_typed_tensors,
+    F32Tensor, GgufWeights, TypedTensor,
+};
 
 use thiserror::Error;
 
@@ -34,7 +37,7 @@ pub enum WeightError {
         got: Vec<i64>,
     },
     #[error(
-        "tensor {name} is ggml type {ggml_type}; this graph input expects F32. Quantized matmul is not wired for this tensor yet"
+        "tensor {name} is ggml type {ggml_type}. Matmul accepts F32, F16, BF16, Q8_0, and Q4_K; other types are not dequantized"
     )]
     Type { name: String, ggml_type: u32 },
     #[error("duplicate GGUF tensor {name} in {path}")]

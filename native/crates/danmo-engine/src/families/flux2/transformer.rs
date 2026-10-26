@@ -45,6 +45,17 @@ impl Flux2Denoise {
         grid_w: i64,
         grid_h: i64,
     ) -> Result<Self, RuntimeError> {
+        Self::build_typed(ctx, config, grid_w, grid_h, &HashMap::new())
+    }
+
+    /// `types` maps a GGUF tensor name to its stored ggml type. Missing names are F32.
+    pub fn build_typed(
+        ctx: &GgmlContext,
+        config: Flux2Config,
+        grid_w: i64,
+        grid_h: i64,
+        types: &HashMap<String, u32>,
+    ) -> Result<Self, RuntimeError> {
         if config.num_heads < 1 || config.attn_head_dim < 1 {
             return Err(RuntimeError::Message(
                 "flux2 attention heads are empty".into(),
@@ -65,7 +76,11 @@ impl Flux2Denoise {
         let mut b = ctx.builder(64 * 1024 * 1024)?;
         let mut weights = HashMap::new();
         for (name, ne0, ne1) in weight_layout(config) {
-            let tensor = b.f32_2d(&name, ne0, ne1, true);
+            let ggml_type = types
+                .get(&name)
+                .copied()
+                .unwrap_or(danmo_ggml_sys::ggml_type_GGML_TYPE_F32);
+            let tensor = b.tensor_2d(&name, ggml_type, ne0, ne1, true);
             if tensor.is_null() {
                 return Err(RuntimeError::Init);
             }
@@ -114,6 +129,10 @@ impl Flux2Denoise {
 
     pub fn load_f32(&mut self, name: &str, data: &[f32]) -> Result<(), RuntimeError> {
         self.graph.set_f32(name, data)
+    }
+
+    pub fn load_bytes(&mut self, name: &str, data: &[u8]) -> Result<(), RuntimeError> {
+        self.graph.set_bytes(name, data)
     }
 
     pub fn latent_len(&self) -> usize {

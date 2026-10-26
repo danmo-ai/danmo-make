@@ -164,8 +164,19 @@ impl<'a> GraphBuilder<'a> {
     }
 
     pub fn f32_2d(&mut self, name: &str, ne0: i64, ne1: i64, input: bool) -> *mut g::ggml_tensor {
+        self.tensor_2d(name, g::ggml_type_GGML_TYPE_F32, ne0, ne1, input)
+    }
+
+    pub fn tensor_2d(
+        &mut self,
+        name: &str,
+        ggml_type: u32,
+        ne0: i64,
+        ne1: i64,
+        input: bool,
+    ) -> *mut g::ggml_tensor {
         unsafe {
-            let t = g::ggml_new_tensor_2d(self.ctx, g::ggml_type_GGML_TYPE_F32, ne0, ne1);
+            let t = g::ggml_new_tensor_2d(self.ctx, ggml_type, ne0, ne1);
             name_tensor(t, name);
             if input {
                 g::ggml_set_input(t);
@@ -425,6 +436,27 @@ pub struct ReusedGraph {
 impl ReusedGraph {
     pub fn compute_count(&self) -> u32 {
         self.computes
+    }
+
+    pub fn set_bytes(&self, name: &str, data: &[u8]) -> Result<(), RuntimeError> {
+        let tensor = self
+            .inputs
+            .iter()
+            .find(|t| t.name == name)
+            .map(|t| t.tensor)
+            .ok_or_else(|| RuntimeError::MissingInput(name.to_string()))?;
+        let nbytes = unsafe { g::ggml_nbytes(tensor) };
+        if nbytes != data.len() {
+            return Err(RuntimeError::SizeMismatch {
+                name: name.to_string(),
+                expected: nbytes,
+                got: data.len(),
+            });
+        }
+        unsafe {
+            g::ggml_backend_tensor_set(tensor, data.as_ptr().cast(), 0, nbytes);
+        }
+        Ok(())
     }
 
     pub fn set_f32(&self, name: &str, data: &[f32]) -> Result<(), RuntimeError> {

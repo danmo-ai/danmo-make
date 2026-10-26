@@ -102,6 +102,30 @@ impl GgufWeights {
         Ok(self.lookup(name)?.1.ne)
     }
 
+    pub fn ggml_type_of(&self, name: &str) -> Result<u32, WeightError> {
+        Ok(self.lookup(name)?.1.ggml_type)
+    }
+
+    /// Bytes as stored. The ggml type is not converted.
+    pub fn raw_exact(&self, name: &str, ne: &[i64]) -> Result<Vec<u8>, WeightError> {
+        let (part, loc) = self.lookup(name)?;
+        if !shape_matches(&loc.ne, ne) {
+            return Err(WeightError::Shape {
+                name: name.to_string(),
+                expected: ne.to_vec(),
+                got: loc.ne.to_vec(),
+            });
+        }
+        let raw = part
+            .map
+            .bytes(loc.offset, loc.nbytes)
+            .map_err(|detail| WeightError::Open {
+                path: part.origin.clone(),
+                detail,
+            })?;
+        Ok(raw.to_vec())
+    }
+
     fn lookup(&self, name: &str) -> Result<(&Part, &TensorLoc), WeightError> {
         for part in &self.parts {
             if let Some(loc) = part.tensors.get(name) {
@@ -250,6 +274,174 @@ pub fn write_f32_gguf(
             data,
         }],
     )
+}
+
+pub struct TypedTensor<'a> {
+    pub name: &'a str,
+    pub ne0: i64,
+    pub ne1: i64,
+    pub ggml_type: u32,
+    pub data: &'a [u8],
+}
+
+pub fn matmul_type(ggml_type: u32) -> bool {
+    matches!(
+        ggml_type,
+        g::ggml_type_GGML_TYPE_F32
+            | g::ggml_type_GGML_TYPE_F16
+            | g::ggml_type_GGML_TYPE_BF16
+            | g::ggml_type_GGML_TYPE_Q8_0
+            | g::ggml_type_GGML_TYPE_Q4_K
+    )
+}
+
+pub fn type_block(ggml_type: u32) -> i64 {
+    unsafe { g::ggml_blck_size(ggml_type) as i64 }
+}
+
+/// Quantize F32 rows to Q8_0. `ne0` is the contiguous axis and must be a multiple of 32.
+pub fn quantize_q8_0(ne0: i64, ne1: i64, values: &[f32]) -> Result<Vec<u8>, WeightError> {
+    let expect = (ne0 as usize).saturating_mul(ne1 as usize);
+    if values.len() != expect || ne0 <= 0 || ne1 <= 0 || ne0 % 32 != 0 {
+        return Err(WeightError::Shape {
+            name: "q8_0".into(),
+            expected: vec![ne0, ne1],
+            got: vec![values.len() as i64],
+        });
+    }
+    let row = unsafe { g::ggml_row_size(g::ggml_type_GGML_TYPE_Q8_0, ne0) };
+    let mut dst = vec![0u8; row.saturating_mul(ne1 as usize)];
+    let wrote = unsafe {
+        g::ggml_quantize_chunk(
+            g::ggml_type_GGML_TYPE_Q8_0,
+            values.as_ptr(),
+            dst.as_mut_ptr().cast(),
+            0,
+            ne1,
+            ne0,
+            std::ptr::null(),
+        )
+    };
+    if wrote == 0 {
+        return Err(WeightError::Open {
+            path: "q8_0".into(),
+            detail: "ggml_quantize_chunk wrote nothing".into(),
+        });
+    }
+    Ok(dst)
+}
+
+pub fn write_typed_tensors(path: &Path, tensors: &[TypedTensor<'_>]) -> Result<(), WeightError> {
+    const MAX_NAME: usize = 256;
+    if tensors.is_empty() {
+        return Err(WeightError::Open {
+            path: path.display().to_string(),
+            detail: "no tensors to write".into(),
+        });
+    }
+    let mut bytes = 0usize;
+    for tensor in tensors {
+        if tensor.name.len() >= MAX_NAME {
+            return Err(WeightError::NameTooLong {
+                name: tensor.name.to_string(),
+                max: MAX_NAME - 1,
+            });
+        }
+        if tensor.ne0 <= 0 || tensor.ne1 <= 0 {
+            return Err(WeightError::Shape {
+                name: tensor.name.to_string(),
+                expected: vec![tensor.ne0, tensor.ne1],
+                got: vec![tensor.data.len() as i64],
+            });
+        }
+        let row = unsafe { g::ggml_row_size(tensor.ggml_type, tensor.ne0) };
+        let expect = row.saturating_mul(tensor.ne1 as usize);
+        if tensor.data.len() != expect {
+            return Err(WeightError::Shape {
+                name: tensor.name.to_string(),
+                expected: vec![tensor.ne0, tensor.ne1, expect as i64],
+                got: vec![tensor.data.len() as i64],
+            });
+        }
+        bytes = bytes.saturating_add(expect);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| WeightError::Open {
+            path: path.display().to_string(),
+            detail: err.to_string(),
+        })?;
+    }
+    let path_string = path.display().to_string();
+    let c_path = CString::new(path_string.as_str()).map_err(|_| WeightError::Open {
+        path: path_string,
+        detail: "path is not a C string".into(),
+    })?;
+    unsafe {
+        let params = g::ggml_init_params {
+            mem_size: bytes.saturating_add(16 * 1024 * 1024),
+            mem_buffer: std::ptr::null_mut(),
+            no_alloc: false,
+        };
+        let ctx = g::ggml_init(params);
+        if ctx.is_null() {
+            return Err(WeightError::Open {
+                path: path.display().to_string(),
+                detail: "ggml_init failed".into(),
+            });
+        }
+        let gctx = g::gguf_init_empty();
+        if gctx.is_null() {
+            g::ggml_free(ctx);
+            return Err(WeightError::Open {
+                path: path.display().to_string(),
+                detail: "gguf_init_empty failed".into(),
+            });
+        }
+        for tensor in tensors {
+            let c_name = match CString::new(tensor.name) {
+                Ok(name) => name,
+                Err(_) => {
+                    g::gguf_free(gctx);
+                    g::ggml_free(ctx);
+                    return Err(WeightError::Open {
+                        path: path.display().to_string(),
+                        detail: "tensor name is not a C string".into(),
+                    });
+                }
+            };
+            let created = g::ggml_new_tensor_2d(ctx, tensor.ggml_type, tensor.ne0, tensor.ne1);
+            if created.is_null() {
+                g::gguf_free(gctx);
+                g::ggml_free(ctx);
+                return Err(WeightError::Open {
+                    path: path.display().to_string(),
+                    detail: format!("ggml_new_tensor_2d failed for {}", tensor.name),
+                });
+            }
+            g::ggml_set_name(created, c_name.as_ptr());
+            let dst = g::ggml_get_data(created);
+            if dst.is_null() {
+                g::gguf_free(gctx);
+                g::ggml_free(ctx);
+                return Err(WeightError::Open {
+                    path: path.display().to_string(),
+                    detail: format!("{} has no data", tensor.name),
+                });
+            }
+            std::ptr::copy_nonoverlapping(tensor.data.as_ptr(), dst.cast(), tensor.data.len());
+            g::gguf_add_tensor(gctx, created);
+        }
+        let ok = g::gguf_write_to_file(gctx, c_path.as_ptr(), false);
+        g::gguf_free(gctx);
+        g::ggml_free(ctx);
+        if !ok {
+            return Err(WeightError::Open {
+                path: path.display().to_string(),
+                detail: "gguf_write_to_file failed".into(),
+            });
+        }
+    }
+    Ok(())
 }
 
 pub fn write_f32_tensors(path: &Path, tensors: &[F32Tensor<'_>]) -> Result<(), WeightError> {

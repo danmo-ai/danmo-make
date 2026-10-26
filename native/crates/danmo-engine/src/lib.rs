@@ -5,8 +5,8 @@ pub mod runtime;
 mod weights;
 
 pub use families::{
-    all_specs, spec, weight_layout, write_config_bundle, write_smoke_bundle, FamilySpec,
-    Flux2Config, Flux2Denoise, Media, Shape,
+    all_specs, spec, weight_layout, write_config_bundle, write_q8_bundle, write_smoke_bundle,
+    FamilySpec, Flux2Config, Flux2Denoise, Media, Shape,
 };
 pub use pipeline::{audio_create, image_create, upscale, video_create, EngineError, RunOutput};
 pub use runtime::{identity_probe, BackendKind, GgmlContext};
@@ -162,6 +162,29 @@ mod tests {
         let dir = scratch("flux2-heads");
         let config = Flux2Config::with_heads(16, 2);
         write_config_bundle(&dir, config).unwrap();
+        let out = image_create(&request(), "flux2", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert_eq!(out.graph_computes, 1);
+        assert!(out.latents.iter().all(|v| v.is_finite()));
+        assert_eq!(&out.preview_png[..8], b"\x89PNG\r\n\x1a\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flux2_q8_0_weights_stay_quantized() {
+        let dir = scratch("flux2-q8");
+        let config = Flux2Config::with_heads(32, 1);
+        write_q8_bundle(&dir, config).unwrap();
+        let weights = GgufWeights::open(&dir.join("transformer.gguf")).unwrap();
+        assert_eq!(
+            weights.ggml_type_of("x_embedder.weight").unwrap(),
+            danmo_ggml_sys::ggml_type_GGML_TYPE_Q8_0
+        );
+        assert_eq!(
+            weights
+                .ggml_type_of("transformer_blocks.0.attn.norm_q.weight")
+                .unwrap(),
+            danmo_ggml_sys::ggml_type_GGML_TYPE_F32
+        );
         let out = image_create(&request(), "flux2", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
         assert_eq!(out.graph_computes, 1);
         assert!(out.latents.iter().all(|v| v.is_finite()));

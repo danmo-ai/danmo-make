@@ -5,7 +5,12 @@ mod weights;
 pub use transformer::Flux2Denoise;
 pub use weights::{weight_layout, Flux2Config};
 
-use crate::weights::{assert_gguf_bundle, write_f32_tensors, F32Tensor, GgufWeights, WeightError};
+use crate::weights::{
+    assert_gguf_bundle, matmul_type, quantize_q8_0, type_block, write_f32_tensors,
+    write_typed_tensors, F32Tensor, GgufWeights, TypedTensor, WeightError,
+};
+use danmo_ggml_sys::{ggml_type_GGML_TYPE_F32, ggml_type_GGML_TYPE_Q8_0};
+use std::collections::HashMap;
 use std::path::Path;
 
 pub fn run(
@@ -31,10 +36,17 @@ pub fn run(
     let seq_img = grid_w * grid_h;
     let txt = text_tokens(&files.text_encoder, config.joint_attention_dim)?;
     let ctx = crate::runtime::GgmlContext::new(backend)?;
-    let mut denoise = transformer::Flux2Denoise::build(&ctx, config, grid_w, grid_h)?;
+    let mut types = HashMap::new();
+    let mut stored = Vec::new();
     for (name, ne0, ne1) in weight_layout(config) {
-        let data = loaded.f32_exact(&name, &[ne0, ne1])?;
-        denoise.load_f32(&name, &data)?;
+        let ggml_type = loaded.ggml_type_of(&name)?;
+        check_stored_type(&name, ggml_type, ne0)?;
+        types.insert(name.clone(), ggml_type);
+        stored.push((name.clone(), loaded.raw_exact(&name, &[ne0, ne1])?));
+    }
+    let mut denoise = transformer::Flux2Denoise::build_typed(&ctx, config, grid_w, grid_h, &types)?;
+    for (name, raw) in &stored {
+        denoise.load_bytes(name, raw)?;
     }
     let latent = vec![0.1f32; denoise.latent_len()];
     let latents = denoise.denoise(
@@ -111,6 +123,30 @@ fn config_from_weights(weights: &GgufWeights) -> Result<Flux2Config, WeightError
         vae_scale: 16,
         rope_theta: 2000.0,
     })
+}
+
+fn check_stored_type(name: &str, ggml_type: u32, ne0: i64) -> Result<(), WeightError> {
+    if name.contains(".norm_") {
+        if ggml_type != ggml_type_GGML_TYPE_F32 {
+            return Err(WeightError::NotBuilt(format!(
+                "{name} is ggml type {ggml_type}. Norm weights stay F32 inside a quantized GGUF"
+            )));
+        }
+        return Ok(());
+    }
+    if !matmul_type(ggml_type) {
+        return Err(WeightError::Type {
+            name: name.to_string(),
+            ggml_type,
+        });
+    }
+    let block = type_block(ggml_type);
+    if block > 1 && (ne0 % block != 0) {
+        return Err(WeightError::NotBuilt(format!(
+            "{name} length {ne0} is not divisible by ggml block {block}"
+        )));
+    }
+    Ok(())
 }
 
 fn count_blocks(weights: &GgufWeights, prefix: &str, suffix: &str) -> i64 {
@@ -239,6 +275,86 @@ pub fn write_config_bundle(dir: &Path, config: Flux2Config) -> Result<(), Weight
     let manifest = r#"{
   "format": "gguf",
   "quant": "bf16",
+  "files": {
+    "transformer": "transformer.gguf",
+    "text_encoder": "text_encoder.gguf",
+    "vae": "vae.gguf"
+  }
+}
+"#;
+    std::fs::write(dir.join("bundle.manifest.json"), manifest).map_err(|err| {
+        WeightError::Open {
+            path: dir.display().to_string(),
+            detail: err.to_string(),
+        }
+    })?;
+    Ok(())
+}
+
+/// Matmul weights are Q8_0. Norm weights stay F32. `ne0` of every matmul row must be a multiple of 32.
+pub fn write_q8_bundle(dir: &Path, config: Flux2Config) -> Result<(), WeightError> {
+    std::fs::create_dir_all(dir).map_err(|err| WeightError::Open {
+        path: dir.display().to_string(),
+        detail: err.to_string(),
+    })?;
+    let layout = weight_layout(config);
+    let mut owned = Vec::new();
+    for (name, ne0, ne1) in &layout {
+        let values = weights::smoke_values(name, *ne0, *ne1);
+        if name.contains(".norm_") {
+            let mut bytes = Vec::with_capacity(values.len() * 4);
+            for value in values {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            owned.push((name.clone(), *ne0, *ne1, ggml_type_GGML_TYPE_F32, bytes));
+        } else {
+            let bytes = quantize_q8_0(*ne0, *ne1, &values)?;
+            owned.push((name.clone(), *ne0, *ne1, ggml_type_GGML_TYPE_Q8_0, bytes));
+        }
+    }
+    let tensors: Vec<TypedTensor<'_>> = owned
+        .iter()
+        .map(|(name, ne0, ne1, ggml_type, data)| TypedTensor {
+            name,
+            ne0: *ne0,
+            ne1: *ne1,
+            ggml_type: *ggml_type,
+            data,
+        })
+        .collect();
+    write_typed_tensors(&dir.join("transformer.gguf"), &tensors)?;
+    let joint = config.joint_attention_dim;
+    let embed = vec![0.1f32; joint as usize];
+    write_f32_tensors(
+        &dir.join("text_encoder.gguf"),
+        &[F32Tensor {
+            name: "token_embed.weight",
+            ne0: joint,
+            ne1: 1,
+            data: &embed,
+        }],
+    )?;
+    let in_ch = config.in_channels as usize;
+    let mut conv = vec![0f32; in_ch * 3];
+    for i in 0..in_ch.min(3) {
+        conv[i + i * in_ch] = 1.0;
+    }
+    write_f32_tensors(
+        &dir.join("vae.gguf"),
+        &[F32Tensor {
+            name: "decoder.conv.weight",
+            ne0: config.in_channels,
+            ne1: 3,
+            data: &conv,
+        }],
+    )?;
+    std::fs::write(dir.join("tokenizer.json"), "{}\n").map_err(|err| WeightError::Open {
+        path: dir.display().to_string(),
+        detail: err.to_string(),
+    })?;
+    let manifest = r#"{
+  "format": "gguf",
+  "quant": "q8_0",
   "files": {
     "transformer": "transformer.gguf",
     "text_encoder": "text_encoder.gguf",
