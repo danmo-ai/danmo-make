@@ -11,9 +11,10 @@
 	pack-linux-desktop-venv pack-linux-desktop-sidecar pack-linux-desktop-shell pack-linux-desktop \
 	pack-linux-server-venv pack-linux-server-runtime pack-linux-server-sidecar pack-linux-server-archive pack-linux-server \
 	pack-linux-server-legacy pack-linux-server-venv-full \
-	pack-windows-venv pack-windows-venv-full pack-windows-runtime pack-windows-sidecar \
+	pack-windows-venv pack-windows-venv-full pack-windows-runtime \
 	pack-windows-server-archive pack-windows-server \
 	pack-windows-desktop-shell pack-windows-desktop pack-windows-desktop-release \
+	pack-ggml-sidecar pack-windows-sidecar \
 	desktop-prereqs desktop-sidecar desktop-tauri desktop-bundle \
 	linux-mlx-venv linux-mlx-sidecar release-linux-mlx-tar release-linux-mlx \
 	linux-cuda-venv linux-cuda-sidecar release-linux-cuda-tar release-linux-cuda \
@@ -335,9 +336,16 @@ pack-linux-server-venv-full:
 	$(PYTHON) -m pip install --upgrade pip
 	$(PYTHON) -m pip install -r requirements-linux.txt pyinstaller
 
-# --- Windows — temporarily unsupported ---
+# --- Windows ---
+# MLX/PyInstaller packs stay unsupported. The ggml sidecar is the Windows binary
+# (Vulkan, plus CUDA when CUDA_PATH or nvcc is present).
 
-pack-windows-venv pack-windows-venv-full pack-windows-runtime pack-windows-sidecar \
+pack-ggml-sidecar:
+	bash scripts/build_ggml_sidecar.sh
+
+pack-windows-sidecar: pack-ggml-sidecar
+
+pack-windows-venv pack-windows-venv-full pack-windows-runtime \
 pack-windows-server-archive pack-windows-server pack-windows-desktop-shell \
 pack-windows-desktop pack-windows-desktop-release:
 	$(_WINDOWS_UNSUPPORTED)
@@ -387,7 +395,8 @@ help:
 	@echo "Release desktop:"
 	@echo "  pack-macos-desktop     macOS arm64 · MLX (Metal) · .app/.dmg"
 	@echo "  pack-linux-desktop     Linux x86_64 · MLX (mlx[cuda]) · AppImage/.deb"
-	@echo "  pack-windows-*         Windows temporarily unsupported"
+	@echo "  pack-windows-sidecar   ggml sidecar (Vulkan; CUDA when the toolkit is present)"
+	@echo "  pack-ggml-sidecar      same binary, host OS backends"
 	@echo ""
 	@echo "Release server (headless thin archives; first run installs mlx[cuda]):"
 	@echo "  pack-linux-server      Linux MLX thin .tar.gz (danmo-make-linux-mlx-*)"

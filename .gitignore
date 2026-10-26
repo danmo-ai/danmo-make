@@ -23,6 +23,7 @@ __pycache__/
 /loras/
 outputs/
 db/*.db
+/native/target/
 
 # Node
 node_modules/
@@ -49,4 +50,6 @@ node_modules/
 
 # Rust
 /target/
+/native/target/
 Cargo.lock
+!/native/Cargo.lock

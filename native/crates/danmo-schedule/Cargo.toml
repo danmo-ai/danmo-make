@@ -1,0 +1,10 @@
+[package]
+name = "danmo-schedule"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+danmo-store = { path = "../danmo-store" }
+thiserror = { workspace = true }
