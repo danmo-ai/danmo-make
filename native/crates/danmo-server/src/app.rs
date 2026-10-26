@@ -239,6 +239,7 @@ fn png_size(png: &[u8]) -> (i64, i64) {
 
 fn gguf_bundle(registry: &std::path::Path, model: &str) -> Result<PathBuf, String> {
     let catalog = Catalog::open(registry).map_err(|e| e.to_string())?;
+    product::materialize_graph_packs(&catalog)?;
     let path = PathBuf::from(catalog.gguf_local_path(model).map_err(|e| e.to_string())?);
     if path.is_absolute() {
         Ok(path)
@@ -351,8 +352,12 @@ mod tests {
     use tower::ServiceExt;
 
     async fn wait_terminal(app: &Router, id: &str) -> Value {
+        wait_terminal_for(app, id, 50, 40).await
+    }
+
+    async fn wait_terminal_for(app: &Router, id: &str, tries: u32, pause_ms: u64) -> Value {
         let mut last = json!({});
-        for _ in 0..50 {
+        for _ in 0..tries {
             let response = app
                 .clone()
                 .oneshot(
@@ -369,7 +374,7 @@ mod tests {
             if status == "completed" || status == "failed" {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(40)).await;
+            tokio::time::sleep(Duration::from_millis(pause_ms)).await;
         }
         last
     }
@@ -454,7 +459,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_registry_weights_fail_the_task() {
+    async fn flux2_klein_chain_pack_writes_a_64px_png() {
         let dir = std::env::temp_dir().join(format!(
             "danmo-api-old-{}-{}",
             std::process::id(),
@@ -489,10 +494,59 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let accepted: Value = serde_json::from_slice(&bytes).unwrap();
         let id = accepted["id"].as_str().unwrap();
-        let task = wait_terminal(&app, id).await;
-        assert_eq!(task["status"], "failed", "task {task}");
-        let err = task["error"].as_str().unwrap_or("");
-        assert!(err.contains("Re-download"), "{err}");
+        let task = wait_terminal_for(&app, id, 120, 250).await;
+        assert_eq!(task["status"], "completed", "task {task}");
+        let ids = task["result"]["asset_ids"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(ids.len(), 1, "task {task}");
+        let asset_id = ids[0].as_str().unwrap();
+        let file = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/assets/{asset_id}/file"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(file.status(), StatusCode::OK);
+        let png = file.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
+        let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+        assert_eq!((width, height), (64, 64));
+
+        let registry_body = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/registry")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = registry_body
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let listed: Value = serde_json::from_slice(&bytes).unwrap();
+        let model = &listed["models"]["flux2-klein-4b"];
+        assert_eq!(model["media"], "image");
+        assert_eq!(
+            model["parameters"]["resolution_presets"]["default"],
+            "64x64"
+        );
+        let options = model["parameters"]["resolution_presets"]["options"]
+            .as_array()
+            .unwrap();
+        assert!(options.iter().any(|v| v == "64x64"));
+        assert!(options.iter().any(|v| v == "1024x1024"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

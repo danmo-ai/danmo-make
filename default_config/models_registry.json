@@ -1131,8 +1131,8 @@
       "catalog": {
         "media": "image",
         "description": {
-          "zh": "FLUX.2 Klein 4B 蒸馏版，4 步快速出图，质量优秀。",
-          "en": "FLUX.2 Klein 4B distilled variant; fast 4-step generation with strong quality."
+          "zh": "FLUX.2 Klein 的本地 ggml 链路包。64 或 128 边长可以出图。这不是 4B 权重。",
+          "en": "Local ggml chain pack for FLUX.2 Klein. Generates at 64 or 128. This is not the 4B checkpoint."
         },
         "category": "base_models",
         "commercial_use_allowed": true,
@@ -1181,8 +1181,8 @@
           },
           "preview_max_edge": {
             "type": "int",
-            "default": 512,
-            "min": 128,
+            "default": 64,
+            "min": 64,
             "max": 1024
           },
           "steps": {
@@ -1203,8 +1203,10 @@
             "type": "float"
           },
           "width": {
-            "default": 1024,
+            "default": 64,
             "options": [
+              64,
+              128,
               512,
               768,
               1024,
@@ -1214,8 +1216,10 @@
             "type": "enum"
           },
           "height": {
-            "default": 1024,
+            "default": 64,
             "options": [
+              64,
+              128,
               512,
               768,
               1024,
@@ -1239,8 +1243,10 @@
           "num_layers": 5,
           "num_single_layers": 20,
           "resolution_presets": {
-            "default": "1024x1024",
+            "default": "64x64",
             "options": [
+              "64x64",
+              "128x128",
               "512x512",
               "768x768",
               "1024x1024",
@@ -1265,7 +1271,18 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {}
+        "versions": {
+          "bf16": {
+            "default": true,
+            "local_path": "models/flux2-klein-4b/bf16",
+            "graph_pack": "flux2-chain",
+            "size": "local",
+            "name": {
+              "zh": "链路",
+              "en": "chain"
+            }
+          }
+        }
       }
     },
     "flux2-klein-9b": {

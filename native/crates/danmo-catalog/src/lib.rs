@@ -162,15 +162,50 @@ impl Catalog {
             return root;
         };
         for model in models.values_mut() {
-            let Some(versions) = model
+            if let Some(versions) = model
                 .pointer_mut("/distribution/versions")
                 .and_then(|v| v.as_object_mut())
-            else {
-                continue;
-            };
-            versions.retain(|key, _| GGUF_VERSION_KEYS.contains(&key.as_str()));
+            {
+                versions.retain(|key, _| GGUF_VERSION_KEYS.contains(&key.as_str()));
+            }
+            lift_model_view(model);
         }
         root
+    }
+}
+
+/// Copy the fields the Vue create page reads onto the model object.
+fn lift_model_view(model: &mut Value) {
+    let fields = [
+        ("media", "/catalog/media"),
+        ("category", "/catalog/category"),
+        ("name", "/catalog/name"),
+        ("description", "/catalog/description"),
+        ("recommended", "/catalog/recommended"),
+        ("commercial_use_allowed", "/catalog/commercial_use_allowed"),
+        ("engine", "/catalog/engine"),
+        ("successor", "/catalog/successor"),
+        ("distilled_from", "/catalog/distilled_from"),
+        ("distilled_variant", "/catalog/distilled_variant"),
+        ("family", "/runtime/family"),
+        ("parameters", "/ui/parameters"),
+        ("versions", "/distribution/versions"),
+    ];
+    let copied: Vec<(String, Value)> = fields
+        .iter()
+        .filter_map(|(key, pointer)| {
+            model
+                .pointer(pointer)
+                .filter(|value| !value.is_null())
+                .cloned()
+                .map(|value| ((*key).to_string(), value))
+        })
+        .collect();
+    let Some(obj) = model.as_object_mut() else {
+        return;
+    };
+    for (key, value) in copied {
+        obj.insert(key, value);
     }
 }
 
@@ -220,5 +255,36 @@ mod tests {
             catalog.gguf_local_path("flux2-klein-4b").unwrap(),
             "models/q4"
         );
+    }
+
+    #[test]
+    fn public_registry_lifts_fields_the_ui_reads() {
+        let catalog = Catalog::from_value(json!({
+            "models": {
+                "flux2-klein-4b": {
+                    "catalog": {
+                        "media": "image",
+                        "name": { "zh": "K", "en": "K" },
+                        "recommended": true
+                    },
+                    "ui": { "parameters": { "steps": { "default": 4 } } },
+                    "runtime": { "family": "flux2" },
+                    "distribution": {
+                        "versions": {
+                            "bf16": { "local_path": "models/bf16", "default": true },
+                            "fp16": { "local_path": "models/old" }
+                        }
+                    }
+                }
+            }
+        }));
+        let public = catalog.public_registry();
+        let model = &public["models"]["flux2-klein-4b"];
+        assert_eq!(model["media"], "image");
+        assert_eq!(model["family"], "flux2");
+        assert_eq!(model["parameters"]["steps"]["default"], 4);
+        assert!(model["versions"]["bf16"].is_object());
+        assert!(model["versions"].get("fp16").is_none());
+        assert!(model["distribution"]["versions"].get("fp16").is_none());
     }
 }

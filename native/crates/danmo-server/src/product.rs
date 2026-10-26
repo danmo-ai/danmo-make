@@ -474,6 +474,41 @@ async fn list_models(
     Ok(Json(json!({ "models": out })))
 }
 
+pub(crate) fn materialize_graph_packs(catalog: &Catalog) -> Result<(), String> {
+    let Some(models) = catalog.root().get("models").and_then(|v| v.as_object()) else {
+        return Ok(());
+    };
+    for entry in models.values() {
+        let Some(versions) = entry
+            .pointer("/distribution/versions")
+            .and_then(|v| v.as_object())
+        else {
+            continue;
+        };
+        for key in GGUF_VERSION_KEYS {
+            let Some(version) = versions.get(*key) else {
+                continue;
+            };
+            if version.get("graph_pack").and_then(|v| v.as_str()) != Some("flux2-chain") {
+                continue;
+            }
+            let Some(path) = version
+                .get("local_path")
+                .and_then(|v| v.as_str())
+                .filter(|path| !path.is_empty())
+            else {
+                continue;
+            };
+            let path = resolve_path(path);
+            if path.join("bundle.manifest.json").is_file() {
+                continue;
+            }
+            danmo_engine::write_chain_bundle(&path).map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 async fn models_status(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     let catalog = open_catalog(&state)?;
     let mut out = serde_json::Map::new();
@@ -1338,8 +1373,11 @@ fn frontend_dist() -> Option<PathBuf> {
 }
 
 fn open_catalog(state: &AppState) -> Result<Catalog, ApiError> {
-    Catalog::open(&state.registry)
-        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+    let catalog = Catalog::open(&state.registry)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    materialize_graph_packs(&catalog)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err))?;
+    Ok(catalog)
 }
 
 pub fn new_id(prefix: &str) -> String {

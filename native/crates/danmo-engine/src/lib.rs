@@ -5,8 +5,8 @@ pub mod runtime;
 mod weights;
 
 pub use families::{
-    all_specs, spec, weight_layout, write_config_bundle, write_q8_bundle, write_qwen3_bundle,
-    write_smoke_bundle, FamilySpec, Flux2Config, Flux2Denoise, Media, Shape,
+    all_specs, spec, weight_layout, write_chain_bundle, write_config_bundle, write_q8_bundle,
+    write_qwen3_bundle, write_smoke_bundle, FamilySpec, Flux2Config, Flux2Denoise, Media, Shape,
 };
 pub use pipeline::{audio_create, image_create, upscale, video_create, EngineError, RunOutput};
 pub use runtime::{identity_probe, BackendKind, GgmlContext};
@@ -210,6 +210,35 @@ mod tests {
         };
         assert!(err.to_string().contains("no id for missing"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flux2_chain_pack_decodes_any_prompt_at_the_requested_size() {
+        let dir = scratch("flux2-chain");
+        write_chain_bundle(&dir).unwrap();
+        let mut cat = request();
+        cat.prompt = "一只猫".into();
+        let cat_out = image_create(&cat, "flux2", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert_eq!(png_edge(&cat_out.preview_png), (64, 64));
+        assert!(cat_out.graph_computes >= 1);
+        let mut dog = request();
+        dog.prompt = "a dog".into();
+        let dog_out = image_create(&dog, "flux2", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert_eq!(png_edge(&dog_out.preview_png), (64, 64));
+        let mut huge = request();
+        huge.size = "512x512".into();
+        let err = match image_create(&huge, "flux2", &dir, BackendKind::Cpu, |_, _| ()) {
+            Err(err) => err,
+            Ok(_) => panic!("oversized chain pack request was accepted"),
+        };
+        assert!(err.to_string().contains("edges up to 128"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn png_edge(png: &[u8]) -> (u32, u32) {
+        let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
+        let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+        (width, height)
     }
 
     #[test]

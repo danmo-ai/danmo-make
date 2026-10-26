@@ -3,7 +3,7 @@ mod text;
 mod transformer;
 mod weights;
 
-pub use text::write_qwen3_bundle;
+pub use text::{write_chain_bundle, write_qwen3_bundle};
 pub use transformer::Flux2Denoise;
 pub use weights::{weight_layout, Flux2Config};
 
@@ -33,6 +33,13 @@ pub fn run(
         return Err(WeightError::NotBuilt(format!(
             "size {width}x{height} is not divisible by vae scale {scale}"
         )));
+    }
+    if let Some(max_edge) = manifest_max_edge(bundle)? {
+        if width > max_edge || height > max_edge {
+            return Err(WeightError::NotBuilt(format!(
+                "this bundle accepts edges up to {max_edge}, got {width}x{height}"
+            )));
+        }
     }
     let grid_w = (width / scale) as i64;
     let grid_h = (height / scale) as i64;
@@ -82,6 +89,8 @@ pub fn run(
         seq_img as usize,
         grid_w as u32,
         grid_h as u32,
+        width,
+        height,
     )?;
     Ok(crate::families::DitImageRun {
         latents,
@@ -203,6 +212,20 @@ fn text_tokens(
     Ok((text.f32_exact("token_embed.weight", &[joint, 1])?, 1))
 }
 
+fn manifest_max_edge(bundle: &Path) -> Result<Option<u32>, WeightError> {
+    let path = bundle.join("bundle.manifest.json");
+    let text = std::fs::read_to_string(&path).map_err(|err| WeightError::Open {
+        path: path.display().to_string(),
+        detail: err.to_string(),
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|err| WeightError::NotBuilt(format!("bundle.manifest.json is not json: {err}")))?;
+    Ok(value
+        .get("max_edge")
+        .and_then(|item| item.as_u64())
+        .map(|edge| edge as u32))
+}
+
 fn decode_preview(
     paths: &[std::path::PathBuf],
     latent: &[f32],
@@ -210,6 +233,8 @@ fn decode_preview(
     seq: usize,
     grid_w: u32,
     grid_h: u32,
+    width: u32,
+    height: u32,
 ) -> Result<Vec<u8>, WeightError> {
     let vae = GgufWeights::open_parts(paths)?;
     let names: Vec<String> = vae.names().map(|name| name.to_string()).collect();
@@ -234,7 +259,25 @@ fn decode_preview(
             rgb[token * 3 + channel] = (acc.clamp(0.0, 1.0) * 255.0) as u8;
         }
     }
-    Ok(png::encode_rgb(grid_w, grid_h, &rgb))
+    let rgb = nearest_expand(&rgb, grid_w, grid_h, width, height);
+    Ok(png::encode_rgb(width, height, &rgb))
+}
+
+fn nearest_expand(src: &[u8], grid_w: u32, grid_h: u32, width: u32, height: u32) -> Vec<u8> {
+    if grid_w == width && grid_h == height {
+        return src.to_vec();
+    }
+    let mut out = vec![0u8; (width as usize) * (height as usize) * 3];
+    for y in 0..height {
+        let sy = ((y as u64) * (grid_h as u64) / (height as u64)) as usize;
+        for x in 0..width {
+            let sx = ((x as u64) * (grid_w as u64) / (width as u64)) as usize;
+            let from = (sy * grid_w as usize + sx) * 3;
+            let to = (y as usize * width as usize + x as usize) * 3;
+            out[to..to + 3].copy_from_slice(&src[from..from + 3]);
+        }
+    }
+    out
 }
 
 /// Tiny bf16-tier bundle whose DiT file uses Flux2 parameter names.

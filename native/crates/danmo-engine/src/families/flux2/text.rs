@@ -397,6 +397,9 @@ fn layout_prefix(config: Qwen3Config, layers: i64) -> Vec<(String, i64, i64)> {
 fn tokenize(json: &str, prompt: &str, vocab_size: i64) -> Result<Vec<i32>, WeightError> {
     let value: serde_json::Value = serde_json::from_str(json)
         .map_err(|err| WeightError::NotBuilt(format!("tokenizer.json is not json: {err}")))?;
+    if value.get("encoding").and_then(|item| item.as_str()) == Some("bytes") {
+        return tokenize_bytes(prompt, vocab_size);
+    }
     if value.get("model").is_some() {
         return Err(WeightError::NotBuilt("chat tokenizer is not built".into()));
     }
@@ -425,6 +428,27 @@ fn tokenize(json: &str, prompt: &str, vocab_size: i64) -> Result<Vec<i32>, Weigh
         ids.push(id as i32);
     }
     Ok(ids)
+}
+
+/// One token per UTF-8 byte. Any non-empty prompt maps into a 256-id table.
+fn tokenize_bytes(prompt: &str, vocab_size: i64) -> Result<Vec<i32>, WeightError> {
+    if vocab_size < 256 {
+        return Err(WeightError::NotBuilt(format!(
+            "byte tokenizer needs vocab >= 256, weights have {vocab_size}"
+        )));
+    }
+    let bytes = prompt.as_bytes();
+    if bytes.is_empty() {
+        return Err(WeightError::NotBuilt("prompt has no tokens".into()));
+    }
+    const MAX_BYTES: usize = 1024;
+    if bytes.len() > MAX_BYTES {
+        return Err(WeightError::NotBuilt(format!(
+            "byte tokenizer accepts at most {MAX_BYTES} bytes, prompt is {}",
+            bytes.len()
+        )));
+    }
+    Ok(bytes.iter().map(|byte| i32::from(*byte)).collect())
 }
 
 fn check_stored_type(name: &str, ggml_type: u32, ne0: i64) -> Result<(), WeightError> {
@@ -553,11 +577,75 @@ pub fn write_qwen3_bundle(dir: &Path, dit: Flux2Config) -> Result<(), WeightErro
 
 fn embed_rows(hidden: i64, vocab: i64) -> Vec<f32> {
     let mut data = vec![0f32; (hidden as usize) * (vocab as usize)];
+    let hidden = hidden as usize;
     for token in 0..vocab {
-        let row = token.min(hidden - 1) as usize;
-        data[row + (token as usize) * (hidden as usize)] = 1.0;
+        let row = (token as usize) % hidden;
+        let scale = 0.25 + ((token % 17) as f32) * 0.05;
+        data[row + (token as usize) * hidden] = scale;
     }
     data
+}
+
+/// Local pack the product can generate with: byte tokenizer, Qwen3 tower, tiny DiT, 1×1 VAE.
+pub fn write_chain_bundle(dir: &Path) -> Result<(), WeightError> {
+    let mut dit = Flux2Config::from_dim(8);
+    dit.joint_attention_dim = 16;
+    super::write_config_bundle(dir, dit)?;
+    let mut enc = Qwen3Config::smoke();
+    enc.vocab = 256;
+    if dit.joint_attention_dim != enc.hidden * enc.layers {
+        return Err(WeightError::NotBuilt(format!(
+            "joint {} does not match qwen3 hidden {} x {} layers",
+            dit.joint_attention_dim, enc.hidden, enc.layers
+        )));
+    }
+    let owned: Vec<(String, i64, i64, Vec<f32>)> = encoder_layout(enc)
+        .into_iter()
+        .map(|(name, ne0, ne1)| {
+            let data = if name == "embed_tokens.weight" {
+                embed_rows(ne0, ne1)
+            } else if is_rms(&name) {
+                vec![1.0; (ne0 as usize) * (ne1 as usize)]
+            } else {
+                diagonal(ne0, ne1)
+            };
+            (name, ne0, ne1, data)
+        })
+        .collect();
+    let tensors: Vec<F32Tensor<'_>> = owned
+        .iter()
+        .map(|(name, ne0, ne1, data)| F32Tensor {
+            name,
+            ne0: *ne0,
+            ne1: *ne1,
+            data,
+        })
+        .collect();
+    write_f32_tensors(&dir.join("text_encoder.gguf"), &tensors)?;
+    std::fs::write(dir.join("tokenizer.json"), "{\"encoding\":\"bytes\"}\n").map_err(|err| {
+        WeightError::Open {
+            path: dir.join("tokenizer.json").display().to_string(),
+            detail: err.to_string(),
+        }
+    })?;
+    let manifest = r#"{
+  "format": "gguf",
+  "quant": "bf16",
+  "max_edge": 128,
+  "files": {
+    "transformer": "transformer.gguf",
+    "text_encoder": "text_encoder.gguf",
+    "vae": "vae.gguf"
+  }
+}
+"#;
+    std::fs::write(dir.join("bundle.manifest.json"), manifest).map_err(|err| {
+        WeightError::Open {
+            path: dir.join("bundle.manifest.json").display().to_string(),
+            detail: err.to_string(),
+        }
+    })?;
+    Ok(())
 }
 
 fn diagonal(ne0: i64, ne1: i64) -> Vec<f32> {
@@ -571,7 +659,7 @@ fn diagonal(ne0: i64, ne1: i64) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_prompt, write_qwen3_bundle};
+    use super::{encode_prompt, write_chain_bundle, write_qwen3_bundle};
     use crate::families::Flux2Config;
     use crate::runtime::BackendKind;
 
@@ -599,6 +687,27 @@ mod tests {
         assert_ne!(cat, dog);
         let err = encode_prompt(&paths, &tokenizer, "a missing", 16, BackendKind::Cpu).unwrap_err();
         assert!(err.to_string().contains("no id for missing"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn byte_prompts_embed_differently() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-bytes-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        write_chain_bundle(&dir).unwrap();
+        let tokenizer = std::fs::read_to_string(dir.join("tokenizer.json")).unwrap();
+        let paths = vec![dir.join("text_encoder.gguf")];
+        let (zh, seq) = encode_prompt(&paths, &tokenizer, "一只猫", 16, BackendKind::Cpu).unwrap();
+        let (en, _) = encode_prompt(&paths, &tokenizer, "a dog", 16, BackendKind::Cpu).unwrap();
+        assert!(seq > 1, "seq {seq}");
+        assert_ne!(zh.len(), en.len());
+        assert!(zh.iter().any(|v| v.is_finite()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
