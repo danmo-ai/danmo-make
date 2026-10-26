@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tauri build requires bundle.resources paths to exist (even for `tauri dev`).
-# Production packs overwrite this with prepare_tauri_resources.py.
+# Production packs overwrite this with prepare_tauri_resources.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -16,7 +16,7 @@ else
 Dev placeholder for Tauri bundle.resources.
 
 Release builds replace this directory via:
-  python scripts/prepare_tauri_resources.py
+  bash scripts/prepare_tauri_resources.sh
 EOF
   echo "==> Ensured Tauri resource stub: desktop/src-tauri/danqing-api/"
 fi
@@ -30,7 +30,7 @@ if [[ ! -d "$RUNTIME_DIR/app" ]]; then
 Dev placeholder for CUDA thin runtime (desktop/src-tauri/runtime).
 
 Windows/Linux release packs replace this via:
-  python scripts/stage_cuda_runtime.py --prepare-tauri
+  bash scripts/build_ggml_sidecar.sh
 EOF
   echo "==> Ensured Tauri runtime stub: desktop/src-tauri/runtime/"
 fi

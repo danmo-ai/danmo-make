@@ -47,6 +47,9 @@ fn main() {
         .arg("-DGGML_BLAS=OFF")
         .arg("-DGGML_OPENMP=OFF")
         .arg("-DGGML_BACKEND_DL=OFF")
+        // Graph parameter names are the GGUF tensor names. 64 truncates Flux block names.
+        .arg("-DCMAKE_C_FLAGS=-DGGML_MAX_NAME=256")
+        .arg("-DCMAKE_CXX_FLAGS=-DGGML_MAX_NAME=256")
         .arg(format!("-DGGML_CUDA={}", on(cuda)))
         .arg(format!("-DGGML_VULKAN={}", on(vulkan)))
         .arg(format!("-DGGML_METAL={}", on(metal)));
@@ -87,7 +90,10 @@ fn main() {
     println!("cargo:rustc-link-lib=dl");
     println!("cargo:rustc-link-lib=m");
 
-    let mut clang_args = vec![format!("-I{}", ggml_src.join("include").display())];
+    let mut clang_args = vec![
+        format!("-I{}", ggml_src.join("include").display()),
+        "-DGGML_MAX_NAME=256".into(),
+    ];
     if cuda {
         clang_args.push("-DDANMO_GGML_CUDA".into());
     }
@@ -101,8 +107,11 @@ fn main() {
     let mut builder = bindgen::Builder::default()
         .header(manifest.join("wrapper.h").to_string_lossy())
         .allowlist_function("ggml_.*")
+        .allowlist_function("gguf_.*")
         .allowlist_type("ggml_.*")
+        .allowlist_type("gguf_.*")
         .allowlist_var("GGML_.*")
+        .allowlist_var("GGUF_.*")
         .layout_tests(false)
         .derive_debug(false)
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()));

@@ -3,7 +3,6 @@
 use super::weights::Flux2Config;
 use crate::common::ops::{self, euler_step, linear_sigmas};
 use crate::runtime::{GgmlContext, ReusedGraph, RuntimeError};
-use std::collections::BTreeMap;
 
 pub struct Flux2Denoise {
     graph: ReusedGraph,
@@ -19,23 +18,9 @@ impl Flux2Denoise {
         })
     }
 
-    /// Fill the fixed weight input. Missing keys fail; there is no silent zero-fill of a partial map
-    /// unless `allow_identity` is set for the smoke graph.
-    pub fn load_weight_map(
-        &mut self,
-        weights: &BTreeMap<String, Vec<f32>>,
-        dim: usize,
-    ) -> Result<(), RuntimeError> {
-        if let Some(w) = weights.get("velocity.weight") {
-            self.graph.set_f32("velocity.weight", w)?;
-        } else {
-            let mut eye = vec![0f32; dim * dim];
-            for i in 0..dim {
-                eye[i * dim + i] = 0.1;
-            }
-            self.graph.set_f32("velocity.weight", &eye)?;
-        }
-        Ok(())
+    /// Copy one graph input by the name stored in the GGUF file.
+    pub fn load_f32(&mut self, name: &str, data: &[f32]) -> Result<(), RuntimeError> {
+        self.graph.set_f32(name, data)
     }
 
     pub fn denoise(

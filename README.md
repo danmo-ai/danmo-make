@@ -2,31 +2,29 @@
 
 Language: **English** | [中文](README_zh.md)
 
-Local **image / video / audio** studio on **MLX** (Apple Silicon Metal; Linux **mlx[cuda]**). Split stack: FastAPI + Vue 3 SPA + CLI + SQLite, with bilingual UI and **fail-loud** errors (no silent downgrades). **Windows is temporarily unsupported.**
+Local **image / video / audio** studio. The API and engine are **Rust** on **ggml** (Metal, CUDA, Vulkan, CPU). The UI is a Vue 3 SPA. Weights are **GGUF** only (`bf16`, `q8_0`, `q4_k`); safetensors and MLX bundles are not loaded. **Fail-loud** on a missing graph or a missing GGUF file.
 
-Product name: **Danmo Make**. Runtime / CLI / sidecar ids stay `danqing-*` / `DanQing*Engine` for upgrade compatibility ([AGENTS.md](AGENTS.md) → Naming boundary).
+Product name: **Danmo Make**. Runtime / sidecar ids stay `danqing-*` ([AGENTS.md](AGENTS.md) → Naming boundary).
 
 | | |
 |---|---|
 | **Contributors / coding agents** | [AGENTS.md](AGENTS.md) |
 | **Desktop (Tauri 2)** | [desktop/README.md](desktop/README.md) |
 | **Engine architecture** | [docs/engine_architecture.md](docs/engine_architecture.md) |
-| **Image benchmarks** | [tests/benchmark/README.md](tests/benchmark/README.md) |
 | **Releases** | [GitHub Releases](https://github.com/danmo-ai/danmo-make/releases) |
 
 ---
 
 ## Features
 
-- **MLX runtime** — single `MLXContext` stack: Metal on Apple Silicon, **mlx[cuda]** on Linux NVIDIA (per-model `backends: ["mlx"]` in the registry).
-- **Plugin models** — New families = registry JSON + `model_configs` + `families/<family>/` + `_transformer_registry`; pipelines stay family-agnostic.
-- **Contract API + CLI** — Routes/CLI only through contracts + `IImageEngine` / `IVideoEngine` / `IAudioEngine`.
+- **ggml runtime** — one graph, replayed per step, on Metal, CUDA, Vulkan, or CPU.
+- **GGUF weights** — download `bf16`, `q8_0`, or `q4_k`. Tensor names are graph parameter names. There is no remap. VAE stays F16/BF16. Old safetensors and MLX packs are not read.
+- **Contract API** — Vue talks to `danqing-api` (`POST /api/images/generations` and the sibling routes). Families that do not have a graph yet fail the task.
 - **Global queue** — One serial worker for image / video / audio; SSE progress, priority, persistent logs.
 - **Studio UI** — Vue 3 + Vite + TypeScript + `@danqing/dq-ui`; Create / Gallery / Models / Settings; bilingual registry names.
 - **Infinite canvas** — Grid and canvas share one asset library; sessions, lineage edges, staging, composer bindings.
-- **Audio** — ACE-Step music generation (`danqing-audio`, MLX) via `MusicPipeline`.
-- **MCP for agents** — Streamable HTTP at `/mcp/` (tools: `list_models`, `generate_*`, `edit_*`, …). Pair with **Danmo Work** builtin `danmo-make` expert (bound-only).
-- **Desktop apps** — macOS MLX `.dmg`; Linux mlx[cuda] desktop / **server** tar.gz. Windows packs are temporarily unsupported.
+- **Audio** — ACE-Step and DiffRhythm are registered; their graphs are not built yet, so generation fails loud.
+- **Desktop apps** — macOS ggml Metal `.dmg`; Linux ggml desktop / server tar.gz. Windows sidecar is Vulkan (CUDA when the toolkit is present).
 
 ---
 
@@ -34,13 +32,12 @@ Product name: **Danmo Make**. Runtime / CLI / sidecar ids stay `danqing-*` / `Da
 
 | Platform | Notes |
 |----------|--------|
-| **macOS (Apple Silicon)** | Primary; MLX via Metal — `pip install -r requirements-macos.txt` |
-| **Linux + NVIDIA** | MLX via **mlx[cuda]** — `pip install -r requirements-linux.txt` |
-| **Windows** | Temporarily unsupported |
-| **Python** | 3.11+ (repo `.venv/` for web/dev) |
+| **macOS (Apple Silicon)** | Metal backend |
+| **Linux** | CPU; CUDA if `nvcc` is present; Vulkan if the SDK is present |
+| **Windows** | Vulkan sidecar; CUDA when `CUDA_PATH` or `nvcc` is present |
+| **Rust** | stable toolchain (`rustup`) |
 | **RAM** | 32 GB+ recommended for large models |
 | **Node.js** | Frontend + desktop packaging |
-| **ffmpeg / ffprobe** | Recommended for video thumbnails / duration |
 
 Missing backends or unsupported actions **fail loudly** — no silent CLI/model fallback.
 
@@ -63,15 +60,13 @@ More detail: [desktop/README.md](desktop/README.md) → quarantine tip.
 
 ### Linux (x86_64 + NVIDIA) — thin server `.tar.gz`
 
-CI ships **`danmo-make-linux-mlx-x86_64-<version>.tar.gz`** (headless API + built UI). Needs an NVIDIA driver; first start downloads **mlx[cuda]** into `~/.danmo-make/runtime-venv` (console progress). No CPU fallback.
+CI ships **`danmo-make-linux-ggml-x86_64-<version>.tar.gz`** (headless `danqing-api` + built UI).
 
 ```bash
-tar -xzf danmo-make-linux-mlx-x86_64-*.tar.gz
-cd danmo-make-linux-mlx-x86_64-*
+tar -xzf danmo-make-linux-ggml-x86_64-*.tar.gz
+cd danmo-make-linux-ggml-x86_64-*
 
 # optional:
-# export DANQING_USER_DATA_DIR=$HOME/.danmo-make
-# export DANQING_PIP_MIRROR=tuna    # official | tuna | aliyun
 # export DANQING_HTTP_HOST=0.0.0.0
 # export DANQING_HTTP_PORT=7800
 
@@ -90,30 +85,24 @@ Linux **desktop** (AppImage / `.deb`) is packable locally (`make pack-linux-desk
 
 For contributors / local development. End users: use **Install from release** above.
 
-### Install (web / CLI)
+### Install (web)
 
 ```bash
-git clone https://github.com/danmo-ai/danmo-make.git
+git clone --recurse-submodules https://github.com/danmo-ai/danmo-make.git
 cd danmo-make
-
-python3.11 -m venv .venv
-source .venv/bin/activate
-# macOS Apple Silicon:
-pip install -r requirements-macos.txt
-# Linux (NVIDIA / mlx[cuda]):
-# pip install -r requirements-linux.txt
+# Rust stable: https://rustup.rs/
+# Node.js for the Vue app
 ```
 
 ### Run (web)
 
 ```bash
-make dev      # uvicorn --reload (:7800) + Vite HMR (:5800)
+make dev      # danqing-api (:7800) + Vite HMR (:5800)
 # make start / make stop
 ```
 
 - UI: **http://localhost:5800** (proxies `/api` → :7800)
-- API / Swagger: **http://localhost:7800/docs**
-- MCP: **http://127.0.0.1:7800/mcp/** (trailing slash)
+- API: **http://127.0.0.1:7800/api/system/health**
 
 ### Dev ports (Danmo line)
 
@@ -229,21 +218,11 @@ Structural guide on text-to-image for `flux1*` (Canny / Depth / Redux); Fill mod
 
 ```
 danmo-make/
-├── backend/
-│   ├── api/routes/       # REST
-│   ├── mcp/              # MCP tools + model cards
-│   ├── cli/              # bin/danqing-*
-│   ├── core/             # contracts, interfaces, i18n
-│   ├── engine/           # pipelines, families, runtime, common
-│   ├── persistence/      # SQLite stores
-│   ├── scheduler/        # TaskScheduler
-│   └── main.py
+├── native/               # Rust workspace: ggml runtime, engine, danqing-api
 ├── frontend/             # Vue 3 SPA
 ├── desktop/              # Tauri 2 shell
-├── bin/                  # CLI + danqing-mcp
 ├── default_config/       # factory registry / presets / locales
-├── scripts/              # pack, gates, release
-├── tests/benchmark/
+├── scripts/              # pack and dev
 ├── docs/
 └── out/                  # build artifacts (gitignored)
 ```
@@ -253,40 +232,39 @@ danmo-make/
 ## Architecture
 
 ```
-REST / MCP / CLI
-        ↓
-TaskScheduler  (single global queue)
-        ↓
-DanQingImageEngine / DanQingVideoEngine / DanQingAudioEngine
-        ↓
-Pipelines + FamilyPlugin + RuntimeContext (MLX)
-        ↓
-V3TaskStore + SQLiteAssetStore
+Vue
+  ↓ HTTP
+danqing-api (Axum)
+  ↓
+Scheduler (one worker, SQLite tasks)
+  ↓
+Image / Video / Audio pipeline
+  ↓
+Family graph on ggml
+  ↓
+GGUF mmap by tensor name
 ```
 
-Add a model: registry → `model_configs` → `families/<family>/` → `weights.py` → `_transformer_registry`. Checklist: [AGENTS.md](AGENTS.md#new-model-checklist).
+Flux2 is the only graph that runs today, and it is a smoke velocity block checked against a tiny GGUF, not the full MM-DiT. Every other family fails loud with “no ggml graph”. A model whose registry versions are still `fp16` / `mlx-q4` / `mlx-q8` fails the task and asks for a GGUF re-download. There is no key remap.
 
 ---
 
 ## Release artifacts (CI)
 
-Tag `v*` → [`.github/workflows/release.yml`](.github/workflows/release.yml). **Install steps:** [Install from release](#install-from-release-recommended).
+Tag `v*` → [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
 | Platform | CI artifact |
 |----------|-------------|
-| macOS Apple Silicon | MLX `.dmg` (Metal) |
-| Linux x86_64 | **`danmo-make-linux-mlx-x86_64-*.tar.gz`** (thin server; mlx[cuda] on first `./run.sh`) |
-| Windows | Temporarily unsupported |
-
-Local pack (not all attached by CI):
+| macOS Apple Silicon | ggml Metal `.dmg` |
+| Linux x86_64 | **`danmo-make-linux-ggml-*.tar.gz`** |
+| Windows | `make pack-windows-sidecar` (Vulkan; CUDA when the toolkit is present) |
 
 ```bash
 make pack-macos-desktop
-make pack-linux-desktop    # AppImage / .deb — local only for now
+make pack-linux-desktop
 make pack-linux-server
+make pack-ggml-sidecar
 ```
-
-Single MLX stack (Metal or mlx[cuda]) — no separate torch CUDA engine.
 
 ---
 
@@ -294,17 +272,16 @@ Single MLX stack (Metal or mlx[cuda]) — no separate torch CUDA engine.
 
 **App settings** — under the control plane / workspace (`~/.danmo-make/…` or `{workspace}/config/.app_config.json`): language, theme, default model, memory limit, queue policy, integration API keys.
 
-**Registry** — `{workspace}/config/models_registry.json` (`schema_version: 3`). Sync factory → workspace: `make sync-models-registry`.
+**Registry** — `default_config/models_registry.json` (`schema_version: 3`). The API only advertises version keys `bf16`, `q8_0`, and `q4_k`. Older keys are ignored.
 
 **Useful env**:
 
 ```bash
-HF_ENDPOINT=https://hf-mirror.com
-MLX_METAL_MEMORY_LIMIT=120
-DANQING_USER_DATA_DIR=~/.danmo-make
-# Prefer Settings → Integrations over plaintext keys:
-# DANQING_HTTP_API_KEY=...
-# DANQING_MCP_API_KEY=...
+DANQING_HTTP_HOST=127.0.0.1
+DANQING_HTTP_PORT=7800
+DANQING_DB=db/studio.db
+DANQING_REGISTRY=default_config/models_registry.json
+DANQING_GGML_BACKEND=cpu
 ```
 
 ---
@@ -313,13 +290,12 @@ DANQING_USER_DATA_DIR=~/.danmo-make
 
 | Command | Purpose |
 |---------|---------|
-| `make dev` / `stop` | API + Vite |
+| `make dev` / `stop` | `danqing-api` + Vite |
 | `make dev-desktop` | Tauri + Vite (`SKIP_BACKEND=1` if API already up) |
 | `make frontend-build` | → `out/frontend/dist/` |
-| `make verify-engine-stack` | Governance + engine unit tests |
-| `make check-consistency` | Registry / routes / i18n / frontend gates |
-| `make bench-eval-smoke` | Image eval smoke |
-| `make clean` | Remove `out/` |
+| `make test` | `cargo test` for the ggml backend |
+| `make pack-ggml-sidecar` | Release `danqing-api` |
+| `make clean` | `cargo clean` and remove `out/` |
 
 ---
 

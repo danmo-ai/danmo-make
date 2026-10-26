@@ -16,20 +16,14 @@ fi
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/out/desktop/cargo}"
 mkdir -p "$CARGO_TARGET_DIR"
 
-PYTHON="${PYTHON:-python3}"
-if [[ -x "$ROOT/.venv/bin/python3" ]]; then
-  PYTHON="$ROOT/.venv/bin/python3"
-fi
-
 if [[ -n "${DANQING_DESKTOP_VERSION:-}" ]]; then
-  "$PYTHON" "$ROOT/scripts/set_desktop_version.py" "$DANQING_DESKTOP_VERSION"
+  bash "$ROOT/scripts/set_desktop_version.sh" "$DANQING_DESKTOP_VERSION"
 elif git -C "$ROOT" describe --exact-match --tags HEAD >/dev/null 2>&1; then
   echo "==> Desktop version from git tag"
-  "$PYTHON" "$ROOT/scripts/set_desktop_version.py"
+  bash "$ROOT/scripts/set_desktop_version.sh"
 fi
 
-"$PYTHON" "$ROOT/scripts/prepare_tauri_resources.py"
-# tauri.conf.json requires bundle.resources["runtime"]; MLX has no thin tree.
+bash "$ROOT/scripts/prepare_tauri_resources.sh"
 bash "$ROOT/scripts/ensure_tauri_resource_stub.sh"
 
 if ! rustup target list --installed | grep -q '^aarch64-apple-darwin$'; then
@@ -61,7 +55,7 @@ export CI=true
 npm exec tauri build -- --target aarch64-apple-darwin
 cleanup_dmg_artifacts
 
-"$PYTHON" "$ROOT/scripts/stage_desktop_bundle.py"
+bash "$ROOT/scripts/stage_desktop_bundle.sh"
 
 if APP=$(find "$ROOT/out/desktop/bundle" -name "*.app" -print -quit); then
   echo "==> codesign .app (ad-hoc)"
@@ -71,7 +65,7 @@ if APP=$(find "$ROOT/out/desktop/bundle" -name "*.app" -print -quit); then
       codesign -s - --force "$bin" 2>/dev/null || true
     done < <(find "$SC_DIR" -type f \( -perm -111 -o -name '*.dylib' -o -name '*.so' \) -print0 2>/dev/null)
   else
-    echo "Warning: sidecar not at $SC_DIR (check prepare_tauri_resources.py)" >&2
+    echo "Warning: sidecar not at $SC_DIR (check prepare_tauri_resources.sh)" >&2
   fi
   if [[ -d "$APP/Contents/MacOS" ]]; then
     for bin in "$APP/Contents/MacOS"/*; do

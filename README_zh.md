@@ -2,25 +2,24 @@
 
 Language: [English](README.md) | **中文**
 
-本地 **图像 / 视频 / 音频** 创作工作室，基于 **MLX**（Apple Silicon Metal；Linux **mlx[cuda]**）。技术栈：FastAPI + Vue 3 SPA + CLI + SQLite，界面双语，错误 **显式失败**（不静默降级）。**Windows 暂不支持。**
+本地 **图像 / 视频 / 音频** 创作工作室。API 与引擎是 **Rust + ggml**（Metal / CUDA / Vulkan / CPU）。界面是 Vue 3。权重只认 **GGUF**（`bf16`、`q8_0`、`q4_k`）。safetensors 与 MLX 包不会加载。缺图或缺文件就 **显式失败**。
 
-产品名：**Danmo Make**。引擎 / CLI / sidecar 技术标识仍为 `danqing-*` / `DanQing*Engine`（见 [AGENTS.md](AGENTS.md) → Naming boundary）。
+产品名：**Danmo Make**。运行时标识仍是 `danqing-*`（见 [AGENTS.md](AGENTS.md)）。
 
 | | |
 |---|---|
 | **贡献者 / Coding Agent** | [AGENTS.md](AGENTS.md) |
 | **桌面版（Tauri 2）** | [desktop/README.md](desktop/README.md) |
 | **引擎架构** | [docs/engine_architecture.md](docs/engine_architecture.md) |
-| **图像基准** | [tests/benchmark/README.md](tests/benchmark/README.md) |
 | **发布包** | [GitHub Releases](https://github.com/danmo-ai/danmo-make/releases) |
 
 ---
 
 ## 特性
 
-- **MLX 运行时** — 单一 `MLXContext`：Apple Silicon 用 Metal，Linux NVIDIA 用 **mlx[cuda]**（注册表 `backends: ["mlx"]`）。
-- **模型即插件** — 新模型 = 注册表 JSON + `model_configs` + `families/<family>/` + `_transformer_registry`；Pipeline 不写 `family` 业务分支。
-- **契约化 API / CLI** — 只经 contracts + `IImageEngine` / `IVideoEngine` / `IAudioEngine`。
+- **ggml 运行时** — 一张图反复算，后端是 Metal、CUDA、Vulkan 或 CPU。
+- **GGUF 权重** — 只下载 `bf16`、`q8_0`、`q4_k`。张量名就是图参数名，没有 remap。VAE 保持 F16/BF16。
+- **契约 API** — Vue 调 `danqing-api`。还没建图的族会让任务失败。
 - **全局单队列** — 图像 / 视频 / 音频串行；SSE 进度、优先级、日志落库。
 - **Studio UI** — Vue 3 + Vite + TypeScript + `@danqing/dq-ui`；创作 / 图库 / 模型 / 设置。
 - **无限画布** — 网格与画布共用资产库；会话、谱系、落点、创作器绑定。
@@ -34,13 +33,12 @@ Language: [English](README.md) | **中文**
 
 | 平台 | 说明 |
 |------|------|
-| **macOS（Apple Silicon）** | 主目标；MLX / Metal — `pip install -r requirements-macos.txt` |
-| **Linux + NVIDIA** | MLX / **mlx[cuda]** — `pip install -r requirements-linux.txt` |
-| **Windows** | 暂不支持 |
-| **Python** | 3.11+（Web/开发用仓库根 `.venv/`） |
+| **macOS（Apple Silicon）** | Metal |
+| **Linux** | CPU；有 `nvcc` 则 CUDA；有 Vulkan SDK 则 Vulkan |
+| **Windows** | Vulkan sidecar；有 `CUDA_PATH` 或 `nvcc` 再加 CUDA |
+| **Rust** | stable（`rustup`） |
 | **内存** | 大模型建议 32 GB+ |
 | **Node.js** | 前端与桌面打包 |
-| **ffmpeg / ffprobe** | 建议安装（缩略图 / 时长） |
 
 缺后端或不支持的 action **明确报错**，不做静默兼容回退。
 
@@ -93,21 +91,14 @@ Linux **桌面包**（AppImage / `.deb`）可本地打包（`make pack-linux-des
 ### 安装（Web / CLI）
 
 ```bash
-git clone https://github.com/danmo-ai/danmo-make.git
+git clone --recurse-submodules https://github.com/danmo-ai/danmo-make.git
 cd danmo-make
-
-python3.11 -m venv .venv
-source .venv/bin/activate
-# macOS Apple Silicon：
-pip install -r requirements-macos.txt
-# Linux（NVIDIA / mlx[cuda]）：
-# pip install -r requirements-linux.txt
 ```
 
 ### 运行（Web）
 
 ```bash
-make dev      # uvicorn --reload (:7800) + Vite HMR (:5800)
+make dev      # danqing-api (:7800) + Vite HMR (:5800)
 # make start / make stop
 ```
 
@@ -229,23 +220,13 @@ API / MCP：`create`→`generate`，rewrite/retouch/extend→`edit`。
 
 ```
 danmo-make/
-├── backend/
-│   ├── api/routes/       # REST
-│   ├── mcp/              # MCP 工具与模型卡片
-│   ├── cli/              # bin/danqing-*
-│   ├── core/             # contracts / interfaces / i18n
-│   ├── engine/           # pipelines / families / runtime / common
-│   ├── persistence/
-│   ├── scheduler/
-│   └── main.py
-├── frontend/
+├── native/               # Rust：ggml 运行时、引擎、danqing-api
+├── frontend/             # Vue 3
 ├── desktop/              # Tauri 2
-├── bin/
 ├── default_config/
 ├── scripts/
-├── tests/benchmark/
 ├── docs/
-└── out/                  # 构建产物（不进 git）
+└── out/
 ```
 
 ---
@@ -253,40 +234,39 @@ danmo-make/
 ## 架构
 
 ```
-REST / MCP / CLI
-        ↓
-TaskScheduler  (全局单队列)
-        ↓
-DanQingImageEngine / DanQingVideoEngine / DanQingAudioEngine
-        ↓
-Pipelines + FamilyPlugin + RuntimeContext (MLX)
-        ↓
-V3TaskStore + SQLiteAssetStore
+Vue
+  ↓ HTTP
+danqing-api
+  ↓
+单 worker 队列（SQLite）
+  ↓
+图像 / 视频 / 音频流水线
+  ↓
+ggml 图
+  ↓
+按张量名 mmap GGUF
 ```
 
-加模型：注册表 → `model_configs` → `families/<family>/` → `weights.py` → `_transformer_registry`。清单：[AGENTS.md](AGENTS.md#new-model-checklist)。
+没有 remap。注册表里还是 `fp16` / `mlx-q4` / `mlx-q8` 的模型会要求重新下载 GGUF。目前只有 flux2 的冒烟去噪图能跑，其余族会明确失败。
 
 ---
 
 ## 发版产物（CI）
 
-打 `v*` tag → [`.github/workflows/release.yml`](.github/workflows/release.yml)。**安装步骤见** [安装发布包](#安装发布包推荐)。
+打 `v*` tag → [`.github/workflows/release.yml`](.github/workflows/release.yml)。
 
 | 平台 | CI 产物 |
 |------|---------|
-| macOS Apple Silicon | MLX `.dmg`（Metal） |
-| Linux x86_64 | **`danmo-make-linux-mlx-x86_64-*.tar.gz`**（thin 服务端；首次 `./run.sh` 装 mlx[cuda]） |
-| Windows | 暂不支持 |
-
-本地打包（并非全部由 CI 挂载）：
+| macOS Apple Silicon | ggml Metal `.dmg` |
+| Linux x86_64 | **`danmo-make-linux-ggml-*.tar.gz`** |
+| Windows | `make pack-windows-sidecar`（Vulkan；有 CUDA 工具链再加 CUDA） |
 
 ```bash
 make pack-macos-desktop
-make pack-linux-desktop    # AppImage / .deb — 目前仅本地
+make pack-linux-desktop
 make pack-linux-server
+make pack-ggml-sidecar
 ```
-
-全平台统一 MLX 栈（Metal 或 mlx[cuda]），无独立 torch CUDA 引擎。
 
 ---
 

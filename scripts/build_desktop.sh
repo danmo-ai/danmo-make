@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Convenience entry — delegates to platform pack_desktop_*.sh (like danmo-work).
+# Convenience entry — delegates to platform pack_desktop_*.sh.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -8,15 +8,13 @@ chmod +x scripts/*.sh
 OS="$(uname -s)"
 case "$OS" in
   Darwin)
-    export DANQING_PYINSTALLER_PROFILE="${DANQING_PYINSTALLER_PROFILE:-mlx}"
     exec ./scripts/pack_desktop_macos.sh
     ;;
   Linux)
-    export DANQING_PYINSTALLER_PROFILE="${DANQING_PYINSTALLER_PROFILE:-mlx}"
     exec ./scripts/pack_desktop_linux.sh
     ;;
   MINGW*|MSYS*|CYGWIN*|Windows*)
-    echo "Windows temporarily unsupported" >&2
+    echo "Use make pack-windows-sidecar for the ggml binary. Tauri Windows packs are not wired yet." >&2
     exit 1
     ;;
   *)

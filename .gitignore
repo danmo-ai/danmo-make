@@ -41,7 +41,7 @@ node_modules/
 /.pycache_tmp/
 /.cache/
 
-# Build outputs (unified under out/ — see scripts/out_paths.py)
+# Build outputs (unified under out/ — see scripts/out_paths.sh)
 /out/
 /dist/
 /build/

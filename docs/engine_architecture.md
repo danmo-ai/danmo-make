@@ -1,8 +1,8 @@
 # Danmo Make Engine Architecture
 
-**Single source of truth** for engine layout, plugin model, new-family integration, and CI gates.
+The Python MLX engine has been removed. The runtime is `native/` (Rust + ggml). This document remains the algorithm and phase reference for the port: resolve → load → encode → schedule → infer → decode → persist, with no `family == ...` branches in the pipeline. Weight loading does not remap keys. GGUF tensor names are the graph parameter names. Missing tensors, wrong shapes, and safetensors paths fail loud and ask for a GGUF re-download.
 
-Operational product rules: [`AGENTS.md`](../AGENTS.md). Cursor enforcement: [`.cursor/rules/model-migration.mdc`](../.cursor/rules/model-migration.mdc).
+Operational product rules: [`AGENTS.md`](../AGENTS.md).
 
 ---
 

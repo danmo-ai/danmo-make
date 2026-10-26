@@ -540,8 +540,8 @@
           "temperature": {
             "type": "float",
             "default": 0.6,
-            "min": 0.0,
-            "max": 2.0
+            "min": 0,
+            "max": 2
           },
           "max_tokens": {
             "type": "int",
@@ -552,26 +552,13 @@
           "top_p": {
             "type": "float",
             "default": 0.95,
-            "min": 0.0,
-            "max": 1.0
+            "min": 0,
+            "max": 1
           }
         }
       },
       "distribution": {
-        "versions": {
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "2.1GB",
-            "default": true,
-            "source": "modelscope",
-            "repo_id": "mlx-community/Qwen3-4B-Thinking-2507-4bit",
-            "local_path": "models/LLM/qwen3-4b-thinking-2507-mlx-q4",
-            "source_type": "prequantized"
-          }
-        }
+        "versions": {}
       }
     },
     "qwen3.5-4b": {
@@ -606,8 +593,8 @@
           "temperature": {
             "type": "float",
             "default": 0.6,
-            "min": 0.0,
-            "max": 2.0
+            "min": 0,
+            "max": 2
           },
           "max_tokens": {
             "type": "int",
@@ -618,26 +605,13 @@
           "top_p": {
             "type": "float",
             "default": 0.95,
-            "min": 0.0,
-            "max": 1.0
+            "min": 0,
+            "max": 1
           }
         }
       },
       "distribution": {
-        "versions": {
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "2.9GB",
-            "default": true,
-            "source": "modelscope",
-            "repo_id": "mlx-community/Qwen3.5-4B-MLX-4bit",
-            "local_path": "models/LLM/qwen3.5-4b-mlx-q4",
-            "source_type": "prequantized"
-          }
-        }
+        "versions": {}
       }
     },
     "qwen3.6-27b": {
@@ -672,8 +646,8 @@
           "temperature": {
             "type": "float",
             "default": 0.35,
-            "min": 0.0,
-            "max": 2.0
+            "min": 0,
+            "max": 2
           },
           "max_tokens": {
             "type": "int",
@@ -684,26 +658,13 @@
           "top_p": {
             "type": "float",
             "default": 0.9,
-            "min": 0.0,
-            "max": 1.0
+            "min": 0,
+            "max": 1
           }
         }
       },
       "distribution": {
-        "versions": {
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "16GB",
-            "default": true,
-            "source": "modelscope",
-            "repo_id": "mlx-community/Qwen3.6-27B-4bit",
-            "local_path": "models/LLM/qwen3.6-27b-mlx-q4",
-            "source_type": "prequantized"
-          }
-        }
+        "versions": {}
       }
     },
     "qwen3-vl-4b-instruct": {
@@ -743,20 +704,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "2.9GB",
-            "default": true,
-            "source": "modelscope",
-            "repo_id": "mlx-community/Qwen3-VL-4B-Instruct-4bit",
-            "local_path": "models/LLM/qwen3-vl-4b-instruct-mlx-q4",
-            "source_type": "prequantized"
-          }
-        }
+        "versions": {}
       }
     },
     "flux1-schnell": {
@@ -823,8 +771,8 @@
           },
           "guidance": {
             "default": 3.5,
-            "min": 1.0,
-            "max": 20.0,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -855,8 +803,8 @@
           },
           "strength": {
             "default": 0.3,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "去噪强度",
             "type": "float"
@@ -895,51 +843,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "54GB",
-            "default": true,
-            "repo_id": "black-forest-labs/FLUX.1-schnell",
-            "local_path": "models/Image/flux1-schnell-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "32GB",
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.1-schnell",
-            "local_path": "models/Image/flux1-schnell-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "20GB",
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.1-schnell",
-            "local_path": "models/Image/flux1-schnell-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "flux1-dev": {
@@ -1006,8 +910,8 @@
           },
           "guidance": {
             "default": 3.5,
-            "min": 1.0,
-            "max": 20.0,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -1050,8 +954,8 @@
           },
           "strength": {
             "default": 0.4,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "去噪强度",
             "type": "float"
@@ -1090,51 +994,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "54GB",
-            "default": true,
-            "repo_id": "black-forest-labs/FLUX.1-dev",
-            "local_path": "models/Image/flux1-dev-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "32GB",
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.1-dev",
-            "local_path": "models/Image/flux1-dev-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "20GB",
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.1-dev",
-            "local_path": "models/Image/flux1-dev-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "flux1-krea-dev": {
@@ -1200,8 +1060,8 @@
           },
           "guidance": {
             "default": 3.5,
-            "min": 1.0,
-            "max": 20.0,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -1230,8 +1090,8 @@
           },
           "strength": {
             "default": 0.4,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "去噪强度",
             "type": "float"
@@ -1264,51 +1124,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "54GB",
-            "default": true,
-            "repo_id": "black-forest-labs/FLUX.1-Krea-dev",
-            "local_path": "models/Image/flux1-krea-dev-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "32GB",
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.1-Krea-dev",
-            "local_path": "models/Image/flux1-krea-dev-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "20GB",
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.1-Krea-dev",
-            "local_path": "models/Image/flux1-krea-dev-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "flux2-klein-4b": {
@@ -1377,9 +1193,9 @@
             "type": "int"
           },
           "guidance": {
-            "default": 1.0,
-            "min": 1.0,
-            "max": 1.0,
+            "default": 1,
+            "min": 1,
+            "max": 1,
             "step": 0.5,
             "label": "CFG引导",
             "fixed": true,
@@ -1410,8 +1226,8 @@
           },
           "strength": {
             "default": 0.3,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "去噪强度",
             "type": "float"
@@ -1449,92 +1265,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "22GB",
-            "min_unified_memory_gb": 16,
-            "default": true,
-            "repo_id": "black-forest-labs/FLUX.2-klein-4B",
-            "local_path": "models/Image/flux2-klein-4b-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "11GB",
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.2-klein-4B",
-            "local_path": "models/Image/flux2-klein-4b-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine",
-              "text_encoder": {
-                "bits": 8
-              }
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "5.7GB",
-            "min_unified_memory_gb": 6,
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.2-klein-4B",
-            "local_path": "models/Image/flux2-klein-4b-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine",
-              "text_encoder": {
-                "bits": 4
-              }
-            }
-          },
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "4.3GB",
-            "min_unified_memory_gb": 6,
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/flux2-klein-4b-4bit",
-            "local_path": "models/Image/flux2-klein-4b-mlx-q4",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          },
-          "mlx-q8": {
-            "name": {
-              "zh": "8-bit 量化版",
-              "en": "8-bit Quantized"
-            },
-            "size": "8.0GB",
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/flux2-klein-4b-8bit",
-            "local_path": "models/Image/flux2-klein-4b-mlx-q8",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "flux2-klein-9b": {
@@ -1605,8 +1336,8 @@
           },
           "guidance": {
             "default": 1,
-            "min": 1.0,
-            "max": 3.0,
+            "min": 1,
+            "max": 3,
             "step": 0.5,
             "label": "CFG引导",
             "note": "1.0最真实，1.5-2.0提升提示词遵从，>2.0可能引入伪影",
@@ -1646,8 +1377,8 @@
           },
           "strength": {
             "default": 0.35,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "去噪强度",
             "note": "图生图/编辑时控制原图保留程度，越高变化越大",
@@ -1680,83 +1411,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "49GB",
-            "default": true,
-            "repo_id": "black-forest-labs/FLUX.2-klein-9B",
-            "local_path": "models/Image/flux2-klein-9b-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "32GB",
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.2-klein-9B",
-            "local_path": "models/Image/flux2-klein-9b-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "24GB",
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.2-klein-9B",
-            "local_path": "models/Image/flux2-klein-9b-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          },
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "8.9GB",
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/flux2-klein-9b-4bit",
-            "local_path": "models/Image/flux2-klein-9b-mlx-q4",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          },
-          "mlx-q8": {
-            "name": {
-              "zh": "8-bit 量化版",
-              "en": "8-bit Quantized"
-            },
-            "size": "17GB",
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/flux2-klein-9b-8bit",
-            "local_path": "models/Image/flux2-klein-9b-mlx-q8",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "flux2-klein-base-4b": {
@@ -1826,8 +1481,8 @@
           },
           "guidance": {
             "default": 1.5,
-            "min": 1.0,
-            "max": 20.0,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -1856,8 +1511,8 @@
           },
           "strength": {
             "default": 0.4,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "去噪强度",
             "type": "float"
@@ -1895,51 +1550,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "22GB",
-            "default": true,
-            "repo_id": "black-forest-labs/FLUX.2-klein-base-4B",
-            "local_path": "models/Image/flux2-klein-base-4b-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "15GB",
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.2-klein-base-4B",
-            "local_path": "models/Image/flux2-klein-base-4b-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "11GB",
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.2-klein-base-4B",
-            "local_path": "models/Image/flux2-klein-base-4b-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "flux2-klein-base-9b": {
@@ -2009,8 +1620,8 @@
           },
           "guidance": {
             "default": 1.5,
-            "min": 1.0,
-            "max": 20.0,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -2039,8 +1650,8 @@
           },
           "strength": {
             "default": 0.4,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "去噪强度",
             "type": "float"
@@ -2073,51 +1684,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "49GB",
-            "default": true,
-            "repo_id": "black-forest-labs/FLUX.2-klein-base-9B",
-            "local_path": "models/Image/flux2-klein-base-9b-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "32GB",
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.2-klein-base-9B",
-            "local_path": "models/Image/flux2-klein-base-9b-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "24GB",
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.2-klein-base-9B",
-            "local_path": "models/Image/flux2-klein-base-9b-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "z-image": {
@@ -2188,8 +1755,8 @@
           },
           "guidance": {
             "default": 4,
-            "min": 1.0,
-            "max": 20.0,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "CFG引导",
             "note": "官方推荐3–5；可配合负向提示词",
@@ -2219,8 +1786,8 @@
           },
           "strength": {
             "default": 0.35,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "去噪强度",
             "type": "float"
@@ -2230,7 +1797,7 @@
             "default": false
           },
           "scheduler_shift": {
-            "default": 6.0
+            "default": 6
           },
           "scheduler": {
             "default": "flow_match_euler",
@@ -2280,51 +1847,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "19GB",
-            "default": true,
-            "repo_id": "Tongyi-MAI/Z-Image",
-            "local_path": "models/Image/z-image-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "13GB",
-            "default": false,
-            "repo_id": "Tongyi-MAI/Z-Image",
-            "local_path": "models/Image/z-image-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "11GB",
-            "default": false,
-            "repo_id": "Tongyi-MAI/Z-Image",
-            "local_path": "models/Image/z-image-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "z-image-turbo": {
@@ -2396,8 +1919,8 @@
           },
           "guidance": {
             "default": 0,
-            "min": 0.0,
-            "max": 20.0,
+            "min": 0,
+            "max": 20,
             "step": 0.5,
             "label": "CFG引导",
             "note": "Turbo蒸馏版固定为0",
@@ -2405,8 +1928,8 @@
           },
           "strength": {
             "default": 0.2,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "去噪强度",
             "type": "float"
@@ -2455,17 +1978,17 @@
           },
           "latent_refine_scale": {
             "type": "float",
-            "default": 1.0,
-            "min": 1.0,
-            "max": 2.0,
+            "default": 1,
+            "min": 1,
+            "max": 2,
             "step": 0.25,
             "label": "Latent 放大倍率"
           },
           "latent_refine_denoise": {
             "type": "float",
             "default": 0.35,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "Latent refine 去噪强度"
           },
@@ -2496,84 +2019,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "31GB",
-            "default": true,
-            "repo_id": "Tongyi-MAI/Z-Image-Turbo",
-            "local_path": "models/Image/z-image-turbo-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "19GB",
-            "default": false,
-            "repo_id": "Tongyi-MAI/Z-Image-Turbo",
-            "local_path": "models/Image/z-image-turbo-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "13GB",
-            "min_unified_memory_gb": 10,
-            "default": false,
-            "repo_id": "Tongyi-MAI/Z-Image-Turbo",
-            "local_path": "models/Image/z-image-turbo-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          },
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "5.5GB",
-            "default": false,
-            "source": "huggingface",
-            "repo_id": "filipstrand/Z-Image-Turbo-mflux-4bit",
-            "local_path": "models/Image/z-image-turbo-mlx-q4",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          },
-          "mlx-q8": {
-            "name": {
-              "zh": "8-bit 量化版",
-              "en": "8-bit Quantized"
-            },
-            "size": "10GB",
-            "default": false,
-            "source": "huggingface",
-            "repo_id": "carsenk/z-image-turbo-mflux-8bit",
-            "local_path": "models/Image/z-image-turbo-mlx-q8",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "fibo": {
@@ -2636,9 +2082,9 @@
             "type": "int"
           },
           "guidance": {
-            "default": 1.0,
-            "min": 1.0,
-            "max": 20.0,
+            "default": 1,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -2667,8 +2113,8 @@
           },
           "strength": {
             "default": 0.35,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "去噪强度",
             "type": "float"
@@ -2694,51 +2140,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "24GB",
-            "default": true,
-            "repo_id": "briaai/FIBO",
-            "local_path": "models/Image/fibo-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "16GB",
-            "default": false,
-            "repo_id": "briaai/FIBO",
-            "local_path": "models/Image/fibo-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "12GB",
-            "default": false,
-            "repo_id": "briaai/FIBO",
-            "local_path": "models/Image/fibo-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "fibo-lite": {
@@ -2798,9 +2200,9 @@
             "type": "int"
           },
           "guidance": {
-            "default": 1.0,
-            "min": 1.0,
-            "max": 20.0,
+            "default": 1,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -2829,8 +2231,8 @@
           },
           "strength": {
             "default": 0.35,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "去噪强度",
             "type": "float"
@@ -2856,51 +2258,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "3KB",
-            "default": true,
-            "repo_id": "briaai/FIBO-lite",
-            "local_path": "models/Image/fibo-lite-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "3KB",
-            "default": false,
-            "repo_id": "briaai/FIBO-lite",
-            "local_path": "models/Image/fibo-lite-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "3KB",
-            "default": false,
-            "repo_id": "briaai/FIBO-lite",
-            "local_path": "models/Image/fibo-lite-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "fibo-edit": {
@@ -2959,9 +2317,9 @@
             "type": "int"
           },
           "guidance": {
-            "default": 1.0,
-            "min": 1.0,
-            "max": 20.0,
+            "default": 1,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -3010,51 +2368,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "3KB",
-            "default": true,
-            "repo_id": "briaai/Fibo-Edit",
-            "local_path": "models/Image/fibo-edit-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "3KB",
-            "default": false,
-            "repo_id": "briaai/Fibo-Edit",
-            "local_path": "models/Image/fibo-edit-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "3KB",
-            "default": false,
-            "repo_id": "briaai/Fibo-Edit",
-            "local_path": "models/Image/fibo-edit-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "fibo-edit-rmbg": {
@@ -3113,9 +2427,9 @@
             "type": "int"
           },
           "guidance": {
-            "default": 1.0,
-            "min": 1.0,
-            "max": 1.0,
+            "default": 1,
+            "min": 1,
+            "max": 1,
             "step": 0.5,
             "label": "CFG引导",
             "fixed": true,
@@ -3166,51 +2480,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "84GB",
-            "default": true,
-            "repo_id": "briaai/Fibo-Edit-RMBG",
-            "local_path": "models/Image/fibo-edit-rmbg-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "46GB",
-            "default": false,
-            "repo_id": "briaai/Fibo-Edit-RMBG",
-            "local_path": "models/Image/fibo-edit-rmbg-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "26GB",
-            "default": false,
-            "repo_id": "briaai/Fibo-Edit-RMBG",
-            "local_path": "models/Image/fibo-edit-rmbg-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "qwen-image": {
@@ -3286,9 +2556,9 @@
             "type": "int"
           },
           "guidance": {
-            "default": 1.0,
-            "min": 1.0,
-            "max": 20.0,
+            "default": 1,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -3317,8 +2587,8 @@
           },
           "strength": {
             "default": 0.35,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "去噪强度",
             "type": "float"
@@ -3351,95 +2621,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "54GB",
-            "default": true,
-            "repo_id": "Qwen/Qwen-Image-2512",
-            "local_path": "models/Image/qwen-image-2512-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "35GB",
-            "default": false,
-            "repo_id": "Qwen/Qwen-Image-2512",
-            "local_path": "models/Image/qwen-image-2512-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "25GB",
-            "default": false,
-            "repo_id": "Qwen/Qwen-Image-2512",
-            "local_path": "models/Image/qwen-image-2512-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          },
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "24GB",
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/Qwen-Image-2512-4bit",
-            "local_path": "models/Image/qwen-image-2512-mlx-q4",
-            "source_type": "prequantized",
-            "allow_patterns": [
-              "transformer/**",
-              "vae/**",
-              "text_encoder/**",
-              "tokenizer/**"
-            ],
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          },
-          "mlx-q8": {
-            "name": {
-              "zh": "8-bit 量化版",
-              "en": "8-bit Quantized"
-            },
-            "size": "34GB",
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/Qwen-Image-2512-8bit",
-            "local_path": "models/Image/qwen-image-2512-mlx-q8",
-            "source_type": "prequantized",
-            "allow_patterns": [
-              "transformer/**",
-              "vae/**",
-              "text_encoder/**",
-              "tokenizer/**"
-            ],
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "qwen-image-edit": {
@@ -3519,9 +2701,9 @@
             "type": "int"
           },
           "guidance": {
-            "default": 4.0,
-            "min": 1.0,
-            "max": 20.0,
+            "default": 4,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -3531,95 +2713,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "54GB",
-            "default": true,
-            "repo_id": "Qwen/Qwen-Image-Edit-2511",
-            "local_path": "models/Image/qwen-image-edit-2511-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "35GB",
-            "default": false,
-            "repo_id": "Qwen/Qwen-Image-Edit-2511",
-            "local_path": "models/Image/qwen-image-edit-2511-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "25GB",
-            "default": false,
-            "repo_id": "Qwen/Qwen-Image-Edit-2511",
-            "local_path": "models/Image/qwen-image-edit-2511-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          },
-          "mlx-q8": {
-            "name": {
-              "zh": "8-bit 量化版",
-              "en": "8-bit Quantized"
-            },
-            "size": "35GB",
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/qwen-image-edit-2511-8bit",
-            "local_path": "models/Image/qwen-image-edit-2511-mlx-q8",
-            "source_type": "prequantized",
-            "allow_patterns": [
-              "transformer/**",
-              "vae/**",
-              "text_encoder/**",
-              "tokenizer/**"
-            ],
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "25GB",
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/qwen-image-edit-2511-4bit",
-            "local_path": "models/Image/qwen-image-edit-2511-mlx-q4",
-            "source_type": "prequantized",
-            "allow_patterns": [
-              "transformer/**",
-              "vae/**",
-              "text_encoder/**",
-              "tokenizer/**"
-            ],
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "firered-image-edit-1.1": {
@@ -3699,9 +2793,9 @@
             "type": "int"
           },
           "guidance": {
-            "default": 4.0,
-            "min": 1.0,
-            "max": 20.0,
+            "default": 4,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -3711,20 +2805,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "54GB",
-            "default": true,
-            "repo_id": "FireRedTeam/FireRed-Image-Edit-1.1",
-            "local_path": "models/Image/firered-image-edit-1.1-fp16",
-            "source": "modelscope",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "hidream-o1-image-dev": {
@@ -3778,9 +2859,9 @@
             "type": "int"
           },
           "guidance": {
-            "default": 1.0,
-            "min": 1.0,
-            "max": 1.0,
+            "default": 1,
+            "min": 1,
+            "max": 1,
             "label": "CFG",
             "type": "float"
           },
@@ -3806,35 +2887,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "mlx-bf16": {
-            "name": {
-              "zh": "BF16 完整版",
-              "en": "BF16 Full"
-            },
-            "size": "16GB",
-            "default": true,
-            "repo_id": "mlx-community/HiDream-O1-Image-Dev-mlx-bf16",
-            "local_path": "models/Image/hidream-o1-image-dev-mlx-bf16",
-            "source": "huggingface",
-            "source_type": "full"
-          },
-          "mlx-q8": {
-            "name": {
-              "zh": "8-bit 量化版",
-              "en": "8-bit Quantized"
-            },
-            "size": "9.4GB",
-            "default": false,
-            "repo_id": "mlx-community/HiDream-O1-Image-Dev-mlx-q8",
-            "local_path": "models/Image/hidream-o1-image-dev-mlx-q8",
-            "source": "huggingface",
-            "source_type": "full",
-            "overrides": {
-              "hidream_quantized_no_edit": true
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "hidream-o1-image-full": {
@@ -3888,9 +2941,9 @@
             "type": "int"
           },
           "guidance": {
-            "default": 1.0,
-            "min": 1.0,
-            "max": 1.0,
+            "default": 1,
+            "min": 1,
+            "max": 1,
             "type": "float"
           },
           "resolution_presets": {
@@ -3915,24 +2968,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "mlx-bf16": {
-            "name": {
-              "zh": "BF16 完整版",
-              "en": "BF16 Full"
-            },
-            "size": "33GB",
-            "default": true,
-            "repo_id": "HiDream-ai/HiDream-O1-Image",
-            "local_path": "models/Image/hidream-o1-image-full-mlx-bf16",
-            "source": "huggingface",
-            "source_type": "full",
-            "notes": {
-              "zh": "需先用 mlx-community 转换脚本将 Full 权重转为 MLX 布局（含 extras/custom_heads.safetensors）。",
-              "en": "Convert Full weights with mlx-community convert_hidream_o1_to_mlx.py first."
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "step1x-edit": {
@@ -3986,9 +3022,9 @@
             "type": "int"
           },
           "guidance": {
-            "default": 6.0,
-            "min": 1.0,
-            "max": 12.0,
+            "default": 6,
+            "min": 1,
+            "max": 12,
             "step": 0.5,
             "label": "CFG",
             "type": "float"
@@ -4013,22 +3049,6 @@
             "notes": {
               "zh": "完整 bundle（VAE + DiT + Qwen2.5-VL）。",
               "en": "Full bundle (VAE + DiT + Qwen2.5-VL)."
-            }
-          },
-          "fp8": {
-            "name": {
-              "zh": "FP8 版",
-              "en": "FP8"
-            },
-            "size": "12GB",
-            "default": false,
-            "repo_id": "meimeilook/Step1X-Edit-FP8",
-            "local_path": "models/Image/step1x-edit-fp8",
-            "source": "huggingface",
-            "source_type": "full",
-            "notes": {
-              "zh": "FP8 DiT 权重；需与完整 bundle 中 VAE + Qwen2.5-VL 目录一并安装。",
-              "en": "FP8 DiT weights; install alongside VAE + Qwen2.5-VL from the full bundle."
             }
           }
         }
@@ -4087,9 +3107,9 @@
             "type": "int"
           },
           "guidance": {
-            "default": 1.0,
-            "min": 1.0,
-            "max": 1.0,
+            "default": 1,
+            "min": 1,
+            "max": 1,
             "step": 0.5,
             "label": "CFG引导",
             "fixed": true,
@@ -4135,128 +3155,6 @@
               "zh": "完整 bundle（DiT + FLUX VAE + Qwen3-VL-8B）。",
               "en": "Full bundle (DiT + FLUX VAE + Qwen3-VL-8B)."
             }
-          },
-          "fp8": {
-            "name": {
-              "zh": "FP8 版",
-              "en": "FP8"
-            },
-            "size": "18GB",
-            "default": false,
-            "repo_id": "Boogu/Boogu-Image-0.1-Turbo-fp8",
-            "local_path": "models/Image/boogu-image-turbo-fp8",
-            "source_type": "full",
-            "notes": {
-              "zh": "官方 FP8 权重 bundle，显存占用更低。",
-              "en": "Official FP8 weight bundle; lower VRAM use."
-            }
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "22GB",
-            "default": false,
-            "repo_id": "Boogu/Boogu-Image-0.1-Turbo",
-            "local_path": "models/Image/boogu-image-turbo-int8",
-            "source_type": "derived",
-            "from_version": "bf16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "14GB",
-            "min_unified_memory_gb": 16,
-            "default": false,
-            "repo_id": "Boogu/Boogu-Image-0.1-Turbo",
-            "local_path": "models/Image/boogu-image-turbo-int4",
-            "source_type": "derived",
-            "from_version": "bf16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          },
-          "mlx-q8": {
-            "name": {
-              "zh": "8-bit 量化版",
-              "en": "8-bit Quantized"
-            },
-            "size": "22GB",
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/Boogu-Image-0.1-Turbo-8bit",
-            "local_path": "models/Image/boogu-image-turbo-mlx-q8",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            },
-            "notes": {
-              "zh": "DiT+VAE 预量化包；安装时一并拉取 Qwen3-VL-8B（4096 维，4B 不可用）。",
-              "en": "Prequantized DiT+VAE; install pulls Qwen3-VL-8B (4096-dim; 4B incompatible)."
-            },
-            "bundle_repos": [
-              {
-                "repo_id": "mlx-community/Boogu-Image-0.1-Turbo-8bit",
-                "local_path": "models/Image/boogu-image-turbo-mlx-q8",
-                "name": "Boogu Image Turbo DiT",
-                "size": "13GB",
-                "source": "modelscope"
-              },
-              {
-                "repo_id": "mlx-community/Qwen3-VL-8B-Instruct-8bit",
-                "local_path": "models/LLM/qwen3-vl-8b-instruct-mlx-q8",
-                "name": {
-                  "zh": "Qwen3-VL-8B Instruct",
-                  "en": "Qwen3-VL-8B Instruct"
-                },
-                "size": "9GB",
-                "source": "modelscope"
-              }
-            ]
-          },
-          "mlx-bf16": {
-            "name": {
-              "zh": "BF16 完整版",
-              "en": "BF16 Full"
-            },
-            "size": "30GB",
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/Boogu-Image-0.1-Turbo-bf16",
-            "local_path": "models/Image/boogu-image-turbo-mlx-bf16",
-            "source_type": "full",
-            "notes": {
-              "zh": "MLX DiT+VAE；安装时一并拉取 Qwen3-VL-8B（4096 维）。",
-              "en": "MLX DiT+VAE; install pulls Qwen3-VL-8B (4096-dim)."
-            },
-            "bundle_repos": [
-              {
-                "repo_id": "mlx-community/Boogu-Image-0.1-Turbo-bf16",
-                "local_path": "models/Image/boogu-image-turbo-mlx-bf16",
-                "name": "Boogu Image Turbo DiT",
-                "size": "21GB",
-                "source": "modelscope"
-              },
-              {
-                "repo_id": "mlx-community/Qwen3-VL-8B-Instruct-8bit",
-                "local_path": "models/LLM/qwen3-vl-8b-instruct-mlx-q8",
-                "name": {
-                  "zh": "Qwen3-VL-8B Instruct",
-                  "en": "Qwen3-VL-8B Instruct"
-                },
-                "size": "9GB",
-                "source": "modelscope"
-              }
-            ]
           }
         }
       }
@@ -4315,9 +3213,9 @@
             "type": "int"
           },
           "guidance": {
-            "default": 4.0,
-            "min": 2.0,
-            "max": 5.0,
+            "default": 4,
+            "min": 2,
+            "max": 5,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -4362,129 +3260,6 @@
               "zh": "完整 bundle（DiT + FLUX VAE + Qwen3-VL-8B）。",
               "en": "Full bundle (DiT + FLUX VAE + Qwen3-VL-8B)."
             }
-          },
-          "fp8": {
-            "name": {
-              "zh": "FP8 版",
-              "en": "FP8"
-            },
-            "size": "18GB",
-            "default": false,
-            "repo_id": "Boogu/Boogu-Image-0.1-Edit-fp8",
-            "local_path": "models/Image/boogu-image-edit-fp8",
-            "source_type": "full",
-            "notes": {
-              "zh": "官方 FP8 编辑 bundle；参考图建议对齐 1K。",
-              "en": "Official FP8 edit bundle; align reference image to ~1K."
-            }
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "22GB",
-            "default": false,
-            "repo_id": "Boogu/Boogu-Image-0.1-Edit",
-            "local_path": "models/Image/boogu-image-edit-int8",
-            "source_type": "derived",
-            "from_version": "bf16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "14GB",
-            "min_unified_memory_gb": 16,
-            "default": false,
-            "repo_id": "Boogu/Boogu-Image-0.1-Edit",
-            "local_path": "models/Image/boogu-image-edit-int4",
-            "source_type": "derived",
-            "from_version": "bf16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          },
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "17GB",
-            "min_unified_memory_gb": 16,
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/Boogu-Image-0.1-Edit-4bit",
-            "local_path": "models/Image/boogu-image-edit-mlx-q4",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            },
-            "notes": {
-              "zh": "DiT+VAE 预量化包；安装时一并拉取 Qwen3-VL-8B（4096 维，4B 不可用）。",
-              "en": "Prequantized DiT+VAE; install pulls Qwen3-VL-8B (4096-dim; 4B incompatible)."
-            },
-            "bundle_repos": [
-              {
-                "repo_id": "mlx-community/Boogu-Image-0.1-Edit-4bit",
-                "local_path": "models/Image/boogu-image-edit-mlx-q4",
-                "name": "Boogu Image Edit DiT",
-                "size": "8GB",
-                "source": "modelscope"
-              },
-              {
-                "repo_id": "mlx-community/Qwen3-VL-8B-Instruct-8bit",
-                "local_path": "models/LLM/qwen3-vl-8b-instruct-mlx-q8",
-                "name": {
-                  "zh": "Qwen3-VL-8B Instruct",
-                  "en": "Qwen3-VL-8B Instruct"
-                },
-                "size": "9GB",
-                "source": "modelscope"
-              }
-            ]
-          },
-          "mlx-bf16": {
-            "name": {
-              "zh": "BF16 完整版",
-              "en": "BF16 Full"
-            },
-            "size": "30GB",
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/Boogu-Image-0.1-Edit-bf16",
-            "local_path": "models/Image/boogu-image-edit-mlx-bf16",
-            "source_type": "full",
-            "notes": {
-              "zh": "MLX DiT+VAE；安装时一并拉取 Qwen3-VL-8B（4096 维）。",
-              "en": "MLX DiT+VAE; install pulls Qwen3-VL-8B (4096-dim)."
-            },
-            "bundle_repos": [
-              {
-                "repo_id": "mlx-community/Boogu-Image-0.1-Edit-bf16",
-                "local_path": "models/Image/boogu-image-edit-mlx-bf16",
-                "name": "Boogu Image Edit DiT",
-                "size": "21GB",
-                "source": "modelscope"
-              },
-              {
-                "repo_id": "mlx-community/Qwen3-VL-8B-Instruct-8bit",
-                "local_path": "models/LLM/qwen3-vl-8b-instruct-mlx-q8",
-                "name": {
-                  "zh": "Qwen3-VL-8B Instruct",
-                  "en": "Qwen3-VL-8B Instruct"
-                },
-                "size": "9GB",
-                "source": "modelscope"
-              }
-            ]
           }
         }
       }
@@ -4565,9 +3340,9 @@
             "type": "int"
           },
           "guidance": {
-            "default": 1.0,
-            "min": 1.0,
-            "max": 1.0,
+            "default": 1,
+            "min": 1,
+            "max": 1,
             "step": 0.5,
             "label": "CFG引导",
             "fixed": true,
@@ -4598,8 +3373,8 @@
           },
           "strength": {
             "default": 0.35,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "去噪强度",
             "type": "float"
@@ -4625,67 +3400,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "29GB",
-            "default": true,
-            "repo_id": "baidu/ERNIE-Image-Turbo",
-            "local_path": "models/Image/ernie-image-turbo-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "22GB",
-            "default": false,
-            "repo_id": "baidu/ERNIE-Image-Turbo",
-            "local_path": "models/Image/ernie-image-turbo-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "18GB",
-            "default": false,
-            "repo_id": "baidu/ERNIE-Image-Turbo",
-            "local_path": "models/Image/ernie-image-turbo-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          },
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "6.2GB",
-            "default": false,
-            "source": "huggingface",
-            "repo_id": "themindstudio/ERNIE-Image-Turbo-MLX-4bit",
-            "local_path": "models/Image/ernie-image-turbo-mlx-q4",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "cogview4-6b": {
@@ -4765,8 +3480,8 @@
           },
           "guidance": {
             "default": 3.5,
-            "min": 1.0,
-            "max": 10.0,
+            "min": 1,
+            "max": 10,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -4797,8 +3512,8 @@
           },
           "strength": {
             "default": 0.35,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "去噪强度",
             "note": "图生图/编辑时控制原图保留程度，越高变化越大",
@@ -4890,24 +3605,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "6.8GB",
-            "default": true,
-            "repo_id": "numz/SeedVR2_comfyUI",
-            "local_path": "models/Upscaler/seedvr2-3b-fp16",
-            "source": "modelscope",
-            "source_type": "full",
-            "allow_patterns": [
-              "seedvr2_ema_3b_fp16.safetensors",
-              "ema_vae_fp16.safetensors"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "seedvr2-7b": {
@@ -4955,24 +3653,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "16GB",
-            "default": true,
-            "repo_id": "numz/SeedVR2_comfyUI",
-            "local_path": "models/Upscaler/seedvr2-7b-fp16",
-            "source": "modelscope",
-            "source_type": "full",
-            "allow_patterns": [
-              "seedvr2_ema_7b_fp16.safetensors",
-              "ema_vae_fp16.safetensors"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "real-esrgan-x4plus": {
@@ -5023,24 +3704,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "32MB",
-            "default": true,
-            "source": "modelscope",
-            "repo_id": "mlx-community/Real-ESRGAN-x4plus",
-            "local_path": "models/Upscaler/real-esrgan-x4plus-fp16",
-            "source_type": "full",
-            "allow_patterns": [
-              "model.safetensors",
-              "config.json"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "seedvr2-video-7b": {
@@ -5086,25 +3750,7 @@
         "extends": "video_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "16GB",
-            "default": true,
-            "repo_id": "numz/SeedVR2_comfyUI",
-            "local_path": "models/Upscaler/seedvr2-7b-fp16",
-            "source": "modelscope",
-            "source_type": "full",
-            "allow_patterns": [
-              "seedvr2_ema_7b_fp16.safetensors",
-              "ema_vae_fp16.safetensors"
-            ],
-            "video_upscale_kind": "seedvr2_spatiotemporal"
-          }
-        }
+        "versions": {}
       }
     },
     "seedvr2-video-3b": {
@@ -5150,25 +3796,7 @@
         "extends": "video_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "6.8GB",
-            "default": true,
-            "repo_id": "numz/SeedVR2_comfyUI",
-            "local_path": "models/Upscaler/seedvr2-3b-fp16",
-            "source": "modelscope",
-            "source_type": "full",
-            "allow_patterns": [
-              "seedvr2_ema_3b_fp16.safetensors",
-              "ema_vae_fp16.safetensors"
-            ],
-            "video_upscale_kind": "seedvr2_spatiotemporal"
-          }
-        }
+        "versions": {}
       }
     },
     "depth-pro": {
@@ -5194,19 +3822,7 @@
       },
       "actions": {},
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "1.8GB",
-            "default": true,
-            "repo_id": "apple/DepthPro-hf",
-            "local_path": "models/Tools/depth-pro-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       },
       "ui": {
         "parameters": {}
@@ -5242,8 +3858,8 @@
         "parameters": {
           "controlnet_strength": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.1,
             "label": "控制强度",
             "type": "float"
@@ -5256,10 +3872,10 @@
             "type": "int"
           },
           "guidance": {
-            "default": 30.0,
-            "min": 1.0,
-            "max": 50.0,
-            "step": 1.0,
+            "default": 30,
+            "min": 1,
+            "max": 50,
+            "step": 1,
             "label": "CFG引导",
             "note": "Canny推荐30",
             "type": "float"
@@ -5267,20 +3883,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "63GB",
-            "default": true,
-            "repo_id": "AI-ModelScope/FLUX.1-Canny-dev",
-            "local_path": "models/ControlNet/flux-canny-controlnet-fp16",
-            "source_type": "full",
-            "source": "modelscope"
-          }
-        }
+        "versions": {}
       }
     },
     "flux-depth-controlnet": {
@@ -5313,8 +3916,8 @@
         "parameters": {
           "controlnet_strength": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.1,
             "label": "控制强度",
             "type": "float"
@@ -5327,10 +3930,10 @@
             "type": "int"
           },
           "guidance": {
-            "default": 30.0,
-            "min": 1.0,
-            "max": 50.0,
-            "step": 1.0,
+            "default": 30,
+            "min": 1,
+            "max": 50,
+            "step": 1,
             "label": "CFG引导",
             "note": "Depth推荐30",
             "type": "float"
@@ -5338,20 +3941,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "63GB",
-            "default": true,
-            "repo_id": "AI-ModelScope/FLUX.1-Depth-dev",
-            "local_path": "models/ControlNet/flux-depth-controlnet-fp16",
-            "source_type": "full",
-            "source": "modelscope"
-          }
-        }
+        "versions": {}
       }
     },
     "flux-fill-controlnet": {
@@ -5397,10 +3987,10 @@
             "type": "int"
           },
           "guidance": {
-            "default": 30.0,
-            "min": 1.0,
-            "max": 50.0,
-            "step": 1.0,
+            "default": 30,
+            "min": 1,
+            "max": 50,
+            "step": 1,
             "label": "CFG引导",
             "note": "Fill推荐30",
             "type": "float"
@@ -5409,19 +3999,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "54GB",
-            "default": true,
-            "repo_id": "black-forest-labs/FLUX.1-Fill-dev",
-            "local_path": "models/ControlNet/flux-fill-controlnet-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "flux-redux": {
@@ -5454,8 +4032,8 @@
         "parameters": {
           "redux_strength": {
             "default": 0.5,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.1,
             "label": "Redux强度",
             "type": "float"
@@ -5468,9 +4046,9 @@
             "type": "int"
           },
           "guidance": {
-            "default": 1.0,
-            "min": 1.0,
-            "max": 20.0,
+            "default": 1,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -5478,20 +4056,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "1.0GB",
-            "default": true,
-            "repo_id": "AI-ModelScope/FLUX.1-Redux-dev",
-            "local_path": "models/ControlNet/flux-redux-fp16",
-            "source_type": "full",
-            "source": "modelscope"
-          }
-        }
+        "versions": {}
       }
     },
     "z-image-turbo-fun-controlnet-union": {
@@ -5526,7 +4091,7 @@
         "parameters": {
           "controlnet_strength": {
             "default": 0.75,
-            "min": 0.0,
+            "min": 0,
             "max": 1.5,
             "step": 0.05,
             "label": "Control context scale",
@@ -5541,33 +4106,15 @@
           },
           "guidance": {
             "default": 0,
-            "min": 0.0,
-            "max": 0.0,
+            "min": 0,
+            "max": 0,
             "label": "CFG引导",
             "type": "float"
           }
         }
       },
       "distribution": {
-        "versions": {
-          "8steps": {
-            "name": {
-              "zh": "Union 2.1 8-step",
-              "en": "Union 2.1 8-step"
-            },
-            "size": "23GB",
-            "default": true,
-            "source": "modelscope",
-            "repo_id": "PAI/Z-Image-Turbo-Fun-Controlnet-Union-2.1",
-            "local_path": "models/ControlNet/z-image-turbo-fun-controlnet-union-2.1-8steps",
-            "source_type": "full",
-            "allow_patterns": [
-              "Z-Image-Turbo-Fun-Controlnet-Union-2.1-*-8steps.safetensors",
-              "Z-Image-Turbo-Fun-Controlnet-Union-2.1-8steps.safetensors",
-              "README.md"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "flux1-kontext": {
@@ -5628,8 +4175,8 @@
           },
           "guidance": {
             "default": 3.5,
-            "min": 1.0,
-            "max": 20.0,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -5658,8 +4205,8 @@
           },
           "strength": {
             "default": 0.4,
-            "min": 0.0,
-            "max": 1.0,
+            "min": 0,
+            "max": 1,
             "step": 0.05,
             "label": "去噪强度",
             "type": "float"
@@ -5692,51 +4239,7 @@
         "extends": "image_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "54GB",
-            "default": true,
-            "repo_id": "black-forest-labs/FLUX.1-Kontext-dev",
-            "local_path": "models/Image/flux1-kontext-fp16",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "32GB",
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.1-Kontext-dev",
-            "local_path": "models/Image/flux1-kontext-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "20GB",
-            "default": false,
-            "repo_id": "black-forest-labs/FLUX.1-Kontext-dev",
-            "local_path": "models/Image/flux1-kontext-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "flux1-dev-lora-antiblur": {
@@ -5767,8 +4270,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -5776,19 +4279,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "656MB",
-            "default": true,
-            "repo_id": "LiblibAI/FLUX.1-dev-LoRA-AntiBlur",
-            "local_path": "models/Lora/flux1-dev-lora-antiblur-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "flux1-dev-lora-ghibli": {
@@ -5819,8 +4310,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -5828,19 +4319,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "164MB",
-            "default": true,
-            "repo_id": "InstantX/FLUX.1-dev-LoRA-Ghibli",
-            "local_path": "models/Lora/flux1-dev-lora-ghibli-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "flux1-dev-lora-makoto-shinkai": {
@@ -5871,8 +4350,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -5880,19 +4359,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "151MB",
-            "default": true,
-            "repo_id": "InstantX/FLUX.1-dev-LoRA-Makoto-Shinkai",
-            "local_path": "models/Lora/flux1-dev-lora-makoto-shinkai-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "flux1-canny-dev-lora": {
@@ -5923,8 +4390,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -5932,19 +4399,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "1.2GB",
-            "default": true,
-            "repo_id": "AI-ModelScope/FLUX.1-Canny-dev-lora",
-            "local_path": "models/Lora/flux1-canny-dev-lora-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "flux1-depth-dev-lora": {
@@ -5975,8 +4430,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -5984,19 +4439,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "1.2GB",
-            "default": true,
-            "repo_id": "black-forest-labs/FLUX.1-Depth-dev-lora",
-            "local_path": "models/Lora/flux1-depth-dev-lora-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "flux-super-realism-lora": {
@@ -6027,8 +4470,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -6036,19 +4479,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "584MB",
-            "default": true,
-            "repo_id": "strangerzonehf/Flux-Super-Realism-LoRA",
-            "local_path": "models/Lora/flux-super-realism-lora-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "flux1-schnell-pvc-style-lora": {
@@ -6079,8 +4510,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.85,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -6088,19 +4519,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "164MB",
-            "default": true,
-            "repo_id": "p1atdev/flux.1-schnell-pvc-style-lora",
-            "local_path": "models/Lora/flux1-schnell-pvc-style-lora-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "flux2-klein-ac-style-lora": {
@@ -6131,8 +4550,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -6140,19 +4559,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "158MB",
-            "default": true,
-            "repo_id": "AI-ModelScope/FLUX.2-klein-AC-Style-LORA",
-            "local_path": "models/Lora/flux2-klein-ac-style-lora-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "flux2-klein-4b-spritesheet-lora": {
@@ -6183,8 +4590,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -6192,19 +4599,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "145MB",
-            "default": true,
-            "repo_id": "fal/flux-2-klein-4b-spritesheet-lora",
-            "local_path": "models/Lora/flux2-klein-4b-spritesheet-lora-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "flux2-klein-4b-zoom-lora": {
@@ -6235,8 +4630,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -6244,19 +4639,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "145MB",
-            "default": true,
-            "repo_id": "fal/flux-2-klein-4B-zoom-lora",
-            "local_path": "models/Lora/flux2-klein-4b-zoom-lora-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "flux2-klein-4b-outpaint-lora": {
@@ -6287,8 +4670,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -6296,19 +4679,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "145MB",
-            "default": true,
-            "repo_id": "RealmSky/flux-2-klein-4B-outpaint-lora",
-            "local_path": "models/Lora/flux2-klein-4b-outpaint-lora-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "flux2-klein-4b-object-remove-lora": {
@@ -6339,8 +4710,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -6348,19 +4719,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "128MB",
-            "default": true,
-            "repo_id": "fal/flux-2-klein-4B-object-remove-lora",
-            "local_path": "models/Lora/flux2-klein-4b-object-remove-lora-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "wan2.2-t2v-lightning-lora": {
@@ -6412,9 +4771,9 @@
       "ui": {
         "parameters": {
           "lora_scale": {
-            "default": 1.0,
-            "min": 0.0,
-            "max": 2.0,
+            "default": 1,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -6422,24 +4781,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "v2": {
-            "name": {
-              "zh": "V2.0",
-              "en": "V2.0"
-            },
-            "size": "2.3GB",
-            "default": true,
-            "repo_id": "lightx2v/Wan2.2-Lightning",
-            "local_path": "models/Lora/Wan/Wan2.2-T2V-Lightning-V2.0-v2",
-            "source": "modelscope",
-            "source_type": "full",
-            "allow_patterns": [
-              "Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V2.0/high_noise_model.safetensors",
-              "Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V2.0/low_noise_model.safetensors"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "wan2.2-i2v-lightning-lora": {
@@ -6491,9 +4833,9 @@
       "ui": {
         "parameters": {
           "lora_scale": {
-            "default": 1.0,
-            "min": 0.0,
-            "max": 2.0,
+            "default": 1,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -6501,24 +4843,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "v1": {
-            "name": {
-              "zh": "V1",
-              "en": "V1"
-            },
-            "size": "2.3GB",
-            "default": true,
-            "repo_id": "lightx2v/Wan2.2-Lightning",
-            "local_path": "models/Lora/Wan/Wan2.2-I2V-Lightning-V1-v1",
-            "source": "modelscope",
-            "source_type": "full",
-            "allow_patterns": [
-              "Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors",
-              "Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "starface-z-image-ms": {
@@ -6549,8 +4874,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -6558,19 +4883,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "151MB",
-            "default": true,
-            "repo_id": "SecretDongGe/StarFace-Z-Image",
-            "local_path": "models/Lora/starface-z-image-ms-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "z-image-turbo-distillpatch-lora": {
@@ -6612,9 +4925,9 @@
         "parameters": {
           "z_image_distill_patch": true,
           "lora_scale": {
-            "default": 1.0,
-            "min": 0.0,
-            "max": 2.0,
+            "default": 1,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -6674,8 +4987,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -6683,19 +4996,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "225MB",
-            "default": true,
-            "repo_id": "SecretDongGe/StarFace-Qwen-Image-2512",
-            "local_path": "models/Lora/starface-qwen-image-2512-ms-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "qwen-image-2512-lightning-lora": {
@@ -6727,9 +5028,9 @@
       "ui": {
         "parameters": {
           "lora_scale": {
-            "default": 1.0,
-            "min": 0.0,
-            "max": 2.0,
+            "default": 1,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -6737,23 +5038,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "v4-bf16": {
-            "name": {
-              "zh": "4 步 V1.0 BF16",
-              "en": "4-Step V1.0 BF16"
-            },
-            "size": "810MB",
-            "default": true,
-            "repo_id": "lightx2v/Qwen-Image-2512-Lightning",
-            "local_path": "models/Lora/Qwen/Qwen-Image-2512-Lightning-4steps-V1.0-bf16-v4-bf16",
-            "source": "modelscope",
-            "source_type": "full",
-            "allow_patterns": [
-              "Qwen-Image-2512-Lightning-4steps-V1.0-bf16.safetensors"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "qwen-image-edit-2511-lightning-lora": {
@@ -6785,9 +5070,9 @@
       "ui": {
         "parameters": {
           "lora_scale": {
-            "default": 1.0,
-            "min": 0.0,
-            "max": 2.0,
+            "default": 1,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -6795,38 +5080,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "v4-bf16": {
-            "name": {
-              "zh": "4 步 V1.0 BF16",
-              "en": "4-Step V1.0 BF16"
-            },
-            "size": "810MB",
-            "default": true,
-            "repo_id": "lightx2v/Qwen-Image-Edit-2511-Lightning",
-            "local_path": "models/Lora/Qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16-v4-bf16",
-            "source": "modelscope",
-            "source_type": "full",
-            "allow_patterns": [
-              "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
-            ]
-          },
-          "v8-bf16": {
-            "name": {
-              "zh": "8 步 V1.0 BF16",
-              "en": "8-Step V1.0 BF16"
-            },
-            "size": "810MB",
-            "default": false,
-            "repo_id": "lightx2v/Qwen-Image-Edit-2511-Lightning",
-            "local_path": "models/Lora/Qwen/Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16-v8-bf16",
-            "source": "modelscope",
-            "source_type": "full",
-            "allow_patterns": [
-              "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "ltx-2.3-distilled": {
@@ -6875,9 +5129,9 @@
             "type": "int"
           },
           "guide_scale": {
-            "default": 1.0,
-            "min": 1.0,
-            "max": 10.0,
+            "default": 1,
+            "min": 1,
+            "max": 10,
             "step": 0.5,
             "label": "CFG引导",
             "fixed": true,
@@ -6964,111 +5218,7 @@
         "extends": "video_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "63GB",
-            "default": true,
-            "source": "huggingface",
-            "repo_id": "dgrauet/ltx-2.3-mlx-q4",
-            "local_path": "models/Video/ltx-2.3-distilled-mlx-q4",
-            "source_type": "full",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine",
-              "group_size": 64
-            },
-            "bundle_repos": [
-              {
-                "repo_id": "dgrauet/ltx-2.3-mlx-q4",
-                "local_path": "models/Video/ltx-2.3-distilled-mlx-q4",
-                "name": "LTX-2.3-DiT",
-                "size": "56GB",
-                "source": "huggingface"
-              },
-              {
-                "repo_id": "mlx-community/gemma-3-12b-it-4bit",
-                "local_path": "models/Text/gemma-3-12b-it-4bit",
-                "name": {
-                  "zh": "MLX Gemma-3-12B-it 4-bit",
-                  "en": "MLX Gemma-3-12B-it 4-bit"
-                },
-                "size": "7.5GB",
-                "source": "modelscope"
-              }
-            ]
-          },
-          "mlx-q8": {
-            "name": {
-              "zh": "8-bit 量化版",
-              "en": "8-bit Quantized"
-            },
-            "size": "89GB",
-            "default": false,
-            "source": "huggingface",
-            "repo_id": "dgrauet/ltx-2.3-mlx-q8",
-            "local_path": "models/Video/ltx-2.3-distilled-mlx-q8",
-            "source_type": "full",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine",
-              "group_size": 32
-            },
-            "bundle_repos": [
-              {
-                "repo_id": "dgrauet/ltx-2.3-mlx-q8",
-                "local_path": "models/Video/ltx-2.3-distilled-mlx-q8",
-                "name": "LTX-2.3-DiT",
-                "size": "82GB",
-                "source": "huggingface"
-              },
-              {
-                "repo_id": "mlx-community/gemma-3-12b-it-4bit",
-                "local_path": "models/Text/gemma-3-12b-it-4bit",
-                "name": {
-                  "zh": "MLX Gemma-3-12B-it 4-bit",
-                  "en": "MLX Gemma-3-12B-it 4-bit"
-                },
-                "size": "7.5GB",
-                "source": "modelscope"
-              }
-            ]
-          },
-          "mlx-bf16": {
-            "name": {
-              "zh": "BF16 完整版",
-              "en": "BF16 Full"
-            },
-            "size": "138GB",
-            "default": false,
-            "source": "huggingface",
-            "repo_id": "dgrauet/ltx-2.3-mlx",
-            "local_path": "models/Video/ltx-2.3-distilled-mlx-bf16",
-            "source_type": "full",
-            "bundle_repos": [
-              {
-                "repo_id": "dgrauet/ltx-2.3-mlx",
-                "local_path": "models/Video/ltx-2.3-distilled-mlx-bf16",
-                "name": "LTX-2.3-DiT",
-                "size": "130GB",
-                "source": "huggingface"
-              },
-              {
-                "repo_id": "mlx-community/gemma-3-12b-it-4bit",
-                "local_path": "models/Text/gemma-3-12b-it-4bit",
-                "name": {
-                  "zh": "MLX Gemma-3-12B-it 4-bit",
-                  "en": "MLX Gemma-3-12B-it 4-bit"
-                },
-                "size": "7.5GB",
-                "source": "modelscope"
-              }
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "ltx-2.3-dev": {
@@ -7115,9 +5265,9 @@
             "type": "int"
           },
           "guide_scale": {
-            "default": 3.0,
-            "min": 1.0,
-            "max": 10.0,
+            "default": 3,
+            "min": 1,
+            "max": 10,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -7202,111 +5352,7 @@
         "extends": "video_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "63GB",
-            "default": true,
-            "source": "huggingface",
-            "repo_id": "dgrauet/ltx-2.3-mlx-q4",
-            "local_path": "models/Video/ltx-2.3-dev-mlx-q4",
-            "source_type": "full",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine",
-              "group_size": 64
-            },
-            "bundle_repos": [
-              {
-                "repo_id": "dgrauet/ltx-2.3-mlx-q4",
-                "local_path": "models/Video/ltx-2.3-dev-mlx-q4",
-                "name": "LTX-2.3-DiT",
-                "size": "56GB",
-                "source": "huggingface"
-              },
-              {
-                "repo_id": "mlx-community/gemma-3-12b-it-4bit",
-                "local_path": "models/Text/gemma-3-12b-it-4bit",
-                "name": {
-                  "zh": "MLX Gemma-3-12B-it 4-bit",
-                  "en": "MLX Gemma-3-12B-it 4-bit"
-                },
-                "size": "7.5GB",
-                "source": "modelscope"
-              }
-            ]
-          },
-          "mlx-q8": {
-            "name": {
-              "zh": "8-bit 量化版",
-              "en": "8-bit Quantized"
-            },
-            "size": "89GB",
-            "default": false,
-            "source": "huggingface",
-            "repo_id": "dgrauet/ltx-2.3-mlx-q8",
-            "local_path": "models/Video/ltx-2.3-dev-mlx-q8",
-            "source_type": "full",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine",
-              "group_size": 32
-            },
-            "bundle_repos": [
-              {
-                "repo_id": "dgrauet/ltx-2.3-mlx-q8",
-                "local_path": "models/Video/ltx-2.3-dev-mlx-q8",
-                "name": "LTX-2.3-DiT",
-                "size": "82GB",
-                "source": "huggingface"
-              },
-              {
-                "repo_id": "mlx-community/gemma-3-12b-it-4bit",
-                "local_path": "models/Text/gemma-3-12b-it-4bit",
-                "name": {
-                  "zh": "MLX Gemma-3-12B-it 4-bit",
-                  "en": "MLX Gemma-3-12B-it 4-bit"
-                },
-                "size": "7.5GB",
-                "source": "modelscope"
-              }
-            ]
-          },
-          "mlx-bf16": {
-            "name": {
-              "zh": "BF16 完整版",
-              "en": "BF16 Full"
-            },
-            "size": "138GB",
-            "default": false,
-            "source": "huggingface",
-            "repo_id": "dgrauet/ltx-2.3-mlx",
-            "local_path": "models/Video/ltx-2.3-dev-mlx-bf16",
-            "source_type": "full",
-            "bundle_repos": [
-              {
-                "repo_id": "dgrauet/ltx-2.3-mlx",
-                "local_path": "models/Video/ltx-2.3-dev-mlx-bf16",
-                "name": "LTX-2.3-DiT",
-                "size": "130GB",
-                "source": "huggingface"
-              },
-              {
-                "repo_id": "mlx-community/gemma-3-12b-it-4bit",
-                "local_path": "models/Text/gemma-3-12b-it-4bit",
-                "name": {
-                  "zh": "MLX Gemma-3-12B-it 4-bit",
-                  "en": "MLX Gemma-3-12B-it 4-bit"
-                },
-                "size": "7.5GB",
-                "source": "modelscope"
-              }
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "ltx-2.5-distilled": {
@@ -7354,9 +5400,9 @@
             "type": "int"
           },
           "guide_scale": {
-            "default": 1.0,
-            "min": 1.0,
-            "max": 10.0,
+            "default": 1,
+            "min": 1,
+            "max": 10,
             "step": 0.5,
             "label": "CFG引导",
             "fixed": true,
@@ -7415,7 +5461,10 @@
           "negative_prompt_support": false,
           "ref2va": {
             "enabled": true,
-            "kinds": ["image", "audio"],
+            "kinds": [
+              "image",
+              "audio"
+            ],
             "max_images": 5,
             "max_videos": 0,
             "max_audios": 2,
@@ -7454,84 +5503,7 @@
         "extends": "video_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "约 90GB 源文件 → 12GB 转换后",
-            "default": true,
-            "source": "modelscope",
-            "repo_id": "Lightricks/LTX-2.5",
-            "local_path": "models/Video/ltx-2.5-distilled-mlx-q4",
-            "source_type": "full",
-            "allow_patterns": [
-              "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
-              "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors",
-              "vae/ltx-2.5-video-vae-conv-bf16.safetensors",
-              "vae/ltx-2.5-audio-vae-bf16.safetensors",
-              "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
-            ],
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine",
-              "group_size": 64
-            },
-            "install_hooks": [
-              {
-                "type": "ltx25_ingest",
-                "source": ".",
-                "quantize": 4,
-                "group_size": 64,
-                "cleanup_source": true,
-                "skip_completeness_if": "backend.engine.families.ltx25.ingest_mlx:ltx25_bundle_is_ready"
-              }
-            ],
-            "note": {
-              "zh": "魔搭镜像无需授权；原始仓库为 Hugging Face gated（Lightricks/LTX-2.5，需同意条款）。",
-              "en": "ModelScope mirror requires no auth; the original gated Hugging Face repo is Lightricks/LTX-2.5."
-            }
-          },
-          "mlx-q8": {
-            "name": {
-              "zh": "8-bit 量化版",
-              "en": "8-bit Quantized"
-            },
-            "size": "约 90GB 源文件 → 23GB 转换后",
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "Lightricks/LTX-2.5",
-            "local_path": "models/Video/ltx-2.5-distilled-mlx-q8",
-            "source_type": "full",
-            "allow_patterns": [
-              "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
-              "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors",
-              "vae/ltx-2.5-video-vae-conv-bf16.safetensors",
-              "vae/ltx-2.5-audio-vae-bf16.safetensors",
-              "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
-            ],
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine",
-              "group_size": 64
-            },
-            "install_hooks": [
-              {
-                "type": "ltx25_ingest",
-                "source": ".",
-                "quantize": 8,
-                "group_size": 64,
-                "cleanup_source": true,
-                "skip_completeness_if": "backend.engine.families.ltx25.ingest_mlx:ltx25_bundle_is_ready"
-              }
-            ],
-            "note": {
-              "zh": "魔搭镜像无需授权；原始仓库为 Hugging Face gated（Lightricks/LTX-2.5，需同意条款）。",
-              "en": "ModelScope mirror requires no auth; the original gated Hugging Face repo is Lightricks/LTX-2.5."
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "ltx25-msr-lora": {
@@ -7571,9 +5543,9 @@
       "ui": {
         "parameters": {
           "lora_scale": {
-            "default": 1.0,
-            "min": 0.0,
-            "max": 2.0,
+            "default": 1,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float",
@@ -7583,23 +5555,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "v2": {
-            "name": {
-              "zh": "V2",
-              "en": "V2"
-            },
-            "size": "2.22GB",
-            "default": true,
-            "source": "huggingface",
-            "repo_id": "LiconStudio/LTX-2.5-Multiple-Subject-Reference",
-            "local_path": "models/Lora/LTX-2.5/ltx25-msr-v2",
-            "source_type": "full",
-            "allow_patterns": [
-              "LTX-2.5-Licon-MSR-V2.safetensors"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "hunyuan-video-1.5-t2v-distill": {
@@ -7634,7 +5590,7 @@
             500,
             250
           ],
-          "hunyuan_distill_shift": 9.0
+          "hunyuan_distill_shift": 9
         }
       },
       "actions": {
@@ -7892,9 +5848,9 @@
             "type": "int"
           },
           "guide_scale": {
-            "default": 6.0,
-            "min": 1.0,
-            "max": 10.0,
+            "default": 6,
+            "min": 1,
+            "max": 10,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -7912,9 +5868,9 @@
             "label": "TeaCache 步间加速"
           },
           "shift": {
-            "default": 7.0,
-            "min": 1.0,
-            "max": 20.0,
+            "default": 7,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "Shift",
             "type": "float"
@@ -8069,9 +6025,9 @@
             "type": "int"
           },
           "shift": {
-            "default": 7.0,
-            "min": 7.0,
-            "max": 7.0,
+            "default": 7,
+            "min": 7,
+            "max": 7,
             "step": 0.5,
             "label": "Shift",
             "type": "float"
@@ -8219,9 +6175,9 @@
             "type": "int"
           },
           "guide_scale": {
-            "default": 3.0,
-            "min": 1.0,
-            "max": 10.0,
+            "default": 3,
+            "min": 1,
+            "max": 10,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -8239,9 +6195,9 @@
             "label": "TeaCache 步间加速"
           },
           "shift": {
-            "default": 12.0,
-            "min": 1.0,
-            "max": 20.0,
+            "default": 12,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "Shift",
             "type": "float"
@@ -8276,9 +6232,9 @@
           "negative_prompt_support": true,
           "lora_support": true,
           "lora_scale": {
-            "default": 1.0,
-            "min": 0.0,
-            "max": 2.0,
+            "default": 1,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -8303,74 +6259,7 @@
         "extends": "video_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "118GB",
-            "default": true,
-            "repo_id": "Wan-AI/Wan2.2-T2V-A14B",
-            "local_path": "models/Video/wan-2.2-t2v-14b-fp16",
-            "source": "modelscope",
-            "source_type": "full",
-            "allow_patterns": [
-              "Wan2.1_VAE.pth",
-              "models_t5_umt5-xxl-enc-bf16.pth",
-              "google/**",
-              "configuration.json",
-              "high_noise_model/config.json",
-              "low_noise_model/config.json",
-              "high_noise_model/diffusion_pytorch_model.safetensors.index.json",
-              "low_noise_model/diffusion_pytorch_model.safetensors.index.json",
-              "high_noise_model/diffusion_pytorch_model-00001-of-00006.safetensors",
-              "high_noise_model/diffusion_pytorch_model-00002-of-00006.safetensors",
-              "high_noise_model/diffusion_pytorch_model-00003-of-00006.safetensors",
-              "high_noise_model/diffusion_pytorch_model-00004-of-00006.safetensors",
-              "high_noise_model/diffusion_pytorch_model-00005-of-00006.safetensors",
-              "high_noise_model/diffusion_pytorch_model-00006-of-00006.safetensors",
-              "low_noise_model/diffusion_pytorch_model-00001-of-00006.safetensors",
-              "low_noise_model/diffusion_pytorch_model-00002-of-00006.safetensors",
-              "low_noise_model/diffusion_pytorch_model-00003-of-00006.safetensors",
-              "low_noise_model/diffusion_pytorch_model-00004-of-00006.safetensors",
-              "low_noise_model/diffusion_pytorch_model-00005-of-00006.safetensors",
-              "low_noise_model/diffusion_pytorch_model-00006-of-00006.safetensors"
-            ]
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "64GB",
-            "default": false,
-            "repo_id": "Wan-AI/Wan2.2-T2V-A14B",
-            "local_path": "models/Video/wan-2.2-t2v-14b-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "38GB",
-            "default": false,
-            "repo_id": "Wan-AI/Wan2.2-T2V-A14B",
-            "local_path": "models/Video/wan-2.2-t2v-14b-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "wan-2.2-i2v-14b": {
@@ -8429,9 +6318,9 @@
             "type": "int"
           },
           "guide_scale": {
-            "default": 3.0,
-            "min": 1.0,
-            "max": 10.0,
+            "default": 3,
+            "min": 1,
+            "max": 10,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -8449,9 +6338,9 @@
             "label": "TeaCache 步间加速"
           },
           "shift": {
-            "default": 12.0,
-            "min": 1.0,
-            "max": 20.0,
+            "default": 12,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "Shift",
             "type": "float"
@@ -8486,9 +6375,9 @@
           "negative_prompt_support": true,
           "lora_support": true,
           "lora_scale": {
-            "default": 1.0,
-            "min": 0.0,
-            "max": 2.0,
+            "default": 1,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -8513,74 +6402,7 @@
         "extends": "video_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "118GB",
-            "default": true,
-            "repo_id": "Wan-AI/Wan2.2-I2V-A14B",
-            "local_path": "models/Video/wan-2.2-i2v-14b-fp16",
-            "source": "modelscope",
-            "source_type": "full",
-            "allow_patterns": [
-              "Wan2.1_VAE.pth",
-              "models_t5_umt5-xxl-enc-bf16.pth",
-              "google/**",
-              "configuration.json",
-              "high_noise_model/config.json",
-              "low_noise_model/config.json",
-              "high_noise_model/diffusion_pytorch_model.safetensors.index.json",
-              "low_noise_model/diffusion_pytorch_model.safetensors.index.json",
-              "high_noise_model/diffusion_pytorch_model-00001-of-00006.safetensors",
-              "high_noise_model/diffusion_pytorch_model-00002-of-00006.safetensors",
-              "high_noise_model/diffusion_pytorch_model-00003-of-00006.safetensors",
-              "high_noise_model/diffusion_pytorch_model-00004-of-00006.safetensors",
-              "high_noise_model/diffusion_pytorch_model-00005-of-00006.safetensors",
-              "high_noise_model/diffusion_pytorch_model-00006-of-00006.safetensors",
-              "low_noise_model/diffusion_pytorch_model-00001-of-00006.safetensors",
-              "low_noise_model/diffusion_pytorch_model-00002-of-00006.safetensors",
-              "low_noise_model/diffusion_pytorch_model-00003-of-00006.safetensors",
-              "low_noise_model/diffusion_pytorch_model-00004-of-00006.safetensors",
-              "low_noise_model/diffusion_pytorch_model-00005-of-00006.safetensors",
-              "low_noise_model/diffusion_pytorch_model-00006-of-00006.safetensors"
-            ]
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "64GB",
-            "default": false,
-            "repo_id": "Wan-AI/Wan2.2-I2V-A14B",
-            "local_path": "models/Video/wan-2.2-i2v-14b-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "38GB",
-            "default": false,
-            "repo_id": "Wan-AI/Wan2.2-I2V-A14B",
-            "local_path": "models/Video/wan-2.2-i2v-14b-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "wan-2.2-i2v-14b-distill": {
@@ -8628,9 +6450,9 @@
             "type": "int"
           },
           "shift": {
-            "default": 5.0,
-            "min": 5.0,
-            "max": 5.0,
+            "default": 5,
+            "min": 5,
+            "max": 5,
             "step": 0.5,
             "label": "Shift",
             "type": "float"
@@ -8753,7 +6575,7 @@
         ],
         "overrides": {
           "moe_boundary_step_index": 2,
-          "shift": 3.0,
+          "shift": 3,
           "video_pipeline_shape": "family_generator",
           "bernini_renderer": true,
           "use_src_id_rotary_emb": true,
@@ -8778,17 +6600,17 @@
             "type": "int"
           },
           "guide_scale": {
-            "default": 3.0,
-            "min": 1.0,
-            "max": 10.0,
+            "default": 3,
+            "min": 1,
+            "max": 10,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
           },
           "shift": {
-            "default": 3.0,
-            "min": 1.0,
-            "max": 20.0,
+            "default": 3,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "Shift",
             "type": "float"
@@ -8831,62 +6653,7 @@
         "extends": "video_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "118GB",
-            "default": true,
-            "repo_id": "ByteDance/Bernini-R-Diffusers",
-            "local_path": "models/Video/bernini-r-14b-fp16",
-            "source": "huggingface",
-            "source_type": "full",
-            "bernini_variant": "bernini_r_14b",
-            "allow_patterns": [
-              "transformer/**",
-              "transformer_2/**",
-              "vae/**",
-              "text_encoder/**",
-              "tokenizer/**",
-              "scheduler/**",
-              "config.json"
-            ]
-          },
-          "mlx-bf16": {
-            "name": {
-              "zh": "BF16 完整版",
-              "en": "BF16 Full"
-            },
-            "size": "64GB",
-            "default": false,
-            "repo_id": "mlx-community/Bernini-R-bf16",
-            "local_path": "models/Video/bernini-r-14b-mlx-bf16",
-            "source": "modelscope",
-            "source_type": "full",
-            "bernini_variant": "bernini_r_14b"
-          },
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "27GB",
-            "min_unified_memory_gb": 32,
-            "default": false,
-            "repo_id": "mlx-community/Bernini-R-int4",
-            "local_path": "models/Video/bernini-r-14b-mlx-q4",
-            "source": "modelscope",
-            "source_type": "prequantized",
-            "bernini_variant": "bernini_r_14b",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine",
-              "group_size": 64
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "bernini-r-1.3b": {
@@ -8913,7 +6680,7 @@
           "mlx"
         ],
         "overrides": {
-          "shift": 3.0,
+          "shift": 3,
           "video_pipeline_shape": "family_generator",
           "bernini_renderer": true,
           "use_src_id_rotary_emb": true,
@@ -8938,17 +6705,17 @@
             "type": "int"
           },
           "guide_scale": {
-            "default": 3.0,
-            "min": 1.0,
-            "max": 10.0,
+            "default": 3,
+            "min": 1,
+            "max": 10,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
           },
           "shift": {
-            "default": 3.0,
-            "min": 1.0,
-            "max": 20.0,
+            "default": 3,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "Shift",
             "type": "float"
@@ -8987,61 +6754,7 @@
         "extends": "video_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "27GB",
-            "default": true,
-            "repo_id": "ByteDance/Bernini-R-1.3B-Diffusers",
-            "local_path": "models/Video/bernini-r-1.3b-fp16",
-            "source": "huggingface",
-            "source_type": "full",
-            "bernini_variant": "bernini_r_1.3b",
-            "allow_patterns": [
-              "transformer/**",
-              "vae/**",
-              "text_encoder/**",
-              "tokenizer/**",
-              "scheduler/**",
-              "config.json"
-            ]
-          },
-          "mlx-bf16": {
-            "name": {
-              "zh": "BF16 完整版",
-              "en": "BF16 Full"
-            },
-            "size": "14GB",
-            "default": false,
-            "repo_id": "mlx-community/Bernini-R-1.3B-bf16",
-            "local_path": "models/Video/bernini-r-1.3b-mlx-bf16",
-            "source": "modelscope",
-            "source_type": "full",
-            "bernini_variant": "bernini_r_1.3b"
-          },
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "12GB",
-            "min_unified_memory_gb": 16,
-            "default": false,
-            "repo_id": "mlx-community/Bernini-R-1.3B-int4",
-            "local_path": "models/Video/bernini-r-1.3b-mlx-q4",
-            "source": "modelscope",
-            "source_type": "prequantized",
-            "bernini_variant": "bernini_r_1.3b",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine",
-              "group_size": 64
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "longcat-video": {
@@ -9068,7 +6781,7 @@
           "mlx"
         ],
         "overrides": {
-          "scheduler_shift": 12.0,
+          "scheduler_shift": 12,
           "supports_guidance": true
         }
       },
@@ -9087,9 +6800,9 @@
             "type": "int"
           },
           "guide_scale": {
-            "default": 5.0,
-            "min": 0.0,
-            "max": 15.0,
+            "default": 5,
+            "min": 0,
+            "max": 15,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
@@ -9146,78 +6859,7 @@
         "extends": "video_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "mlx-bf16": {
-            "name": {
-              "zh": "BF16 完整版",
-              "en": "BF16 Full"
-            },
-            "size": "43GB",
-            "min_unified_memory_gb": 64,
-            "default": true,
-            "source": "modelscope",
-            "repo_id": "mlx-community/LongCat-Video-bf16",
-            "local_path": "models/Video/longcat-video-mlx-bf16",
-            "source_type": "full",
-            "allow_patterns": [
-              "dit/**",
-              "vae/**",
-              "text_encoder/**",
-              "tokenizer/**",
-              "lora/**"
-            ]
-          },
-          "mlx-q8": {
-            "name": {
-              "zh": "8-bit 量化版",
-              "en": "8-bit Quantized"
-            },
-            "size": "31GB",
-            "min_unified_memory_gb": 48,
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/LongCat-Video-q8",
-            "local_path": "models/Video/longcat-video-mlx-q8",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine",
-              "group_size": 64
-            },
-            "allow_patterns": [
-              "dit/**",
-              "vae/**",
-              "text_encoder/**",
-              "tokenizer/**",
-              "lora/**"
-            ]
-          },
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "25GB",
-            "min_unified_memory_gb": 32,
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/LongCat-Video-q4",
-            "local_path": "models/Video/longcat-video-mlx-q4",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine",
-              "group_size": 64
-            },
-            "allow_patterns": [
-              "dit/**",
-              "vae/**",
-              "text_encoder/**",
-              "tokenizer/**",
-              "lora/**"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "minimax-h3-turbo-lora": {
@@ -9259,7 +6901,7 @@
           "h3_turbo_distill": true,
           "compose_overrides": {
             "steps": 8,
-            "guide_scale": 1.0
+            "guide_scale": 1
           }
         }
       },
@@ -9267,9 +6909,9 @@
       "ui": {
         "parameters": {
           "lora_scale": {
-            "default": 1.0,
-            "min": 0.0,
-            "max": 2.0,
+            "default": 1,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float",
@@ -9279,23 +6921,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "v4-ema": {
-            "name": {
-              "zh": "v4 step-600 EMA",
-              "en": "v4 step-600 EMA"
-            },
-            "size": "750MB",
-            "default": true,
-            "source": "huggingface",
-            "repo_id": "larryvrh/MiniMax-H3-Turbo-Lora",
-            "local_path": "models/Lora/MiniMax-H3/minimax-h3-turbo-v4-ema",
-            "source_type": "full",
-            "allow_patterns": [
-              "minimax_h3_turbo_v4_step600_ema.safetensors"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "minimax-h3-veda": {
@@ -9328,23 +6954,7 @@
         "parameters": {}
       },
       "distribution": {
-        "versions": {
-          "fp8": {
-            "name": {
-              "zh": "FP8 版",
-              "en": "FP8"
-            },
-            "size": "280MB",
-            "default": true,
-            "source": "huggingface",
-            "repo_id": "Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview",
-            "local_path": "models/Tools/minimax-h3-veda-fp8",
-            "source_type": "full",
-            "allow_patterns": [
-              "minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "minimax-h3-fl2va": {
@@ -9372,8 +6982,8 @@
           "mlx"
         ],
         "overrides": {
-          "scheduler_shift": 12.0,
-          "audio_scheduler_shift": 3.0,
+          "scheduler_shift": 12,
+          "audio_scheduler_shift": 3,
           "supports_guidance": false
         }
       },
@@ -9393,9 +7003,9 @@
             "note": "sigma 网格点数（含终点 0）；CFG 蒸馏无需负向提示"
           },
           "guide_scale": {
-            "default": 1.0,
-            "min": 1.0,
-            "max": 1.0,
+            "default": 1,
+            "min": 1,
+            "max": 1,
             "step": 0.5,
             "label": "CFG引导",
             "fixed": true,
@@ -9448,7 +7058,11 @@
           "video_edit_source_mode": "first_frame",
           "ref2va": {
             "enabled": true,
-            "kinds": ["image", "video", "audio"],
+            "kinds": [
+              "image",
+              "video",
+              "audio"
+            ],
             "max_images": 9,
             "max_videos": 3,
             "max_audios": 3,
@@ -9543,88 +7157,7 @@
         "extends": "video_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "100GB",
-            "min_unified_memory_gb": 64,
-            "default": true,
-            "source": "huggingface",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine",
-              "group_size": 64
-            },
-            "bundle_repos": [
-              {
-                "repo_id": "pipenetwork/MiniMax-H3-MLX-4bit",
-                "local_path": "models/Video/minimax-h3-fl2va-mlx-q4",
-                "allow_patterns": [
-                  "*.safetensors",
-                  "model.safetensors.index.json",
-                  "quant_config.json",
-                  "config.json"
-                ]
-              },
-              {
-                "repo_id": "MiniMaxAI/MiniMax-H3",
-                "local_path": "models/Video/minimax-h3-fl2va-mlx-q4",
-                "name": "FL2VA aux",
-                "allow_patterns": [
-                  "FL2VA/text_encoder/**",
-                  "FL2VA/video_vae/**",
-                  "FL2VA/audio_vae/**",
-                  "FL2VA/processor/**",
-                  "FL2VA/model_index.json"
-                ]
-              }
-            ]
-          },
-          "mlx-q8": {
-            "name": {
-              "zh": "8-bit 量化版",
-              "en": "8-bit Quantized"
-            },
-            "size": "110GB",
-            "min_unified_memory_gb": 96,
-            "default": false,
-            "source": "huggingface",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine",
-              "group_size": 64
-            },
-            "bundle_repos": [
-              {
-                "repo_id": "pipenetwork/MiniMax-H3-MLX-8bit",
-                "local_path": "models/Video/minimax-h3-fl2va-mlx-q8",
-                "allow_patterns": [
-                  "*.safetensors",
-                  "model.safetensors.index.json",
-                  "quant_config.json",
-                  "config.json"
-                ]
-              },
-              {
-                "repo_id": "MiniMaxAI/MiniMax-H3",
-                "local_path": "models/Video/minimax-h3-fl2va-mlx-q8",
-                "name": "FL2VA aux",
-                "allow_patterns": [
-                  "FL2VA/text_encoder/**",
-                  "FL2VA/video_vae/**",
-                  "FL2VA/audio_vae/**",
-                  "FL2VA/processor/**",
-                  "FL2VA/model_index.json"
-                ]
-              }
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "longcat-avatar-1.5": {
@@ -9651,7 +7184,7 @@
           "mlx"
         ],
         "overrides": {
-          "scheduler_shift": 7.0,
+          "scheduler_shift": 7,
           "supports_guidance": false
         }
       },
@@ -9716,78 +7249,7 @@
         "extends": "video_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "mlx-bf16-dmd": {
-            "name": {
-              "zh": "BF16 完整版 (DMD)",
-              "en": "BF16 Full (DMD)"
-            },
-            "size": "43GB",
-            "min_unified_memory_gb": 64,
-            "default": true,
-            "source": "modelscope",
-            "repo_id": "mlx-community/LongCat-Video-Avatar-1.5-bf16-dmd-merged",
-            "local_path": "models/Video/longcat-avatar-1.5-mlx-bf16-dmd",
-            "source_type": "prequantized",
-            "allow_patterns": [
-              "dit/**",
-              "vae/**",
-              "text_encoder/**",
-              "audio_encoder/**",
-              "tokenizer/**"
-            ]
-          },
-          "mlx-q8-dmd": {
-            "name": {
-              "zh": "8-bit 量化版 (DMD)",
-              "en": "8-bit Quantized (DMD)"
-            },
-            "size": "30GB",
-            "min_unified_memory_gb": 32,
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/LongCat-Video-Avatar-1.5-q8-dmd-merged",
-            "local_path": "models/Video/longcat-avatar-1.5-mlx-q8-dmd",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine",
-              "group_size": 64
-            },
-            "allow_patterns": [
-              "dit/**",
-              "vae/**",
-              "text_encoder/**",
-              "audio_encoder/**",
-              "tokenizer/**"
-            ]
-          },
-          "mlx-q4-dmd": {
-            "name": {
-              "zh": "4-bit 量化版 (DMD)",
-              "en": "4-bit Quantized (DMD)"
-            },
-            "size": "23GB",
-            "min_unified_memory_gb": 24,
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/LongCat-Video-Avatar-1.5-q4-dmd-merged",
-            "local_path": "models/Video/longcat-avatar-1.5-mlx-q4-dmd",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine",
-              "group_size": 64
-            },
-            "allow_patterns": [
-              "dit/**",
-              "vae/**",
-              "text_encoder/**",
-              "audio_encoder/**",
-              "tokenizer/**"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "wan-2.2-ti2v-5b": {
@@ -9829,17 +7291,17 @@
             "type": "int"
           },
           "guide_scale": {
-            "default": 5.0,
-            "min": 1.0,
-            "max": 10.0,
+            "default": 5,
+            "min": 1,
+            "max": 10,
             "step": 0.5,
             "label": "CFG引导",
             "type": "float"
           },
           "shift": {
-            "default": 5.0,
-            "min": 1.0,
-            "max": 20.0,
+            "default": 5,
+            "min": 1,
+            "max": 20,
             "step": 0.5,
             "label": "Shift",
             "type": "float"
@@ -9897,53 +7359,7 @@
         "extends": "video_dit_standard"
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "32GB",
-            "default": true,
-            "repo_id": "Wan-AI/Wan2.2-TI2V-5B",
-            "local_path": "models/Video/wan-2.2-ti2v-5b-fp16",
-            "source": "modelscope",
-            "source_type": "full"
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "23GB",
-            "default": false,
-            "repo_id": "Wan-AI/Wan2.2-TI2V-5B",
-            "local_path": "models/Video/wan-2.2-ti2v-5b-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "18GB",
-            "min_unified_memory_gb": 5,
-            "default": false,
-            "repo_id": "Wan-AI/Wan2.2-TI2V-5B",
-            "local_path": "models/Video/wan-2.2-ti2v-5b-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "ace-step-xl-sft": {
@@ -10023,9 +7439,9 @@
           },
           "guidance": {
             "type": "float",
-            "default": 7.0,
-            "min": 1.0,
-            "max": 20.0
+            "default": 7,
+            "min": 1,
+            "max": 20
           },
           "lora_support": true,
           "supports_lyrics": true,
@@ -10049,84 +7465,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "xl-sft": {
-            "name": {
-              "zh": "XL SFT (4B)",
-              "en": "XL SFT (4B)"
-            },
-            "size": "28GB",
-            "min_unified_memory_gb": 24,
-            "default": true,
-            "repo_id": "ACE-Step/Ace-Step1.5",
-            "local_path": "models/Audio/acestep-v15-xl-sft",
-            "source_type": "full",
-            "bundle_repos": [
-              {
-                "repo_id": "ACE-Step/Ace-Step1.5",
-                "local_path": "models/Audio/acestep-v15-xl-sft",
-                "name": "ACE-Step 1.5 Shared",
-                "size": "9.4GB",
-                "source": "modelscope"
-              },
-              {
-                "repo_id": "ACE-Step/acestep-v15-xl-sft",
-                "local_path": "models/Audio/acestep-v15-xl-sft/acestep-v15-xl-sft",
-                "name": "XL SFT DiT",
-                "size": "19GB",
-                "source": "modelscope"
-              }
-            ]
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "23GB",
-            "default": false,
-            "repo_id": "ACE-Step/Ace-Step1.5",
-            "local_path": "models/Audio/acestep-v15-xl-sft-int8",
-            "source_type": "derived",
-            "from_version": "xl-sft",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "21GB",
-            "default": false,
-            "repo_id": "ACE-Step/Ace-Step1.5",
-            "local_path": "models/Audio/acestep-v15-xl-sft-int4",
-            "source_type": "derived",
-            "from_version": "xl-sft",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          },
-          "mlx-q4": {
-            "name": {
-              "zh": "4-bit 量化版",
-              "en": "4-bit Quantized"
-            },
-            "size": "4.9GB",
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "mlx-community/ACE-Step1.5-MLX-4bit",
-            "local_path": "models/Audio/acestep-v15-mlx-q4",
-            "source_type": "prequantized",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "ace-step-xl-turbo": {
@@ -10206,9 +7545,9 @@
           },
           "guidance": {
             "type": "float",
-            "default": 1.0,
-            "min": 1.0,
-            "max": 20.0
+            "default": 1,
+            "min": 1,
+            "max": 20
           },
           "lora_support": true,
           "supports_lyrics": true,
@@ -10232,68 +7571,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "xl-turbo": {
-            "name": {
-              "zh": "XL Turbo (4B)",
-              "en": "XL Turbo (4B)"
-            },
-            "size": "28GB",
-            "min_unified_memory_gb": 24,
-            "default": true,
-            "repo_id": "ACE-Step/Ace-Step1.5",
-            "local_path": "models/Audio/acestep-v15-xl-turbo",
-            "source_type": "full",
-            "bundle_repos": [
-              {
-                "repo_id": "ACE-Step/Ace-Step1.5",
-                "local_path": "models/Audio/acestep-v15-xl-turbo",
-                "name": "ACE-Step 1.5 Shared",
-                "size": "9.4GB",
-                "source": "modelscope"
-              },
-              {
-                "repo_id": "ACE-Step/acestep-v15-xl-turbo",
-                "local_path": "models/Audio/acestep-v15-xl-turbo/acestep-v15-xl-turbo",
-                "name": "XL Turbo DiT",
-                "size": "19GB",
-                "source": "modelscope"
-              }
-            ]
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "23GB",
-            "default": false,
-            "repo_id": "ACE-Step/Ace-Step1.5",
-            "local_path": "models/Audio/acestep-v15-xl-turbo-int8",
-            "source_type": "derived",
-            "from_version": "xl-turbo",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "21GB",
-            "default": false,
-            "repo_id": "ACE-Step/Ace-Step1.5",
-            "local_path": "models/Audio/acestep-v15-xl-turbo-int4",
-            "source_type": "derived",
-            "from_version": "xl-turbo",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "ace-step-lora-super-eurobeats": {
@@ -10324,8 +7602,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -10333,19 +7611,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "168MB",
-            "default": true,
-            "repo_id": "AI-ModelScope/super_eurobeats_ACE_STEP-1.5-lora",
-            "local_path": "models/Lora/ace-step-lora-super-eurobeats-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "ace-step-lora-accompaniment-ms": {
@@ -10376,8 +7642,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -10385,19 +7651,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "304MB",
-            "default": true,
-            "repo_id": "DiffSynth-Studio/acestep15xlsft-lora-music",
-            "local_path": "models/Lora/ace-step-lora-accompaniment-ms-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "ace-step-lora-chinese-new-year": {
@@ -10428,8 +7682,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -10437,19 +7691,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "84MB",
-            "default": true,
-            "repo_id": "ACE-Step/ACE-Step-v1.5-chinese-new-year-LoRA",
-            "local_path": "models/Lora/ace-step-lora-chinese-new-year-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "diffrhythm-v2": {
@@ -10511,9 +7753,9 @@
           },
           "guidance": {
             "type": "float",
-            "default": 2.0,
-            "min": 1.0,
-            "max": 20.0
+            "default": 2,
+            "min": 1,
+            "max": 20
           },
           "supports_lyrics": true,
           "supports_instrumental": false,
@@ -10530,80 +7772,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16 完整版",
-              "en": "FP16 Full"
-            },
-            "size": "4.7GB",
-            "default": true,
-            "source": "modelscope",
-            "repo_id": "ASLP-lab/DiffRhythm2",
-            "local_path": "models/Audio/diffrhythm-v2-fp16",
-            "source_type": "full",
-            "bundle_repos": [
-              {
-                "repo_id": "ASLP-lab/DiffRhythm2",
-                "local_path": "models/Audio/diffrhythm-v2-fp16",
-                "name": "DiffRhythm2",
-                "size": "4.7GB",
-                "source": "modelscope",
-                "allow_patterns": [
-                  "model.safetensors",
-                  "config.json",
-                  "decoder.bin",
-                  "decoder.json",
-                  "mulan/**"
-                ]
-              },
-              {
-                "repo_id": "ASLP-lab/DiffRhythm2",
-                "local_path": "models/Audio/diffrhythm-v2-fp16",
-                "name": "DiffRhythm2 G2P",
-                "size": "0B",
-                "source": "modelscope",
-                "allow_patterns": [
-                  "g2p/**"
-                ]
-              }
-            ]
-          },
-          "int8": {
-            "name": {
-              "zh": "INT8 量化版",
-              "en": "INT8 Quantized"
-            },
-            "size": "2.6GB",
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "ASLP-lab/DiffRhythm2",
-            "local_path": "models/Audio/diffrhythm-v2-int8",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 8,
-              "scheme": "mlx_affine"
-            }
-          },
-          "int4": {
-            "name": {
-              "zh": "INT4 量化版",
-              "en": "INT4 Quantized"
-            },
-            "size": "1.5GB",
-            "default": false,
-            "source": "modelscope",
-            "repo_id": "ASLP-lab/DiffRhythm2",
-            "local_path": "models/Audio/diffrhythm-v2-int4",
-            "source_type": "derived",
-            "from_version": "fp16",
-            "quantization": {
-              "bits": 4,
-              "scheme": "mlx_affine"
-            }
-          }
-        }
+        "versions": {}
       }
     },
     "realism-lora": {
@@ -10634,8 +7803,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -10643,19 +7812,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "21MB",
-            "default": true,
-            "repo_id": "AI-ModelScope/flux-RealismLora",
-            "local_path": "models/Lora/realism-lora-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "awportraitcn-hf": {
@@ -10686,8 +7843,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.9,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -10695,19 +7852,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "292MB",
-            "default": true,
-            "repo_id": "Shakker-Labs/AWPortraitCN",
-            "local_path": "models/Lora/awportraitcn-hf-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "awportraitcn2-hf": {
@@ -10738,8 +7883,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.9,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -10747,19 +7892,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "584MB",
-            "default": true,
-            "repo_id": "Shakker-Labs/AWPortraitCN2",
-            "local_path": "models/Lora/awportraitcn2-hf-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     },
     "awportrait-z": {
@@ -10790,8 +7923,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -10799,23 +7932,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "649MB",
-            "default": true,
-            "repo_id": "LiblibAI/AWPortrait-Z",
-            "local_path": "models/Lora/awportrait-z-fp16",
-            "source_type": "full",
-            "allow_patterns": [
-              "AWPortrait-Z.safetensors",
-              "README.md"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "awportrait-fl-hf": {
@@ -10846,8 +7963,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.9,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -10855,23 +7972,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "585MB",
-            "default": true,
-            "repo_id": "Shakker-Labs/AWPortrait-FL",
-            "local_path": "models/Lora/awportrait-fl-hf-fp16",
-            "source_type": "full",
-            "allow_patterns": [
-              "AWPortrait-FL-lora.safetensors",
-              "README.md"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "flux1-dev-lora-add-details-hf": {
@@ -10901,9 +8002,9 @@
       "ui": {
         "parameters": {
           "lora_scale": {
-            "default": 1.0,
-            "min": 0.0,
-            "max": 2.0,
+            "default": 1,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -10911,23 +8012,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "656MB",
-            "default": true,
-            "repo_id": "Shakker-Labs/FLUX.1-dev-LoRA-add-details",
-            "local_path": "models/Lora/flux1-dev-lora-add-details-hf-fp16",
-            "source_type": "full",
-            "allow_patterns": [
-              "FLUX-dev-lora-add_details.safetensors",
-              "README.md"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "flux-asian-portrait-hf": {
@@ -10958,8 +8043,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -10967,23 +8052,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "146MB",
-            "default": true,
-            "repo_id": "Keltezaa/flux-realistic-asian-girls-face-flux",
-            "local_path": "models/Lora/flux-asian-portrait-hf-fp16",
-            "source_type": "full",
-            "allow_patterns": [
-              "*.safetensors",
-              "README.md"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "flux2-klein-asian-real-hf": {
@@ -11014,8 +8083,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.8,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -11023,23 +8092,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "158MB",
-            "default": true,
-            "repo_id": "WarmBloodAban/Flux2_Klein_Anything_to_Real_Characters",
-            "local_path": "models/Lora/flux2-klein-asian-real-hf-fp16",
-            "source_type": "full",
-            "allow_patterns": [
-              "*.safetensors",
-              "README.md"
-            ]
-          }
-        }
+        "versions": {}
       }
     },
     "starface-z-image-turbo-ms": {
@@ -11070,8 +8123,8 @@
         "parameters": {
           "lora_scale": {
             "default": 0.7,
-            "min": 0.0,
-            "max": 2.0,
+            "min": 0,
+            "max": 2,
             "step": 0.1,
             "label": "LoRA强度",
             "type": "float"
@@ -11079,19 +8132,7 @@
         }
       },
       "distribution": {
-        "versions": {
-          "fp16": {
-            "name": {
-              "zh": "FP16",
-              "en": "FP16"
-            },
-            "size": "151MB",
-            "default": true,
-            "repo_id": "SecretDongGe/StarFace-Z-Image",
-            "local_path": "models/Lora/starface-z-image-turbo-ms-fp16",
-            "source_type": "full"
-          }
-        }
+        "versions": {}
       }
     }
   }

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Linux Tauri desktop (MLX sidecar / mlx[cuda]) — AppImage + .deb
-# Naming aligned with danmo-work pack_desktop_linux.sh.
+# Linux Tauri desktop (ggml sidecar) — AppImage + .deb
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -18,31 +17,25 @@ fi
 
 dq_ensure_out_layout
 cd "$DQ_ROOT"
-
-PYTHON="${PYTHON:-python3}"
-if [[ -x "$DQ_ROOT/.venv/bin/python3" ]]; then
-  PYTHON="$DQ_ROOT/.venv/bin/python3"
-fi
-
-export DANQING_PYINSTALLER_PROFILE="${DANQING_PYINSTALLER_PROFILE:-mlx}"
 export RELEASE_VERSION="${RELEASE_VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
-
-echo "==> Ensure MLX (mlx[cuda]) venv"
-if [[ ! -d "$DQ_ROOT/.venv" ]]; then
-  python3.11 -m venv "$DQ_ROOT/.venv" 2>/dev/null || python3 -m venv "$DQ_ROOT/.venv"
-fi
-PYTHON="$DQ_ROOT/.venv/bin/python3"
-"$PYTHON" -m pip install --upgrade pip
-"$PYTHON" -m pip install -r "$DQ_ROOT/requirements-linux.txt" pyinstaller
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$DQ_DESKTOP_CARGO}"
+mkdir -p "$CARGO_TARGET_DIR"
 
 echo "==> Frontend -> $DQ_FRONTEND_DIST"
 (cd "$DQ_ROOT/frontend" && npm install && npm run build)
 
-echo "==> PyInstaller sidecar (MLX)"
-DANQING_PYINSTALLER_PROFILE=mlx "$PYTHON" "$SCRIPT_DIR/build_sidecar.py"
+echo "==> ggml sidecar"
+bash "$SCRIPT_DIR/build_ggml_sidecar.sh"
 
-echo "==> Tauri shell (Linux AppImage + deb)"
-"$PYTHON" "$SCRIPT_DIR/tauri_build.py" --platform linux
+if [[ -n "${DANQING_DESKTOP_VERSION:-}" ]]; then
+  bash "$SCRIPT_DIR/set_desktop_version.sh" "$DANQING_DESKTOP_VERSION"
+elif git -C "$DQ_ROOT" describe --exact-match --tags HEAD >/dev/null 2>&1; then
+  bash "$SCRIPT_DIR/set_desktop_version.sh"
+fi
+bash "$SCRIPT_DIR/prepare_tauri_resources.sh"
+rustup target add x86_64-unknown-linux-gnu
+(cd "$DQ_ROOT/desktop" && npm install && npm exec tauri build -- --target x86_64-unknown-linux-gnu -b appimage -b deb)
+bash "$SCRIPT_DIR/stage_desktop_bundle.sh"
 
 echo "==> Desktop bundle -> $DQ_DESKTOP_BUNDLE"
 find "$DQ_DESKTOP_BUNDLE" -type f \( -name '*.AppImage' -o -name '*.deb' \) 2>/dev/null | head -20 || true

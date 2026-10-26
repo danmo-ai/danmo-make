@@ -58,7 +58,7 @@ fn spawn_worker(state: AppState) {
         };
         let params: Value = serde_json::from_str(&task.params).unwrap_or(json!({}));
         let family = params.get("family").and_then(|v| v.as_str()).unwrap_or("");
-        let outcome = run_task(&state, &task.kind, family, &params);
+        let outcome = run_task(&state, &task.kind, family, &task.model_id, &params);
         match outcome {
             Ok(result) => {
                 let _ = state.scheduler.finish_ok(&task.id, &result.to_string());
@@ -70,13 +70,33 @@ fn spawn_worker(state: AppState) {
     });
 }
 
-fn run_task(state: &AppState, kind: &str, family: &str, params: &Value) -> Result<Value, String> {
+fn run_task(
+    state: &AppState,
+    kind: &str,
+    family: &str,
+    model: &str,
+    params: &Value,
+) -> Result<Value, String> {
+    let needs_bundle = matches!(
+        kind,
+        "image.generation"
+            | "image.edit"
+            | "image.upscale"
+            | "video.generation"
+            | "audio.generation"
+    );
+    let bundle = if needs_bundle {
+        Some(gguf_bundle(&state.registry, model)?)
+    } else {
+        None
+    };
     match kind {
         "image.generation" => {
             let request: ImageGenerationRequest =
                 serde_json::from_value(params.get("request").cloned().unwrap_or(json!({})))
                     .map_err(|e| e.to_string())?;
-            let out = image_create(&request, family, state.backend, |step, steps| {
+            let bundle = bundle.ok_or_else(|| "missing GGUF bundle".to_string())?;
+            let out = image_create(&request, family, &bundle, state.backend, |step, steps| {
                 let _ = state.scheduler.progress(
                     params.get("task_id").and_then(|v| v.as_str()).unwrap_or(""),
                     step as f64 / steps as f64,
@@ -93,23 +113,45 @@ fn run_task(state: &AppState, kind: &str, family: &str, params: &Value) -> Resul
                 "latent_len": out.latents.len(),
             }))
         }
-        "image.edit" | "image.upscale" => upscale_or_edit(kind, family),
-        "video.generation" => video_create(family)
-            .map(|_| json!({"ok": true}))
-            .map_err(|e| e.to_string()),
-        "audio.generation" => audio_create(family)
-            .map(|_| json!({"ok": true}))
-            .map_err(|e| e.to_string()),
+        "image.edit" | "image.upscale" => {
+            let bundle = bundle.ok_or_else(|| "missing GGUF bundle".to_string())?;
+            upscale_or_edit(kind, family, &bundle)
+        }
+        "video.generation" => {
+            let bundle = bundle.ok_or_else(|| "missing GGUF bundle".to_string())?;
+            video_create(family, &bundle)
+                .map(|_| json!({"ok": true}))
+                .map_err(|e| e.to_string())
+        }
+        "audio.generation" => {
+            let bundle = bundle.ok_or_else(|| "missing GGUF bundle".to_string())?;
+            audio_create(family, &bundle)
+                .map(|_| json!({"ok": true}))
+                .map_err(|e| e.to_string())
+        }
         other => Err(format!("unsupported task kind {other}")),
     }
 }
 
-fn upscale_or_edit(kind: &str, family: &str) -> Result<Value, String> {
+fn gguf_bundle(registry: &std::path::Path, model: &str) -> Result<PathBuf, String> {
+    let catalog = Catalog::open(registry).map_err(|e| e.to_string())?;
+    let path = PathBuf::from(catalog.gguf_local_path(model).map_err(|e| e.to_string())?);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path))
+    }
+}
+
+fn upscale_or_edit(kind: &str, family: &str, bundle: &std::path::Path) -> Result<Value, String> {
     if kind == "image.upscale" {
-        upscale(family)
+        upscale(family, bundle)
             .map(|_| json!({"ok": true}))
             .map_err(|e| e.to_string())
     } else {
+        let _ = danmo_engine::assert_gguf_bundle(bundle).map_err(|e| e.to_string())?;
         Err(format!("{family} edit graph is not built"))
     }
 }
@@ -131,9 +173,10 @@ async fn registry_route(
             format!("registry unreadable: {e}"),
         )
     })?;
-    let value: Value =
-        serde_json::from_str(&text).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    Ok(Json(value))
+    let catalog = Catalog::from_value(
+        serde_json::from_str(&text).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
+    );
+    Ok(Json(catalog.public_registry()))
 }
 
 async fn queue(State(state): State<AppState>) -> Json<Value> {
@@ -210,14 +253,63 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    async fn wait_terminal(app: &Router, id: &str) -> Value {
+        let mut last = json!({});
+        for _ in 0..50 {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/tasks/{id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            last = serde_json::from_slice(&bytes).unwrap();
+            let status = last["status"].as_str().unwrap_or("");
+            if status == "succeeded" || status == "failed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+        last
+    }
+
     #[tokio::test]
-    async fn flux2_generation_is_accepted_and_runs() {
-        let dir = std::env::temp_dir().join(format!("danmo-api-{}", std::process::id()));
+    async fn flux2_generation_loads_gguf_bundle() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-ok-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
-        let db = dir.join("studio.db");
-        let registry = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../default_config/models_registry.json");
-        let app = router(&db, &registry);
+        let bundle = dir.join("flux2-klein-4b-bf16");
+        danmo_engine::write_smoke_bundle(&bundle, 4).unwrap();
+        let registry = dir.join("registry.json");
+        std::fs::write(
+            &registry,
+            serde_json::json!({
+                "models": {
+                    "flux2-klein-4b": {
+                        "catalog": { "media": "image" },
+                        "runtime": { "family": "flux2", "backends": ["ggml"] },
+                        "distribution": {
+                            "versions": {
+                                "bf16": { "local_path": bundle, "default": true }
+                            }
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let app = router(&dir.join("studio.db"), &registry);
         let body = serde_json::json!({
             "model": "flux2-klein-4b",
             "prompt": "a cat",
@@ -239,28 +331,52 @@ mod tests {
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         let accepted: Value = serde_json::from_slice(&bytes).unwrap();
-        let id = accepted["id"].as_str().unwrap().to_string();
-        let mut status = String::new();
-        for _ in 0..50 {
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .uri(format!("/api/tasks/{id}"))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            let bytes = response.into_body().collect().await.unwrap().to_bytes();
-            let task: Value = serde_json::from_slice(&bytes).unwrap();
-            status = task["status"].as_str().unwrap_or("").to_string();
-            if status == "succeeded" || status == "failed" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(40)).await;
-        }
-        assert_eq!(status, "succeeded", "task ended as {status}");
+        let id = accepted["id"].as_str().unwrap();
+        let task = wait_terminal(&app, id).await;
+        assert_eq!(task["status"], "succeeded", "task {task}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn legacy_registry_weights_fail_the_task() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-old-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let registry = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../default_config/models_registry.json");
+        let app = router(&dir.join("studio.db"), &registry);
+        let body = serde_json::json!({
+            "model": "flux2-klein-4b",
+            "prompt": "a cat",
+            "size": "64x64",
+            "steps": 2
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/images/generations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let accepted: Value = serde_json::from_slice(&bytes).unwrap();
+        let id = accepted["id"].as_str().unwrap();
+        let task = wait_terminal(&app, id).await;
+        assert_eq!(task["status"], "failed", "task {task}");
+        let err = task["error"].as_str().unwrap_or("");
+        assert!(err.contains("Re-download"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

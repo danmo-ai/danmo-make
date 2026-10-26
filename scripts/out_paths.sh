@@ -1,5 +1,5 @@
 # Unified build output paths — source from scripts/*.sh
-# Python canonical copy: scripts/out_paths.py
+# Python canonical copy removed. This shell file is the source of paths.
 
 if [[ -n "${_DQ_OUT_PATHS_LOADED:-}" ]]; then
   return 0 2>/dev/null || true

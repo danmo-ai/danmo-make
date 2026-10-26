@@ -2,13 +2,15 @@
 
 use crate::families::{self, Media, Shape};
 use crate::runtime::BackendKind;
+use crate::weights::{self, WeightError};
 use danmo_contracts::{parse_size, ImageGenerationRequest};
+use std::path::Path;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum EngineError {
     #[error(transparent)]
-    Runtime(#[from] crate::runtime::RuntimeError),
+    Weights(#[from] WeightError),
     #[error("family {0} is not registered")]
     UnknownFamily(String),
     #[error("{family} has no ggml graph yet (shape {shape})")]
@@ -40,6 +42,7 @@ fn shape_name(shape: Shape) -> &'static str {
 pub fn image_create(
     request: &ImageGenerationRequest,
     family: &str,
+    bundle: &Path,
     backend: BackendKind,
     on_progress: impl FnMut(u32, u32),
 ) -> Result<RunOutput, EngineError> {
@@ -50,11 +53,13 @@ pub fn image_create(
         )));
     }
     let (width, height) = parse_size(&request.size).map_err(EngineError::BadRequest)?;
+    weights::assert_gguf_bundle(bundle)?;
     let steps = request.steps.unwrap_or(4);
     match spec.shape {
         Shape::DitPipeline => {
             let Some(done) = families::run_dit_image(
                 family,
+                bundle,
                 steps,
                 width,
                 height,
@@ -85,34 +90,36 @@ pub fn image_create(
     }
 }
 
-pub fn video_create(family: &str) -> Result<(), EngineError> {
-    route_media(family, Media::Video)
+pub fn video_create(family: &str, bundle: &Path) -> Result<(), EngineError> {
+    route_media(family, bundle, Media::Video)
 }
 
-pub fn audio_create(family: &str) -> Result<(), EngineError> {
-    route_media(family, Media::Audio)
+pub fn audio_create(family: &str, bundle: &Path) -> Result<(), EngineError> {
+    route_media(family, bundle, Media::Audio)
 }
 
-pub fn upscale(family: &str) -> Result<(), EngineError> {
+pub fn upscale(family: &str, bundle: &Path) -> Result<(), EngineError> {
     let spec = families::spec(family).ok_or_else(|| EngineError::UnknownFamily(family.into()))?;
     if spec.shape != Shape::JobPipeline {
         return Err(EngineError::BadRequest(format!(
             "{family} is not an upscale job"
         )));
     }
+    weights::assert_gguf_bundle(bundle)?;
     Err(EngineError::GraphNotBuilt {
         family: family.into(),
         shape: shape_name(spec.shape).into(),
     })
 }
 
-fn route_media(family: &str, media: Media) -> Result<(), EngineError> {
+fn route_media(family: &str, bundle: &Path, media: Media) -> Result<(), EngineError> {
     let spec = families::spec(family).ok_or_else(|| EngineError::UnknownFamily(family.into()))?;
     if spec.media != media {
         return Err(EngineError::BadRequest(format!(
             "{family} does not match the requested media"
         )));
     }
+    weights::assert_gguf_bundle(bundle)?;
     Err(EngineError::GraphNotBuilt {
         family: family.into(),
         shape: shape_name(spec.shape).into(),

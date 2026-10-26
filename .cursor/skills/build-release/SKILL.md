@@ -18,16 +18,16 @@ Always drive version resolution and notes through the repo script:
 
 ```bash
 # Preview only
-python3 scripts/release_version.py --dry-run
-python3 scripts/release_version.py 0.1.9 --dry-run
+bash scripts/release_version.sh --dry-run
+bash scripts/release_version.sh 0.1.9 --dry-run
 
 # Bump files only (no git)
-python3 scripts/release_version.py
-python3 scripts/release_version.py 0.2.0
+bash scripts/release_version.sh
+bash scripts/release_version.sh 0.2.0
 
 # Full release: commit + tag + push + gh release notes
-python3 scripts/release_version.py --push
-python3 scripts/release_version.py 0.1.9 --push
+bash scripts/release_version.sh --push
+bash scripts/release_version.sh 0.1.9 --push
 ```
 
 ### Version rules
@@ -49,7 +49,7 @@ When the user asks to build/release:
 4. After `--push`, report:
    - tag `vX.Y.Z`
    - Actions run URL: `gh run list --workflow=release.yml -L 1`
-5. Do **not** invent a second versioning path — do not hand-edit `Cargo.toml` / `tauri.conf.json` for releases (use this script; CI may still call `set_desktop_version.py` at build time).
+5. Do **not** invent a second versioning path — do not hand-edit `Cargo.toml` / `tauri.conf.json` for releases (use this script).
 
 ## What the script bumps
 
@@ -57,7 +57,7 @@ When the user asks to build/release:
 - `desktop/src-tauri/Cargo.lock` → `danqing-desktop` package version only
 - `desktop/src-tauri/tauri.conf.json` → `version`
 
-CI (`release.yml` on `v*` tags) publishes macOS `.dmg`, Linux AppImage/`.deb`, Linux CUDA server `.tar.gz`, and Windows NSIS `.exe`.
+CI (`release.yml` on `v*` tags) publishes a macOS `.dmg` and a Linux ggml server `.tar.gz`.
 
 ## Notes
 

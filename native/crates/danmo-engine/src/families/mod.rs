@@ -2,9 +2,7 @@
 
 mod flux2;
 
-pub use flux2::{
-    load_safetensors_f32, remap_flux2_lora_target, remap_flux2_weights, Flux2Config, Flux2Denoise,
-};
+pub use flux2::{Flux2Config, Flux2Denoise};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Media {
@@ -165,15 +163,17 @@ pub struct DitImageRun {
 /// Factory row for Shape A image families. The pipeline does not match on family ids.
 pub fn run_dit_image(
     family: &str,
+    bundle: &std::path::Path,
     steps: u32,
     width: u32,
     height: u32,
     guidance: f32,
     backend: crate::runtime::BackendKind,
     on_progress: impl FnMut(u32, u32),
-) -> Result<Option<DitImageRun>, crate::runtime::RuntimeError> {
+) -> Result<Option<DitImageRun>, crate::weights::WeightError> {
     match family {
-        "flux2" => Ok(Some(flux2::run_smoke(
+        "flux2" => Ok(Some(flux2::run(
+            bundle,
             steps,
             width,
             height,
