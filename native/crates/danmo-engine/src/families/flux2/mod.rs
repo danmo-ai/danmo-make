@@ -1,7 +1,9 @@
 mod png;
+mod text;
 mod transformer;
 mod weights;
 
+pub use text::write_qwen3_bundle;
 pub use transformer::Flux2Denoise;
 pub use weights::{weight_layout, Flux2Config};
 
@@ -15,6 +17,7 @@ use std::path::Path;
 
 pub fn run(
     bundle: &Path,
+    prompt: &str,
     steps: u32,
     width: u32,
     height: u32,
@@ -34,7 +37,19 @@ pub fn run(
     let grid_w = (width / scale) as i64;
     let grid_h = (height / scale) as i64;
     let seq_img = grid_w * grid_h;
-    let txt = text_tokens(&files.text_encoder, config.joint_attention_dim)?;
+    let tokenizer = std::fs::read_to_string(bundle.join("tokenizer.json")).map_err(|err| {
+        WeightError::Open {
+            path: bundle.join("tokenizer.json").display().to_string(),
+            detail: err.to_string(),
+        }
+    })?;
+    let (txt, seq_txt) = text_tokens(
+        &files.text_encoder,
+        &tokenizer,
+        prompt,
+        config.joint_attention_dim,
+        backend,
+    )?;
     let ctx = crate::runtime::GgmlContext::new(backend)?;
     let mut types = HashMap::new();
     let mut stored = Vec::new();
@@ -44,7 +59,8 @@ pub fn run(
         types.insert(name.clone(), ggml_type);
         stored.push((name.clone(), loaded.raw_exact(&name, &[ne0, ne1])?));
     }
-    let mut denoise = transformer::Flux2Denoise::build_typed(&ctx, config, grid_w, grid_h, &types)?;
+    let mut denoise =
+        transformer::Flux2Denoise::build_typed(&ctx, config, grid_w, grid_h, seq_txt, &types)?;
     for (name, raw) in &stored {
         denoise.load_bytes(name, raw)?;
     }
@@ -161,14 +177,21 @@ fn count_blocks(weights: &GgufWeights, prefix: &str, suffix: &str) -> i64 {
     n
 }
 
-fn text_tokens(paths: &[std::path::PathBuf], joint: i64) -> Result<Vec<f32>, WeightError> {
+fn text_tokens(
+    paths: &[std::path::PathBuf],
+    tokenizer_json: &str,
+    prompt: &str,
+    joint: i64,
+    backend: crate::runtime::BackendKind,
+) -> Result<(Vec<f32>, i64), WeightError> {
     let text = GgufWeights::open_parts(paths)?;
-    for name in text.names() {
-        if name.contains("layers.") || name.starts_with("blk.") {
-            return Err(WeightError::NotBuilt(
-                "text encoder graph is not built".into(),
-            ));
-        }
+    if text.names().any(|name| name.starts_with("blk.")) {
+        return Err(WeightError::NotBuilt(
+            "text encoder tensor names are blk.*; this graph reads layers.*".into(),
+        ));
+    }
+    if text.contains("layers.0.self_attn.q_proj.weight") {
+        return text::encode_prompt(paths, tokenizer_json, prompt, joint, backend);
     }
     let shape = text.shape("token_embed.weight")?;
     if shape[0] != joint || shape[1] != 1 {
@@ -177,7 +200,7 @@ fn text_tokens(paths: &[std::path::PathBuf], joint: i64) -> Result<Vec<f32>, Wei
             shape
         )));
     }
-    text.f32_exact("token_embed.weight", &[joint, 1])
+    Ok((text.f32_exact("token_embed.weight", &[joint, 1])?, 1))
 }
 
 fn decode_preview(

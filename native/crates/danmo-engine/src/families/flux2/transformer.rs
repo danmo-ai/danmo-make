@@ -44,8 +44,9 @@ impl Flux2Denoise {
         config: Flux2Config,
         grid_w: i64,
         grid_h: i64,
+        seq_txt: i64,
     ) -> Result<Self, RuntimeError> {
-        Self::build_typed(ctx, config, grid_w, grid_h, &HashMap::new())
+        Self::build_typed(ctx, config, grid_w, grid_h, seq_txt, &HashMap::new())
     }
 
     /// `types` maps a GGUF tensor name to its stored ggml type. Missing names are F32.
@@ -54,6 +55,7 @@ impl Flux2Denoise {
         config: Flux2Config,
         grid_w: i64,
         grid_h: i64,
+        seq_txt: i64,
         types: &HashMap<String, u32>,
     ) -> Result<Self, RuntimeError> {
         if config.num_heads < 1 || config.attn_head_dim < 1 {
@@ -69,8 +71,10 @@ impl Flux2Denoise {
         if grid_w < 1 || grid_h < 1 {
             return Err(RuntimeError::Message("flux2 image grid is empty".into()));
         }
+        if seq_txt < 1 {
+            return Err(RuntimeError::Message("flux2 text sequence is empty".into()));
+        }
         let seq_img = grid_w * grid_h;
-        let seq_txt = 1i64;
         let seq = seq_txt + seq_img;
         let axis_rope = config.attn_head_dim % 8 == 0;
         let mut b = ctx.builder(64 * 1024 * 1024)?;

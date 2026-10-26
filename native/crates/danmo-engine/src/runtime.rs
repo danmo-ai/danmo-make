@@ -343,6 +343,27 @@ impl<'a> GraphBuilder<'a> {
         unsafe { g::ggml_view_2d(self.ctx, a, ne0, ne1, nb1, offset) }
     }
 
+    pub fn get_rows(
+        &self,
+        table: *mut g::ggml_tensor,
+        rows: *mut g::ggml_tensor,
+    ) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_get_rows(self.ctx, table, rows) }
+    }
+
+    pub fn repeat(&self, a: *mut g::ggml_tensor, b: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_repeat(self.ctx, a, b) }
+    }
+
+    pub fn soft_max_ext(
+        &self,
+        a: *mut g::ggml_tensor,
+        mask: *mut g::ggml_tensor,
+        scale: f32,
+    ) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_soft_max_ext(self.ctx, a, mask, scale, 0.0) }
+    }
+
     /// Interleaved-pair RoPE. `pos` is I32 `[n_token]`. `freq_base` is 2000 for Flux2.
     pub fn rope(
         &self,
@@ -359,6 +380,33 @@ impl<'a> GraphBuilder<'a> {
                 std::ptr::null_mut(),
                 n_dims,
                 0,
+                0,
+                freq_base,
+                1.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+            )
+        }
+    }
+
+    /// Half-split RoPE used by Qwen3. `freq_base` is 1_000_000.
+    pub fn rope_neox(
+        &self,
+        a: *mut g::ggml_tensor,
+        pos: *mut g::ggml_tensor,
+        n_dims: i32,
+        freq_base: f32,
+    ) -> *mut g::ggml_tensor {
+        unsafe {
+            g::ggml_rope_ext(
+                self.ctx,
+                a,
+                pos,
+                std::ptr::null_mut(),
+                n_dims,
+                g::GGML_ROPE_TYPE_NEOX as i32,
                 0,
                 freq_base,
                 1.0,

@@ -5,8 +5,8 @@ pub mod runtime;
 mod weights;
 
 pub use families::{
-    all_specs, spec, weight_layout, write_config_bundle, write_q8_bundle, write_smoke_bundle,
-    FamilySpec, Flux2Config, Flux2Denoise, Media, Shape,
+    all_specs, spec, weight_layout, write_config_bundle, write_q8_bundle, write_qwen3_bundle,
+    write_smoke_bundle, FamilySpec, Flux2Config, Flux2Denoise, Media, Shape,
 };
 pub use pipeline::{audio_create, image_create, upscale, video_create, EngineError, RunOutput};
 pub use runtime::{identity_probe, BackendKind, GgmlContext};
@@ -127,7 +127,7 @@ mod tests {
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
         let config = Flux2Config::smoke();
         let grid = (64 / config.vae_scale) as i64;
-        let mut model = Flux2Denoise::build(&ctx, config, grid, grid).unwrap();
+        let mut model = Flux2Denoise::build(&ctx, config, grid, grid, 1).unwrap();
         let weights = GgufWeights::open(&dir.join("transformer.gguf")).unwrap();
         assert!(weights.contains("transformer_blocks.0.attn.to_q.weight"));
         assert!(!weights.contains("velocity.weight"));
@@ -189,6 +189,26 @@ mod tests {
         assert_eq!(out.graph_computes, 1);
         assert!(out.latents.iter().all(|v| v.is_finite()));
         assert_eq!(&out.preview_png[..8], b"\x89PNG\r\n\x1a\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flux2_qwen3_prompt_embeds_drive_denoise() {
+        let dir = scratch("flux2-qwen3");
+        let mut config = Flux2Config::from_dim(8);
+        config.joint_attention_dim = 16;
+        write_qwen3_bundle(&dir, config).unwrap();
+        let out = image_create(&request(), "flux2", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert_eq!(out.graph_computes, 1);
+        assert!(out.latents.iter().all(|v| v.is_finite()));
+        assert_eq!(&out.preview_png[..8], b"\x89PNG\r\n\x1a\n");
+        let mut missing = request();
+        missing.prompt = "a missing".into();
+        let err = match image_create(&missing, "flux2", &dir, BackendKind::Cpu, |_, _| ()) {
+            Err(err) => err,
+            Ok(_) => panic!("unknown prompt token was accepted"),
+        };
+        assert!(err.to_string().contains("no id for missing"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

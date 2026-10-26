@@ -61,6 +61,7 @@ pub fn image_create(
             let Some(done) = families::run_dit_image(
                 family,
                 bundle,
+                &request.prompt,
                 steps,
                 width,
                 height,

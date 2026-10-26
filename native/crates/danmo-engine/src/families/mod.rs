@@ -3,8 +3,8 @@
 mod flux2;
 
 pub use flux2::{
-    weight_layout, write_config_bundle, write_q8_bundle, write_smoke_bundle, Flux2Config,
-    Flux2Denoise,
+    weight_layout, write_config_bundle, write_q8_bundle, write_qwen3_bundle, write_smoke_bundle,
+    Flux2Config, Flux2Denoise,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +168,7 @@ pub struct DitImageRun {
 pub fn run_dit_image(
     family: &str,
     bundle: &std::path::Path,
+    prompt: &str,
     steps: u32,
     width: u32,
     height: u32,
@@ -178,6 +179,7 @@ pub fn run_dit_image(
     match family {
         "flux2" => Ok(Some(flux2::run(
             bundle,
+            prompt,
             steps,
             width,
             height,
