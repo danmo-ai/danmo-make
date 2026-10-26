@@ -280,22 +280,16 @@ fn nearest_expand(src: &[u8], grid_w: u32, grid_h: u32, width: u32, height: u32)
     out
 }
 
-/// Tiny bf16-tier bundle whose DiT file uses Flux2 parameter names.
-pub fn write_smoke_bundle(dir: &Path, dim: i64) -> Result<(), WeightError> {
-    write_config_bundle(dir, Flux2Config::from_dim(dim))
-}
-
-/// Same files as [`write_smoke_bundle`], with an explicit head split.
-pub fn write_config_bundle(dir: &Path, config: Flux2Config) -> Result<(), WeightError> {
-    std::fs::create_dir_all(dir).map_err(|err| WeightError::Open {
-        path: dir.display().to_string(),
-        detail: err.to_string(),
-    })?;
+fn write_transformer(
+    dir: &Path,
+    config: Flux2Config,
+    values: fn(&str, i64, i64) -> Vec<f32>,
+) -> Result<(), WeightError> {
     let layout = weight_layout(config);
     let owned: Vec<(String, i64, i64, Vec<f32>)> = layout
         .iter()
         .map(|(name, ne0, ne1)| {
-            let data = weights::smoke_values(name, *ne0, *ne1);
+            let data = values(name, *ne0, *ne1);
             (name.clone(), *ne0, *ne1, data)
         })
         .collect();
@@ -308,7 +302,28 @@ pub fn write_config_bundle(dir: &Path, config: Flux2Config) -> Result<(), Weight
             data,
         })
         .collect();
-    write_f32_tensors(&dir.join("transformer.gguf"), &tensors)?;
+    write_f32_tensors(&dir.join("transformer.gguf"), &tensors)
+}
+
+pub(super) fn rewrite_chain_transformer(
+    dir: &Path,
+    config: Flux2Config,
+) -> Result<(), WeightError> {
+    write_transformer(dir, config, weights::chain_dit_values)
+}
+
+/// Tiny bf16-tier bundle whose DiT file uses Flux2 parameter names.
+pub fn write_smoke_bundle(dir: &Path, dim: i64) -> Result<(), WeightError> {
+    write_config_bundle(dir, Flux2Config::from_dim(dim))
+}
+
+/// Same files as [`write_smoke_bundle`], with an explicit head split.
+pub fn write_config_bundle(dir: &Path, config: Flux2Config) -> Result<(), WeightError> {
+    std::fs::create_dir_all(dir).map_err(|err| WeightError::Open {
+        path: dir.display().to_string(),
+        detail: err.to_string(),
+    })?;
+    write_transformer(dir, config, weights::smoke_values)?;
     let joint = config.joint_attention_dim;
     let embed = vec![0.1f32; joint as usize];
     write_f32_tensors(

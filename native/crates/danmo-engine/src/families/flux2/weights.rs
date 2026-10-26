@@ -153,9 +153,43 @@ pub fn smoke_values(name: &str, ne0: i64, ne1: i64) -> Vec<f32> {
         return vec![1.0; n];
     }
     let mut data = vec![0f32; n];
-    let span = ne0.min(ne1) as usize;
-    for i in 0..span {
-        data[i + i * ne0 as usize] = 0.05;
+    paint_diag(&mut data, ne0, ne1, 0, ne0.min(ne1) as usize, 0.05);
+    data
+}
+
+/// Smoke diagonals, plus a joint-stream gate and a text-to-image path.
+///
+/// The plain diagonal fills only the shift slice of AdaLN, so the attention
+/// gate stays zero and the prompt never reaches the latent.
+pub fn chain_dit_values(name: &str, ne0: i64, ne1: i64) -> Vec<f32> {
+    let mut data = smoke_values(name, ne0, ne1);
+    if name.starts_with("time_guidance_embed.linear_") {
+        paint_diag(&mut data, ne0, ne1, 0, ne0.min(ne1) as usize, 2.0);
+    }
+    if name == "double_stream_modulation_img.linear.weight" {
+        let dim = ne0 as usize;
+        paint_diag(&mut data, ne0, ne1, dim * 2, dim, 1.0);
+    }
+    if name == "x_embedder.weight"
+        || name == "context_embedder.weight"
+        || name == "proj_out.weight"
+        || name.ends_with("attn.add_v_proj.weight")
+        || (name.contains("transformer_blocks.")
+            && !name.contains("single_")
+            && name.ends_with("attn.to_out.weight"))
+    {
+        paint_diag(&mut data, ne0, ne1, 0, ne0.min(ne1) as usize, 1.0);
     }
     data
+}
+
+fn paint_diag(data: &mut [f32], ne0: i64, ne1: i64, out_at: usize, count: usize, gain: f32) {
+    let ne0 = ne0 as usize;
+    let ne1 = ne1 as usize;
+    for i in 0..count {
+        let out = out_at + i;
+        if i < ne0 && out < ne1 {
+            data[i + out * ne0] = gain;
+        }
+    }
 }

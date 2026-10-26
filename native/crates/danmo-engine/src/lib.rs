@@ -225,6 +225,15 @@ mod tests {
         dog.prompt = "a dog".into();
         let dog_out = image_create(&dog, "flux2", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
         assert_eq!(png_edge(&dog_out.preview_png), (64, 64));
+        assert!(
+            cat_out.latents.iter().all(|v| v.is_finite()),
+            "cat latent {:?}",
+            &cat_out.latents[..8]
+        );
+        assert_ne!(
+            cat_out.preview_png, dog_out.preview_png,
+            "prompt did not change the image"
+        );
         let mut huge = request();
         huge.size = "512x512".into();
         let err = match image_create(&huge, "flux2", &dir, BackendKind::Cpu, |_, _| ()) {

@@ -500,13 +500,20 @@ pub(crate) fn materialize_graph_packs(catalog: &Catalog) -> Result<(), String> {
                 continue;
             };
             let path = resolve_path(path);
-            if path.join("bundle.manifest.json").is_file() {
+            if chain_pack_current(&path) {
                 continue;
             }
             danmo_engine::write_chain_bundle(&path).map_err(|err| err.to_string())?;
         }
     }
     Ok(())
+}
+
+fn chain_pack_current(path: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path.join("bundle.manifest.json")) else {
+        return false;
+    };
+    text.contains("\"pack_rev\": 2")
 }
 
 async fn models_status(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {

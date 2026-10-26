@@ -591,6 +591,7 @@ pub fn write_chain_bundle(dir: &Path) -> Result<(), WeightError> {
     let mut dit = Flux2Config::from_dim(8);
     dit.joint_attention_dim = 16;
     super::write_config_bundle(dir, dit)?;
+    super::rewrite_chain_transformer(dir, dit)?;
     let mut enc = Qwen3Config::smoke();
     enc.vocab = 256;
     if dit.joint_attention_dim != enc.hidden * enc.layers {
@@ -632,6 +633,7 @@ pub fn write_chain_bundle(dir: &Path) -> Result<(), WeightError> {
   "format": "gguf",
   "quant": "bf16",
   "max_edge": 128,
+  "pack_rev": 2,
   "files": {
     "transformer": "transformer.gguf",
     "text_encoder": "text_encoder.gguf",

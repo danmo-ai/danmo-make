@@ -351,6 +351,68 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    fn vue_generate_body(prompt: &str) -> Value {
+        json!({
+            "model": "flux2-klein-4b:bf16",
+            "title": "chain",
+            "prompt": prompt,
+            "negative_prompt": "",
+            "size": "64x64",
+            "n": 1,
+            "steps": 2,
+            "guidance": 1.0,
+            "seed": 1,
+            "adapters": [],
+            "metadata": { "source": "create" },
+            "priority": "normal"
+        })
+    }
+
+    fn png_edge(png: &[u8]) -> (u32, u32) {
+        let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
+        let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
+        (width, height)
+    }
+
+    async fn generate_png(app: &Router, body: Value) -> Vec<u8> {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/images/generations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let accepted: Value = serde_json::from_slice(&bytes).unwrap();
+        let id = accepted["id"].as_str().unwrap();
+        let task = wait_terminal_for(app, id, 120, 250).await;
+        assert_eq!(task["status"], "completed", "task {task}");
+        let asset_id = task["result"]["asset_ids"][0].as_str().unwrap();
+        let file = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/assets/{asset_id}/file"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(file.status(), StatusCode::OK);
+        file.into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec()
+    }
+
     async fn wait_terminal(app: &Router, id: &str) -> Value {
         wait_terminal_for(app, id, 50, 40).await
     }
@@ -472,52 +534,12 @@ mod tests {
         let registry = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../default_config/models_registry.json");
         let app = router(&dir.join("studio.db"), &registry);
-        let body = serde_json::json!({
-            "model": "flux2-klein-4b",
-            "prompt": "a cat",
-            "size": "64x64",
-            "steps": 2
-        });
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/images/generations")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let accepted: Value = serde_json::from_slice(&bytes).unwrap();
-        let id = accepted["id"].as_str().unwrap();
-        let task = wait_terminal_for(&app, id, 120, 250).await;
-        assert_eq!(task["status"], "completed", "task {task}");
-        let ids = task["result"]["asset_ids"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        assert_eq!(ids.len(), 1, "task {task}");
-        let asset_id = ids[0].as_str().unwrap();
-        let file = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/assets/{asset_id}/file"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(file.status(), StatusCode::OK);
-        let png = file.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
-        let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
-        let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
-        assert_eq!((width, height), (64, 64));
+        let cat = vue_generate_body("一只猫");
+        let dog = vue_generate_body("a dog");
+        let cat_png = generate_png(&app, cat).await;
+        let dog_png = generate_png(&app, dog).await;
+        assert_eq!(png_edge(&cat_png), (64, 64));
+        assert_ne!(cat_png, dog_png, "prompt did not change the asset");
 
         let registry_body = app
             .clone()
@@ -538,6 +560,7 @@ mod tests {
         let listed: Value = serde_json::from_slice(&bytes).unwrap();
         let model = &listed["models"]["flux2-klein-4b"];
         assert_eq!(model["media"], "image");
+        assert_eq!(model["recommended"], true);
         assert_eq!(
             model["parameters"]["resolution_presets"]["default"],
             "64x64"
