@@ -1,3 +1,4 @@
+use crate::download::Downloads;
 use crate::product;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -26,6 +27,7 @@ pub(crate) struct AppState {
     pub(crate) registry: PathBuf,
     pub(crate) workspace: PathBuf,
     pub(crate) outputs: PathBuf,
+    pub(crate) downloads: Downloads,
 }
 
 pub fn router(db: &std::path::Path, registry: &std::path::Path) -> Router {
@@ -35,12 +37,14 @@ pub fn router(db: &std::path::Path, registry: &std::path::Path) -> Router {
         .map(PathBuf::from)
         .unwrap_or_else(|_| workspace.join("outputs"));
     let scheduler = Scheduler::open(db, true).expect("open task db");
+    let downloads = Downloads::open(&workspace);
     let state = AppState {
         scheduler,
         backend,
         registry: registry.to_path_buf(),
         workspace,
         outputs,
+        downloads,
     };
     spawn_worker(state.clone());
     Router::new()
@@ -349,6 +353,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
+    use std::io::{Read, Write};
     use tower::ServiceExt;
 
     fn vue_generate_body(prompt: &str) -> Value {
@@ -686,6 +691,243 @@ mod tests {
             body["detail"].as_str().unwrap_or("").contains("GGUF"),
             "{body}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn download_page_fetches_a_gguf_over_http() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let payload = b"gguf-demo-payload";
+        std::thread::spawn(move || {
+            for _ in 0..4 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let mut buf = [0u8; 1];
+                let mut header = Vec::new();
+                loop {
+                    if stream.read(&mut buf).ok() != Some(1) {
+                        break;
+                    }
+                    header.push(buf[0]);
+                    if header.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let body = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    payload.len()
+                );
+                let _ = stream.write_all(body.as_bytes());
+                let _ = stream.write_all(payload);
+            }
+        });
+
+        let cwd = std::env::current_dir().unwrap();
+        let bundle = cwd.join(format!("models/demo-http-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&bundle);
+        let dir = std::env::temp_dir().join(format!("danmo-dl-route-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let registry = dir.join("registry.json");
+        let spec = json!({
+            "models": {
+                "demo-gguf": {
+                    "catalog": {
+                        "media": "image",
+                        "name": { "en": "Demo GGUF" }
+                    },
+                    "ui": { "parameters": { "lora_support": true } },
+                    "distribution": {
+                        "versions": {
+                            "bf16": {
+                                "local_path": bundle.display().to_string(),
+                                "url": format!("http://127.0.0.1:{port}/demo.gguf"),
+                                "source": "huggingface"
+                            },
+                            "q4_k": {
+                                "local_path": bundle.join("q4"),
+                                "url": format!("http://127.0.0.1:{port}/model.safetensors"),
+                                "source": "huggingface"
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        std::fs::write(&registry, spec.to_string()).unwrap();
+        let app = router(&dir.join("studio.db"), &registry);
+
+        let disk = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/settings/disk-space")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = disk.into_body().collect().await.unwrap().to_bytes();
+        let disk: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(disk["models"]["free_human"].is_string(), "{disk}");
+
+        let bases = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/download/lora/base-models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = bases.into_body().collect().await.unwrap().to_bytes();
+        let bases: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(bases
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == "demo-gguf"));
+
+        let started = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/demo-gguf/install")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"version":"bf16"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(started.status(), StatusCode::OK);
+        let bytes = started.into_body().collect().await.unwrap().to_bytes();
+        let started: Value = serde_json::from_slice(&bytes).unwrap();
+        let task_id = started["task_id"].as_str().unwrap().to_string();
+
+        let mut status = String::new();
+        let mut error = String::new();
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let listed = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/download/tasks")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let bytes = listed.into_body().collect().await.unwrap().to_bytes();
+            let tasks: Value = serde_json::from_slice(&bytes).unwrap();
+            let task = tasks
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|task| task["id"] == task_id)
+                .unwrap();
+            status = task["status"].as_str().unwrap_or("").to_string();
+            error = task["error_message"].as_str().unwrap_or("").to_string();
+            if matches!(status.as_str(), "completed" | "failed" | "cancelled") {
+                break;
+            }
+        }
+        assert_eq!(status, "completed", "{error}");
+        assert_eq!(std::fs::read(bundle.join("demo.gguf")).unwrap(), payload);
+
+        let detailed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/settings/models/status/detailed")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = detailed.into_body().collect().await.unwrap().to_bytes();
+        let detailed: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(detailed["demo-gguf"]["versions"]["bf16"]["ready"], true);
+
+        let stream = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/download/progress/{task_id}/stream"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stream.status(), StatusCode::OK);
+        let bytes = stream.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("completed"), "{text}");
+
+        let removed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/models/demo-gguf/versions/bf16")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(removed.status(), StatusCode::OK, "{removed:?}");
+        assert!(!bundle.join("demo.gguf").exists());
+
+        let refused = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/demo-gguf/install")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"version":"q4_k"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = refused.into_body().collect().await.unwrap().to_bytes();
+        let refused: Value = serde_json::from_slice(&bytes).unwrap();
+        let refused_id = refused["task_id"].as_str().unwrap();
+        let mut refused_error = String::new();
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let listed = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/download/tasks")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let bytes = listed.into_body().collect().await.unwrap().to_bytes();
+            let tasks: Value = serde_json::from_slice(&bytes).unwrap();
+            let task = tasks
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|task| task["id"] == refused_id)
+                .unwrap();
+            if task["status"] == "failed" {
+                refused_error = task["error_message"].as_str().unwrap_or("").to_string();
+                break;
+            }
+            if task["status"] == "completed" {
+                panic!("safetensors URL was downloaded: {task}");
+            }
+        }
+        assert!(refused_error.contains("GGUF"), "{refused_error}");
+        let _ = std::fs::remove_dir_all(&bundle);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

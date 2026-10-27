@@ -2,9 +2,11 @@
 //! Graphs that are not built return a JSON `detail` and do not pretend to run.
 
 use crate::app::AppState;
+use crate::download;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -12,7 +14,10 @@ use danmo_catalog::{Catalog, GGUF_VERSION_KEYS};
 use danmo_store::{AssetRow, CanvasRow, TaskRow};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::convert::Infallible;
 use std::path::{Path as FsPath, PathBuf};
+use std::time::Duration;
+use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
 pub struct ApiError {
@@ -108,16 +113,30 @@ pub fn routes() -> Router<AppState> {
         .route("/api/settings/system/monitor", get(system_monitor))
         .route("/api/system/metrics", get(system_monitor))
         .route("/api/system/cache", get(cache_status))
-        .route("/api/download/tasks", get(empty_tasks))
-        .route("/api/download/start", post(reject_download))
-        .route("/api/download/lora/search", get(empty_items))
-        .route("/api/download/lora/base-models", get(empty_list))
-        .route("/api/download/lora/hub", post(reject_download))
-        .route("/api/download/lora", post(reject_download))
+        .route("/api/download/tasks", get(list_downloads))
+        .route(
+            "/api/download/tasks/:task_id",
+            axum::routing::delete(delete_download),
+        )
+        .route("/api/download/start", post(start_download))
+        .route("/api/download/cancel/:task_id", post(cancel_download))
+        .route("/api/download/resume/:task_id", post(resume_download))
+        .route(
+            "/api/download/progress/:task_id/stream",
+            get(download_progress),
+        )
+        .route("/api/download/lora/search", get(search_loras))
+        .route("/api/download/lora/base-models", get(lora_base_models))
+        .route("/api/download/lora/hub", post(start_lora_download))
+        .route("/api/download/lora", post(start_lora_download))
         .route("/api/download/convert", post(reject_convert))
         .route("/api/loras/datasets", get(empty_items))
         .route("/api/loras/user-adapters", get(empty_items))
-        .route("/api/loras/downloaded-adapters", get(empty_items))
+        .route(
+            "/api/loras/user-adapters/:id",
+            axum::routing::delete(delete_lora),
+        )
+        .route("/api/loras/downloaded-adapters", get(list_downloaded_loras))
         .route("/api/loras/trainable-models", get(empty_models))
         .route(
             "/api/loras/training/requirements",
@@ -553,7 +572,7 @@ fn detailed_status(entry: &Value) -> Value {
                 .get("local_path")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let is_ready = bundle_ready(path);
+            let is_ready = download::version_ready(&download::resolve_model_path(path));
             if is_ready {
                 ready = true;
             }
@@ -577,23 +596,8 @@ fn model_ready(entry: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn bundle_ready(path: &str) -> bool {
-    if path.is_empty() {
-        return false;
-    }
-    let path = resolve_path(path);
-    path.join("bundle.manifest.json").is_file()
-}
-
 fn resolve_path(path: &str) -> PathBuf {
-    let path = PathBuf::from(path);
-    if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
-    }
+    download::resolve_model_path(path)
 }
 
 async fn installed_models(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
@@ -615,7 +619,7 @@ async fn installed_models(State(state): State<AppState>) -> Result<Json<Value>, 
                 else {
                     continue;
                 };
-                if !bundle_ready(path) {
+                if !download::version_ready(&resolve_path(path)) {
                     continue;
                 }
                 let full = resolve_path(path);
@@ -634,22 +638,169 @@ async fn installed_models(State(state): State<AppState>) -> Result<Json<Value>, 
     Ok(Json(Value::Array(rows)))
 }
 
-async fn install_model() -> Result<Json<Value>, ApiError> {
-    Err(fail(
-        StatusCode::BAD_REQUEST,
-        "no GGUF download URL is published for this model. Re-download when a bf16, q8_0, or q4_k package is listed",
-    ))
+async fn install_model(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let version = body
+        .get("version")
+        .and_then(|v| v.as_str())
+        .filter(|version| !version.is_empty())
+        .ok_or_else(|| fail(StatusCode::BAD_REQUEST, "version is required"))?;
+    let task_id = enqueue_install(&state, &id, version)?;
+    Ok(Json(json!({ "task_id": task_id })))
 }
 
-async fn install_batch() -> Result<Json<Value>, ApiError> {
-    install_model().await
+async fn install_batch(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    if let Some(items) = body.get("items").and_then(|v| v.as_array()) {
+        for item in items {
+            let model_id = item
+                .get("model_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let version = item
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if model_id.is_empty() || version.is_empty() {
+                return Err(fail(
+                    StatusCode::BAD_REQUEST,
+                    "each install item needs model_id and version",
+                ));
+            }
+            pairs.push((model_id, version));
+        }
+    } else if let Some(ids) = body.get("model_ids").and_then(|v| v.as_array()) {
+        let catalog = open_catalog(&state)?;
+        for id in ids {
+            let Some(model_id) = id.as_str() else {
+                continue;
+            };
+            let version = default_version(catalog.root(), model_id).ok_or_else(|| {
+                fail(
+                    StatusCode::BAD_REQUEST,
+                    format!("{model_id} has no bf16, q8_0, or q4_k version"),
+                )
+            })?;
+            pairs.push((model_id.to_string(), version));
+        }
+    }
+    if pairs.is_empty() {
+        return Err(fail(StatusCode::BAD_REQUEST, "no models to install"));
+    }
+    let mut task_ids = Vec::new();
+    for (model_id, version) in &pairs {
+        task_ids.push(enqueue_install(&state, model_id, version)?);
+    }
+    Ok(Json(json!({ "task_ids": task_ids })))
 }
 
-async fn delete_model_version() -> Result<Json<Value>, ApiError> {
-    Err(fail(
-        StatusCode::BAD_REQUEST,
-        "installed GGUF versions are removed by deleting the bundle directory",
-    ))
+fn enqueue_install(state: &AppState, model_id: &str, version: &str) -> Result<String, ApiError> {
+    if !danmo_catalog::GGUF_VERSION_KEYS.contains(&version) {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            "version must be bf16, q8_0, or q4_k",
+        ));
+    }
+    let catalog = open_catalog(state)?;
+    let spec = catalog
+        .root()
+        .pointer(&format!(
+            "/models/{model_id}/distribution/versions/{version}"
+        ))
+        .cloned()
+        .ok_or_else(|| {
+            fail(
+                StatusCode::BAD_REQUEST,
+                format!("{model_id} has no {version} package"),
+            )
+        })?;
+    state
+        .downloads
+        .install_model(model_id, version, &spec)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err))
+}
+
+fn default_version(root: &Value, model_id: &str) -> Option<String> {
+    let versions = root
+        .pointer(&format!("/models/{model_id}/distribution/versions"))?
+        .as_object()?;
+    for key in danmo_catalog::GGUF_VERSION_KEYS {
+        if let Some(version) = versions.get(*key) {
+            if version
+                .get("default")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                return Some((*key).to_string());
+            }
+        }
+    }
+    danmo_catalog::GGUF_VERSION_KEYS
+        .iter()
+        .find(|key| versions.contains_key(**key))
+        .map(|key| (*key).to_string())
+}
+
+async fn delete_model_version(
+    State(state): State<AppState>,
+    Path((id, version)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    if !danmo_catalog::GGUF_VERSION_KEYS.contains(&version.as_str()) {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            "version must be bf16, q8_0, or q4_k",
+        ));
+    }
+    let catalog = open_catalog(&state)?;
+    let spec = catalog
+        .root()
+        .pointer(&format!("/models/{id}/distribution/versions/{version}"))
+        .ok_or_else(|| {
+            fail(
+                StatusCode::NOT_FOUND,
+                format!("{id} has no {version} package"),
+            )
+        })?;
+    let local = spec
+        .get("local_path")
+        .and_then(|v| v.as_str())
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| fail(StatusCode::BAD_REQUEST, "version has no local_path"))?;
+    remove_model_dir(&resolve_path(local))?;
+    Ok(Json(json!({ "success": true })))
+}
+
+fn remove_model_dir(path: &FsPath) -> Result<(), ApiError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let canon = path
+        .canonicalize()
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let roots = [cwd.join("models"), PathBuf::from("models")];
+    let allowed = roots.iter().any(|root| {
+        let Ok(root) = root.canonicalize() else {
+            return false;
+        };
+        canon.starts_with(&root) && canon != root
+    });
+    if !allowed {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            "refusing to delete a path outside the models directory",
+        ));
+    }
+    std::fs::remove_dir_all(&canon)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
 }
 
 async fn empty_items() -> Json<Value> {
@@ -660,8 +811,222 @@ async fn empty_list() -> Json<Value> {
     Json(json!([]))
 }
 
-async fn empty_tasks() -> Json<Value> {
-    Json(json!({ "tasks": [] }))
+async fn list_downloads(State(state): State<AppState>) -> Json<Value> {
+    Json(Value::Array(state.downloads.list()))
+}
+
+async fn start_download(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let url = body.get("url").and_then(|v| v.as_str()).unwrap_or("");
+    let name = body
+        .get("target_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let kind = body.get("type").and_then(|v| v.as_str()).unwrap_or("model");
+    let task_id = state
+        .downloads
+        .start_url(url, name, kind)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err))?;
+    Ok(Json(json!({ "task_id": task_id })))
+}
+
+async fn cancel_download(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    state
+        .downloads
+        .cancel(&task_id)
+        .map_err(|err| fail(StatusCode::NOT_FOUND, err))?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn resume_download(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    state
+        .downloads
+        .resume(&task_id)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err))?;
+    Ok(Json(json!({ "task_id": task_id })))
+}
+
+async fn delete_download(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    state
+        .downloads
+        .delete_task(&task_id)
+        .map_err(|err| fail(StatusCode::NOT_FOUND, err))?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn download_progress(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+) -> Sse<ReceiverStream<Result<Event, Infallible>>> {
+    let downloads = state.downloads.clone();
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move {
+        loop {
+            let Some(snap) = downloads.snapshot(&task_id) else {
+                let missing = json!({
+                    "status": "failed",
+                    "error_message": "download task not found",
+                    "progress": 0,
+                    "total_size": 0,
+                    "downloaded_size": 0,
+                });
+                let _ = tx
+                    .send(Ok(Event::default().data(missing.to_string())))
+                    .await;
+                break;
+            };
+            let _ = tx.send(Ok(Event::default().data(snap.to_string()))).await;
+            let status = snap.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            if matches!(status, "completed" | "failed" | "cancelled") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    });
+    Sse::new(ReceiverStream::new(rx))
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct LoraSearchQuery {
+    q: Option<String>,
+    base_model: Option<String>,
+    source: Option<String>,
+    limit: Option<String>,
+}
+
+async fn search_loras(
+    State(state): State<AppState>,
+    Query(query): Query<LoraSearchQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let text = lora_query_text(
+        catalog.root(),
+        query.q.as_deref(),
+        query.base_model.as_deref(),
+    )?;
+    let limit = query
+        .limit
+        .as_deref()
+        .and_then(|text| text.parse::<usize>().ok())
+        .unwrap_or(24)
+        .clamp(1, 100);
+    let source = query.source.unwrap_or_else(|| "all".into());
+    let items = tokio::task::spawn_blocking(move || state.downloads.search(&source, &text, limit))
+        .await
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .map_err(|err| fail(StatusCode::BAD_GATEWAY, err))?;
+    Ok(Json(json!({ "items": items })))
+}
+
+fn lora_query_text(
+    root: &Value,
+    q: Option<&str>,
+    base_model: Option<&str>,
+) -> Result<String, ApiError> {
+    if let Some(q) = q.map(str::trim).filter(|q| !q.is_empty()) {
+        return Ok(q.to_string());
+    }
+    let Some(base_model) = base_model.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            "select a base model to search",
+        ));
+    };
+    if let Some(term) = root
+        .pointer(&format!(
+            "/models/{base_model}/ui/parameters/lora_search/terms/0"
+        ))
+        .and_then(|v| v.as_str())
+        .filter(|term| !term.is_empty())
+    {
+        return Ok(term.to_string());
+    }
+    Ok(base_model.to_string())
+}
+
+async fn lora_base_models(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let mut rows = Vec::new();
+    if let Some(models) = catalog.root().get("models").and_then(|v| v.as_object()) {
+        for (id, entry) in models {
+            let supported = entry
+                .pointer("/ui/parameters/lora_support")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !supported {
+                continue;
+            }
+            rows.push(json!({
+                "id": id,
+                "name": model_label(entry, id),
+            }));
+        }
+    }
+    rows.sort_by(|a, b| {
+        a.get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or(""))
+    });
+    Ok(Json(Value::Array(rows)))
+}
+
+fn model_label(entry: &Value, id: &str) -> String {
+    match entry.pointer("/catalog/name") {
+        Some(Value::String(text)) => text.clone(),
+        Some(value) => value
+            .get("en")
+            .and_then(|v| v.as_str())
+            .filter(|text| !text.is_empty())
+            .or_else(|| value.get("zh").and_then(|v| v.as_str()))
+            .unwrap_or(id)
+            .to_string(),
+        None => id.to_string(),
+    }
+}
+
+async fn start_lora_download(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let task_id = state
+        .downloads
+        .start_lora(&body)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err))?;
+    Ok(Json(json!({ "task_id": task_id })))
+}
+
+async fn list_downloaded_loras(State(state): State<AppState>) -> Json<Value> {
+    Json(state.downloads.list_loras())
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RemoveFilesQuery {
+    remove_files: Option<String>,
+}
+
+async fn delete_lora(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<RemoveFilesQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let remove = matches!(query.remove_files.as_deref(), Some("true" | "1" | "yes"));
+    state
+        .downloads
+        .delete_lora(&id, remove)
+        .map_err(|err| fail(StatusCode::NOT_FOUND, err))
+        .map(Json)
 }
 
 async fn empty_models() -> Json<Value> {
@@ -1224,14 +1589,30 @@ async fn settings_registry(State(state): State<AppState>) -> Result<Json<Value>,
 }
 
 async fn disk_space(State(state): State<AppState>) -> Json<Value> {
-    let (total, free) = stat_space(&state.workspace);
+    let models = resolve_path("models");
+    let loras = resolve_path("models/loras");
+    let anchor = models.parent().unwrap_or(&state.workspace);
+    let (total, free) = stat_space(if anchor.as_os_str().is_empty() {
+        std::path::Path::new(".")
+    } else {
+        anchor
+    });
     Json(json!({
-        "path": state.workspace.display().to_string(),
-        "total_bytes": total,
-        "free_bytes": free,
-        "total_human": human_bytes(total),
-        "free_human": human_bytes(free),
+        "models": disk_row(&models, total, free),
+        "loras": disk_row(&loras, total, free),
     }))
+}
+
+fn disk_row(path: &FsPath, total: u64, free: u64) -> Value {
+    let size = if path.is_dir() { dir_size(path) } else { 0 };
+    json!({
+        "exists": path.exists(),
+        "size": size,
+        "size_human": human_bytes(size),
+        "total": total,
+        "free": free,
+        "free_human": human_bytes(free),
+    })
 }
 
 async fn cache_status() -> Json<Value> {
@@ -1270,13 +1651,6 @@ async fn delete_preset(
     }
     save_json(&presets_path(&state), &all)?;
     Ok(Json(json!({ "ok": true })))
-}
-
-async fn reject_download() -> Result<Json<Value>, ApiError> {
-    Err(fail(
-        StatusCode::BAD_REQUEST,
-        "no GGUF download URL is published. Re-download when a bf16, q8_0, or q4_k package is listed",
-    ))
 }
 
 async fn reject_convert() -> Result<Json<Value>, ApiError> {

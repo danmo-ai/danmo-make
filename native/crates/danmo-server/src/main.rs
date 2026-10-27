@@ -1,6 +1,7 @@
 //! Axum entry. Binary name stays `danqing-api` so the desktop sidecar path is unchanged.
 
 mod app;
+mod download;
 mod product;
 
 #[tokio::main]
