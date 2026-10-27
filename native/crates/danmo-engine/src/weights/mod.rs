@@ -3,6 +3,7 @@
 
 mod bundle;
 mod gguf;
+mod lora;
 
 pub use bundle::assert_gguf_bundle;
 pub use gguf::{
@@ -11,6 +12,7 @@ pub use gguf::{
 };
 #[cfg(test)]
 pub use gguf::{write_f32_nd, write_safetensors, F32Nd, SafeTensor};
+pub use lora::{bind_lora_factors, load_lora_factors, LoraFactor, LoraFile};
 
 use thiserror::Error;
 

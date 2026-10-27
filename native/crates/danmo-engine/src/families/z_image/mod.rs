@@ -23,7 +23,10 @@ use crate::common::ops::{
     empirical_mu_sigmas, flow_match_shift_sigmas, linear_sigmas, normal_latent,
 };
 use crate::runtime::{GgmlContext, TYPE_F32};
-use crate::weights::{assert_gguf_bundle, matmul_type, type_block, GgufWeights, WeightError};
+use crate::weights::{
+    assert_gguf_bundle, load_lora_factors, matmul_type, type_block, GgufWeights, LoraFile,
+    WeightError,
+};
 #[cfg(test)]
 use crate::weights::{write_f32_tensors, F32Tensor};
 use std::collections::HashMap;
@@ -47,6 +50,7 @@ pub fn execute(
     scheduler_shift: Option<f32>,
     empirical_mu: bool,
     negative: &str,
+    loras: &[LoraFile],
     on_progress: impl FnMut(u32, u32),
 ) -> Result<crate::families::DitImageRun, WeightError> {
     let files = assert_gguf_bundle(bundle)?;
@@ -64,16 +68,22 @@ pub fn execute(
     )?;
     let grid = geom::token_grid(width, height, cap_real, config.vae_scale)?;
     let layout = weight_layout(config);
+    let factors = load_lora_factors(loras, &layout)?;
     let mut types = HashMap::new();
     for (name, ne0, _) in &layout {
         let ggml_type = loaded.ggml_type_of(name)?;
         check_stored_type(name, ggml_type, *ne0)?;
         types.insert(name.clone(), ggml_type);
     }
-    let mut denoise = ZImageDenoise::build(ctx, config, width, height, cap_real, &types)?;
+    let mut denoise =
+        ZImageDenoise::build_with_loras(ctx, config, width, height, cap_real, &types, &factors)?;
     for (name, ne0, ne1) in &layout {
         let raw = loaded.raw_exact(name, &[*ne0, *ne1])?;
         denoise.load_bytes(name, &raw)?;
+    }
+    for (index, factor) in factors.iter().enumerate() {
+        denoise.load_f32(&format!("lora.{index}.a"), &factor.a)?;
+        denoise.load_f32(&format!("lora.{index}.b"), &factor.b)?;
     }
     let latent = match seed {
         Some(seed) => normal_latent(seed, denoise.latent_len()),
@@ -566,6 +576,7 @@ mod tests {
             scheduler: None,
             scheduler_shift: None,
             use_empirical_mu: false,
+            adapters: Vec::new(),
             priority: "normal".into(),
         }
     }

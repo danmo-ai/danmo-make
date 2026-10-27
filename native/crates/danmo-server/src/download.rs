@@ -439,6 +439,49 @@ impl Downloads {
         json!({ "items": items })
     }
 
+    /// Installed file for a downloaded adapter, or a user-trained LoRA row.
+    pub fn lora_path(&self, id: &str) -> Result<Option<PathBuf>, String> {
+        if let Some(path) = lora_item_file(&load_lora_items(&self.loras_path), id, &self.workspace)
+        {
+            return Ok(Some(path));
+        }
+        let user = self.workspace.join("config").join("user_loras.json");
+        if !user.is_file() {
+            return Ok(None);
+        }
+        Ok(lora_item_file(&read_lora_items(&user)?, id, &self.workspace))
+    }
+
+    /// True only for a user-trained Turbo adapter whose inference scheme is `sft`.
+    pub fn turbo_sft(&self, id: &str) -> Result<bool, String> {
+        if !id.starts_with("user-lora-") {
+            return Ok(false);
+        }
+        let user = self.workspace.join("config").join("user_loras.json");
+        if !user.is_file() {
+            return Ok(false);
+        }
+        for item in read_lora_items(&user)? {
+            if item.get("id").and_then(|v| v.as_str()) != Some(id) {
+                continue;
+            }
+            let base = item
+                .get("base_model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let base = base.split(':').next().unwrap_or(base).trim();
+            if base != "z-image-turbo" {
+                return Ok(false);
+            }
+            let scheme = item
+                .pointer("/inference/scheme")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            return Ok(scheme.eq_ignore_ascii_case("sft"));
+        }
+        Ok(false)
+    }
+
     pub fn delete_lora(&self, id: &str, remove_files: bool) -> Result<Value, String> {
         let mut items = load_lora_items(&self.loras_path);
         let Some(pos) = items
@@ -2082,6 +2125,27 @@ fn save_tasks(path: &Path, tasks: &[Task]) -> Result<(), String> {
     }
     let body = serde_json::to_vec_pretty(tasks).map_err(|err| err.to_string())?;
     fs::write(path, body).map_err(|err| err.to_string())
+}
+
+fn read_lora_items(path: &Path) -> Result<Vec<Value>, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|err| format!("{} is not readable: {err}", path.display()))?;
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|err| format!("{} is not json: {err}", path.display()))?;
+    Ok(value
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default())
+}
+
+fn lora_item_file(items: &[Value], id: &str, workspace: &Path) -> Option<PathBuf> {
+    let item = items
+        .iter()
+        .find(|item| item.get("id").and_then(|v| v.as_str()) == Some(id))?;
+    let raw = item.get("local_path").and_then(|v| v.as_str())?;
+    let path = resolve_model_path(workspace, raw);
+    path.is_file().then_some(path)
 }
 
 fn load_lora_items(path: &Path) -> Vec<Value> {

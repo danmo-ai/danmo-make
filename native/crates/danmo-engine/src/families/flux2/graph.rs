@@ -10,6 +10,7 @@ use super::weights::{weight_layout, Flux2Config};
 use crate::runtime::{
     flash_attend, rope_pair, GraphBuilder, RopeIn, RuntimeError, Tensor, TYPE_F32,
 };
+use crate::weights::{bind_lora_factors, LoraFactor};
 use std::collections::HashMap;
 
 const LN_EPS: f32 = 1e-6;
@@ -28,6 +29,7 @@ pub fn build_dit(
     grid_h: i64,
     seq_txt: i64,
     types: &HashMap<String, u32>,
+    loras: &[LoraFactor],
 ) -> Result<BuiltDit, RuntimeError> {
     if config.num_heads < 1 || config.attn_head_dim < 1 {
         return Err(RuntimeError::Message(
@@ -57,6 +59,7 @@ pub fn build_dit(
         }
         weights.insert(name, tensor);
     }
+    bind_lora_factors(b, &weights, loras)?;
     let latent = nn(b.f32_2d("latent", config.in_channels, seq_img, true))?;
     let txt = nn(b.f32_2d("txt", config.joint_attention_dim, seq_txt, true))?;
     let temb_freq = nn(b.f32_2d("temb_freq", config.freq_dim, 1, true))?;
@@ -512,7 +515,7 @@ fn tokens(
 }
 
 fn linear(b: &GraphBuilder, x: Tensor, w: Tensor) -> Tensor {
-    b.mul_mat(w, x)
+    b.project(w, x)
 }
 
 fn wt(weights: &HashMap<String, Tensor>, name: &str) -> Result<Tensor, RuntimeError> {

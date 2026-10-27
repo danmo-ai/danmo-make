@@ -2,13 +2,21 @@
 
 use super::{RuntimeError, Tensor, TYPE_F16};
 use danmo_ggml_sys as g;
+use std::collections::HashMap;
 use std::ffi::CString;
+
+struct SideResidual {
+    a: Tensor,
+    b: Tensor,
+    scale: f32,
+}
 
 pub struct GraphBuilder {
     backend: g::ggml_backend_t,
     buft: g::ggml_backend_buffer_type_t,
     ctx: *mut g::ggml_context,
     inputs: Vec<NamedTensor>,
+    sides: HashMap<usize, Vec<SideResidual>>,
 }
 
 pub struct NamedTensor {
@@ -36,6 +44,7 @@ impl GraphBuilder {
             buft,
             ctx,
             inputs: Vec::new(),
+            sides: HashMap::new(),
         })
     }
 
@@ -82,6 +91,49 @@ impl GraphBuilder {
 
     pub fn mul_mat(&self, a: *mut g::ggml_tensor, b: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
         unsafe { g::ggml_mul_mat(self.ctx, a, b) }
+    }
+
+    /// `Wx`, plus `scale * B(Ax)` for every factor attached to `weight`.
+    /// An unattached weight is one matmul.
+    pub fn project(&self, weight: Tensor, x: Tensor) -> Tensor {
+        let mut y = self.mul_mat(weight, x);
+        let Some(rows) = self.sides.get(&(weight as usize)) else {
+            return y;
+        };
+        for row in rows {
+            let ax = self.mul_mat(row.a, x);
+            let delta = self.scale(self.mul_mat(row.b, ax), row.scale);
+            y = self.add(y, delta);
+        }
+        y
+    }
+
+    /// Register one low-rank residual on `weight`. The factor tensors are graph inputs
+    /// named `lora.{index}.a` and `lora.{index}.b`.
+    pub fn attach_lora(
+        &mut self,
+        weight: Tensor,
+        index: usize,
+        in_dim: i64,
+        rank: i64,
+        out_dim: i64,
+        scale: f32,
+    ) -> Result<(), RuntimeError> {
+        if weight.is_null() || in_dim < 1 || rank < 1 || out_dim < 1 || !scale.is_finite() {
+            return Err(RuntimeError::Message(
+                "lora factor rank or scale is empty".into(),
+            ));
+        }
+        let a = self.f32_2d(&format!("lora.{index}.a"), in_dim, rank, true);
+        let b = self.f32_2d(&format!("lora.{index}.b"), rank, out_dim, true);
+        if a.is_null() || b.is_null() {
+            return Err(RuntimeError::Init);
+        }
+        self.sides
+            .entry(weight as usize)
+            .or_default()
+            .push(SideResidual { a, b, scale });
+        Ok(())
     }
 
     pub fn add(&self, a: *mut g::ggml_tensor, b: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
@@ -704,4 +756,31 @@ unsafe fn name_tensor(tensor: *mut g::ggml_tensor, name: &str) {
     }
     let c = CString::new(name).unwrap_or_else(|_| CString::new("tensor").unwrap());
     g::ggml_set_name(tensor, c.as_ptr());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GraphBuilder;
+    use crate::runtime::{BackendKind, GgmlContext};
+
+    /// y = Wx + scale * B(Ax). W is identity, so the residual is the only change.
+    #[test]
+    fn side_residual_is_base_plus_scaled_low_rank() {
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let mut b = ctx.builder(8 * 1024 * 1024).unwrap();
+        let w = b.f32_2d("w", 2, 2, true);
+        b.attach_lora(w, 0, 2, 1, 2, 0.5).unwrap();
+        let x = b.f32_2d("x", 2, 1, true);
+        let y = b.project(w, x);
+        let mut graph = b.finish(y).unwrap();
+        graph.set_f32("w", &[1.0, 0.0, 0.0, 1.0]).unwrap();
+        graph.set_f32("lora.0.a", &[1.0, 0.0]).unwrap();
+        graph.set_f32("lora.0.b", &[0.0, 2.0]).unwrap();
+        graph.set_f32("x", &[3.0, 4.0]).unwrap();
+        let y = graph.compute().unwrap();
+        let expect = [3.0f32, 7.0];
+        for (got, want) in y.iter().zip(expect) {
+            assert!((got - want).abs() < 1e-4, "got {y:?}");
+        }
+    }
 }

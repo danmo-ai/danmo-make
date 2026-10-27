@@ -7,6 +7,7 @@ use super::geom::{
 use super::graph::build_dit;
 use super::weights::ZImageConfig;
 use crate::runtime::{GgmlContext, ReusedGraph, RuntimeError};
+use crate::weights::LoraFactor;
 use std::collections::HashMap;
 
 const STEP_MEM: usize = 8 * 1024 * 1024;
@@ -28,9 +29,21 @@ impl ZImageDenoise {
         cap_real: i64,
         types: &HashMap<String, u32>,
     ) -> Result<Self, RuntimeError> {
+        Self::build_with_loras(ctx, config, width, height, cap_real, types, &[])
+    }
+
+    pub fn build_with_loras(
+        ctx: &GgmlContext,
+        config: ZImageConfig,
+        width: u32,
+        height: u32,
+        cap_real: i64,
+        types: &HashMap<String, u32>,
+        loras: &[LoraFactor],
+    ) -> Result<Self, RuntimeError> {
         let grid = token_grid(width, height, cap_real, config.vae_scale)?;
         let mut builder = ctx.builder(GRAPH_MEM)?;
-        let built = build_dit(&mut builder, config, grid, types)?;
+        let built = build_dit(&mut builder, config, grid, types, loras)?;
         let graph = builder.finish(built.output)?;
         Ok(Self {
             graph,
@@ -42,6 +55,10 @@ impl ZImageDenoise {
 
     pub fn load_bytes(&mut self, name: &str, data: &[u8]) -> Result<(), RuntimeError> {
         self.graph.set_bytes(name, data)
+    }
+
+    pub fn load_f32(&mut self, name: &str, data: &[f32]) -> Result<(), RuntimeError> {
+        self.graph.set_f32(name, data)
     }
 
     pub fn latent_len(&self) -> usize {

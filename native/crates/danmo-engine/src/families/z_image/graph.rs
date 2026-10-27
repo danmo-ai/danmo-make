@@ -13,6 +13,7 @@
 use super::geom::{TokenGrid, FINAL_EPS, RMS_EPS};
 use super::weights::{weight_layout, ZImageConfig};
 use crate::runtime::{flash_attend, rope_nd, GraphBuilder, RuntimeError, Tensor};
+use crate::weights::{bind_lora_factors, LoraFactor};
 use std::collections::HashMap;
 
 pub struct BuiltDit {
@@ -24,6 +25,7 @@ pub fn build_dit(
     config: ZImageConfig,
     grid: TokenGrid,
     types: &HashMap<String, u32>,
+    loras: &[LoraFactor],
 ) -> Result<BuiltDit, RuntimeError> {
     if config.heads < 1 || config.head_dim < 2 || grid.cap_real < 1 || grid.img_real < 1 {
         return Err(RuntimeError::Message(
@@ -47,6 +49,7 @@ pub fn build_dit(
         }
         weights.insert(name, tensor);
     }
+    bind_lora_factors(b, &weights, loras)?;
     let latent = nn(b.f32_3d(
         "latent",
         grid.latent_w,
@@ -470,7 +473,7 @@ fn add_bias(b: &GraphBuilder, x: Tensor, bias: Tensor) -> Result<Tensor, Runtime
 }
 
 fn linear(b: &GraphBuilder, x: Tensor, w: Tensor) -> Tensor {
-    b.mul_mat(w, x)
+    b.project(w, x)
 }
 
 fn wt(weights: &HashMap<String, Tensor>, name: &str) -> Result<Tensor, RuntimeError> {

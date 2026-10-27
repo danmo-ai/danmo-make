@@ -4,7 +4,7 @@ pub(crate) mod denoise;
 
 use crate::families::{self, Media, Shape};
 use crate::runtime::{BackendKind, GgmlContext};
-use crate::weights::{self, WeightError};
+use crate::weights::{self, LoraFile, WeightError};
 use danmo_contracts::{parse_size, ImageGenerationRequest};
 use std::path::Path;
 use thiserror::Error;
@@ -34,6 +34,34 @@ pub struct RunOutput {
     pub preview_png: Vec<u8>,
 }
 
+fn request_loras(request: &ImageGenerationRequest) -> Result<Vec<LoraFile>, EngineError> {
+    let mut files = Vec::new();
+    for adapter in &request.adapters {
+        if adapter.id.trim().is_empty() {
+            return Err(EngineError::BadRequest("lora id is required".into()));
+        }
+        let path = std::path::PathBuf::from(&adapter.path);
+        if adapter.path.is_empty() || !path.is_file() {
+            return Err(EngineError::BadRequest(format!(
+                "lora {} is not installed",
+                adapter.id
+            )));
+        }
+        if !adapter.weight.is_finite() {
+            return Err(EngineError::BadRequest(format!(
+                "lora {} weight is not a finite number",
+                adapter.id
+            )));
+        }
+        files.push(LoraFile {
+            id: adapter.id.clone(),
+            path,
+            weight: adapter.weight,
+        });
+    }
+    Ok(files)
+}
+
 fn shape_name(shape: Shape) -> &'static str {
     match shape {
         Shape::DitPipeline => "dit_pipeline",
@@ -58,6 +86,12 @@ pub fn image_create(
         )));
     }
     let (width, height) = parse_size(&request.size).map_err(EngineError::BadRequest)?;
+    let loras = request_loras(request)?;
+    if !loras.is_empty() && !matches!(family, "flux2" | "z_image") {
+        return Err(EngineError::BadRequest(
+            "lora inference graph is not built".into(),
+        ));
+    }
     weights::assert_gguf_bundle(bundle)?;
     let steps = request.steps.unwrap_or(4);
     match spec.shape {
@@ -77,6 +111,7 @@ pub fn image_create(
                 request.scheduler_shift,
                 request.use_empirical_mu,
                 &request.negative_prompt,
+                &loras,
                 on_progress,
             )?
             else {

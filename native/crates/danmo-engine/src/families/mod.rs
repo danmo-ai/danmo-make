@@ -180,6 +180,7 @@ pub fn run_dit_image(
     scheduler_shift: Option<f32>,
     empirical_mu: bool,
     negative: &str,
+    loras: &[crate::weights::LoraFile],
     on_progress: impl FnMut(u32, u32),
 ) -> Result<Option<DitImageRun>, crate::weights::WeightError> {
     match family {
@@ -194,6 +195,7 @@ pub fn run_dit_image(
             seed,
             scheduler,
             negative,
+            loras,
             on_progress,
         )?)),
         "z_image" => Ok(Some(z_image::execute(
@@ -209,6 +211,7 @@ pub fn run_dit_image(
             scheduler_shift,
             empirical_mu,
             negative,
+            loras,
             on_progress,
         )?)),
         _ => Ok(None),

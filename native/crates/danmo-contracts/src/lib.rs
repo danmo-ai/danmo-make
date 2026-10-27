@@ -57,8 +57,20 @@ pub struct ImageGenerationRequest {
     pub scheduler_shift: Option<f32>,
     #[serde(default)]
     pub use_empirical_mu: bool,
+    #[serde(default)]
+    pub adapters: Vec<ImageAdapter>,
     #[serde(default = "default_priority")]
     pub priority: String,
+}
+
+/// One LoRA on an image create. `path` is filled when the request is accepted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageAdapter {
+    pub id: String,
+    #[serde(default = "default_adapter_weight")]
+    pub weight: f32,
+    #[serde(default)]
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +135,10 @@ fn one() -> u32 {
 }
 fn default_priority() -> String {
     "normal".into()
+}
+
+fn default_adapter_weight() -> f32 {
+    1.0
 }
 
 pub fn parse_size(size: &str) -> Result<(u32, u32), String> {

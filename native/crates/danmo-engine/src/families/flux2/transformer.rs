@@ -4,6 +4,7 @@ use super::graph::build_dit;
 use super::weights::Flux2Config;
 use crate::pipeline::denoise::{denoise_resident, flow_steps};
 use crate::runtime::{GgmlContext, ReusedGraph, RuntimeError};
+use crate::weights::LoraFactor;
 use std::collections::HashMap;
 
 pub struct Flux2Denoise {
@@ -27,7 +28,7 @@ impl Flux2Denoise {
         grid_h: i64,
         seq_txt: i64,
     ) -> Result<Self, RuntimeError> {
-        Self::build_typed(ctx, config, grid_w, grid_h, seq_txt, &HashMap::new())
+        Self::build_typed(ctx, config, grid_w, grid_h, seq_txt, &HashMap::new(), &[])
     }
 
     /// `types` maps a GGUF tensor name to its stored ggml type. Missing names are F32.
@@ -38,9 +39,10 @@ impl Flux2Denoise {
         grid_h: i64,
         seq_txt: i64,
         types: &HashMap<String, u32>,
+        loras: &[LoraFactor],
     ) -> Result<Self, RuntimeError> {
         let mut builder = ctx.builder(64 * 1024 * 1024)?;
-        let built = build_dit(&mut builder, config, grid_w, grid_h, seq_txt, types)?;
+        let built = build_dit(&mut builder, config, grid_w, grid_h, seq_txt, types, loras)?;
         let graph = builder.finish(built.output)?;
         Ok(Self {
             graph,

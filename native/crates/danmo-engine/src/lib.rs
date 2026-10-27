@@ -17,7 +17,7 @@ mod tests {
     use super::*;
     use crate::runtime::identity_probe;
     use crate::weights::{write_safetensors, SafeTensor};
-    use danmo_contracts::ImageGenerationRequest;
+    use danmo_contracts::{ImageAdapter, ImageGenerationRequest};
     use std::path::PathBuf;
 
     fn request() -> ImageGenerationRequest {
@@ -34,6 +34,7 @@ mod tests {
             scheduler: None,
             scheduler_shift: None,
             use_empirical_mu: false,
+            adapters: Vec::new(),
             priority: "normal".into(),
         }
     }
@@ -296,6 +297,78 @@ mod tests {
         };
         assert!(
             err.to_string().contains("negative prompt is not built"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flux2_lora_residual_changes_the_latent() {
+        let dir = scratch("flux2-lora");
+        write_smoke_bundle(&dir, 4).unwrap();
+        let plain = image_create(&request(), "flux2", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        let lora = dir.join("portrait.safetensors");
+        let down = f32_le(&[1.0, 0.0, 0.0, 1.0]);
+        let up = f32_le(&[0.5, 0.25, -0.25, 0.5]);
+        write_safetensors(
+            &lora,
+            &[
+                SafeTensor {
+                    name: "diffusion_model.img_in.lora_A.weight",
+                    dtype: "F32",
+                    shape: &[1, 4],
+                    data: &down,
+                },
+                SafeTensor {
+                    name: "diffusion_model.img_in.lora_B.weight",
+                    dtype: "F32",
+                    shape: &[4, 1],
+                    data: &up,
+                },
+            ],
+        )
+        .unwrap();
+        let mut adapted = request();
+        adapted.adapters = vec![ImageAdapter {
+            id: "portrait".into(),
+            weight: 0.8,
+            path: lora.display().to_string(),
+        }];
+        let with = image_create(&adapted, "flux2", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert!(with.latents.iter().all(|v| v.is_finite()));
+        assert_ne!(plain.latents, with.latents);
+        let split = dir.join("split.safetensors");
+        write_safetensors(
+            &split,
+            &[
+                SafeTensor {
+                    name: "transformer_blocks.0.attn.to_q.lora_A.weight",
+                    dtype: "F32",
+                    shape: &[1, 4],
+                    data: &down,
+                },
+                SafeTensor {
+                    name: "transformer_blocks.0.attn.to_q.lora_B.weight",
+                    dtype: "F32",
+                    shape: &[4, 1],
+                    data: &up,
+                },
+            ],
+        )
+        .unwrap();
+        adapted.adapters[0].path = split.display().to_string();
+        let err = match image_create(&adapted, "flux2", &dir, BackendKind::Cpu, |_, _| ()) {
+            Err(err) => err,
+            Ok(_) => panic!("diffusers to_q lora was accepted"),
+        };
+        assert!(err.to_string().contains("not a graph parameter"), "{err}");
+        adapted.adapters[0].path.clear();
+        let err = match image_create(&adapted, "flux2", &dir, BackendKind::Cpu, |_, _| ()) {
+            Err(err) => err,
+            Ok(_) => panic!("missing lora file was accepted"),
+        };
+        assert!(
+            err.to_string().contains("lora portrait is not installed"),
             "{err}"
         );
         let _ = std::fs::remove_dir_all(&dir);

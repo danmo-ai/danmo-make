@@ -551,6 +551,17 @@ mod tests {
         body["teacache_mode"] = json!("auto");
         body["lemica_mode"] = json!("none");
         body["adapters"] = json!([{ "id": "portrait", "weight": 0.8 }]);
+        let missing = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(missing.0, StatusCode::BAD_REQUEST);
+        assert!(
+            missing.1["detail"]
+                .as_str()
+                .unwrap()
+                .contains("lora portrait is not installed"),
+            "{}",
+            missing.1
+        );
+        body["model"] = json!("fibo");
         let refused = post_json(&app, "/api/images/generations", &body).await;
         assert_eq!(refused.0, StatusCode::NOT_IMPLEMENTED);
         assert!(
@@ -561,6 +572,26 @@ mod tests {
             "{}",
             refused.1
         );
+        let config = dir.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("user_loras.json"),
+            r#"{"items":[{"id":"user-lora-abc","base_model":"z-image-turbo","local_path":"missing.safetensors","inference":{"scheme":"sft","model":"z-image-turbo"}}]}"#,
+        )
+        .unwrap();
+        body["model"] = json!("z-image-turbo");
+        body["adapters"] = json!([{ "id": "user-lora-abc", "weight": 0.8 }]);
+        let sft = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(sft.0, StatusCode::NOT_IMPLEMENTED);
+        assert!(
+            sft.1["detail"]
+                .as_str()
+                .unwrap()
+                .contains("Turbo SFT DistillPatch is not built"),
+            "{}",
+            sft.1
+        );
+        body["model"] = json!(model);
         body["adapters"] = json!([]);
         body["negative_prompt"] = json!("blurry");
         let accepted_negative = post_json(&app, "/api/images/generations", &body).await;
@@ -689,6 +720,22 @@ mod tests {
         );
         assert!(q4.get("graph_pack").is_none());
         assert!(model["versions"]["bf16"].get("graph_pack").is_none());
+        let klein9 = &listed["models"]["flux2-klein-9b"]["versions"];
+        assert_eq!(klein9["bf16"]["size"], "34.7GB");
+        assert_eq!(klein9["q8_0"]["size"], "26.5GB");
+        assert_eq!(klein9["q4_k"]["size"], "22.5GB");
+        assert_eq!(
+            klein9["q4_k"]["components"][0]["repo_id"],
+            "black-forest-labs/FLUX.2-klein-9B"
+        );
+        let turbo = &listed["models"]["z-image-turbo"]["versions"];
+        assert_eq!(turbo["bf16"]["size"], "20.5GB");
+        assert_eq!(turbo["q8_0"]["size"], "15.5GB");
+        assert_eq!(turbo["q4_k"]["size"], "13.2GB");
+        assert_eq!(
+            turbo["q4_k"]["components"][0]["repo_id"],
+            "Tongyi-MAI/Z-Image-Turbo"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1134,6 +1181,7 @@ fn prepare_image_request(
         .model(&model)
         .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
     reject_unbuilt_inference(&entry.family, &body)?;
+    bind_installed_loras(state, &model, &mut body)?;
     fill_registry_defaults(&catalog, &entry.id, &mut body);
     let request: ImageGenerationRequest = serde_json::from_value(body)
         .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
@@ -1144,11 +1192,8 @@ fn prepare_image_request(
 }
 
 fn reject_unbuilt_inference(family: &str, body: &Value) -> Result<(), ApiError> {
-    if body
-        .get("adapters")
-        .and_then(|v| v.as_array())
-        .is_some_and(|rows| !rows.is_empty())
-    {
+    let adapters = body.get("adapters").and_then(|v| v.as_array());
+    if adapters.is_some_and(|rows| !rows.is_empty()) && !matches!(family, "flux2" | "z_image") {
         return Err(fail(
             StatusCode::NOT_IMPLEMENTED,
             "lora inference graph is not built",
@@ -1193,6 +1238,60 @@ fn reject_unbuilt_inference(family: &str, body: &Value) -> Result<(), ApiError> 
                 format!("scheduler {scheduler} is not built"),
             ));
         }
+    }
+    Ok(())
+}
+
+fn bind_installed_loras(state: &AppState, model: &str, body: &mut Value) -> Result<(), ApiError> {
+    let Some(rows) = body.get_mut("adapters").and_then(|v| v.as_array_mut()) else {
+        return Ok(());
+    };
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let bare = model.split(':').next().unwrap_or(model);
+    for row in rows.iter_mut() {
+        let id = row
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if id.is_empty() {
+            return Err(fail(StatusCode::BAD_REQUEST, "lora id is required"));
+        }
+        if bare == "z-image-turbo" {
+            match state.downloads.turbo_sft(&id) {
+                Ok(true) => {
+                    return Err(fail(
+                        StatusCode::NOT_IMPLEMENTED,
+                        "Turbo SFT DistillPatch is not built",
+                    ));
+                }
+                Ok(false) => {}
+                Err(detail) => return Err(fail(StatusCode::BAD_REQUEST, detail)),
+            }
+        }
+        let path = state
+            .downloads
+            .lora_path(&id)
+            .map_err(|detail| fail(StatusCode::BAD_REQUEST, detail))?;
+        let Some(path) = path else {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                format!("lora {id} is not installed"),
+            ));
+        };
+        let Some(obj) = row.as_object_mut() else {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                "lora adapter is not an object",
+            ));
+        };
+        obj.insert(
+            "path".to_string(),
+            json!(path.to_string_lossy().to_string()),
+        );
     }
     Ok(())
 }

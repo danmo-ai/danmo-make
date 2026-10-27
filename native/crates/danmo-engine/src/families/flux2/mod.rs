@@ -12,8 +12,9 @@ use crate::common::ops::{empirical_mu_sigmas, normal_latent};
 use crate::common::qwen3::tower_present;
 use crate::runtime::{GgmlContext, TYPE_F32, TYPE_Q8_0};
 use crate::weights::{
-    assert_gguf_bundle, matmul_type, quantize_q8_0, type_block, write_f32_tensors,
-    write_typed_tensors, F32Tensor, GgufWeights, TypedTensor, WeightError,
+    assert_gguf_bundle, load_lora_factors, matmul_type, quantize_q8_0, type_block,
+    write_f32_tensors, write_typed_tensors, F32Tensor, GgufWeights, LoraFile, TypedTensor,
+    WeightError,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -30,6 +31,7 @@ pub fn execute(
     seed: Option<i64>,
     scheduler: Option<&str>,
     negative: &str,
+    loras: &[LoraFile],
     on_progress: impl FnMut(u32, u32),
 ) -> Result<crate::families::DitImageRun, WeightError> {
     if !negative.trim().is_empty() {
@@ -71,18 +73,25 @@ pub fn execute(
         prompt,
         config.joint_attention_dim,
     )?;
+    let layout = weight_layout(config);
+    let factors = load_lora_factors(loras, &layout)?;
     let mut types = HashMap::new();
     let mut stored = Vec::new();
-    for (name, ne0, ne1) in weight_layout(config) {
-        let ggml_type = loaded.ggml_type_of(&name)?;
-        check_stored_type(&name, ggml_type, ne0)?;
+    for (name, ne0, ne1) in &layout {
+        let ggml_type = loaded.ggml_type_of(name)?;
+        check_stored_type(name, ggml_type, *ne0)?;
         types.insert(name.clone(), ggml_type);
-        stored.push((name.clone(), loaded.raw_exact(&name, &[ne0, ne1])?));
+        stored.push((name.clone(), loaded.raw_exact(name, &[*ne0, *ne1])?));
     }
-    let mut denoise =
-        transformer::Flux2Denoise::build_typed(&ctx, config, grid_w, grid_h, seq_txt, &types)?;
+    let mut denoise = transformer::Flux2Denoise::build_typed(
+        &ctx, config, grid_w, grid_h, seq_txt, &types, &factors,
+    )?;
     for (name, raw) in &stored {
         denoise.load_bytes(name, raw)?;
+    }
+    for (index, factor) in factors.iter().enumerate() {
+        denoise.load_f32(&format!("lora.{index}.a"), &factor.a)?;
+        denoise.load_f32(&format!("lora.{index}.b"), &factor.b)?;
     }
     let latent = match seed {
         Some(seed) => normal_latent(seed, denoise.latent_len()),
@@ -460,8 +469,22 @@ mod tests {
             types.insert(name, ggml_type);
         }
         let ctx = GgmlContext::new(BackendKind::Cpu).expect("cpu");
-        let graph =
-            Flux2Denoise::build_typed(&ctx, config, 4, 4, 32, &types).expect("klein dit reserves");
+        let graph = Flux2Denoise::build_typed(&ctx, config, 4, 4, 32, &types, &[])
+            .expect("klein dit reserves");
+        drop(graph);
+    }
+
+    /// Published Klein 9B depth is 8 double blocks and 24 single blocks.
+    /// Head dim stays divisible by 8 so the four-axis RoPE path is the one reserved.
+    #[test]
+    fn klein_9b_depth_reserves() {
+        let mut config = Flux2Config::from_dim(8);
+        config.num_layers = 8;
+        config.num_single_layers = 24;
+        assert_eq!(config.attn_head_dim % 8, 0);
+        let ctx = GgmlContext::new(BackendKind::Cpu).expect("cpu");
+        let graph = Flux2Denoise::build_typed(&ctx, config, 1, 1, 1, &HashMap::new(), &[])
+            .expect("klein 9b depth reserves");
         drop(graph);
     }
 }

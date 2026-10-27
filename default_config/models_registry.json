@@ -1443,8 +1443,8 @@
       "catalog": {
         "media": "image",
         "description": {
-          "zh": "FLUX.2 Klein 9B 蒸馏版，8 步真实感出图。",
-          "en": "FLUX.2 Klein 9B distilled; realistic 8-step generation."
+          "zh": "FLUX.2 Klein 9B 蒸馏版，8 步真实感出图。一次安装下载所选档的 DiT GGUF，以及魔塔 black-forest-labs/FLUX.2-klein-9B 的文本编码器、VAE 和分词器，落到该档自己的目录。",
+          "en": "FLUX.2 Klein 9B distilled; realistic 8-step generation. One install downloads the selected DiT GGUF plus the text encoder, VAE, and tokenizer from ModelScope black-forest-labs/FLUX.2-klein-9B into that tier's own directory."
         },
         "category": "base_models",
         "commercial_use_allowed": false,
@@ -1588,7 +1588,7 @@
               "zh": "BF16",
               "en": "BF16"
             },
-            "size": "18.2GB",
+            "size": "34.7GB",
             "source": "modelscope",
             "source_type": "full",
             "repo_id": "unsloth/FLUX.2-klein-9B-GGUF",
@@ -1596,20 +1596,42 @@
             "allow_patterns": [
               "flux-2-klein-9b-BF16.gguf"
             ],
-            "default": true
+            "default": true,
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "black-forest-labs/FLUX.2-klein-9B",
+                "allow_patterns": [
+                  "text_encoder/**",
+                  "tokenizer/**",
+                  "vae/**"
+                ]
+              }
+            ]
           },
           "q8_0": {
             "name": {
               "zh": "Q8_0",
               "en": "Q8_0"
             },
-            "size": "10.0GB",
+            "size": "26.5GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "unsloth/FLUX.2-klein-9B-GGUF",
             "local_path": "models/flux2-klein-9b/q8_0",
             "allow_patterns": [
               "flux-2-klein-9b-Q8_0.gguf"
+            ],
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "black-forest-labs/FLUX.2-klein-9B",
+                "allow_patterns": [
+                  "text_encoder/**",
+                  "tokenizer/**",
+                  "vae/**"
+                ]
+              }
             ]
           },
           "q4_k": {
@@ -1617,13 +1639,24 @@
               "zh": "Q4_K_M",
               "en": "Q4_K_M"
             },
-            "size": "5.9GB",
+            "size": "22.5GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "unsloth/FLUX.2-klein-9B-GGUF",
             "local_path": "models/flux2-klein-9b/q4_k",
             "allow_patterns": [
               "flux-2-klein-9b-Q4_K_M.gguf"
+            ],
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "black-forest-labs/FLUX.2-klein-9B",
+                "allow_patterns": [
+                  "text_encoder/**",
+                  "tokenizer/**",
+                  "vae/**"
+                ]
+              }
             ]
           }
         }
@@ -2234,8 +2267,8 @@
       "catalog": {
         "media": "image",
         "description": {
-          "zh": "通义 Z-Image-Turbo，默认 9 步快速出图。Scheme 4：加载 Base 训练的 LoRA 时自动附加 DistillPatch，并按官方加速配置切到 8 步。",
-          "en": "Tongyi Z-Image-Turbo — 9-step default. Scheme 4: Base-trained LoRAs auto-load DistillPatch and switch to official 8-step acceleration."
+          "zh": "通义 Z-Image-Turbo，默认 9 步快速出图。一次安装下载所选档的 DiT GGUF，以及魔塔 Tongyi-MAI/Z-Image-Turbo 的文本编码器、VAE 和分词器，落到该档自己的目录。Scheme 4 的 Turbo SFT 还需要 DistillPatch，这条附加没有接上，这类请求会直接失败。",
+          "en": "Tongyi Z-Image-Turbo, 9-step default. One install downloads the selected DiT GGUF plus the text encoder, VAE, and tokenizer from ModelScope Tongyi-MAI/Z-Image-Turbo into that tier's own directory. Scheme 4 Turbo SFT still needs DistillPatch; that attachment is not built, and those requests fail."
         },
         "category": "base_models",
         "commercial_use_allowed": true,
@@ -2405,7 +2438,7 @@
               "zh": "BF16",
               "en": "BF16"
             },
-            "size": "12.3GB",
+            "size": "20.5GB",
             "source": "modelscope",
             "source_type": "full",
             "repo_id": "unsloth/Z-Image-Turbo-GGUF",
@@ -2413,20 +2446,42 @@
             "allow_patterns": [
               "z-image-turbo-BF16.gguf"
             ],
-            "default": true
+            "default": true,
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "Tongyi-MAI/Z-Image-Turbo",
+                "allow_patterns": [
+                  "text_encoder/**",
+                  "tokenizer/**",
+                  "vae/**"
+                ]
+              }
+            ]
           },
           "q8_0": {
             "name": {
               "zh": "Q8_0",
               "en": "Q8_0"
             },
-            "size": "7.2GB",
+            "size": "15.5GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "unsloth/Z-Image-Turbo-GGUF",
             "local_path": "models/z-image-turbo/q8_0",
             "allow_patterns": [
               "z-image-turbo-Q8_0.gguf"
+            ],
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "Tongyi-MAI/Z-Image-Turbo",
+                "allow_patterns": [
+                  "text_encoder/**",
+                  "tokenizer/**",
+                  "vae/**"
+                ]
+              }
             ]
           },
           "q4_k": {
@@ -2434,13 +2489,24 @@
               "zh": "Q4_K_M",
               "en": "Q4_K_M"
             },
-            "size": "5.0GB",
+            "size": "13.2GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "unsloth/Z-Image-Turbo-GGUF",
             "local_path": "models/z-image-turbo/q4_k",
             "allow_patterns": [
               "z-image-turbo-Q4_K_M.gguf"
+            ],
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "Tongyi-MAI/Z-Image-Turbo",
+                "allow_patterns": [
+                  "text_encoder/**",
+                  "tokenizer/**",
+                  "vae/**"
+                ]
+              }
             ]
           }
         }
