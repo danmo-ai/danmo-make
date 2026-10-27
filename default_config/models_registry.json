@@ -7339,7 +7339,9 @@
         }
       },
       "actions": {
-        "create": {},
+        "create": {
+          "media_roles": ["reference_image", "reference_audio"]
+        },
         "animate": {}
       },
       "ui": {
@@ -8763,8 +8765,12 @@
         }
       },
       "actions": {
-        "create": {},
-        "animate": {}
+        "create": {
+          "media_roles": ["reference_image"]
+        },
+        "animate": {
+          "media_roles": ["source_video", "first_frame", "reference_image"]
+        }
       },
       "ui": {
         "parameters": {
@@ -8923,8 +8929,12 @@
         }
       },
       "actions": {
-        "create": {},
-        "animate": {}
+        "create": {
+          "media_roles": ["reference_image"]
+        },
+        "animate": {
+          "media_roles": ["source_video", "first_frame", "reference_image"]
+        }
       },
       "ui": {
         "parameters": {
@@ -9378,8 +9388,12 @@
         }
       },
       "actions": {
-        "create": {},
-        "animate": {}
+        "create": {
+          "media_roles": ["reference_image", "reference_video", "reference_audio"]
+        },
+        "animate": {
+          "media_roles": ["first_frame", "last_frame"]
+        }
       },
       "ui": {
         "parameters": {

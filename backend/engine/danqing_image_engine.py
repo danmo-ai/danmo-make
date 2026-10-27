@@ -67,6 +67,16 @@ class DanQingImageEngine(IImageEngine):
             return False
         return action in e.actions
 
+    def _reject_media(self, request: Any, endpoint: str) -> None:
+        from backend.core.media_roles import reject_image_roles
+
+        entry = self._registry.get(request.model)
+        if entry is None:
+            return
+        rejected = reject_image_roles(entry, request, endpoint=endpoint)
+        if rejected is not None:
+            raise RuntimeError(rejected.message)
+
     def _resolve_runtime(self, model_id: str) -> RuntimeContext:
         entry = self._registry.require(model_id)
         backends = entry.backends
@@ -93,6 +103,7 @@ class DanQingImageEngine(IImageEngine):
                 f"Model {mid!r} does not support text-to-image (create) for this engine; "
                 "see config/models_registry.json actions."
             )
+        self._reject_media(request, "generate")
         runtime = self._resolve_runtime(request.model)
 
         on_progress = make_pipeline_progress_callback(ctx)
@@ -151,6 +162,7 @@ class DanQingImageEngine(IImageEngine):
                 f"Model {mid!r} does not support image edit (rewrite/retouch/extend) for this engine; "
                 "see config/models_registry.json actions."
             )
+        self._reject_media(request, "edit")
         runtime = self._resolve_runtime(request.model)
         on_progress = make_pipeline_progress_callback(ctx)
 

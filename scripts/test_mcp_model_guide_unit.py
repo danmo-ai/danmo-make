@@ -101,6 +101,7 @@ def main() -> int:
     assert card["parameters"]["size"]["options"] == ["768x1280"]
     assert card["preferred_version"] == "int4"
     assert card["actions"] == ["generate"]
+    assert card["media_roles"] == []
     assert "lora_support" not in card.get("parameters", {})
 
     out = enrich_model_list(
@@ -141,6 +142,8 @@ def main() -> int:
     assert "old-model" in ids
     assert ids.index("old-model") > ids.index("distill-model")
     assert all("generate" in c["actions"] for c in out["image"])
+    base = next(c for c in out["image"] if c["id"] == "base-model")
+    assert base["media_roles"] == ["reference_image"]
     print("ok: mcp model_guide sort+simplified")
     return 0
 

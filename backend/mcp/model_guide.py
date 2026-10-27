@@ -314,6 +314,14 @@ def summarize_model(
         "installed": row.get("installed"),
         "defaults": defaults,
     }
+    if media in ("image", "video"):
+        from backend.core.media_roles import model_media_roles
+
+        class _RoleEntry:
+            raw = cfg
+            parameters = params
+
+        card["media_roles"] = model_media_roles(_RoleEntry(), media=str(media))
     if card["type"] is None:
         card.pop("type", None)
     pref_ver = _preferred_version_key(versions) if isinstance(versions, dict) else ""

@@ -90,7 +90,7 @@ def _register_tools(mcp: MCPServer) -> None:
 
     @mcp.tool(
         description=(
-            "Model card: actions + type + defaults + parameters "
+            "Model card: actions + media_roles + type + defaults + parameters "
             "(size options; video duration_sec; audio duration; steps/guidance/fps). "
             "Call after list_models. Reject type=lora for generate_*."
         )
@@ -202,6 +202,18 @@ def _register_tools(mcp: MCPServer) -> None:
             )
         return card
 
+    def _normalize_media(items: Optional[list[dict[str, str]]]) -> list[dict[str, str]]:
+        out: list[dict[str, str]] = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                raise RuntimeError("media items must be objects with role and asset_id")
+            role = str(item.get("role") or "").strip()
+            asset_id = str(item.get("asset_id") or "").strip().removeprefix("asset:")
+            if not role or not asset_id:
+                raise RuntimeError("each media item needs role and asset_id")
+            out.append({"role": role, "asset_id": asset_id})
+        return out
+
     async def _model_defaults(model_id: str) -> dict[str, Any]:
         card = await _model_card(model_id)
         defaults = card.get("defaults")
@@ -228,9 +240,9 @@ def _register_tools(mcp: MCPServer) -> None:
 
     @mcp.tool(
         description=(
-            "Text-to-image. model from list_models(action=generate).image[0] "
-            "(must have actions containing generate; not LoRA/edit-only). "
-            "size from get_model. wait=true default."
+            "Text-to-image. model from list_models(action=generate).image[0]. "
+            "media stays empty. size from get_model. wait=true default. "
+            "Reference images use edit_image(operation=rewrite)."
         )
     )
     async def generate_image(
@@ -273,8 +285,13 @@ def _register_tools(mcp: MCPServer) -> None:
 
     @mcp.tool(
         description=(
-            "Edit image (rewrite/retouch/extend). "
-            "model from list_models(action=edit); needs source_asset_id."
+            "Edit an image. operation must be a registry action the model declares: "
+            "rewrite (reference_image), retouch (mask), or extend. "
+            "media is an ordered list of {role, asset_id}. "
+            "Roles: reference_image, mask. "
+            "source_asset_id is the picture being edited. "
+            "retouch also needs mask_asset_id or media role mask. "
+            "Model card media_roles lists what the model accepts."
         )
     )
     async def edit_image(
@@ -284,6 +301,7 @@ def _register_tools(mcp: MCPServer) -> None:
         prompt: str,
         mask_asset_id: Optional[str] = None,
         reference_asset_ids: Optional[list[str]] = None,
+        media: Optional[list[dict[str, str]]] = None,
         negative_prompt: str = "",
         steps: Optional[int] = None,
         guidance: Optional[float] = None,
@@ -305,6 +323,7 @@ def _register_tools(mcp: MCPServer) -> None:
             "reference_asset_ids": [
                 a.removeprefix("asset:") for a in (reference_asset_ids or [])
             ],
+            "media": _normalize_media(media),
         }
         if mask_asset_id:
             body["mask_asset_id"] = mask_asset_id.removeprefix("asset:")
@@ -348,8 +367,12 @@ def _register_tools(mcp: MCPServer) -> None:
 
     @mcp.tool(
         description=(
-            "Text/image-to-video. Prefer duration_sec from get_model "
-            "(converted to num_frames). size/fps from get_model. wait default true."
+            "Text-to-video, or reference-to-video when media/media_references is set. "
+            "media roles: reference_image, reference_video, reference_audio. "
+            "Empty media is text-to-video. "
+            "First/last frame uses edit_video. "
+            "get_model.media_roles lists accepted roles. "
+            "Prefer duration_sec from get_model. wait default true."
         )
     )
     async def generate_video(
@@ -364,6 +387,8 @@ def _register_tools(mcp: MCPServer) -> None:
         guidance: Optional[float] = None,
         seed: Optional[int] = None,
         reference_asset_ids: Optional[list[str]] = None,
+        media_references: Optional[list[dict[str, str]]] = None,
+        media: Optional[list[dict[str, str]]] = None,
         priority: str = "normal",
         wait: bool = True,
         wait_timeout_seconds: float = 900.0,
@@ -376,6 +401,15 @@ def _register_tools(mcp: MCPServer) -> None:
             "priority": priority,
             "reference_asset_ids": [
                 a.removeprefix("asset:") for a in (reference_asset_ids or [])
+            ],
+            "media": _normalize_media(media),
+            "media_references": [
+                {
+                    "kind": str(ref.get("kind") or "").strip(),
+                    "asset_id": str(ref.get("asset_id") or "").strip().removeprefix("asset:"),
+                }
+                for ref in (media_references or [])
+                if isinstance(ref, dict)
             ],
         }
         size_s = (size or "").strip()
@@ -413,7 +447,17 @@ def _register_tools(mcp: MCPServer) -> None:
             wait_timeout_seconds=wait_timeout_seconds,
         )
 
-    @mcp.tool(description="Video edit (animate); needs source_asset_id.")
+    @mcp.tool(
+        description=(
+            "Image-to-video or video edit. "
+            "media roles: first_frame, last_frame, source_video, "
+            "reference_image, reference_video, reference_audio. "
+            "source_asset_id is the first frame or the source video. "
+            "Pass tail_asset_id or media role last_frame for first-last-frame. "
+            "First/last frames cannot be combined with reference media. "
+            "get_model.media_roles lists accepted roles."
+        )
+    )
     async def edit_video(
         model: str,
         source_asset_id: str,
@@ -425,6 +469,9 @@ def _register_tools(mcp: MCPServer) -> None:
         fps: int = 16,
         steps: Optional[int] = None,
         seed: Optional[int] = None,
+        tail_asset_id: Optional[str] = None,
+        media: Optional[list[dict[str, str]]] = None,
+        media_references: Optional[list[dict[str, str]]] = None,
         priority: str = "normal",
         wait: bool = True,
         wait_timeout_seconds: float = 900.0,
@@ -440,7 +487,18 @@ def _register_tools(mcp: MCPServer) -> None:
             "num_frames": num_frames,
             "fps": fps,
             "priority": priority,
+            "media": _normalize_media(media),
+            "media_references": [
+                {
+                    "kind": str(ref.get("kind") or "").strip(),
+                    "asset_id": str(ref.get("asset_id") or "").strip().removeprefix("asset:"),
+                }
+                for ref in (media_references or [])
+                if isinstance(ref, dict)
+            ],
         }
+        if tail_asset_id:
+            body["tail_asset_id"] = tail_asset_id.removeprefix("asset:")
         if steps is not None:
             body["steps"] = steps
         if seed is not None:

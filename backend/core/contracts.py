@@ -101,6 +101,7 @@ class ImageGenerationRequest(BaseModel):
     latent_refine: Optional[LatentRefineSpec] = None
     priority: Literal["normal", "high"] = "normal"
     metadata: dict[str, Any] = Field(default_factory=dict)
+    media: list[MediaInput] = Field(default_factory=list)
 
 
 class ExtendSpec(BaseModel):
@@ -111,7 +112,7 @@ class ExtendSpec(BaseModel):
 class ImageEditRequest(BaseModel):
     model: str
     operation: Literal["rewrite", "retouch", "extend"]
-    source_asset_id: str
+    source_asset_id: str = ""
     reference_asset_ids: list[str] = Field(default_factory=list)
     title: str = ""
     prompt: str
@@ -136,9 +137,13 @@ class ImageEditRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     # operation=rewrite: reference=full-image img2img; instruct=instruction-based edit (currently only flux1-kontext / text_editing). None=use legacy auto rules.
     rewrite_mode: Optional[Literal["reference", "instruct"]] = None
+    media: list[MediaInput] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _rewrite_mode_consistency(self) -> "ImageEditRequest":
+        from backend.core.media_roles import project_image_edit
+
+        project_image_edit(self)
         if self.rewrite_mode is not None and self.operation != "rewrite":
             raise ValueError("rewrite_mode is only valid when operation is rewrite")
         return self
@@ -164,6 +169,21 @@ class VideoMediaReference(BaseModel):
     asset_id: str
 
 
+class MediaInput(BaseModel):
+    """One ordered input asset. ``role`` selects the task (Seedance-style)."""
+
+    role: Literal[
+        "reference_image",
+        "mask",
+        "first_frame",
+        "last_frame",
+        "reference_video",
+        "reference_audio",
+        "source_video",
+    ]
+    asset_id: str
+
+
 class VideoGenerationRequest(BaseModel):
     model: str
     title: str = ""
@@ -184,6 +204,14 @@ class VideoGenerationRequest(BaseModel):
     teacache_mode: Optional[str] = None
     h3_veda: Optional[str] = None
     h3_turbo: Optional[bool] = None
+    media: list[MediaInput] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _project_media(self) -> "VideoGenerationRequest":
+        from backend.core.media_roles import project_video_generate
+
+        project_video_generate(self)
+        return self
 
 
 class VideoAvatarRequest(BaseModel):
@@ -242,7 +270,7 @@ class VideoAvatarScriptRequest(BaseModel):
 class VideoEditRequest(BaseModel):
     model: str
     operation: Literal["animate"] = "animate"
-    source_asset_id: str
+    source_asset_id: str = ""
     tail_asset_id: Optional[str] = None
     title: str = ""
     prompt: str
@@ -262,6 +290,14 @@ class VideoEditRequest(BaseModel):
     teacache_mode: Optional[str] = None
     h3_veda: Optional[str] = None
     h3_turbo: Optional[bool] = None
+    media: list[MediaInput] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _project_media(self) -> "VideoEditRequest":
+        from backend.core.media_roles import project_video_edit
+
+        project_video_edit(self)
+        return self
 
 
 class VideoUpscaleRequest(BaseModel):

@@ -6,6 +6,7 @@ from typing import Any, Literal
 from fastapi import HTTPException
 
 from backend.core.contracts import BaseModel
+from backend.core.media_roles import reject_request_media
 from backend.engine.engine_registry import EngineRegistry
 from backend.scheduler.task_scheduler import TaskScheduler
 
@@ -33,6 +34,15 @@ async def submit_media_task(
             409,
             detail={"code": "unsupported", "message": f"model does not support {api_action}"},
         )
+    entry = engines.model_registry.get(model_id)
+    if entry is not None:
+        rejected = reject_request_media(entry, body, media=media, api_action=api_action)
+        if rejected is not None:
+            status = 409 if rejected.code == "unsupported" else 400
+            raise HTTPException(
+                status,
+                detail={"code": rejected.code, "message": rejected.message},
+            )
     priority = getattr(body, "priority", "normal")
     r = await sched.submit(
         kind=task_kind,

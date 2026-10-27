@@ -70,6 +70,16 @@ class DanQingVideoEngine(IVideoEngine):
             return False
         return action in e.actions
 
+    def _reject_media(self, request: Any, endpoint: str) -> None:
+        from backend.core.media_roles import reject_video_roles
+
+        entry = self._registry.get(request.model)
+        if entry is None:
+            return
+        rejected = reject_video_roles(entry, request, endpoint=endpoint)
+        if rejected is not None:
+            raise RuntimeError(rejected.message)
+
     def _resolve_runtime(self, model_id: str) -> RuntimeContext:
         entry = self._registry.require(model_id)
         backends = entry.backends
@@ -96,6 +106,7 @@ class DanQingVideoEngine(IVideoEngine):
                 f"Model {mid!r} does not support text-to-video (create) for this engine; "
                 "see config/models_registry.json actions."
             )
+        self._reject_media(request, "generate")
         runtime = self._resolve_runtime(request.model)
         on_progress = make_pipeline_progress_callback(ctx)
 
@@ -134,6 +145,7 @@ class DanQingVideoEngine(IVideoEngine):
                 f"Model {mid!r} does not support video edit (animate) for this engine; "
                 "see config/models_registry.json actions."
             )
+        self._reject_media(request, "edit")
         runtime = self._resolve_runtime(request.model)
         on_progress = make_pipeline_progress_callback(ctx)
 

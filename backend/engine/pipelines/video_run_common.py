@@ -835,10 +835,29 @@ def execute_family_video_generator(pipeline,
         import inspect as _inspect
 
         gen_sig = _inspect.signature(generator.generate_and_save).parameters
-        if last_frame_path is not None and "last_frame_path" in gen_sig:
+        if last_frame_path is not None:
+            if "last_frame_path" not in gen_sig:
+                raise RuntimeError(
+                    "This video model does not accept a last frame "
+                    "(tail_asset_id / last_frame)."
+                )
             gen_kwargs["last_frame_path"] = last_frame_path
         media_refs = list(getattr(request, "media_references", None) or [])
-        if media_refs and "media_references" in gen_sig:
+        if ref_ids and "media_references" in gen_sig:
+            from backend.core.contracts import VideoMediaReference
+
+            seen = {
+                (str(getattr(ref, "kind", "")), str(getattr(ref, "asset_id", "")))
+                for ref in media_refs
+            }
+            for asset_id in ref_ids:
+                key = ("image", str(asset_id))
+                if key not in seen:
+                    media_refs.append(VideoMediaReference(kind="image", asset_id=str(asset_id)))
+                    seen.add(key)
+        if media_refs:
+            if "media_references" not in gen_sig:
+                raise RuntimeError("This video model does not accept media_references.")
             if image_path or last_frame_path:
                 raise RuntimeError(
                     "Ref2VA media_references cannot be combined with "
@@ -864,6 +883,8 @@ def execute_family_video_generator(pipeline,
             gen_kwargs["image_path"] = None
             if "last_frame_path" in gen_sig:
                 gen_kwargs["last_frame_path"] = None
+        elif ref_ids:
+            raise RuntimeError("This video model does not accept reference_asset_ids.")
     result_path = generator.generate_and_save(**gen_kwargs)
 
     if ctx_exec.cancel_token.is_cancelled():

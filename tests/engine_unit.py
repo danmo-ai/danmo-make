@@ -756,6 +756,88 @@ class RegistryActionTests(unittest.TestCase):
         self.assertEqual(api_action_frozenset(acts, media="image"), frozenset({"upscale"}))
 
 
+class MediaRoleTests(unittest.TestCase):
+    def _entry(self, actions: dict, **parameters: object):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(id="m", raw={"actions": actions}, parameters=parameters)
+
+    def test_image_operation_is_checked_separately(self) -> None:
+        from types import SimpleNamespace
+
+        from backend.core.media_roles import reject_image_roles
+
+        entry = self._entry({"rewrite": {}})
+        rewrite = SimpleNamespace(
+            model="m", operation="rewrite", source_asset_id="ast_src",
+            reference_asset_ids=[], mask_asset_id=None, extend=None, media=[],
+        )
+        self.assertIsNone(reject_image_roles(entry, rewrite, endpoint="edit"))
+        retouch = SimpleNamespace(
+            model="m", operation="retouch", source_asset_id="ast_src",
+            reference_asset_ids=[], mask_asset_id="ast_mask", extend=None, media=[],
+        )
+        rejected = reject_image_roles(entry, retouch, endpoint="edit")
+        self.assertIsNotNone(rejected)
+        assert rejected is not None
+        self.assertEqual(rejected.code, "unsupported")
+        self.assertIn("retouch", rejected.message)
+
+    def test_video_last_frame_requires_declaration(self) -> None:
+        from types import SimpleNamespace
+
+        from backend.core.media_roles import reject_video_roles
+
+        plain = self._entry({"create": {}, "animate": {}})
+        flf = SimpleNamespace(
+            model="m", source_asset_id="ast_a", tail_asset_id="ast_b",
+            reference_asset_ids=[], media_references=[], media=[],
+        )
+        rejected = reject_video_roles(plain, flf, endpoint="edit")
+        self.assertIsNotNone(rejected)
+        assert rejected is not None
+        self.assertEqual(rejected.code, "unsupported")
+        self.assertIn("last_frame", rejected.message)
+
+        declared = self._entry({
+            "animate": {"media_roles": ["first_frame", "last_frame"]},
+        })
+        self.assertIsNone(reject_video_roles(declared, flf, endpoint="edit"))
+
+    def test_keyframes_reject_reference_media(self) -> None:
+        from types import SimpleNamespace
+
+        from backend.core.contracts import VideoMediaReference
+        from backend.core.media_roles import reject_video_roles
+
+        entry = self._entry({
+            "animate": {"media_roles": ["first_frame", "last_frame", "reference_image"]},
+        })
+        req = SimpleNamespace(
+            model="m", source_asset_id="ast_a", tail_asset_id=None,
+            reference_asset_ids=[], media=[],
+            media_references=[VideoMediaReference(kind="image", asset_id="ast_ref")],
+        )
+        rejected = reject_video_roles(entry, req, endpoint="edit")
+        self.assertIsNotNone(rejected)
+        assert rejected is not None
+        self.assertEqual(rejected.code, "invalid")
+
+    def test_media_projects_onto_legacy_fields(self) -> None:
+        from backend.core.contracts import MediaInput, VideoEditRequest
+
+        req = VideoEditRequest(
+            model="m",
+            prompt="move",
+            media=[
+                MediaInput(role="first_frame", asset_id="ast_a"),
+                MediaInput(role="last_frame", asset_id="asset:ast_b"),
+            ],
+        )
+        self.assertEqual(req.source_asset_id, "ast_a")
+        self.assertEqual(req.tail_asset_id, "ast_b")
+
+
 class FluxFillPatchEmbedTests(unittest.TestCase):
     def test_fill_patch_token_dim_matches_x_embedder(self) -> None:
         from backend.engine.config.model_configs import Flux1Config

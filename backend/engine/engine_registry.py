@@ -57,6 +57,10 @@ class EngineRegistry:
             raise TypeError(f"engine {cfg.engine!r} is not configured as IVideoEngine")
         return eng
 
+    @property
+    def model_registry(self) -> ModelRegistry:
+        return self._model_registry
+
     def get_audio(self, model_id: str) -> IAudioEngine:
         cfg = self._model_registry.require(model_id)
         if cfg.media != "audio":
