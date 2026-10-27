@@ -1,16 +1,9 @@
 mod graph;
-mod png;
 mod text;
-mod tokenizer;
 mod transformer;
 mod weights;
 
-pub(crate) use tokenizer::load_tokenizer;
-
-pub use png::encode_rgb;
-pub use text::{encode_penultimate, write_chain_bundle, write_qwen3_bundle};
-#[cfg(test)]
-pub use text::{encoder_layout, Qwen3Config};
+pub use text::{write_chain_bundle, write_qwen3_bundle};
 pub use transformer::Flux2Denoise;
 pub use weights::{weight_layout, Flux2Config};
 
@@ -68,7 +61,7 @@ pub fn execute(
     let grid_w = (width / scale) as i64;
     let grid_h = (height / scale) as i64;
     let seq_img = grid_w * grid_h;
-    let tokenizer = load_tokenizer(bundle)?;
+    let tokenizer = crate::common::qwen3::load_tokenizer(bundle)?;
     let (txt, seq_txt) = text_tokens(
         ctx,
         &files.text_encoder,
@@ -282,7 +275,7 @@ fn decode_preview(
     )?;
     let rgb = planar_rgb(&planar, grid_w, grid_h);
     let rgb = nearest_expand(&rgb, grid_w, grid_h, width, height);
-    Ok(png::encode_rgb(width, height, &rgb))
+    Ok(crate::common::png::encode_rgb(width, height, &rgb))
 }
 
 fn planar_rgb(planar: &[f32], grid_w: u32, grid_h: u32) -> Vec<u8> {

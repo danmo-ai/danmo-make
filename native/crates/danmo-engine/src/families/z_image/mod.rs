@@ -6,11 +6,10 @@
 //! Sequence order is image then caption. SD.cpp concatenates caption then image;
 //! full attention makes the image tokens match.
 //!
-//! The caption is the shared Qwen3 tower's penultimate hidden state, the same
-//! graph Flux2 uses. A Qwen byte-level tokenizer runs the single-user chat
-//! template with thinking left on. A one-vector `token_embed` fixture does not
-//! read the prompt. The pixel decoder is the FLUX.1 graph; a one-tensor
-//! `decoder.conv.weight` file stays the 1×1 preview.
+//! The caption is the shared Qwen3 tower's penultimate hidden state. Thinking
+//! stays on. A one-vector `token_embed` fixture does not read the prompt.
+//! The pixel decoder is the shared AutoencoderKL graph with this family's
+//! spec. A one-tensor `decoder.conv.weight` file stays the 1×1 preview.
 
 mod geom;
 mod graph;
@@ -172,8 +171,22 @@ fn encode_caption(
         ));
     }
     if text.contains("layers.0.self_attn.q_proj.weight") {
-        let tokenizer = super::flux2::load_tokenizer(bundle)?;
-        return super::flux2::encode_penultimate(ctx, paths, &tokenizer, prompt, cap_dim);
+        let tokenizer = crate::common::qwen3::load_tokenizer(bundle)?;
+        let loaded = crate::common::qwen3::Loaded::open(paths)?;
+        let config = loaded.config();
+        if config.layers < 2 {
+            return Err(WeightError::NotBuilt(
+                "penultimate text encoder needs at least 2 layers".into(),
+            ));
+        }
+        if config.hidden != cap_dim {
+            return Err(WeightError::NotBuilt(format!(
+                "text encoder hidden {} is not the caption width {cap_dim}",
+                config.hidden
+            )));
+        }
+        let layer = config.layers - 1;
+        return loaded.encode(ctx, &tokenizer, prompt, &[layer], true, cap_dim);
     }
     let shape = text.shape("token_embed.weight")?;
     if shape[0] != cap_dim || shape[1] != 1 {
@@ -238,14 +251,14 @@ fn check_stored_type(name: &str, ggml_type: u32, ne0: i64) -> Result<(), WeightE
 
 #[cfg(test)]
 fn write_smoke_text(dir: &Path, cap_dim: i64) -> Result<(), WeightError> {
-    let enc = super::flux2::Qwen3Config::smoke();
+    let enc = crate::common::qwen3::Qwen3Config::smoke();
     if enc.hidden != cap_dim {
         return Err(WeightError::NotBuilt(format!(
             "smoke text hidden {} is not caption {cap_dim}",
             enc.hidden
         )));
     }
-    let owned: Vec<(String, i64, i64, Vec<f32>)> = super::flux2::encoder_layout(enc)
+    let owned: Vec<(String, i64, i64, Vec<f32>)> = crate::common::qwen3::encoder_layout(enc)
         .into_iter()
         .map(|(name, ne0, ne1)| {
             let n = (ne0 as usize) * (ne1 as usize);

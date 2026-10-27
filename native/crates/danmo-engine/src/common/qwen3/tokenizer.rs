@@ -1,11 +1,9 @@
-//! Qwen3 byte-level BPE. This is the tokenizer `main` loads with
-//! `AutoTokenizer` for Z-Image and Flux2 Klein.
+//! Qwen3 byte-level BPE and the single-user ChatML string.
 //!
-//! The chat string is the single user turn those encoders pass to
-//! `apply_chat_template(..., add_generation_prompt=True)`. It is not a Jinja
-//! interpreter. A template that is not ChatML fails. Z-Image leaves thinking
-//! on. Flux2 passes `enable_thinking=False`, which appends the empty think
-//! block only when the template mentions that flag.
+//! The chat string is one user turn plus the assistant generation prompt.
+//! It is not a Jinja interpreter. A template that is not ChatML fails.
+//! When `thinking` is false and the template mentions `enable_thinking`,
+//! the empty think block is appended.
 
 use crate::weights::WeightError;
 use regex::Regex;
@@ -48,7 +46,7 @@ pub(crate) fn load_tokenizer(bundle: &Path) -> Result<String, WeightError> {
     merge_chat_template(&json, &config)
 }
 
-pub(super) fn tokenize(
+pub(crate) fn tokenize(
     json: &str,
     prompt: &str,
     vocab_size: i64,
@@ -577,7 +575,7 @@ fn tokenize_bytes(prompt: &str, vocab_size: i64) -> Result<Vec<i32>, WeightError
 #[cfg(test)]
 mod tests {
     use super::{chat_text, load_tokenizer, pretokenize, tokenize};
-    use crate::families::flux2::text::{encode_penultimate, encoder_layout, Qwen3Config};
+    use crate::common::qwen3::{encoder_layout, Loaded, Qwen3Config};
     use crate::runtime::{BackendKind, GgmlContext};
     use crate::weights::{write_f32_tensors, F32Tensor};
 
@@ -686,8 +684,14 @@ mod tests {
         assert!(loaded.contains("enable_thinking"), "{loaded}");
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
         let paths = vec![dir.join("text_encoder.gguf")];
-        let (cat, cat_len) = encode_penultimate(&ctx, &paths, &loaded, "cat", 8).unwrap();
-        let (dog, _) = encode_penultimate(&ctx, &paths, &loaded, "dog", 8).unwrap();
+        let tower = Loaded::open(&paths).unwrap();
+        let layer = tower.config().layers - 1;
+        let (cat, cat_len) = tower
+            .encode(&ctx, &loaded, "cat", &[layer], true, 8)
+            .unwrap();
+        let (dog, _) = tower
+            .encode(&ctx, &loaded, "dog", &[layer], true, 8)
+            .unwrap();
         assert!(cat_len > 2, "chat wrap collapsed to {cat_len}");
         assert_ne!(cat, dog);
         assert!(cat.iter().all(|v| v.is_finite()));
