@@ -51,7 +51,7 @@ Long form: [docs/engine_architecture.md](docs/engine_architecture.md).
 - A difference that needs many callbacks or mode switches stays in the family. Denoise does: Flux2 steps `x + dt * (u + g * (c - u))` on `[channels, seq]`; Z-Image steps `x + dt * (c + g * (c - u))` on `[W, H, C]`.
 - Phases stay resolve → load → encode → schedule → infer → decode → persist. One cgraph is reserved and replayed.
 - ggml calls stay in `danmo-ggml-sys` and `danmo-engine` runtime / weight code.
-- Built image graphs: `flux2` (MM-DiT; Qwen layers 9/18/27; 1×1 VAE preview) and `z_image` (DiT; Qwen penultimate state; AutoencoderKL when `decoder.conv_in.weight` is present). Every other family fails after the bundle check.
+- Built image graphs: `flux2` (MM-DiT; Qwen layers 9/18/27; packed-latent batch norm, unpatch, post-quant, then AutoencoderKL) and `z_image` (DiT; Qwen penultimate state; AutoencoderKL when `decoder.conv_in.weight` is present). A one-tensor `decoder.conv.weight` file stays the 1×1 preview. Every other family fails after the bundle check.
 
 ## Backend selection
 

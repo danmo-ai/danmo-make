@@ -1,6 +1,7 @@
 mod graph;
 mod text;
 mod transformer;
+mod vae;
 mod weights;
 
 pub use text::{write_chain_bundle, write_qwen3_bundle};
@@ -8,7 +9,7 @@ pub use transformer::Flux2Denoise;
 pub use weights::{weight_layout, Flux2Config};
 
 use crate::common::ops::normal_latent;
-use crate::runtime::{preview_conv, GgmlContext, TYPE_F32, TYPE_Q8_0};
+use crate::runtime::{GgmlContext, TYPE_F32, TYPE_Q8_0};
 use crate::weights::{
     assert_gguf_bundle, matmul_type, quantize_q8_0, type_block, write_f32_tensors,
     write_typed_tensors, F32Tensor, GgufWeights, TypedTensor, WeightError,
@@ -60,7 +61,6 @@ pub fn execute(
     }
     let grid_w = (width / scale) as i64;
     let grid_h = (height / scale) as i64;
-    let seq_img = grid_w * grid_h;
     let tokenizer = crate::common::qwen3::load_tokenizer(bundle)?;
     let (txt, seq_txt) = text_tokens(
         ctx,
@@ -96,14 +96,13 @@ pub fn execute(
         guidance,
         on_progress,
     )?;
-    let png = decode_preview(
+    let png = vae::decode(
         ctx,
         &files.vae,
         &latents,
-        config.in_channels as usize,
-        seq_img as usize,
-        grid_w as u32,
-        grid_h as u32,
+        config.in_channels,
+        grid_w,
+        grid_h,
         width,
         height,
     )?;
@@ -239,79 +238,6 @@ fn manifest_max_edge(bundle: &Path) -> Result<Option<u32>, WeightError> {
         .get("max_edge")
         .and_then(|item| item.as_u64())
         .map(|edge| edge as u32))
-}
-
-fn decode_preview(
-    ctx: &GgmlContext,
-    paths: &[std::path::PathBuf],
-    latent: &[f32],
-    in_ch: usize,
-    seq: usize,
-    grid_w: u32,
-    grid_h: u32,
-    width: u32,
-    height: u32,
-) -> Result<Vec<u8>, WeightError> {
-    let vae = GgufWeights::open_parts(paths)?;
-    let names: Vec<String> = vae.names().map(|name| name.to_string()).collect();
-    if names.len() != 1 || names.first().map(String::as_str) != Some("decoder.conv.weight") {
-        return Err(WeightError::NotBuilt("vae graph is not built".into()));
-    }
-    let weight = vae.f32_exact("decoder.conv.weight", &[in_ch as i64, 3])?;
-    if latent.len() != in_ch * seq {
-        return Err(WeightError::Shape {
-            name: "latent".into(),
-            expected: vec![in_ch as i64, seq as i64],
-            got: vec![latent.len() as i64],
-        });
-    }
-    let planar = preview_conv(
-        ctx,
-        latent,
-        &weight,
-        in_ch as i64,
-        grid_w as i64,
-        grid_h as i64,
-    )?;
-    let rgb = planar_rgb(&planar, grid_w, grid_h);
-    let rgb = nearest_expand(&rgb, grid_w, grid_h, width, height);
-    Ok(crate::common::png::encode_rgb(width, height, &rgb))
-}
-
-fn planar_rgb(planar: &[f32], grid_w: u32, grid_h: u32) -> Vec<u8> {
-    let width = grid_w as usize;
-    let height = grid_h as usize;
-    let plane = width * height;
-    let mut rgb = vec![0u8; plane * 3];
-    for y in 0..height {
-        for x in 0..width {
-            for channel in 0..3 {
-                let v = planar
-                    .get(x + y * width + channel * plane)
-                    .copied()
-                    .unwrap_or(0.0);
-                rgb[(y * width + x) * 3 + channel] = (v.clamp(0.0, 1.0) * 255.0) as u8;
-            }
-        }
-    }
-    rgb
-}
-
-fn nearest_expand(src: &[u8], grid_w: u32, grid_h: u32, width: u32, height: u32) -> Vec<u8> {
-    if grid_w == width && grid_h == height {
-        return src.to_vec();
-    }
-    let mut out = vec![0u8; (width as usize) * (height as usize) * 3];
-    for y in 0..height {
-        let sy = ((y as u64) * (grid_h as u64) / (height as u64)) as usize;
-        for x in 0..width {
-            let sx = ((x as u64) * (grid_w as u64) / (width as u64)) as usize;
-            let from = (sy * grid_w as usize + sx) * 3;
-            let to = (y as usize * width as usize + x as usize) * 3;
-            out[to..to + 3].copy_from_slice(&src[from..from + 3]);
-        }
-    }
-    out
 }
 
 fn write_transformer(

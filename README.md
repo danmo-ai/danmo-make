@@ -222,7 +222,7 @@ Family graph on ggml
 GGUF mmap by tensor name
 ```
 
-Image graphs that run today are Flux2 (MM-DiT) and Z-Image (DiT). They share the Qwen3 tower, the PNG writer, and, for Z-Image, the AutoencoderKL decoder. Shared code takes parameters and does not know the family id. Families do not import each other. Every other family fails loud after the bundle check. A registry version that is still `fp16` / `mlx-q4` / `mlx-q8` fails the task and asks for a GGUF re-download. There is no key remap. Principles: [docs/engine_architecture.md](docs/engine_architecture.md).
+Image graphs that run today are Flux2 (MM-DiT) and Z-Image (DiT). They share the Qwen3 tower, the PNG writer, and the AutoencoderKL decoder. Flux2 first applies its packed-latent batch norm, 2×2 unpatch, and post-quant conv, then passes 32 channels with scaling 1 and shift 0. Z-Image passes 16 channels with scaling 0.3611 and shift 0.1159. A file whose only tensor is `decoder.conv.weight` stays the 1×1 preview. Shared code takes parameters and does not know the family id. Families do not import each other. Every other family fails loud after the bundle check. A registry version that is still `fp16` / `mlx-q4` / `mlx-q8` fails the task and asks for a GGUF re-download. There is no key remap. Principles: [docs/engine_architecture.md](docs/engine_architecture.md).
 
 ---
 

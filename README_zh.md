@@ -221,7 +221,7 @@ ggml 图
 按张量名 mmap GGUF
 ```
 
-现在能跑的图像图是 Flux2（MM-DiT）和 Z-Image（DiT）。它们共用 Qwen3 文本塔和 PNG 写出；Z-Image 另用共享的 AutoencoderKL 解码器。共享代码只收参数，不认识家族 id。家族之间不互相引用。其余家族在检查完 bundle 之后显式失败。注册表里还是 `fp16` / `mlx-q4` / `mlx-q8` 的版本会要求重新下载 GGUF。没有 remap。原则见 [docs/engine_architecture.md](docs/engine_architecture.md)。
+现在能跑的图像图是 Flux2（MM-DiT）和 Z-Image（DiT）。它们共用 Qwen3 文本塔、PNG 写出和 AutoencoderKL 解码器。Flux2 先对 packed latent 做 batch norm、2×2 unpatch 和 post-quant，再以 32 通道、scaling 1、shift 0 进入解码器。Z-Image 传入 16 通道、scaling 0.3611、shift 0.1159。只有 `decoder.conv.weight` 一张量的文件仍走 1×1 预览。共享代码只收参数，不认识家族 id。家族之间不互相引用。其余家族在检查完 bundle 之后显式失败。注册表里还是 `fp16` / `mlx-q4` / `mlx-q8` 的版本会要求重新下载 GGUF。没有 remap。原则见 [docs/engine_architecture.md](docs/engine_architecture.md)。
 
 ---
 

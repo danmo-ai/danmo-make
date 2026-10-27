@@ -71,7 +71,7 @@ The caller owns the policy:
 | Policy | Who decides |
 |--------|-------------|
 | Which Qwen layers, and whether thinking is on | The family. Flux2 passes layers 9, 18, and 27 with thinking off. A short tower whose `hidden * layers` equals the joint width passes every layer. Z-Image passes the penultimate layer with thinking on. |
-| VAE numbers | The family. Z-Image passes 16 channels, blocks 128/256/512/512, 32 groups, scaling 0.3611, shift 0.1159. |
+| VAE numbers | The family. Z-Image passes 16 channels, blocks 128/256/512/512, 32 groups, scaling 0.3611, shift 0.1159. Flux2 passes the same blocks after its own unpack, with 32 channels, scaling 1, shift 0. |
 | Scheduler name | The family accepts the names its registry lists and calls the matching function in `common/ops`. |
 | Negative prompt | The family. Z-Image requires the same token count and a guidance other than 0. Flux2 rejects a non-empty negative. |
 
@@ -79,6 +79,7 @@ These stay in the family because one shared function would be a pile of switches
 
 - **Denoise.** Flux2 uses `pipeline/denoise.rs`: velocity is `[channels, seq]`, the step is `x + dt * (u + g * (c - u))`, and guidance near 1 skips the second pass. Z-Image steps `x + dt * (c + g * (c - u))` on `[W, H, C]`, and guidance 0 is one pass. The Euler child graph is built by the family that owns that rank.
 - **1×1 preview.** Both families can decode a file whose only tensor is `decoder.conv.weight`. The latent layout differs, so each family keeps its own preview. Both call `common/png`.
+- **Flux2 packed latents.** The DiT latent is 128 channels. The family applies `bn.running_mean` / `bn.running_var`, unpatches groups of 4 channels into a 2×2 block, applies scaling 1 and shift 0, then `post_quant_conv`. The shared decoder then sees 32 channels. That front end stays in `families/flux2` because it is not an AutoencoderKL parameter.
 - **DiT graph and weight table.** Each family.
 
 A later model that needs the Qwen3 tower calls `common/qwen3` with its own layer list. It does not import `families/flux2`. A later model that needs this AutoencoderKL calls `common/vae` with its own `VaeSpec`. A different VAE topology stays in that family and still uses the runtime conv, group norm, and nearest-upsample operators.
@@ -97,7 +98,7 @@ Shape on `FamilySpec`:
 
 Any other registered family passes the bundle check and then fails with `has no ggml graph yet`. Edit, upscale, ControlNet, LoRA inference, and LoRA training are not built.
 
-`flux2` text is the Qwen3 tower. `flux2` pixels are still the 1×1 preview. `z_image` pixels use the shared AutoencoderKL graph when the file contains `decoder.conv_in.weight`, and the 1×1 preview when that file is only `decoder.conv.weight`. Any other VAE file fails.
+`flux2` text is the Qwen3 tower. `flux2` pixels use the packed-latent front end and then the shared AutoencoderKL graph when the file contains `decoder.conv_in.weight`. `z_image` pixels use that same decoder when `decoder.conv_in.weight` is present. Either family keeps the 1×1 preview when the VAE file is only `decoder.conv.weight`. Any other VAE file fails.
 
 One graph is reserved and replayed. Steps replace inputs. The host reads the latent after the last step.
 
