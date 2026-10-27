@@ -18,6 +18,7 @@ const USER_AGENT: &str = "danmo-make/gguf";
 pub struct Downloads {
     inner: Arc<Mutex<Inner>>,
     agent: Agent,
+    workspace: PathBuf,
     persist: PathBuf,
     loras_path: PathBuf,
     settings_path: PathBuf,
@@ -103,14 +104,12 @@ struct HubAuth {
     nsfw: bool,
 }
 
-pub fn resolve_model_path(path: &str) -> PathBuf {
+pub fn resolve_model_path(workspace: &Path, path: &str) -> PathBuf {
     let path = PathBuf::from(path);
     if path.is_absolute() {
         path
     } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
+        workspace.join(path)
     }
 }
 
@@ -143,6 +142,11 @@ fn walk_marks(path: &Path, gguf: &mut bool, partial: &mut bool) {
 
 impl Downloads {
     pub fn open(workspace: &Path) -> Self {
+        let workspace = if workspace.as_os_str().is_empty() {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        } else {
+            workspace.to_path_buf()
+        };
         let config = workspace.join("config");
         let _ = fs::create_dir_all(&config);
         let persist = config.join("download_tasks.json");
@@ -161,10 +165,15 @@ impl Downloads {
                 cancels: HashMap::new(),
             })),
             agent,
+            workspace,
             persist,
             loras_path,
             settings_path,
         }
+    }
+
+    fn resolve(&self, path: &str) -> PathBuf {
+        resolve_model_path(&self.workspace, path)
     }
 
     pub fn list(&self) -> Vec<Value> {
@@ -235,7 +244,7 @@ impl Downloads {
         {
             return Err(format!("download URL is not a GGUF file: {url}"));
         }
-        let dest = resolve_model_path("models/imports").join(&filename);
+        let dest = self.resolve("models/imports").join(&filename);
         let file = PlannedFile {
             url: url.into(),
             dest: dest.display().to_string(),
@@ -558,18 +567,35 @@ impl Downloads {
         cancel: &AtomicBool,
     ) -> Result<Done, String> {
         let auth = self.auth();
-        let plan = plan_version(
-            spec,
-            &mut |query| self.list_repo(query, &auth),
-            &resolve_model_path,
-        )?;
+        let workspace = self.workspace.clone();
+        let plan = plan_version(spec, &mut |query| self.list_repo(query, &auth), &|path| {
+            resolve_model_path(&workspace, path)
+        })?;
         match plan {
-            Plan::Local => Ok(Done::Finished),
+            Plan::Local => self.install_graph_pack(spec),
             Plan::Files(files) => {
                 self.remember_files(id, &files);
                 self.run_files(id, &files, force, cancel)
             }
         }
+    }
+
+    fn install_graph_pack(&self, spec: &Value) -> Result<Done, String> {
+        let pack = spec
+            .get("graph_pack")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if pack != "flux2-chain" {
+            return Err(format!("local graph pack {pack} is not built"));
+        }
+        let local = spec
+            .get("local_path")
+            .and_then(|v| v.as_str())
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| "version has no local_path".to_string())?;
+        let dest = self.resolve(local);
+        danmo_engine::write_chain_bundle(&dest).map_err(|err| err.to_string())?;
+        Ok(Done::Finished)
     }
 
     fn run_lora(
@@ -620,7 +646,7 @@ impl Downloads {
         } else {
             display_name
         });
-        let dest = resolve_model_path("models/loras").join(folder).join(&name);
+        let dest = self.resolve("models/loras").join(folder).join(&name);
         let file = PlannedFile {
             url: file_url,
             dest: dest.display().to_string(),
@@ -1969,6 +1995,47 @@ mod tests {
         })
         .unwrap_err();
         assert!(err.contains("GGUF"), "{err}");
+    }
+
+    #[test]
+    fn graph_pack_install_writes_the_download_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-pack-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let downloads = Downloads::open(&dir);
+        let spec = json!({
+            "local_path": "models/flux2-klein-4b/bf16",
+            "graph_pack": "flux2-chain"
+        });
+        let id = downloads
+            .install_model("flux2-klein-4b", "bf16", &spec)
+            .unwrap();
+        let mut status = String::new();
+        for _ in 0..50 {
+            status = downloads
+                .snapshot(&id)
+                .and_then(|task| {
+                    task.get("status")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_default();
+            if status == "completed" || status == "failed" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(status, "completed", "{status}");
+        let manifest = dir.join("models/flux2-klein-4b/bf16/bundle.manifest.json");
+        assert!(manifest.is_file(), "{}", manifest.display());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

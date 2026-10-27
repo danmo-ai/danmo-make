@@ -1,4 +1,4 @@
-use crate::download::Downloads;
+use crate::download::{self, Downloads};
 use crate::product;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -69,15 +69,28 @@ pub fn router(db: &std::path::Path, registry: &std::path::Path) -> Router {
 
 fn workspace_of(db: &FsPath) -> PathBuf {
     if let Ok(path) = std::env::var("DANQING_WORKSPACE") {
-        return PathBuf::from(path);
+        return absolute_dir(PathBuf::from(path));
     }
-    match db.parent() {
+    let raw = match db.parent() {
         Some(parent) if parent.file_name().and_then(|name| name.to_str()) == Some("db") => parent
             .parent()
             .map(|path| path.to_path_buf())
-            .unwrap_or_else(|| parent.to_path_buf()),
-        Some(parent) => parent.to_path_buf(),
-        None => PathBuf::from("."),
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from(".")),
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    absolute_dir(raw)
+}
+
+fn absolute_dir(path: PathBuf) -> PathBuf {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if path.as_os_str().is_empty() || path == PathBuf::from(".") {
+        cwd
+    } else if path.is_absolute() {
+        path
+    } else {
+        cwd.join(path)
     }
 }
 
@@ -122,7 +135,7 @@ fn run_task(
             | "audio.edit"
     );
     let bundle = if needs_bundle {
-        Some(gguf_bundle(&state.registry, model)?)
+        Some(gguf_bundle(state, model)?)
     } else {
         None
     };
@@ -241,17 +254,10 @@ fn png_size(png: &[u8]) -> (i64, i64) {
     (width as i64, height as i64)
 }
 
-fn gguf_bundle(registry: &std::path::Path, model: &str) -> Result<PathBuf, String> {
-    let catalog = Catalog::open(registry).map_err(|e| e.to_string())?;
-    product::materialize_graph_packs(&catalog)?;
-    let path = PathBuf::from(catalog.gguf_local_path(model).map_err(|e| e.to_string())?);
-    if path.is_absolute() {
-        Ok(path)
-    } else {
-        Ok(std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path))
-    }
+fn gguf_bundle(state: &AppState, model: &str) -> Result<PathBuf, String> {
+    let catalog = Catalog::open(&state.registry).map_err(|e| e.to_string())?;
+    let path = catalog.gguf_local_path(model).map_err(|e| e.to_string())?;
+    Ok(download::resolve_model_path(&state.workspace, &path))
 }
 
 fn upscale_or_edit(kind: &str, family: &str, bundle: &std::path::Path) -> Result<Value, String> {
@@ -539,6 +545,76 @@ mod tests {
         let registry = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../default_config/models_registry.json");
         let app = router(&dir.join("studio.db"), &registry);
+        let bundle = dir.join("models/flux2-klein-4b/bf16/bundle.manifest.json");
+        assert!(
+            !bundle.exists(),
+            "chain pack must come from the download page"
+        );
+        let missing = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/images/generations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(vue_generate_body("一只猫").to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::ACCEPTED);
+        let bytes = missing.into_body().collect().await.unwrap().to_bytes();
+        let accepted: Value = serde_json::from_slice(&bytes).unwrap();
+        let failed = wait_terminal(&app, accepted["id"].as_str().unwrap()).await;
+        assert_eq!(failed["status"], "failed", "{failed}");
+        let err = failed["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("models/flux2-klein-4b/bf16"),
+            "generation did not use the download path: {err}"
+        );
+
+        let install = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/flux2-klein-4b/install")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"version":"bf16"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(install.status(), StatusCode::OK, "install");
+        let mut download_status = String::new();
+        for _ in 0..50 {
+            let listed = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/download/tasks")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let bytes = listed.into_body().collect().await.unwrap().to_bytes();
+            let tasks: Value = serde_json::from_slice(&bytes).unwrap();
+            download_status = tasks
+                .as_array()
+                .and_then(|rows| rows.first())
+                .and_then(|row| row.get("status"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if download_status == "completed" || download_status == "failed" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(download_status, "completed", "{download_status}");
+        assert!(bundle.is_file(), "{}", bundle.display());
+
         let cat = vue_generate_body("一只猫");
         let dog = vue_generate_body("a dog");
         let cat_png = generate_png(&app, cat).await;
@@ -718,12 +794,10 @@ mod tests {
             }
         });
 
-        let cwd = std::env::current_dir().unwrap();
-        let bundle = cwd.join(format!("models/demo-http-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&bundle);
         let dir = std::env::temp_dir().join(format!("danmo-dl-route-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        let bundle = dir.join("models/demo-http");
         let registry = dir.join("registry.json");
         let spec = json!({
             "models": {
@@ -736,12 +810,12 @@ mod tests {
                     "distribution": {
                         "versions": {
                             "bf16": {
-                                "local_path": bundle.display().to_string(),
+                                "local_path": "models/demo-http",
                                 "url": format!("http://127.0.0.1:{port}/demo.gguf"),
                                 "source": "huggingface"
                             },
                             "q4_k": {
-                                "local_path": bundle.join("q4"),
+                                "local_path": "models/demo-http/q4",
                                 "url": format!("http://127.0.0.1:{port}/model.safetensors"),
                                 "source": "huggingface"
                             }
@@ -947,13 +1021,30 @@ fn accept(
     let prio = if priority == "high" { 10 } else { 100 };
     state
         .scheduler
-        .submit(&id, kind.as_str(), &entry.id, &params.to_string(), prio)
+        .submit(
+            &id,
+            kind.as_str(),
+            &stored_model_id(model, &entry.id),
+            &params.to_string(),
+            prio,
+        )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(TaskAccepted {
         id,
         status: "queued".into(),
         kind: kind.as_str().into(),
     }))
+}
+
+fn stored_model_id(requested: &str, bare: &str) -> String {
+    match requested.split_once(':') {
+        Some((id, version))
+            if id == bare && danmo_catalog::GGUF_VERSION_KEYS.contains(&version) =>
+        {
+            requested.to_string()
+        }
+        _ => bare.to_string(),
+    }
 }
 
 async fn image_generations(

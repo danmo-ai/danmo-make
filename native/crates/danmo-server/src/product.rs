@@ -457,7 +457,7 @@ async fn list_models(
                 continue;
             }
         }
-        let ready = model_ready(entry);
+        let ready = model_ready(&state.workspace, entry);
         if let Some(flag) = query.installed.as_deref() {
             let want = flag == "true" || flag == "1";
             if want != ready {
@@ -492,54 +492,12 @@ async fn list_models(
     Ok(Json(json!({ "models": out })))
 }
 
-pub(crate) fn materialize_graph_packs(catalog: &Catalog) -> Result<(), String> {
-    let Some(models) = catalog.root().get("models").and_then(|v| v.as_object()) else {
-        return Ok(());
-    };
-    for entry in models.values() {
-        let Some(versions) = entry
-            .pointer("/distribution/versions")
-            .and_then(|v| v.as_object())
-        else {
-            continue;
-        };
-        for key in GGUF_VERSION_KEYS {
-            let Some(version) = versions.get(*key) else {
-                continue;
-            };
-            if version.get("graph_pack").and_then(|v| v.as_str()) != Some("flux2-chain") {
-                continue;
-            }
-            let Some(path) = version
-                .get("local_path")
-                .and_then(|v| v.as_str())
-                .filter(|path| !path.is_empty())
-            else {
-                continue;
-            };
-            let path = resolve_path(path);
-            if chain_pack_current(&path) {
-                continue;
-            }
-            danmo_engine::write_chain_bundle(&path).map_err(|err| err.to_string())?;
-        }
-    }
-    Ok(())
-}
-
-fn chain_pack_current(path: &std::path::Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(path.join("bundle.manifest.json")) else {
-        return false;
-    };
-    text.contains("\"pack_rev\": 2")
-}
-
 async fn models_status(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     let catalog = open_catalog(&state)?;
     let mut out = serde_json::Map::new();
     if let Some(models) = catalog.root().get("models").and_then(|v| v.as_object()) {
         for (id, entry) in models {
-            out.insert(id.clone(), json!(model_ready(entry)));
+            out.insert(id.clone(), json!(model_ready(&state.workspace, entry)));
         }
     }
     Ok(Json(Value::Object(out)))
@@ -550,13 +508,13 @@ async fn models_detailed(State(state): State<AppState>) -> Result<Json<Value>, A
     let mut out = serde_json::Map::new();
     if let Some(models) = catalog.root().get("models").and_then(|v| v.as_object()) {
         for (id, entry) in models {
-            out.insert(id.clone(), detailed_status(entry));
+            out.insert(id.clone(), detailed_status(&state.workspace, entry));
         }
     }
     Ok(Json(Value::Object(out)))
 }
 
-fn detailed_status(entry: &Value) -> Value {
+fn detailed_status(workspace: &FsPath, entry: &Value) -> Value {
     let versions = entry
         .pointer("/distribution/versions")
         .and_then(|v| v.as_object());
@@ -571,7 +529,7 @@ fn detailed_status(entry: &Value) -> Value {
                 .get("local_path")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let is_ready = download::version_ready(&download::resolve_model_path(path));
+            let is_ready = download::version_ready(&download::resolve_model_path(workspace, path));
             if is_ready {
                 ready = true;
             }
@@ -588,15 +546,11 @@ fn detailed_status(entry: &Value) -> Value {
     json!({ "ready": ready, "versions": listed })
 }
 
-fn model_ready(entry: &Value) -> bool {
-    detailed_status(entry)
+fn model_ready(workspace: &FsPath, entry: &Value) -> bool {
+    detailed_status(workspace, entry)
         .get("ready")
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
-}
-
-fn resolve_path(path: &str) -> PathBuf {
-    download::resolve_model_path(path)
 }
 
 async fn installed_models(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
@@ -618,10 +572,10 @@ async fn installed_models(State(state): State<AppState>) -> Result<Json<Value>, 
                 else {
                     continue;
                 };
-                if !download::version_ready(&resolve_path(path)) {
+                if !download::version_ready(&download::resolve_model_path(&state.workspace, path)) {
                     continue;
                 }
-                let full = resolve_path(path);
+                let full = download::resolve_model_path(&state.workspace, path);
                 let bytes = dir_size(&full);
                 rows.push(json!({
                     "name": format!("{id}:{key}"),
@@ -773,19 +727,21 @@ async fn delete_model_version(
         .and_then(|v| v.as_str())
         .filter(|path| !path.is_empty())
         .ok_or_else(|| fail(StatusCode::BAD_REQUEST, "version has no local_path"))?;
-    remove_model_dir(&resolve_path(local))?;
+    remove_model_dir(
+        &state,
+        &download::resolve_model_path(&state.workspace, local),
+    )?;
     Ok(Json(json!({ "success": true })))
 }
 
-fn remove_model_dir(path: &FsPath) -> Result<(), ApiError> {
+fn remove_model_dir(state: &AppState, path: &FsPath) -> Result<(), ApiError> {
     if !path.exists() {
         return Ok(());
     }
     let canon = path
         .canonicalize()
         .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let roots = [cwd.join("models"), PathBuf::from("models")];
+    let roots = [state.workspace.join("models")];
     let allowed = roots.iter().any(|root| {
         let Ok(root) = root.canonicalize() else {
             return false;
@@ -1588,8 +1544,8 @@ async fn settings_registry(State(state): State<AppState>) -> Result<Json<Value>,
 }
 
 async fn disk_space(State(state): State<AppState>) -> Json<Value> {
-    let models = resolve_path("models");
-    let loras = resolve_path("models/loras");
+    let models = state.workspace.join("models");
+    let loras = state.workspace.join("models/loras");
     let anchor = models.parent().unwrap_or(&state.workspace);
     let (total, free) = stat_space(if anchor.as_os_str().is_empty() {
         std::path::Path::new(".")
@@ -1746,11 +1702,8 @@ fn frontend_dist() -> Option<PathBuf> {
 }
 
 fn open_catalog(state: &AppState) -> Result<Catalog, ApiError> {
-    let catalog = Catalog::open(&state.registry)
-        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-    materialize_graph_packs(&catalog)
-        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err))?;
-    Ok(catalog)
+    Catalog::open(&state.registry)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
 }
 
 pub fn new_id(prefix: &str) -> String {

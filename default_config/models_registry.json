@@ -1219,8 +1219,8 @@
       "catalog": {
         "media": "image",
         "description": {
-          "zh": "FLUX.2 Klein 4B。链路位是本地 ggml 图，64 或 128 边长可以出图。Q4_K_M 与 Q8_0 是魔塔 unsloth/FLUX.2-klein-4B-GGUF 上公布的权重。",
-          "en": "FLUX.2 Klein 4B. The chain slot is a local ggml graph and generates at 64 or 128. Q4_K_M and Q8_0 are the weights published on ModelScope as unsloth/FLUX.2-klein-4B-GGUF."
+          "zh": "FLUX.2 Klein 4B。链路档从下载页安装到 models/flux2-klein-4b/bf16，64 或 128 边长可以出图。Q4_K_M 与 Q8_0 是魔塔 unsloth/FLUX.2-klein-4B-GGUF 上公布的权重。",
+          "en": "FLUX.2 Klein 4B. The chain tier is installed from the download page into models/flux2-klein-4b/bf16 and generates at 64 or 128. Q4_K_M and Q8_0 are the weights published on ModelScope as unsloth/FLUX.2-klein-4B-GGUF."
         },
         "category": "base_models",
         "commercial_use_allowed": true,

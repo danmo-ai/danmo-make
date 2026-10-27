@@ -102,9 +102,10 @@ impl Catalog {
         })
     }
 
-    /// Install path for a published GGUF tier. Legacy MLX version keys are not returned.
+    /// Install path for a published GGUF tier. `id:version` selects that download.
+    /// Legacy MLX version keys are not returned.
     pub fn gguf_local_path(&self, id: &str) -> Result<String, CatalogError> {
-        let bare = id.split(':').next().unwrap_or(id);
+        let (bare, requested) = split_model_version(id);
         let entry = self
             .root
             .get("models")
@@ -132,17 +133,27 @@ impl Catalog {
                 found,
             });
         }
-        let key = present
-            .iter()
-            .copied()
-            .find(|key| {
-                versions
-                    .get(*key)
-                    .and_then(|ver| ver.get("default"))
-                    .and_then(|v| v.as_bool())
-                    == Some(true)
-            })
-            .unwrap_or(present[0]);
+        let key = if let Some(version) = requested {
+            if !GGUF_VERSION_KEYS.contains(&version) || !versions.contains_key(version) {
+                return Err(CatalogError::NoGguf {
+                    model: id.to_string(),
+                    found,
+                });
+            }
+            version
+        } else {
+            present
+                .iter()
+                .copied()
+                .find(|key| {
+                    versions
+                        .get(*key)
+                        .and_then(|ver| ver.get("default"))
+                        .and_then(|v| v.as_bool())
+                        == Some(true)
+                })
+                .unwrap_or(present[0])
+        };
         let local = versions
             .get(key)
             .and_then(|ver| ver.get("local_path"))
@@ -171,6 +182,13 @@ impl Catalog {
             lift_model_view(model);
         }
         root
+    }
+}
+
+fn split_model_version(id: &str) -> (&str, Option<&str>) {
+    match id.split_once(':') {
+        Some((bare, version)) if !bare.is_empty() && !version.is_empty() => (bare, Some(version)),
+        _ => (id, None),
     }
 }
 
@@ -253,6 +271,14 @@ mod tests {
         }));
         assert_eq!(
             catalog.gguf_local_path("flux2-klein-4b").unwrap(),
+            "models/q4"
+        );
+        assert_eq!(
+            catalog.gguf_local_path("flux2-klein-4b:bf16").unwrap(),
+            "models/bf16"
+        );
+        assert_eq!(
+            catalog.gguf_local_path("flux2-klein-4b:q4_k").unwrap(),
             "models/q4"
         );
     }
