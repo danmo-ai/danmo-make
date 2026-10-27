@@ -9,17 +9,19 @@
 //! The caption is the shared Qwen3 tower's penultimate hidden state, the same
 //! graph Flux2 uses. A Qwen byte-level tokenizer runs the single-user chat
 //! template with thinking left on. A one-vector `token_embed` fixture does not
-//! read the prompt.
+//! read the prompt. The pixel decoder is the FLUX.1 graph; a one-tensor
+//! `decoder.conv.weight` file stays the 1×1 preview.
 
 mod geom;
 mod graph;
 #[cfg(test)]
 mod reference;
 mod transformer;
+mod vae;
 mod weights;
 
 use crate::common::ops::{flow_match_shift_sigmas, linear_sigmas, normal_latent};
-use crate::runtime::{preview_conv, GgmlContext, TYPE_F32};
+use crate::runtime::{GgmlContext, TYPE_F32};
 use crate::weights::{assert_gguf_bundle, matmul_type, type_block, GgufWeights, WeightError};
 #[cfg(test)]
 use crate::weights::{write_f32_tensors, F32Tensor};
@@ -93,7 +95,7 @@ pub fn execute(
         guidance,
         on_progress,
     )?;
-    let png = decode_preview(
+    let png = vae::decode(
         ctx,
         &files.vae,
         &latents,
@@ -232,91 +234,6 @@ fn check_stored_type(name: &str, ggml_type: u32, ne0: i64) -> Result<(), WeightE
         )));
     }
     Ok(())
-}
-
-fn decode_preview(
-    ctx: &GgmlContext,
-    paths: &[std::path::PathBuf],
-    latent: &[f32],
-    in_ch: i64,
-    grid_w: i64,
-    grid_h: i64,
-    width: u32,
-    height: u32,
-) -> Result<Vec<u8>, WeightError> {
-    let vae = GgufWeights::open_parts(paths)?;
-    let names: Vec<String> = vae.names().map(|name| name.to_string()).collect();
-    if names.len() != 1 || names.first().map(String::as_str) != Some("decoder.conv.weight") {
-        return Err(WeightError::NotBuilt("vae graph is not built".into()));
-    }
-    let weight = vae.f32_exact("decoder.conv.weight", &[in_ch, 3])?;
-    let seq = grid_w * grid_h;
-    if latent.len() as i64 != in_ch * seq {
-        return Err(WeightError::Shape {
-            name: "latent".into(),
-            expected: vec![in_ch, seq],
-            got: vec![latent.len() as i64],
-        });
-    }
-    let planar = repack_channel_fast(latent, grid_w, grid_h, in_ch);
-    let decoded = preview_conv(ctx, &planar, &weight, in_ch, grid_w, grid_h)?;
-    let rgb = planar_rgb(&decoded, grid_w as u32, grid_h as u32);
-    let rgb = nearest_expand(&rgb, grid_w as u32, grid_h as u32, width, height);
-    Ok(super::flux2::encode_rgb(width, height, &rgb))
-}
-
-/// `[W, H, C]` (x fastest) to `[C, W*H]` (channel fastest) for `preview_conv`.
-fn repack_channel_fast(src: &[f32], width: i64, height: i64, channels: i64) -> Vec<f32> {
-    let width = width as usize;
-    let height = height as usize;
-    let channels = channels as usize;
-    let mut out = vec![0f32; src.len()];
-    for channel in 0..channels {
-        for y in 0..height {
-            for x in 0..width {
-                let from = x + y * width + channel * width * height;
-                let to = channel + (x + y * width) * channels;
-                out[to] = src[from];
-            }
-        }
-    }
-    out
-}
-
-fn planar_rgb(planar: &[f32], grid_w: u32, grid_h: u32) -> Vec<u8> {
-    let width = grid_w as usize;
-    let height = grid_h as usize;
-    let plane = width * height;
-    let mut rgb = vec![0u8; plane * 3];
-    for y in 0..height {
-        for x in 0..width {
-            for channel in 0..3 {
-                let v = planar
-                    .get(x + y * width + channel * plane)
-                    .copied()
-                    .unwrap_or(0.0);
-                rgb[(y * width + x) * 3 + channel] = (v.clamp(0.0, 1.0) * 255.0) as u8;
-            }
-        }
-    }
-    rgb
-}
-
-fn nearest_expand(src: &[u8], grid_w: u32, grid_h: u32, width: u32, height: u32) -> Vec<u8> {
-    if grid_w == width && grid_h == height {
-        return src.to_vec();
-    }
-    let mut out = vec![0u8; (width as usize) * (height as usize) * 3];
-    for y in 0..height {
-        let sy = ((y as u64) * (grid_h as u64) / (height as u64)) as usize;
-        for x in 0..width {
-            let sx = ((x as u64) * (grid_w as u64) / (width as u64)) as usize;
-            let from = (sy * grid_w as usize + sx) * 3;
-            let to = (y as usize * width as usize + x as usize) * 3;
-            out[to..to + 3].copy_from_slice(&src[from..from + 3]);
-        }
-    }
-    out
 }
 
 #[cfg(test)]

@@ -9,6 +9,8 @@ pub use gguf::{
     matmul_type, quantize_q8_0, type_block, write_f32_gguf, write_f32_tensors, write_typed_tensors,
     F32Tensor, GgufWeights, TypedTensor,
 };
+#[cfg(test)]
+pub use gguf::{write_f32_nd, F32Nd};
 
 use thiserror::Error;
 

@@ -327,6 +327,39 @@ impl GraphBuilder {
         unsafe { g::ggml_cast(self.ctx, a, TYPE_F16) }
     }
 
+    pub fn f32_4d(
+        &mut self,
+        name: &str,
+        ne0: i64,
+        ne1: i64,
+        ne2: i64,
+        ne3: i64,
+        input: bool,
+    ) -> *mut g::ggml_tensor {
+        unsafe {
+            let t = g::ggml_new_tensor_4d(self.ctx, g::ggml_type_GGML_TYPE_F32, ne0, ne1, ne2, ne3);
+            name_tensor(t, name);
+            if input {
+                g::ggml_set_input(t);
+                self.inputs.push(NamedTensor {
+                    name: name.to_string(),
+                    tensor: t,
+                });
+            }
+            t
+        }
+    }
+
+    /// Group norm along channels (`ne[2]`). The affine scale and shift are a later mul and add.
+    pub fn group_norm(&self, a: Tensor, n_groups: i32, eps: f32) -> Tensor {
+        unsafe { g::ggml_group_norm(self.ctx, a, n_groups, eps) }
+    }
+
+    /// Nearest ×2 on width and height. Channels stay on `ne[2]`.
+    pub fn upscale_nearest(&self, a: Tensor) -> Tensor {
+        unsafe { g::ggml_upscale(self.ctx, a, 2, g::ggml_scale_mode_GGML_SCALE_MODE_NEAREST) }
+    }
+
     /// Direct 2D convolution. Kernel is `[KW, KH, IC, OC]`, data is `[W, H, C, N]`.
     /// This is ggml's direct conv, not the im2col plus matmul path.
     pub fn conv2d_direct(
