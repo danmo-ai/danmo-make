@@ -1219,8 +1219,8 @@
       "catalog": {
         "media": "image",
         "description": {
-          "zh": "FLUX.2 Klein 4B。链路档从下载页安装到 models/flux2-klein-4b/bf16，64 或 128 边长可以出图。Q4_K_M 与 Q8_0 是魔塔 unsloth/FLUX.2-klein-4B-GGUF 上公布的权重。",
-          "en": "FLUX.2 Klein 4B. The chain tier is installed from the download page into models/flux2-klein-4b/bf16 and generates at 64 or 128. Q4_K_M and Q8_0 are the weights published on ModelScope as unsloth/FLUX.2-klein-4B-GGUF."
+          "zh": "FLUX.2 Klein 4B。默认档是魔塔 unsloth/FLUX.2-klein-4B-GGUF 的 Q4_K_M，下载到 models/flux2-klein-4b/q4_k。快速验证用 64 边。",
+          "en": "FLUX.2 Klein 4B. The default tier is Q4_K_M from ModelScope unsloth/FLUX.2-klein-4B-GGUF, downloaded to models/flux2-klein-4b/q4_k. Quick checks use a 64-pixel edge."
         },
         "category": "base_models",
         "commercial_use_allowed": true,
@@ -1361,14 +1361,18 @@
       "distribution": {
         "versions": {
           "bf16": {
-            "default": true,
-            "local_path": "models/flux2-klein-4b/bf16",
-            "graph_pack": "flux2-chain",
-            "size": "local",
             "name": {
-              "zh": "链路",
-              "en": "chain"
-            }
+              "zh": "BF16",
+              "en": "BF16"
+            },
+            "size": "7.8GB",
+            "source": "modelscope",
+            "source_type": "full",
+            "repo_id": "unsloth/FLUX.2-klein-4B-GGUF",
+            "local_path": "models/flux2-klein-4b/bf16",
+            "allow_patterns": [
+              "flux-2-klein-4b-BF16.gguf"
+            ]
           },
           "q8_0": {
             "name": {
@@ -1396,7 +1400,8 @@
             "local_path": "models/flux2-klein-4b/q4_k",
             "allow_patterns": [
               "flux-2-klein-4b-Q4_K_M.gguf"
-            ]
+            ],
+            "default": true
           }
         }
       }

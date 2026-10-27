@@ -76,7 +76,6 @@ enum Job {
 
 #[derive(Debug)]
 enum Plan {
-    Local,
     Files(Vec<PlannedFile>),
 }
 
@@ -571,31 +570,9 @@ impl Downloads {
         let plan = plan_version(spec, &mut |query| self.list_repo(query, &auth), &|path| {
             resolve_model_path(&workspace, path)
         })?;
-        match plan {
-            Plan::Local => self.install_graph_pack(spec),
-            Plan::Files(files) => {
-                self.remember_files(id, &files);
-                self.run_files(id, &files, force, cancel)
-            }
-        }
-    }
-
-    fn install_graph_pack(&self, spec: &Value) -> Result<Done, String> {
-        let pack = spec
-            .get("graph_pack")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if pack != "flux2-chain" {
-            return Err(format!("local graph pack {pack} is not built"));
-        }
-        let local = spec
-            .get("local_path")
-            .and_then(|v| v.as_str())
-            .filter(|path| !path.is_empty())
-            .ok_or_else(|| "version has no local_path".to_string())?;
-        let dest = self.resolve(local);
-        danmo_engine::write_chain_bundle(&dest).map_err(|err| err.to_string())?;
-        Ok(Done::Finished)
+        let Plan::Files(files) = plan;
+        self.remember_files(id, &files);
+        self.run_files(id, &files, force, cancel)
     }
 
     fn run_lora(
@@ -1158,9 +1135,6 @@ fn plan_version(
         repos.push(spec.clone());
     }
     if repos.is_empty() {
-        if spec.get("graph_pack").and_then(|v| v.as_str()).is_some() {
-            return Ok(Plan::Local);
-        }
         return Err(
             "no GGUF download URL is published for this model. Re-download when a bf16, q8_0, or q4_k package is listed"
                 .into(),
@@ -1978,14 +1952,10 @@ mod tests {
             PathBuf::from(path.to_string())
         })
         .unwrap();
-        match plan {
-            Plan::Files(files) => {
-                assert_eq!(files.len(), 1);
-                assert!(files[0].dest.ends_with("demo.gguf"), "{}", files[0].dest);
-                assert!(files[0].url.ends_with("demo.gguf"));
-            }
-            Plan::Local => panic!("local"),
-        }
+        let Plan::Files(files) = plan;
+        assert_eq!(files.len(), 1);
+        assert!(files[0].dest.ends_with("demo.gguf"), "{}", files[0].dest);
+        assert!(files[0].url.ends_with("demo.gguf"));
         let blocked = json!({
             "local_path": "/tmp/danmo-demo",
             "url": "https://example.com/model.safetensors"
@@ -1998,57 +1968,50 @@ mod tests {
     }
 
     #[test]
-    fn graph_pack_install_writes_the_download_path() {
-        let dir = std::env::temp_dir().join(format!(
-            "danmo-pack-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let downloads = Downloads::open(&dir);
+    fn smallest_quant_lands_in_the_download_directory() {
         let spec = json!({
-            "local_path": "models/flux2-klein-4b/bf16",
-            "graph_pack": "flux2-chain"
+            "local_path": "models/flux2-klein-4b/q4_k",
+            "repo_id": "unsloth/FLUX.2-klein-4B-GGUF",
+            "source": "modelscope",
+            "allow_patterns": ["flux-2-klein-4b-Q4_K_M.gguf"]
         });
-        let id = downloads
-            .install_model("flux2-klein-4b", "bf16", &spec)
-            .unwrap();
-        let mut status = String::new();
-        for _ in 0..50 {
-            status = downloads
-                .snapshot(&id)
-                .and_then(|task| {
-                    task.get("status")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                })
-                .unwrap_or_default();
-            if status == "completed" || status == "failed" {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert_eq!(status, "completed", "{status}");
-        let manifest = dir.join("models/flux2-klein-4b/bf16/bundle.manifest.json");
-        assert!(manifest.is_file(), "{}", manifest.display());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn graph_pack_without_a_url_is_already_local() {
-        let spec = json!({
-            "local_path": "models/flux2-klein-4b/bf16",
-            "graph_pack": "flux2-chain"
-        });
-        let plan = plan_version(&spec, &mut |_| panic!("listed"), &|path| {
-            PathBuf::from(path.to_string())
-        })
+        let workspace = PathBuf::from("/workspace");
+        let plan = plan_version(
+            &spec,
+            &mut |_| {
+                Ok(vec![
+                    entry("flux-2-klein-4b-BF16.gguf", 100),
+                    entry("flux-2-klein-4b-Q8_0.gguf", 50),
+                    entry("flux-2-klein-4b-Q4_K_M.gguf", 26),
+                ])
+            },
+            &|path| resolve_model_path(&workspace, path),
+        )
         .unwrap();
-        assert!(matches!(plan, Plan::Local));
+        let Plan::Files(files) = plan;
+        assert_eq!(files.len(), 1);
+        assert!(
+            files[0]
+                .dest
+                .ends_with("models/flux2-klein-4b/q4_k/flux-2-klein-4b-Q4_K_M.gguf"),
+            "{}",
+            files[0].dest
+        );
+        assert!(
+            files[0].url.contains("flux-2-klein-4b-Q4_K_M.gguf"),
+            "{}",
+            files[0].url
+        );
+        let err = plan_version(
+            &json!({
+                "local_path": "models/flux2-klein-4b/bf16",
+                "graph_pack": "flux2-chain"
+            }),
+            &mut |_| panic!("listed"),
+            &|path| PathBuf::from(path.to_string()),
+        )
+        .unwrap_err();
+        assert!(err.contains("no GGUF download"), "{err}");
     }
 
     #[test]
@@ -2071,15 +2034,11 @@ mod tests {
             &|path| PathBuf::from(path.to_string()),
         )
         .unwrap();
-        match plan {
-            Plan::Files(files) => {
-                assert_eq!(
-                    files[0].url,
-                    "https://huggingface.co/acme/demo/resolve/main/demo-q4.gguf"
-                );
-            }
-            Plan::Local => panic!("local"),
-        }
+        let Plan::Files(files) = plan;
+        assert_eq!(
+            files[0].url,
+            "https://huggingface.co/acme/demo/resolve/main/demo-q4.gguf"
+        );
     }
 
     #[test]

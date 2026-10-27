@@ -364,7 +364,7 @@ mod tests {
 
     fn vue_generate_body(prompt: &str) -> Value {
         json!({
-            "model": "flux2-klein-4b:bf16",
+            "model": "flux2-klein-4b:q4_k",
             "title": "chain",
             "prompt": prompt,
             "negative_prompt": "",
@@ -377,51 +377,6 @@ mod tests {
             "metadata": { "source": "create" },
             "priority": "normal"
         })
-    }
-
-    fn png_edge(png: &[u8]) -> (u32, u32) {
-        let width = u32::from_be_bytes(png[16..20].try_into().unwrap());
-        let height = u32::from_be_bytes(png[20..24].try_into().unwrap());
-        (width, height)
-    }
-
-    async fn generate_png(app: &Router, body: Value) -> Vec<u8> {
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/images/generations")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let accepted: Value = serde_json::from_slice(&bytes).unwrap();
-        let id = accepted["id"].as_str().unwrap();
-        let task = wait_terminal_for(app, id, 120, 250).await;
-        assert_eq!(task["status"], "completed", "task {task}");
-        let asset_id = task["result"]["asset_ids"][0].as_str().unwrap();
-        let file = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/assets/{asset_id}/file"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(file.status(), StatusCode::OK);
-        file.into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes()
-            .to_vec()
     }
 
     async fn wait_terminal(app: &Router, id: &str) -> Value {
@@ -463,7 +418,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let bundle = dir.join("flux2-klein-4b-bf16");
+        let bundle = dir.join("models/flux2-klein-4b/q4_k");
         danmo_engine::write_smoke_bundle(&bundle, 4).unwrap();
         let registry = dir.join("registry.json");
         std::fs::write(
@@ -475,7 +430,7 @@ mod tests {
                         "runtime": { "family": "flux2", "backends": ["ggml"] },
                         "distribution": {
                             "versions": {
-                                "bf16": { "local_path": bundle, "default": true }
+                                "q4_k": { "local_path": "models/flux2-klein-4b/q4_k", "default": true }
                             }
                         }
                     }
@@ -486,7 +441,7 @@ mod tests {
         .unwrap();
         let app = router(&dir.join("studio.db"), &registry);
         let body = serde_json::json!({
-            "model": "flux2-klein-4b",
+            "model": "flux2-klein-4b:q4_k",
             "prompt": "a cat",
             "size": "64x64",
             "steps": 2
@@ -532,9 +487,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flux2_klein_chain_pack_writes_a_64px_png() {
+    async fn flux2_klein_q4_uses_the_download_directory() {
         let dir = std::env::temp_dir().join(format!(
-            "danmo-api-old-{}-{}",
+            "danmo-api-q4-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -545,11 +500,8 @@ mod tests {
         let registry = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../default_config/models_registry.json");
         let app = router(&dir.join("studio.db"), &registry);
-        let bundle = dir.join("models/flux2-klein-4b/bf16/bundle.manifest.json");
-        assert!(
-            !bundle.exists(),
-            "chain pack must come from the download page"
-        );
+        let downloaded = dir.join("models/flux2-klein-4b/q4_k");
+        assert!(!downloaded.exists());
         let missing = app
             .clone()
             .oneshot(
@@ -569,58 +521,10 @@ mod tests {
         assert_eq!(failed["status"], "failed", "{failed}");
         let err = failed["error"].as_str().unwrap_or("");
         assert!(
-            err.contains("models/flux2-klein-4b/bf16"),
-            "generation did not use the download path: {err}"
+            err.contains("models/flux2-klein-4b/q4_k"),
+            "generation did not use the q4 download path: {err}"
         );
-
-        let install = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/models/flux2-klein-4b/install")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"version":"bf16"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(install.status(), StatusCode::OK, "install");
-        let mut download_status = String::new();
-        for _ in 0..50 {
-            let listed = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .uri("/api/download/tasks")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            let bytes = listed.into_body().collect().await.unwrap().to_bytes();
-            let tasks: Value = serde_json::from_slice(&bytes).unwrap();
-            download_status = tasks
-                .as_array()
-                .and_then(|rows| rows.first())
-                .and_then(|row| row.get("status"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            if download_status == "completed" || download_status == "failed" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert_eq!(download_status, "completed", "{download_status}");
-        assert!(bundle.is_file(), "{}", bundle.display());
-
-        let cat = vue_generate_body("一只猫");
-        let dog = vue_generate_body("a dog");
-        let cat_png = generate_png(&app, cat).await;
-        let dog_png = generate_png(&app, dog).await;
-        assert_eq!(png_edge(&cat_png), (64, 64));
-        assert_ne!(cat_png, dog_png, "prompt did not change the asset");
+        assert_eq!(failed["model_id"], "flux2-klein-4b:q4_k");
 
         let registry_body = app
             .clone()
@@ -651,6 +555,12 @@ mod tests {
             .unwrap();
         assert!(options.iter().any(|v| v == "64x64"));
         assert!(options.iter().any(|v| v == "1024x1024"));
+        let q4 = &model["versions"]["q4_k"];
+        assert_eq!(q4["default"], true);
+        assert_eq!(q4["local_path"], "models/flux2-klein-4b/q4_k");
+        assert_eq!(q4["allow_patterns"][0], "flux-2-klein-4b-Q4_K_M.gguf");
+        assert!(q4.get("graph_pack").is_none());
+        assert!(model["versions"]["bf16"].get("graph_pack").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
