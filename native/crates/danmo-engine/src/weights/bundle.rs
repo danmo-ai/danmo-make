@@ -61,7 +61,7 @@ pub fn assert_gguf_bundle(dir: &Path) -> Result<GgufBundle, WeightError> {
             path: root.display().to_string(),
         });
     }
-    if contains_safetensors(&root) {
+    if contains_safetensors(&root) && !contains_gguf(&root) {
         return Err(WeightError::LegacyBundle {
             path: root.display().to_string(),
         });
@@ -148,7 +148,15 @@ fn is_legacy_dir(name: &str) -> bool {
 }
 
 fn contains_safetensors(dir: &Path) -> bool {
-    fn walk(dir: &Path, depth: usize) -> bool {
+    contains_extension(dir, "safetensors")
+}
+
+fn contains_gguf(dir: &Path) -> bool {
+    contains_extension(dir, "gguf")
+}
+
+fn contains_extension(dir: &Path, extension: &str) -> bool {
+    fn walk(dir: &Path, extension: &str, depth: usize) -> bool {
         if depth > 3 {
             return false;
         }
@@ -157,14 +165,14 @@ fn contains_safetensors(dir: &Path) -> bool {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) == Some("safetensors") {
+            if path.extension().and_then(|ext| ext.to_str()) == Some(extension) {
                 return true;
             }
-            if path.is_dir() && walk(&path, depth + 1) {
+            if path.is_dir() && walk(&path, extension, depth + 1) {
                 return true;
             }
         }
         false
     }
-    walk(dir, 0)
+    walk(dir, extension, 0)
 }

@@ -118,7 +118,7 @@ One graph is reserved and replayed. Steps replace inputs. The host reads the lat
 
 ## 7. Weights and backends
 
-A bundle directory holds `transformer.gguf`, `text_encoder.gguf`, `vae.gguf`, `tokenizer.json`, and `bundle.manifest.json`. Shards (`role-00001-of-000NN.gguf`) are mmap'd per file. Duplicate tensor names across shards fail.
+A bundle directory holds `transformer.gguf`, `text_encoder.gguf`, `vae.gguf`, `tokenizer.json`, and `bundle.manifest.json`. Shards (`role-00001-of-000NN.gguf`) are mmap'd per file. Duplicate tensor names across shards fail. FLUX.2 Klein 4B and Z-Image version installs also download the published text encoder, VAE, and tokenizer into that version directory. The loader still reads the GGUF roles.
 
 Version keys are `bf16`, `q8_0`, and `q4_k`. Inside a quantized file, norm, bias, and modulation stay F32 or F16. The VAE decoder reads F32.
 

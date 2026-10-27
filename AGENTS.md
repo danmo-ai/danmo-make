@@ -30,7 +30,7 @@ make pack-ggml-sidecar
 
 ## Weights
 
-Runtime files are GGUF only. Users re-download. Safetensors and MLX `fp16` / `int8` / `int4` / `mlx-q4` / `mlx-q8` bundles are not scanned, converted, or loaded.
+The engine loads GGUF only. MLX `fp16` / `int8` / `int4` / `mlx-q4` / `mlx-q8` directories are not scanned, converted, or loaded. FLUX.2 Klein 4B and Z-Image installs also copy the ModelScope text encoder, VAE, and tokenizer into that version's own directory; those companions may be safetensors. A directory that already contains a GGUF is not treated as an old MLX pack because of them. Generation still needs `bundle.manifest.json` and GGUF role files.
 
 - Bundle directory: `transformer.gguf`, `text_encoder.gguf`, `vae.gguf`, `tokenizer.json`, `bundle.manifest.json`. Large towers may be sharded (`role-00001-of-000NN.gguf`) and are mmap'd per file. Duplicate tensor names across shards fail.
 - Version keys: `bf16`, `q8_0`, `q4_k`. The API drops every other key. VAE stays F16/BF16 in all tiers. Inside a quantized file, norm / bias / modulation stay F32 or F16.

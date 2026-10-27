@@ -1219,8 +1219,8 @@
       "catalog": {
         "media": "image",
         "description": {
-          "zh": "FLUX.2 Klein 4B。默认档是魔塔 unsloth/FLUX.2-klein-4B-GGUF 的 Q4_K_M，下载到 models/flux2-klein-4b/q4_k。快速验证用 64 边。",
-          "en": "FLUX.2 Klein 4B. The default tier is Q4_K_M from ModelScope unsloth/FLUX.2-klein-4B-GGUF, downloaded to models/flux2-klein-4b/q4_k. Quick checks use a 64-pixel edge."
+          "zh": "FLUX.2 Klein 4B。一次安装下载所选档的 DiT GGUF，以及魔塔 black-forest-labs/FLUX.2-klein-4B 的文本编码器、VAE 和分词器，全部落到该档自己的目录。默认档是 Q4_K_M，目录 models/flux2-klein-4b/q4_k。快速验证用 64 边。",
+          "en": "FLUX.2 Klein 4B. One install downloads the selected DiT GGUF plus the text encoder, VAE, and tokenizer from ModelScope black-forest-labs/FLUX.2-klein-4B into that tier's own directory. The default tier is Q4_K_M at models/flux2-klein-4b/q4_k. Quick checks use a 64-pixel edge."
         },
         "category": "base_models",
         "commercial_use_allowed": true,
@@ -1365,13 +1365,24 @@
               "zh": "BF16",
               "en": "BF16"
             },
-            "size": "7.8GB",
+            "size": "16.0GB",
             "source": "modelscope",
             "source_type": "full",
             "repo_id": "unsloth/FLUX.2-klein-4B-GGUF",
             "local_path": "models/flux2-klein-4b/bf16",
             "allow_patterns": [
               "flux-2-klein-4b-BF16.gguf"
+            ],
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "black-forest-labs/FLUX.2-klein-4B",
+                "allow_patterns": [
+                  "text_encoder/**",
+                  "tokenizer/**",
+                  "vae/**"
+                ]
+              }
             ]
           },
           "q8_0": {
@@ -1379,13 +1390,24 @@
               "zh": "Q8_0",
               "en": "Q8_0"
             },
-            "size": "4.3GB",
+            "size": "12.5GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "unsloth/FLUX.2-klein-4B-GGUF",
             "local_path": "models/flux2-klein-4b/q8_0",
             "allow_patterns": [
               "flux-2-klein-4b-Q8_0.gguf"
+            ],
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "black-forest-labs/FLUX.2-klein-4B",
+                "allow_patterns": [
+                  "text_encoder/**",
+                  "tokenizer/**",
+                  "vae/**"
+                ]
+              }
             ]
           },
           "q4_k": {
@@ -1393,7 +1415,7 @@
               "zh": "Q4_K_M",
               "en": "Q4_K_M"
             },
-            "size": "2.6GB",
+            "size": "10.8GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "unsloth/FLUX.2-klein-4B-GGUF",
@@ -1401,7 +1423,18 @@
             "allow_patterns": [
               "flux-2-klein-4b-Q4_K_M.gguf"
             ],
-            "default": true
+            "default": true,
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "black-forest-labs/FLUX.2-klein-4B",
+                "allow_patterns": [
+                  "text_encoder/**",
+                  "tokenizer/**",
+                  "vae/**"
+                ]
+              }
+            ]
           }
         }
       }
@@ -1961,8 +1994,8 @@
       "catalog": {
         "media": "image",
         "description": {
-          "zh": "通义 Z-Image 完整版基础模型，支持 CFG 与负向提示。人像/概念 LoRA 推荐 Scheme 4：在此 Base 上训练，推理时用 Z-Image-Turbo + DistillPatch 加速。",
-          "en": "Tongyi Z-Image foundation with CFG and negatives. For portrait/concept LoRAs use Scheme 4: train on Base, infer on Z-Image-Turbo with DistillPatch."
+          "zh": "通义 Z-Image 完整版基础模型，支持 CFG 与负向提示。一次安装下载所选档的 DiT GGUF，以及同一魔塔仓库 unsloth/Z-Image-GGUF 里的文本编码器、VAE 和分词器，落到该档自己的目录。人像/概念 LoRA 推荐 Scheme 4：在此 Base 上训练，推理时用 Z-Image-Turbo + DistillPatch 加速。",
+          "en": "Tongyi Z-Image foundation with CFG and negatives. One install downloads the selected DiT GGUF plus the text encoder, VAE, and tokenizer from the same ModelScope repo unsloth/Z-Image-GGUF into that tier's own directory. For portrait/concept LoRAs use Scheme 4: train on Base, infer on Z-Image-Turbo with DistillPatch."
         },
         "category": "base_models",
         "commercial_use_allowed": true,
@@ -2123,7 +2156,7 @@
               "zh": "BF16",
               "en": "BF16"
             },
-            "size": "12.3GB",
+            "size": "20.5GB",
             "source": "modelscope",
             "source_type": "full",
             "repo_id": "unsloth/Z-Image-GGUF",
@@ -2131,20 +2164,42 @@
             "allow_patterns": [
               "z-image-BF16.gguf"
             ],
-            "default": true
+            "default": true,
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/Z-Image-GGUF",
+                "allow_patterns": [
+                  "text_encoder/**",
+                  "tokenizer/**",
+                  "vae/**"
+                ]
+              }
+            ]
           },
           "q8_0": {
             "name": {
               "zh": "Q8_0",
               "en": "Q8_0"
             },
-            "size": "7.2GB",
+            "size": "15.5GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "unsloth/Z-Image-GGUF",
             "local_path": "models/z-image/q8_0",
             "allow_patterns": [
               "z-image-Q8_0.gguf"
+            ],
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/Z-Image-GGUF",
+                "allow_patterns": [
+                  "text_encoder/**",
+                  "tokenizer/**",
+                  "vae/**"
+                ]
+              }
             ]
           },
           "q4_k": {
@@ -2152,13 +2207,24 @@
               "zh": "Q4_K_M",
               "en": "Q4_K_M"
             },
-            "size": "5.1GB",
+            "size": "13.3GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "unsloth/Z-Image-GGUF",
             "local_path": "models/z-image/q4_k",
             "allow_patterns": [
               "z-image-Q4_K_M.gguf"
+            ],
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/Z-Image-GGUF",
+                "allow_patterns": [
+                  "text_encoder/**",
+                  "tokenizer/**",
+                  "vae/**"
+                ]
+              }
             ]
           }
         }

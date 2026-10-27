@@ -1,6 +1,8 @@
 //! Pure HTTP download client for the models page.
 //! File URLs come from the registry or from a hub file listing. Names are not invented.
-//! Model weights must be GGUF. Safetensors and MLX tensors are refused.
+//! The DiT weight must be GGUF. A version may also list `components`: the text encoder,
+//! VAE, and tokenizer published beside that GGUF. Those files land in the version
+//! directory. The engine still loads GGUF only.
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -1142,12 +1144,98 @@ fn plan_version(
     }
     let mut files = Vec::new();
     for repo in &repos {
-        files.extend(plan_repo(repo, spec, list, resolve)?);
+        append_files(&mut files, plan_repo(repo, spec, list, resolve)?)?;
     }
-    if files.is_empty() {
+    append_files(&mut files, plan_components(spec, list, resolve)?)?;
+    if !files.iter().any(|file| is_gguf(&file.dest)) {
         return Err("no GGUF file is published for this model".into());
     }
     Ok(Plan::Files(files))
+}
+
+fn append_files(files: &mut Vec<PlannedFile>, extra: Vec<PlannedFile>) -> Result<(), String> {
+    for file in extra {
+        if let Some(existing) = files.iter().find(|row| row.dest == file.dest) {
+            if existing.url != file.url {
+                return Err(format!(
+                    "two published files would download to {}",
+                    file.dest
+                ));
+            }
+            continue;
+        }
+        files.push(file);
+    }
+    Ok(())
+}
+
+fn plan_components(
+    spec: &Value,
+    list: &mut dyn FnMut(&RepoQuery) -> Result<Vec<RemoteEntry>, String>,
+    resolve: &dyn Fn(&str) -> PathBuf,
+) -> Result<Vec<PlannedFile>, String> {
+    let Some(components) = spec.get("components") else {
+        return Ok(Vec::new());
+    };
+    let rows = components
+        .as_array()
+        .ok_or_else(|| "components is not a list".to_string())?;
+    if rows.is_empty() {
+        return Err("components is empty".into());
+    }
+    let mut files = Vec::new();
+    for component in rows {
+        if !component.is_object() {
+            return Err("component entry is not an object".into());
+        }
+        append_files(&mut files, plan_component(component, spec, list, resolve)?)?;
+    }
+    Ok(files)
+}
+
+fn plan_component(
+    component: &Value,
+    parent: &Value,
+    list: &mut dyn FnMut(&RepoQuery) -> Result<Vec<RemoteEntry>, String>,
+    resolve: &dyn Fn(&str) -> PathBuf,
+) -> Result<Vec<PlannedFile>, String> {
+    let local = parent
+        .get("local_path")
+        .and_then(|v| v.as_str())
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "version has no local_path".to_string())?;
+    let root = resolve(local);
+    let repo_id = component
+        .get("repo_id")
+        .and_then(|v| v.as_str())
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "component has no repo_id".to_string())?;
+    let source = component
+        .get("source")
+        .and_then(|v| v.as_str())
+        .or_else(|| parent.get("source").and_then(|v| v.as_str()))
+        .unwrap_or("huggingface");
+    let revision = revision_of(component, parent, source);
+    let patterns = patterns_of(component);
+    if patterns.is_empty() {
+        return Err("component allow_patterns is empty".into());
+    }
+    let entries = list(&RepoQuery {
+        source: source.into(),
+        repo_id: repo_id.into(),
+        revision: revision.clone(),
+    })?;
+    let selected = select_component_files(&entries, &patterns)?;
+    let mut files = Vec::new();
+    for entry in selected {
+        let url = resolve_file_url(source, repo_id, &revision, &entry.path)?;
+        files.push(PlannedFile {
+            url,
+            dest: root.join(&entry.path).display().to_string(),
+            size: entry.size,
+        });
+    }
+    Ok(files)
 }
 
 fn plan_repo(
@@ -1331,6 +1419,53 @@ fn pick_lora_file(entries: &[RemoteEntry]) -> Result<String, String> {
         return Ok(file.path.clone());
     }
     Err("no downloadable LoRA file is published".into())
+}
+
+fn select_component_files(
+    entries: &[RemoteEntry],
+    patterns: &[String],
+) -> Result<Vec<RemoteEntry>, String> {
+    if patterns.is_empty() {
+        return Err("component allow_patterns is empty".into());
+    }
+    let mut out: Vec<RemoteEntry> = Vec::new();
+    for pattern in patterns {
+        let mut matched = false;
+        for entry in entries {
+            if !glob_match(pattern, &entry.path) {
+                continue;
+            }
+            if entry.path.contains("..") || entry.path.starts_with('/') {
+                return Err(format!("component path escapes the bundle: {}", entry.path));
+            }
+            if !is_component_file(&entry.path) {
+                continue;
+            }
+            matched = true;
+            if out.iter().any(|row| row.path == entry.path) {
+                continue;
+            }
+            out.push(RemoteEntry {
+                path: entry.path.clone(),
+                size: entry.size,
+            });
+        }
+        if !matched {
+            return Err(format!(
+                "component pattern {pattern} matched no published file"
+            ));
+        }
+    }
+    Ok(out)
+}
+
+fn is_component_file(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".gguf")
+        || lower.ends_with(".safetensors")
+        || lower.ends_with(".json")
+        || lower.ends_with(".txt")
+        || lower.ends_with(".jinja")
 }
 
 fn is_gguf(path: &str) -> bool {
@@ -1978,34 +2113,141 @@ mod tests {
             .clone()
     }
 
+    fn published_listing(query: &RepoQuery) -> Result<Vec<RemoteEntry>, String> {
+        assert_eq!(query.source, "modelscope", "{}", query.repo_id);
+        assert_eq!(query.revision, "master", "{}", query.repo_id);
+        let files: &[&str] = match query.repo_id.as_str() {
+            "unsloth/FLUX.2-klein-4B-GGUF" => &[
+                "not-selected.gguf",
+                "flux-2-klein-4b-BF16.gguf",
+                "flux-2-klein-4b-Q8_0.gguf",
+                "flux-2-klein-4b-Q4_K_M.gguf",
+            ],
+            "black-forest-labs/FLUX.2-klein-4B" => &[
+                "text_encoder",
+                "text_encoder/config.json",
+                "text_encoder/generation_config.json",
+                "text_encoder/model-00001-of-00002.safetensors",
+                "text_encoder/model-00002-of-00002.safetensors",
+                "text_encoder/model.safetensors.index.json",
+                "tokenizer/added_tokens.json",
+                "tokenizer/chat_template.jinja",
+                "tokenizer/merges.txt",
+                "tokenizer/special_tokens_map.json",
+                "tokenizer/tokenizer.json",
+                "tokenizer/tokenizer_config.json",
+                "tokenizer/vocab.json",
+                "vae/config.json",
+                "vae/diffusion_pytorch_model.safetensors",
+                "transformer/diffusion_pytorch_model.safetensors",
+                "flux-2-klein-4b.safetensors",
+                "scheduler/scheduler_config.json",
+            ],
+            "unsloth/Z-Image-GGUF" => &[
+                "z-image-BF16.gguf",
+                "z-image-Q8_0.gguf",
+                "z-image-Q4_K_M.gguf",
+                "z-image-Q2_K.gguf",
+                "text_encoder",
+                "text_encoder/config.json",
+                "text_encoder/generation_config.json",
+                "text_encoder/model-00001-of-00003.safetensors",
+                "text_encoder/model-00002-of-00003.safetensors",
+                "text_encoder/model-00003-of-00003.safetensors",
+                "text_encoder/model.safetensors.index.json",
+                "tokenizer/merges.txt",
+                "tokenizer/tokenizer.json",
+                "tokenizer/tokenizer_config.json",
+                "tokenizer/vocab.json",
+                "vae/config.json",
+                "vae/diffusion_pytorch_model.safetensors",
+                "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
+                "transformer/config.json",
+                "scheduler/scheduler_config.json",
+            ],
+            other => return Err(format!("unexpected repo {other}")),
+        };
+        Ok(files
+            .iter()
+            .enumerate()
+            .map(|(index, path)| entry(path, (index as u64) + 1))
+            .collect())
+    }
+
+    fn planned_names(spec: &Value, workspace: &Path) -> Vec<String> {
+        let plan = plan_version(spec, &mut published_listing, &|path| {
+            resolve_model_path(workspace, path)
+        })
+        .unwrap();
+        let Plan::Files(files) = plan;
+        files
+            .into_iter()
+            .map(|file| {
+                let dest = PathBuf::from(&file.dest);
+                let rel = dest
+                    .strip_prefix(workspace)
+                    .unwrap_or_else(|_| panic!("dest left the workspace: {}", file.dest));
+                let rel = rel.display().to_string();
+                assert!(
+                    file.url.contains("https://www.modelscope.cn/models/"),
+                    "{}",
+                    file.url
+                );
+                assert!(file.url.contains("/resolve/master/"), "{}", file.url);
+                rel
+            })
+            .collect()
+    }
+
     #[test]
     fn smallest_quant_lands_in_the_download_directory() {
         let spec = published_version("flux2-klein-4b", "q4_k");
         let local = spec["local_path"].as_str().expect("local_path");
-        let file = spec["allow_patterns"][0]
-            .as_str()
-            .expect("published gguf name");
         let workspace = PathBuf::from("/tmp/danmo-weight-root");
-        let plan = plan_version(
-            &spec,
-            &mut |_| {
-                Ok(vec![
-                    entry("not-selected.gguf", 100),
-                    entry(file, 26),
-                ])
-            },
-            &|path| resolve_model_path(&workspace, path),
-        )
-        .unwrap();
-        let Plan::Files(files) = plan;
-        assert_eq!(files.len(), 1);
-        assert_eq!(
-            files[0].dest,
-            workspace.join(local).join(file).display().to_string(),
-            "{}",
-            files[0].dest
+        let names = planned_names(&spec, &workspace);
+        assert!(names
+            .iter()
+            .any(|name| name == &format!("{local}/flux-2-klein-4b-Q4_K_M.gguf")));
+        for suffix in [
+            "text_encoder/model-00001-of-00002.safetensors",
+            "text_encoder/model-00002-of-00002.safetensors",
+            "tokenizer/tokenizer.json",
+            "tokenizer/chat_template.jinja",
+            "tokenizer/merges.txt",
+            "vae/diffusion_pytorch_model.safetensors",
+        ] {
+            assert!(
+                names
+                    .iter()
+                    .any(|name| name == &format!("{local}/{suffix}")),
+                "missing {suffix} in {names:?}"
+            );
+        }
+        assert!(
+            names
+                .iter()
+                .all(|name| name.starts_with(&format!("{local}/"))),
+            "{names:?}"
         );
-        assert!(files[0].url.contains(file), "{}", files[0].url);
+        assert!(!names.iter().any(|name| name.contains("transformer/")));
+        assert!(!names
+            .iter()
+            .any(|name| name.ends_with("flux-2-klein-4b.safetensors")));
+        assert!(!names.iter().any(|name| name.ends_with("not-selected.gguf")));
+        assert_eq!(names.len(), 15, "{names:?}");
+
+        let bf16 = published_version("flux2-klein-4b", "bf16");
+        let bf16_names = planned_names(&bf16, &workspace);
+        assert!(bf16_names
+            .iter()
+            .any(|name| name.ends_with("flux-2-klein-4b-BF16.gguf")));
+        assert!(bf16_names
+            .iter()
+            .all(|name| name.starts_with("models/flux2-klein-4b/bf16/")));
+        assert!(names
+            .iter()
+            .all(|name| name.starts_with("models/flux2-klein-4b/q4_k/")));
+
         let err = plan_version(
             &json!({ "graph_pack": "flux2-chain" }),
             &mut |_| panic!("listed"),
@@ -2013,6 +2255,87 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("no GGUF download"), "{err}");
+    }
+
+    #[test]
+    fn z_image_quant_copies_companions_into_its_own_directory() {
+        let spec = published_version("z-image", "q4_k");
+        let workspace = PathBuf::from("/tmp/danmo-weight-root");
+        let names = planned_names(&spec, &workspace);
+        assert!(names
+            .iter()
+            .any(|name| name == "models/z-image/q4_k/z-image-Q4_K_M.gguf"));
+        assert_eq!(
+            names.iter().filter(|name| name.ends_with(".gguf")).count(),
+            1,
+            "{names:?}"
+        );
+        for suffix in [
+            "text_encoder/model-00001-of-00003.safetensors",
+            "text_encoder/model-00003-of-00003.safetensors",
+            "tokenizer/vocab.json",
+            "vae/diffusion_pytorch_model.safetensors",
+        ] {
+            assert!(
+                names
+                    .iter()
+                    .any(|name| name == &format!("models/z-image/q4_k/{suffix}")),
+                "missing {suffix} in {names:?}"
+            );
+        }
+        assert!(!names.iter().any(|name| name.contains("transformer/")));
+        assert!(!names.iter().any(|name| name.contains("Q2_K")));
+        assert!(!names
+            .iter()
+            .any(|name| name.starts_with("models/flux2-klein-4b/")));
+        assert_eq!(names.len(), 13, "{names:?}");
+    }
+
+    #[test]
+    fn component_pattern_must_match_a_published_file() {
+        let spec = json!({
+            "local_path": "models/demo/q4_k",
+            "source": "modelscope",
+            "repo_id": "acme/dit",
+            "allow_patterns": ["demo-Q4_K_M.gguf"],
+            "components": [{
+                "source": "modelscope",
+                "repo_id": "acme/aux",
+                "allow_patterns": ["vae/**"]
+            }]
+        });
+        let err = plan_version(
+            &spec,
+            &mut |query| {
+                if query.repo_id == "acme/dit" {
+                    Ok(vec![entry("demo-Q4_K_M.gguf", 1)])
+                } else {
+                    Ok(vec![entry("text_encoder/model.safetensors", 2)])
+                }
+            },
+            &|path| PathBuf::from(path.to_string()),
+        )
+        .unwrap_err();
+        assert!(err.contains("vae/**"), "{err}");
+
+        let empty = json!({
+            "local_path": "models/demo/q4_k",
+            "source": "modelscope",
+            "repo_id": "acme/dit",
+            "allow_patterns": ["demo-Q4_K_M.gguf"],
+            "components": [{
+                "source": "modelscope",
+                "repo_id": "acme/aux",
+                "allow_patterns": []
+            }]
+        });
+        let err = plan_version(
+            &empty,
+            &mut |_| Ok(vec![entry("demo-Q4_K_M.gguf", 1)]),
+            &|path| PathBuf::from(path.to_string()),
+        )
+        .unwrap_err();
+        assert!(err.contains("component allow_patterns is empty"), "{err}");
     }
 
     #[test]

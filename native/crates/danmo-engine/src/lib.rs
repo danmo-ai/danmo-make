@@ -113,6 +113,21 @@ mod tests {
             Ok(_) => panic!("legacy directory was accepted"),
         };
         assert!(err.to_string().contains("Re-download"), "{err}");
+
+        let ready = dir.join("with-companions");
+        write_smoke_bundle(&ready, 4).unwrap();
+        std::fs::create_dir_all(ready.join("vae")).unwrap();
+        std::fs::write(ready.join("vae/diffusion_pytorch_model.safetensors"), b"st").unwrap();
+        assert!(assert_gguf_bundle(&ready).is_ok());
+
+        let only = dir.join("safetensors-only");
+        std::fs::create_dir_all(&only).unwrap();
+        std::fs::write(only.join("w.safetensors"), b"st").unwrap();
+        let err = match assert_gguf_bundle(&only) {
+            Err(err) => err,
+            Ok(_) => panic!("safetensors directory was accepted"),
+        };
+        assert!(err.to_string().contains("old MLX"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
