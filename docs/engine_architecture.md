@@ -63,7 +63,7 @@ Shared modules take parameters. They do not branch on `flux2` or `z_image`.
 | Qwen3 tokenizer and tower | `common/qwen3` | 1-based layer indices, `thinking: bool`, output width |
 | AutoencoderKL decode | `common/vae` | `VaeSpec` (channels, block widths, groups, scaling, shift, mid attention) |
 | PNG | `common/png` | width, height, RGB bytes |
-| Linear / shifted sigmas, N(0, 1) noise | `common/ops` | steps, shift, seed, length |
+| Linear, static-shift, and empirical-mu sigmas; Flux2 timestep; N(0, 1) noise | `common/ops` | steps, shift, image sequence length, sigma, seed, length |
 | ggml operators | `runtime` | tensor shapes |
 
 The caller owns the policy:
@@ -72,7 +72,7 @@ The caller owns the policy:
 |--------|-------------|
 | Which Qwen layers, and whether thinking is on | The family. Flux2 passes layers 9, 18, and 27 with thinking off. A short tower whose `hidden * layers` equals the joint width passes every layer. Z-Image passes the penultimate layer with thinking on. |
 | VAE numbers | The family. Z-Image passes 16 channels, blocks 128/256/512/512, 32 groups, scaling 0.3611, shift 0.1159. Flux2 passes the same blocks after its own unpack, with 32 channels, scaling 1, shift 0. |
-| Scheduler name | The family accepts the names its registry lists and calls the matching function in `common/ops`. |
+| Scheduler name | The family accepts the names its registry lists and calls the matching function in `common/ops`. Flux2 runs empirical mu for both `flow_match_euler` and `flow_match_euler_discrete`, and embeds `sigma * 1000` as cosine then sine. Z-Image uses those two names as one scheduler: static shift unless `use_empirical_mu` is set. `linear` keeps the resolution shift. |
 | Negative prompt | The family. Z-Image requires the same token count and a guidance other than 0. Flux2 rejects a non-empty negative. |
 
 These stay in the family because one shared function would be a pile of switches:

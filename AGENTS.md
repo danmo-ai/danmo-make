@@ -49,6 +49,7 @@ Long form: [docs/engine_architecture.md](docs/engine_architecture.md).
 - Families are isolated. A family does not import another family. `families/mod.rs` is the only match on a family id. Pipelines do not branch on `family == ...`.
 - Shared modules (`common/qwen3`, `common/vae`, `common/png`, `common/ops`, `runtime`) do not know family ids. Callers pass layer indices, a thinking flag, or a `VaeSpec`. Weight-file names such as `layers.*` and `decoder.*` are the file format.
 - A difference that needs many callbacks or mode switches stays in the family. Denoise does: Flux2 steps `x + dt * (u + g * (c - u))` on `[channels, seq]`; Z-Image steps `x + dt * (c + g * (c - u))` on `[W, H, C]`.
+- Schedules live in `common/ops`. Flux2's two flow-match names use empirical mu, and the timestep is cosine then sine of `sigma * 1000`. Z-Image treats `flow_match_euler_discrete` as the same scheduler: static shift unless `use_empirical_mu` is set. `linear` keeps the resolution shift.
 - Phases stay resolve → load → encode → schedule → infer → decode → persist. One cgraph is reserved and replayed.
 - ggml calls stay in `danmo-ggml-sys` and `danmo-engine` runtime / weight code.
 - Built image graphs: `flux2` (MM-DiT; Qwen layers 9/18/27; packed-latent batch norm, unpatch, post-quant, then AutoencoderKL) and `z_image` (DiT; Qwen penultimate state; AutoencoderKL when `decoder.conv_in.weight` is present). A one-tensor `decoder.conv.weight` file stays the 1×1 preview. Every other family fails after the bundle check.

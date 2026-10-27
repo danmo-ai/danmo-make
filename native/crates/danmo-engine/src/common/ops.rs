@@ -73,7 +73,7 @@ fn next_unit(state: &mut u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::flow_match_shift_sigmas;
+    use super::{empirical_mu, empirical_mu_sigmas, flow_match_shift_sigmas, flux_timestep_embed};
 
     #[test]
     fn static_shift_matches_the_z_image_base_schedule() {
@@ -85,18 +85,86 @@ mod tests {
         }
         assert_eq!(flow_match_shift_sigmas(1, 6.0), vec![1.0, 0.0]);
     }
+
+    #[test]
+    fn empirical_mu_matches_flow_match_euler() {
+        let mu = empirical_mu(16, 4);
+        assert!((mu - 1.9452164).abs() < 1e-5, "{mu}");
+        let small = empirical_mu_sigmas(4, 16);
+        let expect = [1.0, 0.95451534, 0.8749241, 0.6998543, 0.0];
+        assert_eq!(small.len(), expect.len());
+        for (got, want) in small.iter().zip(expect) {
+            assert!((got - want).abs() < 1e-5, "{got} vs {want}");
+        }
+
+        let wide = empirical_mu(5000, 2);
+        assert!((wide - 1.3030167).abs() < 1e-5, "{wide}");
+        let long = empirical_mu_sigmas(2, 5000);
+        let expect = [1.0, 0.78634226, 0.0];
+        assert_eq!(long.len(), expect.len());
+        for (got, want) in long.iter().zip(expect) {
+            assert!((got - want).abs() < 1e-5, "{got} vs {want}");
+        }
+    }
+
+    #[test]
+    fn flux_timestep_is_cosine_then_sine_at_sigma_times_1000() {
+        let emb = flux_timestep_embed(0.5, 4);
+        let expect = [-0.88384926, 0.2836622, -0.4677718, -0.9589243];
+        assert_eq!(emb.len(), expect.len());
+        for (got, want) in emb.iter().zip(expect) {
+            assert!((got - want).abs() < 1e-5, "{got} vs {want}");
+        }
+    }
 }
 
-/// Sinusoidal timestep projection used by Flux2TimestepEmbeddings (host side, fed as a graph input).
-pub fn sinusoidal_timestep(t: f32, dim: usize) -> Vec<f32> {
+/// `FlowMatchEulerScheduler._compute_empirical_mu`.
+/// `image_seq_len` is `(width / vae_scale) * (height / vae_scale)`.
+pub fn empirical_mu(image_seq_len: u32, steps: u32) -> f32 {
+    let seq = f64::from(image_seq_len);
+    let steps = f64::from(steps.max(1));
+    let a1 = 8.73809524e-05;
+    let b1 = 1.89833333;
+    let a2 = 0.00016927;
+    let b2 = 0.45666666;
+    let mu = if seq > 4300.0 {
+        a2 * seq + b2
+    } else {
+        let m_200 = a2 * seq + b2;
+        let m_10 = a1 * seq + b1;
+        let slope = (m_200 - m_10) / 190.0;
+        let intercept = m_200 - 200.0 * slope;
+        slope * steps + intercept
+    };
+    mu as f32
+}
+
+/// Empirical-mu flow schedule: `linspace(1, 1/steps, steps)`, shifted by
+/// [`empirical_mu`], then a terminal 0.
+pub fn empirical_mu_sigmas(steps: u32, image_seq_len: u32) -> Vec<f32> {
+    let exp_mu = f64::from(empirical_mu(image_seq_len, steps)).exp();
+    let mut sigmas = linear_sigmas(steps, 0, 0, false);
+    let last = sigmas.len().saturating_sub(1);
+    for sigma in &mut sigmas[..last] {
+        let t = f64::from(*sigma);
+        *sigma = (exp_mu / (exp_mu + (1.0 / t - 1.0))) as f32;
+    }
+    sigmas
+}
+
+/// Flux2 timestep embedding. `dim` is `time_guidance_embed.linear_1`'s input
+/// width. Sigmas at or below 1 are scaled by 1000, then cosine occupies the
+/// first half and sine the second (`flip_sin_to_cos`).
+pub fn flux_timestep_embed(sigma: f32, dim: usize) -> Vec<f32> {
+    let t = if sigma <= 1.0 { sigma * 1000.0 } else { sigma };
     let mut out = vec![0f32; dim];
     let half = dim / 2;
     for i in 0..half {
-        let freq = (10000f32).powf(-(i as f32) / half.max(1) as f32);
+        let freq = (10000f32).powf(-(i as f32) / (half.max(1) as f32));
         let arg = t * freq;
-        out[i] = arg.sin();
+        out[i] = arg.cos();
         if i + half < dim {
-            out[i + half] = arg.cos();
+            out[i + half] = arg.sin();
         }
     }
     out

@@ -1,7 +1,7 @@
 //! Denoise loop. Inputs are written after the graph is built. Steps do not
 //! read activations back to the host. The preview read happens once, at the end.
 
-use crate::common::ops::{linear_sigmas, sinusoidal_timestep};
+use crate::common::ops::flux_timestep_embed;
 use crate::runtime::{euler_graph, DeviceStep, ReusedGraph, RuntimeError};
 
 /// Replay `forward` once per conditional pass. Latents, CFG, and Euler stay on
@@ -54,23 +54,20 @@ pub fn denoise_resident(
     euler.read_output()
 }
 
-/// Host schedule for a flow-match trajectory. Fed into [`denoise_resident`] as inputs.
-pub fn flow_steps(
-    steps: u32,
-    width: u32,
-    height: u32,
-    shift: bool,
-    freq_dim: usize,
-) -> Vec<DeviceStep> {
-    let sigmas = linear_sigmas(steps, width, height, shift);
-    (0..steps.max(1))
-        .map(|step| {
-            let sigma = sigmas[step as usize];
-            DeviceStep {
-                sigma,
-                sigma_next: sigmas[step as usize + 1],
-                temb: sinusoidal_timestep(sigma, freq_dim),
-            }
+/// Host timesteps for a caller-built sigma list. Fed into [`denoise_resident`].
+/// `sigmas` includes the terminal 0, so the step count is `len - 1`.
+pub fn flow_steps(sigmas: &[f32], freq_dim: usize) -> Result<Vec<DeviceStep>, RuntimeError> {
+    if sigmas.len() < 2 {
+        return Err(RuntimeError::Message(
+            "denoise schedule needs at least two sigmas".into(),
+        ));
+    }
+    Ok(sigmas
+        .windows(2)
+        .map(|pair| DeviceStep {
+            sigma: pair[0],
+            sigma_next: pair[1],
+            temb: flux_timestep_embed(pair[0], freq_dim),
         })
-        .collect()
+        .collect())
 }

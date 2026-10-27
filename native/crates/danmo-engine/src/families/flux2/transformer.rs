@@ -76,10 +76,7 @@ impl Flux2Denoise {
         &mut self,
         latent: Vec<f32>,
         txt: &[f32],
-        steps: u32,
-        width: u32,
-        height: u32,
-        shift: bool,
+        sigmas: &[f32],
         guidance: f32,
         on_step: impl FnMut(u32, u32),
     ) -> Result<Vec<f32>, RuntimeError> {
@@ -98,7 +95,8 @@ impl Flux2Denoise {
             )));
         }
         self.bind_rope()?;
-        let schedule = flow_steps(steps, width, height, shift, self.freq as usize);
+        let schedule = flow_steps(sigmas, self.freq as usize)?;
+        let steps = schedule.len() as u32;
         let latents = denoise_resident(
             &mut self.graph,
             &schedule,

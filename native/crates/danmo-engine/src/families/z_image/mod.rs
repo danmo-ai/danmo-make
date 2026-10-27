@@ -19,7 +19,9 @@ mod transformer;
 mod vae;
 mod weights;
 
-use crate::common::ops::{flow_match_shift_sigmas, linear_sigmas, normal_latent};
+use crate::common::ops::{
+    empirical_mu_sigmas, flow_match_shift_sigmas, linear_sigmas, normal_latent,
+};
 use crate::runtime::{GgmlContext, TYPE_F32};
 use crate::weights::{assert_gguf_bundle, matmul_type, type_block, GgufWeights, WeightError};
 #[cfg(test)]
@@ -121,24 +123,24 @@ fn schedule(
     empirical_mu: bool,
 ) -> Result<Vec<f32>, WeightError> {
     match scheduler.unwrap_or("linear") {
-        "linear" => {
+        // LinearScheduler keeps the resolution shift. Empirical mu belongs to FlowMatchEuler.
+        "linear" => Ok(linear_sigmas(
+            steps,
+            width,
+            height,
+            config.requires_sigma_shift,
+        )),
+        "flow_match_euler" | "flow_match_euler_discrete" => {
             if empirical_mu {
-                return Err(WeightError::NotBuilt(
-                    "empirical mu schedule is not built".into(),
-                ));
-            }
-            Ok(linear_sigmas(
-                steps,
-                width,
-                height,
-                config.requires_sigma_shift,
-            ))
-        }
-        "flow_match_euler" => {
-            if empirical_mu {
-                return Err(WeightError::NotBuilt(
-                    "empirical mu schedule is not built".into(),
-                ));
+                let scale = u32::try_from(config.vae_scale).unwrap_or(0);
+                if scale == 0 || width % scale != 0 || height % scale != 0 {
+                    return Err(WeightError::NotBuilt(format!(
+                        "size {width}x{height} is not divisible by vae scale {}",
+                        config.vae_scale
+                    )));
+                }
+                let seq = (width / scale) * (height / scale);
+                return Ok(empirical_mu_sigmas(steps, seq));
             }
             let shift = scheduler_shift.unwrap_or(6.0);
             if !shift.is_finite() || shift <= 0.0 {
@@ -148,9 +150,6 @@ fn schedule(
             }
             Ok(flow_match_shift_sigmas(steps, shift))
         }
-        "flow_match_euler_discrete" => Err(WeightError::NotBuilt(
-            "empirical mu schedule is not built".into(),
-        )),
         other => Err(WeightError::NotBuilt(format!(
             "scheduler {other} is not built"
         ))),
@@ -382,6 +381,37 @@ mod tests {
             Ok(_) => panic!("unknown scheduler was accepted"),
         };
         assert!(err.to_string().contains("not built"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discrete_matches_static_shift_and_empirical_mu_decodes() {
+        let dir = scratch("z-image-schedule");
+        write_smoke_bundle(&dir).unwrap();
+        let mut euler = request();
+        euler.guidance = Some(0.0);
+        euler.steps = Some(4);
+        euler.scheduler = Some("flow_match_euler".into());
+        euler.scheduler_shift = Some(6.0);
+        let base = image_create(&euler, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        let mut discrete = euler.clone();
+        discrete.scheduler = Some("flow_match_euler_discrete".into());
+        let alias = image_create(&discrete, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert_eq!(base.latents, alias.latents);
+        discrete.use_empirical_mu = true;
+        let shifted =
+            image_create(&discrete, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert_ne!(base.latents, shifted.latents);
+        assert!(shifted.latents.iter().all(|v| v.is_finite()));
+        assert_eq!(&shifted.preview_png[..8], b"\x89PNG\r\n\x1a\n");
+        let mut linear = request();
+        linear.guidance = Some(0.0);
+        linear.steps = Some(4);
+        linear.scheduler = Some("linear".into());
+        let plain = image_create(&linear, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        linear.use_empirical_mu = true;
+        let flagged = image_create(&linear, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert_eq!(plain.latents, flagged.latents);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

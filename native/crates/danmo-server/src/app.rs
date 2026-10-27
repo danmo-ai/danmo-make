@@ -575,6 +575,10 @@ mod tests {
         body["scheduler_shift"] = json!(6);
         let accepted = post_json(&app, "/api/images/generations", &body).await;
         assert_eq!(accepted.0, StatusCode::ACCEPTED, "{}", accepted.1);
+        body["scheduler"] = json!("flow_match_euler_discrete");
+        body["use_empirical_mu"] = json!(true);
+        let empirical = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(empirical.0, StatusCode::ACCEPTED, "{}", empirical.1);
         let edit = post_json(&app, "/api/images/edits", &body).await;
         assert_eq!(edit.0, StatusCode::NOT_IMPLEMENTED);
         assert!(
@@ -1182,12 +1186,6 @@ fn reject_unbuilt_inference(family: &str, body: &Value) -> Result<(), ApiError> 
             "lemica graph is not built",
         ));
     }
-    if family == "z_image" && body.get("use_empirical_mu").and_then(|v| v.as_bool()) == Some(true) {
-        return Err(fail(
-            StatusCode::NOT_IMPLEMENTED,
-            "empirical mu schedule is not built",
-        ));
-    }
     if let Some(scheduler) = text_field(body, "scheduler") {
         if !scheduler_built(family, scheduler) {
             return Err(fail(
@@ -1201,7 +1199,12 @@ fn reject_unbuilt_inference(family: &str, body: &Value) -> Result<(), ApiError> 
 
 fn scheduler_built(family: &str, scheduler: &str) -> bool {
     match family {
-        "z_image" => matches!(scheduler, "linear" | "flow_match_euler"),
+        "z_image" => {
+            matches!(
+                scheduler,
+                "linear" | "flow_match_euler" | "flow_match_euler_discrete"
+            )
+        }
         "flux2" => matches!(scheduler, "flow_match_euler" | "flow_match_euler_discrete"),
         _ => scheduler.is_empty(),
     }

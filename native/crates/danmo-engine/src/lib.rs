@@ -138,20 +138,13 @@ mod tests {
             model.load_f32(&name, &data).unwrap();
         }
         let txt = vec![0.1f32; config.joint_attention_dim as usize];
+        let seq = (grid * grid) as u32;
+        let sigmas = crate::common::ops::empirical_mu_sigmas(3, seq);
         let mut ticks = 0u32;
         let latents = model
-            .denoise(
-                vec![0.2; model.latent_len()],
-                &txt,
-                3,
-                64,
-                64,
-                true,
-                3.5,
-                |_, _| {
-                    ticks += 1;
-                },
-            )
+            .denoise(vec![0.2; model.latent_len()], &txt, &sigmas, 3.5, |_, _| {
+                ticks += 1;
+            })
             .unwrap();
         assert_eq!(ticks, 3);
         assert_eq!(model.graph_computes(), 6);

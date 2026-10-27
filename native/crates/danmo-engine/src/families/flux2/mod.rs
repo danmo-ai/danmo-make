@@ -8,7 +8,7 @@ pub use text::{write_chain_bundle, write_qwen3_bundle};
 pub use transformer::Flux2Denoise;
 pub use weights::{weight_layout, Flux2Config};
 
-use crate::common::ops::normal_latent;
+use crate::common::ops::{empirical_mu_sigmas, normal_latent};
 use crate::runtime::{GgmlContext, TYPE_F32, TYPE_Q8_0};
 use crate::weights::{
     assert_gguf_bundle, matmul_type, quantize_q8_0, type_block, write_f32_tensors,
@@ -86,16 +86,8 @@ pub fn execute(
         Some(seed) => normal_latent(seed, denoise.latent_len()),
         None => vec![0.1f32; denoise.latent_len()],
     };
-    let latents = denoise.denoise(
-        latent,
-        &txt,
-        steps,
-        width,
-        height,
-        config.requires_sigma_shift,
-        guidance,
-        on_progress,
-    )?;
+    let sigmas = schedule(steps, grid_w, grid_h);
+    let latents = denoise.denoise(latent, &txt, &sigmas, guidance, on_progress)?;
     let png = vae::decode(
         ctx,
         &files.vae,
@@ -111,6 +103,14 @@ pub fn execute(
         graph_computes: denoise.graph_computes(),
         preview_png: png,
     })
+}
+
+/// Both registry names are `FlowMatchEulerScheduler`. The card does not set
+/// `use_empirical_mu` false, and this config requires sigma shift, so the
+/// trajectory is empirical mu on the VAE grid (`width/16 * height/16`).
+fn schedule(steps: u32, grid_w: i64, grid_h: i64) -> Vec<f32> {
+    let seq = (grid_w.max(0) as u32).saturating_mul(grid_h.max(0) as u32);
+    empirical_mu_sigmas(steps, seq)
 }
 
 fn config_from_weights(weights: &GgufWeights) -> Result<Flux2Config, WeightError> {
@@ -410,4 +410,20 @@ pub fn write_q8_bundle(dir: &Path, config: Flux2Config) -> Result<(), WeightErro
         }
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::schedule;
+
+    #[test]
+    fn klein_64_uses_the_vae_grid_empirical_schedule() {
+        // 64×64 at vae scale 16 is a 4×4 latent grid.
+        let sigmas = schedule(4, 4, 4);
+        let expect = [1.0, 0.95451534, 0.8749241, 0.6998543, 0.0];
+        assert_eq!(sigmas.len(), expect.len());
+        for (got, want) in sigmas.iter().zip(expect) {
+            assert!((got - want).abs() < 1e-5, "{got} vs {want}");
+        }
+    }
 }
