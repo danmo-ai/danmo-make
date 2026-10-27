@@ -362,9 +362,24 @@ mod tests {
     use std::io::{Read, Write};
     use tower::ServiceExt;
 
-    fn vue_generate_body(prompt: &str) -> Value {
+    fn factory_registry() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../default_config/models_registry.json")
+    }
+
+    /// Weight key in, registry install directory out.
+    fn published_weight(model: &str, weight: &str) -> (String, String) {
+        let catalog = Catalog::open(&factory_registry()).expect("factory registry");
+        let id = format!("{model}:{weight}");
+        let path = catalog
+            .gguf_local_path(&id)
+            .unwrap_or_else(|err| panic!("{id}: {err}"));
+        (id, path)
+    }
+
+    fn vue_generate_body(model: &str, prompt: &str) -> Value {
         json!({
-            "model": "flux2-klein-4b:q4_k",
+            "model": model,
             "title": "chain",
             "prompt": prompt,
             "negative_prompt": "",
@@ -418,30 +433,12 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let bundle = dir.join("models/flux2-klein-4b/q4_k");
+        let (model, local_path) = published_weight("flux2-klein-4b", "q4_k");
+        let bundle = dir.join(&local_path);
         danmo_engine::write_smoke_bundle(&bundle, 4).unwrap();
-        let registry = dir.join("registry.json");
-        std::fs::write(
-            &registry,
-            serde_json::json!({
-                "models": {
-                    "flux2-klein-4b": {
-                        "catalog": { "media": "image" },
-                        "runtime": { "family": "flux2", "backends": ["ggml"] },
-                        "distribution": {
-                            "versions": {
-                                "q4_k": { "local_path": "models/flux2-klein-4b/q4_k", "default": true }
-                            }
-                        }
-                    }
-                }
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let app = router(&dir.join("studio.db"), &registry);
+        let app = router(&dir.join("studio.db"), &factory_registry());
         let body = serde_json::json!({
-            "model": "flux2-klein-4b:q4_k",
+            "model": model,
             "prompt": "a cat",
             "size": "64x64",
             "steps": 2
@@ -497,11 +494,10 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let registry = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../default_config/models_registry.json");
-        let app = router(&dir.join("studio.db"), &registry);
-        let downloaded = dir.join("models/flux2-klein-4b/q4_k");
-        assert!(!downloaded.exists());
+        let (model, local_path) = published_weight("flux2-klein-4b", "q4_k");
+        let weight = model.split(':').nth(1).unwrap();
+        let app = router(&dir.join("studio.db"), &factory_registry());
+        assert!(!dir.join(&local_path).exists());
         let missing = app
             .clone()
             .oneshot(
@@ -509,7 +505,7 @@ mod tests {
                     .method("POST")
                     .uri("/api/images/generations")
                     .header("content-type", "application/json")
-                    .body(Body::from(vue_generate_body("一只猫").to_string()))
+                    .body(Body::from(vue_generate_body(&model, "一只猫").to_string()))
                     .unwrap(),
             )
             .await
@@ -521,10 +517,10 @@ mod tests {
         assert_eq!(failed["status"], "failed", "{failed}");
         let err = failed["error"].as_str().unwrap_or("");
         assert!(
-            err.contains("models/flux2-klein-4b/q4_k"),
-            "generation did not use the q4 download path: {err}"
+            err.contains(&local_path),
+            "generation did not use the registry path for {model}: {err}"
         );
-        assert_eq!(failed["model_id"], "flux2-klein-4b:q4_k");
+        assert_eq!(failed["model_id"], model);
 
         let registry_body = app
             .clone()
@@ -555,10 +551,16 @@ mod tests {
             .unwrap();
         assert!(options.iter().any(|v| v == "64x64"));
         assert!(options.iter().any(|v| v == "1024x1024"));
-        let q4 = &model["versions"]["q4_k"];
+        let q4 = &model["versions"][weight];
         assert_eq!(q4["default"], true);
-        assert_eq!(q4["local_path"], "models/flux2-klein-4b/q4_k");
-        assert_eq!(q4["allow_patterns"][0], "flux-2-klein-4b-Q4_K_M.gguf");
+        assert_eq!(q4["local_path"], local_path);
+        let patterns = q4["allow_patterns"].as_array().expect("allow_patterns");
+        assert!(
+            patterns
+                .iter()
+                .any(|name| name.as_str().unwrap_or("").ends_with(".gguf")),
+            "{patterns:?}"
+        );
         assert!(q4.get("graph_pack").is_none());
         assert!(model["versions"]["bf16"].get("graph_pack").is_none());
         let _ = std::fs::remove_dir_all(&dir);
@@ -575,9 +577,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let registry = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../default_config/models_registry.json");
-        let app = router(&dir.join("studio.db"), &registry);
+        let app = router(&dir.join("studio.db"), &factory_registry());
 
         let settings = app
             .clone()

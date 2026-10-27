@@ -1967,22 +1967,31 @@ mod tests {
         assert!(err.contains("GGUF"), "{err}");
     }
 
+    fn published_version(model: &str, weight: &str) -> Value {
+        let registry = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../default_config/models_registry.json");
+        let catalog = danmo_catalog::Catalog::open(&registry).expect("factory registry");
+        catalog
+            .root()
+            .pointer(&format!("/models/{model}/distribution/versions/{weight}"))
+            .unwrap_or_else(|| panic!("{model}:{weight} is not in the registry"))
+            .clone()
+    }
+
     #[test]
     fn smallest_quant_lands_in_the_download_directory() {
-        let spec = json!({
-            "local_path": "models/flux2-klein-4b/q4_k",
-            "repo_id": "unsloth/FLUX.2-klein-4B-GGUF",
-            "source": "modelscope",
-            "allow_patterns": ["flux-2-klein-4b-Q4_K_M.gguf"]
-        });
-        let workspace = PathBuf::from("/workspace");
+        let spec = published_version("flux2-klein-4b", "q4_k");
+        let local = spec["local_path"].as_str().expect("local_path");
+        let file = spec["allow_patterns"][0]
+            .as_str()
+            .expect("published gguf name");
+        let workspace = PathBuf::from("/tmp/danmo-weight-root");
         let plan = plan_version(
             &spec,
             &mut |_| {
                 Ok(vec![
-                    entry("flux-2-klein-4b-BF16.gguf", 100),
-                    entry("flux-2-klein-4b-Q8_0.gguf", 50),
-                    entry("flux-2-klein-4b-Q4_K_M.gguf", 26),
+                    entry("not-selected.gguf", 100),
+                    entry(file, 26),
                 ])
             },
             &|path| resolve_model_path(&workspace, path),
@@ -1990,23 +1999,15 @@ mod tests {
         .unwrap();
         let Plan::Files(files) = plan;
         assert_eq!(files.len(), 1);
-        assert!(
-            files[0]
-                .dest
-                .ends_with("models/flux2-klein-4b/q4_k/flux-2-klein-4b-Q4_K_M.gguf"),
+        assert_eq!(
+            files[0].dest,
+            workspace.join(local).join(file).display().to_string(),
             "{}",
             files[0].dest
         );
-        assert!(
-            files[0].url.contains("flux-2-klein-4b-Q4_K_M.gguf"),
-            "{}",
-            files[0].url
-        );
+        assert!(files[0].url.contains(file), "{}", files[0].url);
         let err = plan_version(
-            &json!({
-                "local_path": "models/flux2-klein-4b/bf16",
-                "graph_pack": "flux2-chain"
-            }),
+            &json!({ "graph_pack": "flux2-chain" }),
             &mut |_| panic!("listed"),
             &|path| PathBuf::from(path.to_string()),
         )
