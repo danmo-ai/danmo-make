@@ -72,6 +72,10 @@ pub fn image_create(
                 width,
                 height,
                 request.guidance.unwrap_or(1.0),
+                request.seed,
+                request.scheduler.as_deref(),
+                request.scheduler_shift,
+                request.use_empirical_mu,
                 on_progress,
             )?
             else {

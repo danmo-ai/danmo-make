@@ -54,6 +54,9 @@ pub struct ImageGenerationRequest {
     pub guidance: Option<f32>,
     pub seed: Option<i64>,
     pub scheduler: Option<String>,
+    pub scheduler_shift: Option<f32>,
+    #[serde(default)]
+    pub use_empirical_mu: bool,
     #[serde(default = "default_priority")]
     pub priority: String,
 }

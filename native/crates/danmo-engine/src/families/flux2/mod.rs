@@ -9,6 +9,7 @@ pub use text::{write_chain_bundle, write_qwen3_bundle};
 pub use transformer::Flux2Denoise;
 pub use weights::{weight_layout, Flux2Config};
 
+use crate::common::ops::normal_latent;
 use crate::runtime::{preview_conv, GgmlContext, TYPE_F32, TYPE_Q8_0};
 use crate::weights::{
     assert_gguf_bundle, matmul_type, quantize_q8_0, type_block, write_f32_tensors,
@@ -25,8 +26,18 @@ pub fn execute(
     width: u32,
     height: u32,
     guidance: f32,
+    seed: Option<i64>,
+    scheduler: Option<&str>,
     on_progress: impl FnMut(u32, u32),
 ) -> Result<crate::families::DitImageRun, WeightError> {
+    match scheduler.unwrap_or("flow_match_euler_discrete") {
+        "flow_match_euler" | "flow_match_euler_discrete" => {}
+        other => {
+            return Err(WeightError::NotBuilt(format!(
+                "scheduler {other} is not built"
+            )))
+        }
+    }
     let files = assert_gguf_bundle(bundle)?;
     let loaded = GgufWeights::open_parts(&files.transformer)?;
     let config = config_from_weights(&loaded)?;
@@ -72,7 +83,10 @@ pub fn execute(
     for (name, raw) in &stored {
         denoise.load_bytes(name, raw)?;
     }
-    let latent = vec![0.1f32; denoise.latent_len()];
+    let latent = match seed {
+        Some(seed) => normal_latent(seed, denoise.latent_len()),
+        None => vec![0.1f32; denoise.latent_len()],
+    };
     let latents = denoise.denoise(
         latent,
         &txt,

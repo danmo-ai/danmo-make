@@ -6,7 +6,6 @@ use super::geom::{
 };
 use super::graph::build_dit;
 use super::weights::ZImageConfig;
-use crate::common::ops::linear_sigmas;
 use crate::runtime::{GgmlContext, ReusedGraph, RuntimeError};
 use std::collections::HashMap;
 
@@ -57,21 +56,18 @@ impl ZImageDenoise {
         &mut self,
         latent: Vec<f32>,
         txt: &[f32],
-        steps: u32,
-        width: u32,
-        height: u32,
+        sigmas: &[f32],
         guidance: f32,
         mut on_step: impl FnMut(u32, u32),
     ) -> Result<Vec<f32>, RuntimeError> {
         self.bind(latent.as_slice(), txt)?;
         let mut euler = zimage_euler(&self.graph, self.grid, self.config.in_channels)?;
-        let sigmas = linear_sigmas(steps, width, height, self.config.requires_sigma_shift);
-        let total = steps.max(1);
-        if sigmas.len() != total as usize + 1 {
+        if sigmas.len() < 2 {
             return Err(RuntimeError::Message(
                 "z-image sigma schedule is shorter than the step count".into(),
             ));
         }
+        let total = (sigmas.len() - 1) as u32;
         // The velocity is the same shape as the latent, so the allocator may
         // reuse that buffer for the graph output. Keep x on the euler graph,
         // which the forward does not write, and copy it back before each pass.

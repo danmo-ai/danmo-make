@@ -31,6 +31,8 @@ mod tests {
             guidance: None,
             seed: Some(1),
             scheduler: None,
+            scheduler_shift: None,
+            use_empirical_mu: false,
             priority: "normal".into(),
         }
     }

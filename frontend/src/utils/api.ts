@@ -54,6 +54,18 @@ const client = axios.create({
   },
 });
 
+client.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const data = error?.response?.data;
+    const detail = data && typeof data === 'object' ? data.detail : data;
+    if (typeof detail === 'string' && detail.trim()) {
+      error.message = detail.trim();
+    }
+    return Promise.reject(error);
+  },
+);
+
 client.interceptors.request.use((config) => {
   const lang = getItem(DQ_STORAGE.LANG) || 'zh';
   config.headers = config.headers ?? {};

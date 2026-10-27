@@ -13,6 +13,7 @@ mod reference;
 mod transformer;
 mod weights;
 
+use crate::common::ops::{flow_match_shift_sigmas, linear_sigmas, normal_latent};
 use crate::runtime::{preview_conv, GgmlContext, TYPE_F32};
 use crate::weights::{assert_gguf_bundle, matmul_type, type_block, GgufWeights, WeightError};
 #[cfg(test)]
@@ -33,6 +34,10 @@ pub fn execute(
     width: u32,
     height: u32,
     guidance: f32,
+    seed: Option<i64>,
+    scheduler: Option<&str>,
+    scheduler_shift: Option<f32>,
+    empirical_mu: bool,
     on_progress: impl FnMut(u32, u32),
 ) -> Result<crate::families::DitImageRun, WeightError> {
     let _ = prompt;
@@ -54,8 +59,20 @@ pub fn execute(
     for (name, raw) in &stored {
         denoise.load_bytes(name, raw)?;
     }
-    let latent = vec![0.1f32; denoise.latent_len()];
-    let latents = denoise.denoise(latent, &txt, steps, width, height, guidance, on_progress)?;
+    let latent = match seed {
+        Some(seed) => normal_latent(seed, denoise.latent_len()),
+        None => vec![0.1f32; denoise.latent_len()],
+    };
+    let sigmas = schedule(
+        config,
+        steps,
+        width,
+        height,
+        scheduler,
+        scheduler_shift,
+        empirical_mu,
+    )?;
+    let latents = denoise.denoise(latent, &txt, &sigmas, guidance, on_progress)?;
     let png = decode_preview(
         ctx,
         &files.vae,
@@ -71,6 +88,52 @@ pub fn execute(
         graph_computes: denoise.graph_computes(),
         preview_png: png,
     })
+}
+
+fn schedule(
+    config: weights::ZImageConfig,
+    steps: u32,
+    width: u32,
+    height: u32,
+    scheduler: Option<&str>,
+    scheduler_shift: Option<f32>,
+    empirical_mu: bool,
+) -> Result<Vec<f32>, WeightError> {
+    match scheduler.unwrap_or("linear") {
+        "linear" => {
+            if empirical_mu {
+                return Err(WeightError::NotBuilt(
+                    "empirical mu schedule is not built".into(),
+                ));
+            }
+            Ok(linear_sigmas(
+                steps,
+                width,
+                height,
+                config.requires_sigma_shift,
+            ))
+        }
+        "flow_match_euler" => {
+            if empirical_mu {
+                return Err(WeightError::NotBuilt(
+                    "empirical mu schedule is not built".into(),
+                ));
+            }
+            let shift = scheduler_shift.unwrap_or(6.0);
+            if !shift.is_finite() || shift <= 0.0 {
+                return Err(WeightError::NotBuilt(format!(
+                    "scheduler shift {shift} is not a positive finite value"
+                )));
+            }
+            Ok(flow_match_shift_sigmas(steps, shift))
+        }
+        "flow_match_euler_discrete" => Err(WeightError::NotBuilt(
+            "empirical mu schedule is not built".into(),
+        )),
+        other => Err(WeightError::NotBuilt(format!(
+            "scheduler {other} is not built"
+        ))),
+    }
 }
 
 fn text_tokens(paths: &[std::path::PathBuf], cap_dim: i64) -> Result<Vec<f32>, WeightError> {
@@ -287,6 +350,30 @@ mod tests {
     use danmo_contracts::ImageGenerationRequest;
 
     #[test]
+    fn same_seed_repeats_and_flow_match_runs() {
+        let dir = scratch("z-image-seed");
+        write_smoke_bundle(&dir).unwrap();
+        let mut request = request();
+        request.guidance = Some(0.0);
+        request.seed = Some(7);
+        request.scheduler = Some("flow_match_euler".into());
+        request.scheduler_shift = Some(6.0);
+        let first = image_create(&request, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        let second = image_create(&request, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert_eq!(first.latents, second.latents);
+        request.seed = Some(8);
+        let other = image_create(&request, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert_ne!(first.latents, other.latents);
+        request.scheduler = Some("unipc".into());
+        let err = match image_create(&request, "z_image", &dir, BackendKind::Cpu, |_, _| ()) {
+            Err(err) => err,
+            Ok(_) => panic!("unknown scheduler was accepted"),
+        };
+        assert!(err.to_string().contains("not built"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn smoke_create_is_one_forward_and_a_png() {
         let dir = scratch("z-image-create");
         write_smoke_bundle(&dir).unwrap();
@@ -346,6 +433,8 @@ mod tests {
             guidance: Some(0.0),
             seed: Some(1),
             scheduler: None,
+            scheduler_shift: None,
+            use_empirical_mu: false,
             priority: "normal".into(),
         }
     }

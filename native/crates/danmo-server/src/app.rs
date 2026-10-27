@@ -1,5 +1,5 @@
 use crate::download::{self, Downloads};
-use crate::product;
+use crate::product::{self, fail, ApiError};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, Sse};
@@ -7,8 +7,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use danmo_catalog::Catalog;
 use danmo_contracts::{
-    AudioGenerationRequest, ImageEditRequest, ImageGenerationRequest, ImageUpscaleRequest,
-    TaskAccepted, TaskKind, VideoGenerationRequest,
+    AudioGenerationRequest, ImageGenerationRequest, TaskAccepted, TaskKind, VideoGenerationRequest,
 };
 use danmo_engine::{audio_create, image_create, upscale, video_create, BackendKind};
 use danmo_schedule::Scheduler;
@@ -150,23 +149,39 @@ fn run_task(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let out = image_create(&request, family, &bundle, state.backend, |step, steps| {
-                let _ = state.scheduler.progress(
-                    &task_id,
-                    step as f64 / steps as f64,
-                    &format!("step {step}/{steps}"),
-                );
-            })
-            .map_err(|e| e.to_string())?;
-            let asset_ids = persist_preview(state, &task_id, model, params, &out)?;
+            let count = request.n.max(1);
+            let mut asset_ids = Vec::new();
+            let mut last = None;
+            let mut computes = 0u32;
+            for index in 0..count {
+                let mut one = request.clone();
+                if count > 1 {
+                    one.seed = Some(request.seed.unwrap_or(0) + index as i64);
+                }
+                let out = image_create(&one, family, &bundle, state.backend, |step, steps| {
+                    let done = index as f64 * steps as f64 + step as f64;
+                    let all = count as f64 * steps as f64;
+                    let _ = state.scheduler.progress(
+                        &task_id,
+                        done / all,
+                        &format!("step {step}/{steps}"),
+                    );
+                })
+                .map_err(|e| e.to_string())?;
+                computes += out.graph_computes;
+                asset_ids.extend(persist_preview(state, &task_id, model, params, &out)?);
+                last = Some(out);
+            }
+            let out = last.ok_or_else(|| "n must be at least 1".to_string())?;
             Ok(json!({
                 "family": out.family,
                 "steps": out.steps,
-                "graph_computes": out.graph_computes,
+                "graph_computes": computes,
                 "width": out.width,
                 "height": out.height,
                 "latent_len": out.latents.len(),
                 "asset_ids": asset_ids,
+                "primary_asset_id": asset_ids.first(),
             }))
         }
         "image.edit" | "image.upscale" => {
@@ -245,6 +260,19 @@ fn persist_preview(
     Ok(vec![id])
 }
 
+fn parse_step_message(message: &str) -> (u32, u32) {
+    let Some(rest) = message.strip_prefix("step ") else {
+        return (0, 0);
+    };
+    let Some((step, total)) = rest.split_once('/') else {
+        return (0, 0);
+    };
+    (
+        step.trim().parse().unwrap_or(0),
+        total.trim().parse().unwrap_or(0),
+    )
+}
+
 fn png_size(png: &[u8]) -> (i64, i64) {
     if png.len() < 24 {
         return (0, 0);
@@ -304,6 +332,7 @@ async fn stream_task(
 ) -> Sse<ReceiverStream<Result<Event, Infallible>>> {
     let (tx, rx) = tokio::sync::mpsc::channel(16);
     tokio::spawn(async move {
+        let mut last_log_id = 0i64;
         loop {
             let row = state.scheduler.get(&id).ok().flatten();
             let Some(row) = row else {
@@ -312,9 +341,31 @@ async fn stream_task(
                     .await;
                 break;
             };
+            let logs = state.scheduler.logs(&id, 0, 50).unwrap_or_default();
+            if let Some(log) = logs.last() {
+                if log.id != last_log_id {
+                    last_log_id = log.id;
+                    let payload = json!({
+                        "id": log.id,
+                        "message": log.message,
+                        "level": log.level,
+                        "time": log.time,
+                    });
+                    let _ = tx
+                        .send(Ok(Event::default().event("log").data(payload.to_string())))
+                        .await;
+                }
+            }
+            let message = logs
+                .last()
+                .map(|log| log.message.clone())
+                .unwrap_or_else(|| "denoise".into());
+            let (step, total) = parse_step_message(&message);
             let progress = json!({
                 "progress": row.progress,
                 "message": "denoise",
+                "step": step,
+                "total": total,
             });
             let _ = tx
                 .send(Ok(Event::default()
@@ -481,6 +532,79 @@ mod tests {
         let listed: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(listed["items"][0]["id"], ids[0]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn image_create_rejects_unbuilt_inference_options() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-reject-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = router(&dir.join("studio.db"), &factory_registry());
+        let (model, _) = published_weight("z-image", "q4_k");
+        let mut body = vue_generate_body(&model, "a cat");
+        body["teacache_mode"] = json!("auto");
+        body["lemica_mode"] = json!("none");
+        body["adapters"] = json!([{ "id": "portrait", "weight": 0.8 }]);
+        let refused = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(refused.0, StatusCode::NOT_IMPLEMENTED);
+        assert!(
+            refused.1["detail"]
+                .as_str()
+                .unwrap()
+                .contains("lora inference"),
+            "{}",
+            refused.1
+        );
+        body["adapters"] = json!([]);
+        body["negative_prompt"] = json!("blurry");
+        let refused = post_json(&app, "/api/images/generations", &body).await;
+        assert!(
+            refused.1["detail"]
+                .as_str()
+                .unwrap()
+                .contains("text encoder"),
+            "{}",
+            refused.1
+        );
+        body["negative_prompt"] = json!("");
+        body["scheduler"] = json!("flow_match_euler");
+        body["scheduler_shift"] = json!(6);
+        let accepted = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(accepted.0, StatusCode::ACCEPTED, "{}", accepted.1);
+        let edit = post_json(&app, "/api/images/edits", &body).await;
+        assert_eq!(edit.0, StatusCode::NOT_IMPLEMENTED);
+        assert!(
+            edit.1["detail"].as_str().unwrap().contains("edit graph"),
+            "{}",
+            edit.1
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    async fn post_json(app: &Router, uri: &str, body: &Value) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload = serde_json::from_slice(&bytes)
+            .unwrap_or(json!({ "raw": String::from_utf8_lossy(&bytes).to_string() }));
+        (status, payload)
     }
 
     #[tokio::test]
@@ -959,44 +1083,167 @@ fn stored_model_id(requested: &str, bare: &str) -> String {
 
 async fn image_generations(
     State(state): State<AppState>,
-    Json(body): Json<ImageGenerationRequest>,
-) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<TaskAccepted>), ApiError> {
+    let request = prepare_image_request(&state, body)?;
     let accepted = accept(
         &state,
         TaskKind::ImageGeneration,
-        &body.model,
-        &body,
-        &body.priority,
-    )?;
+        &request.model,
+        &request,
+        &request.priority,
+    )
+    .map_err(|(status, detail)| fail(status, detail))?;
     Ok((StatusCode::ACCEPTED, accepted))
 }
 
 async fn image_edits(
-    State(state): State<AppState>,
-    Json(body): Json<ImageEditRequest>,
-) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
-    let accepted = accept(
-        &state,
-        TaskKind::ImageEdit,
-        &body.model,
-        &body,
-        &body.priority,
-    )?;
-    Ok((StatusCode::ACCEPTED, accepted))
+    State(_state): State<AppState>,
+    Json(_body): Json<Value>,
+) -> Result<(StatusCode, Json<TaskAccepted>), ApiError> {
+    Err(fail(StatusCode::NOT_IMPLEMENTED, "edit graph is not built"))
 }
 
 async fn image_upscales(
-    State(state): State<AppState>,
-    Json(body): Json<ImageUpscaleRequest>,
-) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
-    let accepted = accept(
-        &state,
-        TaskKind::ImageUpscale,
-        &body.model,
-        &body,
-        &body.priority,
-    )?;
-    Ok((StatusCode::ACCEPTED, accepted))
+    State(_state): State<AppState>,
+    Json(_body): Json<Value>,
+) -> Result<(StatusCode, Json<TaskAccepted>), ApiError> {
+    Err(fail(
+        StatusCode::NOT_IMPLEMENTED,
+        "upscale graph is not built",
+    ))
+}
+
+fn prepare_image_request(
+    state: &AppState,
+    mut body: Value,
+) -> Result<ImageGenerationRequest, ApiError> {
+    let model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if model.is_empty() {
+        return Err(fail(StatusCode::BAD_REQUEST, "model is required"));
+    }
+    let catalog = Catalog::open(&state.registry)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
+    let entry = catalog
+        .model(&model)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
+    reject_unbuilt_inference(&entry.family, &body)?;
+    fill_registry_defaults(&catalog, &entry.id, &mut body);
+    let request: ImageGenerationRequest = serde_json::from_value(body)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
+    if request.n == 0 {
+        return Err(fail(StatusCode::BAD_REQUEST, "n must be at least 1"));
+    }
+    Ok(request)
+}
+
+fn reject_unbuilt_inference(family: &str, body: &Value) -> Result<(), ApiError> {
+    if text_field(body, "negative_prompt").is_some_and(|text| !text.is_empty()) {
+        return Err(fail(
+            StatusCode::NOT_IMPLEMENTED,
+            "negative prompt needs the text encoder graph",
+        ));
+    }
+    if body
+        .get("adapters")
+        .and_then(|v| v.as_array())
+        .is_some_and(|rows| !rows.is_empty())
+    {
+        return Err(fail(
+            StatusCode::NOT_IMPLEMENTED,
+            "lora inference graph is not built",
+        ));
+    }
+    if body
+        .get("structural_guide")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Err(fail(
+            StatusCode::NOT_IMPLEMENTED,
+            "controlnet graph is not built",
+        ));
+    }
+    if body
+        .get("latent_refine")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Err(fail(
+            StatusCode::NOT_IMPLEMENTED,
+            "latent refine graph is not built",
+        ));
+    }
+    let teacache = text_field(body, "teacache_mode").unwrap_or("");
+    if !matches!(teacache, "" | "none" | "auto") {
+        return Err(fail(
+            StatusCode::NOT_IMPLEMENTED,
+            "teacache graph is not built",
+        ));
+    }
+    let lemica = text_field(body, "lemica_mode").unwrap_or("");
+    if !matches!(lemica, "" | "none" | "off") {
+        return Err(fail(
+            StatusCode::NOT_IMPLEMENTED,
+            "lemica graph is not built",
+        ));
+    }
+    if family == "z_image" && body.get("use_empirical_mu").and_then(|v| v.as_bool()) == Some(true) {
+        return Err(fail(
+            StatusCode::NOT_IMPLEMENTED,
+            "empirical mu schedule is not built",
+        ));
+    }
+    if let Some(scheduler) = text_field(body, "scheduler") {
+        if !scheduler_built(family, scheduler) {
+            return Err(fail(
+                StatusCode::NOT_IMPLEMENTED,
+                format!("scheduler {scheduler} is not built"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn scheduler_built(family: &str, scheduler: &str) -> bool {
+    match family {
+        "z_image" => matches!(scheduler, "linear" | "flow_match_euler"),
+        "flux2" => matches!(scheduler, "flow_match_euler" | "flow_match_euler_discrete"),
+        _ => scheduler.is_empty(),
+    }
+}
+
+fn fill_registry_defaults(catalog: &Catalog, id: &str, body: &mut Value) {
+    let Some(params) = catalog
+        .root()
+        .pointer(&format!("/models/{id}/ui/parameters"))
+        .and_then(|v| v.as_object())
+    else {
+        return;
+    };
+    let Some(obj) = body.as_object_mut() else {
+        return;
+    };
+    for key in ["steps", "guidance", "scheduler", "scheduler_shift"] {
+        let present = obj.get(key).is_some_and(|value| !value.is_null());
+        if present {
+            continue;
+        }
+        let Some(spec) = params.get(key) else {
+            continue;
+        };
+        let default = spec.get("default").unwrap_or(spec);
+        if default.is_null() || default.is_object() || default.is_array() {
+            continue;
+        }
+        obj.insert((*key).to_string(), default.clone());
+    }
+}
+
+fn text_field<'a>(body: &'a Value, key: &str) -> Option<&'a str> {
+    body.get(key).and_then(|v| v.as_str())
 }
 
 async fn video_generations(

@@ -828,13 +828,13 @@ mod tests {
             let raw = loaded.raw_exact(&name, &[ne0, ne1]).unwrap();
             session.load_bytes(&name, &raw).unwrap();
         }
+        let sigmas = linear_sigmas(1, 64, 64, true);
         let stepped = session
-            .denoise(latent.clone(), &txt, 1, 64, 64, 0.0, |_, _| ())
+            .denoise(latent.clone(), &txt, &sigmas, 0.0, |_, _| ())
             .unwrap();
         assert_eq!(session.graph_computes(), 1);
         assert_eq!(session.host_readbacks(), 0);
         assert_eq!(session.steps_run(), 1);
-        let sigmas = linear_sigmas(1, 64, 64, true);
         let dt = sigmas[1] - sigmas[0];
         let euler: Vec<f32> = latent
             .iter()
