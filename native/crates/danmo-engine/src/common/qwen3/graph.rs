@@ -17,6 +17,7 @@ pub(crate) struct QwenTower {
 pub(crate) fn build_qwen3(
     b: &mut GraphBuilder,
     tower: QwenTower,
+    prefix: &str,
     selected: &[i64],
     seq: i64,
     layout: &[(String, i64, i64)],
@@ -37,11 +38,14 @@ pub(crate) fn build_qwen3(
     let token_ids = nn(b.i32_1d("token_ids", seq, true))?;
     let pos = nn(b.i32_1d("positions", seq, true))?;
     let mask = nn(b.f32_2d("attn_mask", seq, seq, true))?;
-    let mut hidden = nn(b.get_rows(wt(&weights, "embed_tokens.weight")?, token_ids))?;
+    let mut hidden = nn(b.get_rows(
+        wt(&weights, &format!("{prefix}embed_tokens.weight"))?,
+        token_ids,
+    ))?;
     let last = *selected.iter().max().unwrap_or(&0);
     let mut captured = Vec::new();
     for layer in 0..last {
-        hidden = qwen_layer(b, &weights, &tower, layer, hidden, pos, mask, seq)?;
+        hidden = qwen_layer(b, &weights, &tower, prefix, layer, hidden, pos, mask, seq)?;
         let index = layer + 1;
         if selected.contains(&index) {
             captured.push(hidden);
@@ -60,13 +64,14 @@ fn qwen_layer(
     b: &GraphBuilder,
     weights: &HashMap<String, Tensor>,
     tower: &QwenTower,
+    prefix: &str,
     layer: i64,
     hidden: Tensor,
     pos: Tensor,
     mask: Tensor,
     seq: i64,
 ) -> Result<Tensor, RuntimeError> {
-    let p = format!("layers.{layer}");
+    let p = format!("{prefix}layers.{layer}");
     let normed = qwen_rms(
         b,
         hidden,

@@ -37,6 +37,7 @@ impl Qwen3Config {
 pub struct Loaded {
     weights: GgufWeights,
     config: Qwen3Config,
+    prefix: String,
 }
 
 impl Loaded {
@@ -47,8 +48,13 @@ impl Loaded {
                 "text encoder tensor names are blk.*; this graph reads layers.*".into(),
             ));
         }
-        let config = infer_config(&weights)?;
-        Ok(Self { weights, config })
+        let prefix = file_prefix(&weights)?;
+        let config = infer_config(&weights, &prefix)?;
+        Ok(Self {
+            weights,
+            config,
+            prefix,
+        })
     }
 
     pub fn config(&self) -> Qwen3Config {
@@ -80,7 +86,7 @@ impl Loaded {
             }
         }
         let ids = tokenize(tokenizer_json, prompt, self.config.vocab, thinking)?;
-        let embed = run_tower(ctx, &self.weights, self.config, layers, &ids)?;
+        let embed = run_tower(ctx, &self.weights, self.config, &self.prefix, layers, &ids)?;
         let seq = ids.len() as i64;
         if embed.len() as i64 != width * seq {
             return Err(WeightError::Shape {
@@ -97,22 +103,34 @@ fn run_tower(
     ctx: &GgmlContext,
     weights: &GgufWeights,
     config: Qwen3Config,
+    prefix: &str,
     selected: &[i64],
     ids: &[i32],
 ) -> Result<Vec<f32>, WeightError> {
     let seq = ids.len() as i64;
     let last = *selected.iter().max().unwrap_or(&0);
-    let layout = layout_prefix(config, last);
+    let layout = layout_prefix(config, last, prefix);
     let mut types = HashMap::new();
-    for (name, ne0, _) in &layout {
-        let ggml_type = weights.ggml_type_of(name)?;
-        check_stored_type(name, ggml_type, *ne0)?;
-        types.insert(name.clone(), ggml_type);
-    }
-    let mut graph = Qwen3Encode::build(ctx, config, selected, seq, &types)?;
+    let mut stored = Vec::with_capacity(layout.len());
     for (name, ne0, ne1) in &layout {
-        let raw = weights.raw_exact(name, &[*ne0, *ne1])?;
-        graph.load_bytes(name, &raw)?;
+        let (ggml_type, raw) = if is_rms(name) {
+            let values = weights.f32_widened(name, &[*ne0, *ne1])?;
+            let mut raw = Vec::with_capacity(values.len() * 4);
+            for value in values {
+                raw.extend_from_slice(&value.to_le_bytes());
+            }
+            (TYPE_F32, raw)
+        } else {
+            let ggml_type = weights.ggml_type_of(name)?;
+            check_stored_type(name, ggml_type, *ne0)?;
+            (ggml_type, weights.raw_exact(name, &[*ne0, *ne1])?)
+        };
+        types.insert(name.clone(), ggml_type);
+        stored.push((name.clone(), raw));
+    }
+    let mut graph = Qwen3Encode::build(ctx, config, prefix, selected, seq, &types)?;
+    for (name, raw) in &stored {
+        graph.load_bytes(name, raw)?;
     }
     Ok(graph.compute(ids)?)
 }
@@ -126,6 +144,7 @@ impl Qwen3Encode {
     fn build(
         ctx: &GgmlContext,
         config: Qwen3Config,
+        prefix: &str,
         selected: &[i64],
         seq: i64,
         types: &HashMap<String, u32>,
@@ -134,7 +153,7 @@ impl Qwen3Encode {
             return Err(RuntimeError::Message("text sequence is empty".into()));
         }
         let last = *selected.iter().max().unwrap_or(&0);
-        let layout = layout_prefix(config, last);
+        let layout = layout_prefix(config, last, prefix);
         let mut b = ctx.builder(64 * 1024 * 1024)?;
         let out = build_qwen3(
             &mut b,
@@ -145,6 +164,7 @@ impl Qwen3Encode {
                 head_dim: config.head_dim,
                 rope_theta: config.rope_theta,
             },
+            prefix,
             selected,
             seq,
             &layout,
@@ -182,18 +202,49 @@ impl Qwen3Encode {
     }
 }
 
-fn infer_config(weights: &GgufWeights) -> Result<Qwen3Config, WeightError> {
-    let embed = weights.shape("embed_tokens.weight")?;
-    let q = weights.shape("layers.0.self_attn.q_proj.weight")?;
-    let k = weights.shape("layers.0.self_attn.k_proj.weight")?;
-    let norm = weights.shape("layers.0.self_attn.q_norm.weight")?;
-    let gate = weights.shape("layers.0.mlp.gate_proj.weight")?;
+pub(crate) fn tower_present(weights: &GgufWeights) -> bool {
+    weights.contains("layers.0.self_attn.q_proj.weight")
+        || weights.contains("model.layers.0.self_attn.q_proj.weight")
+}
+
+fn file_prefix(weights: &GgufWeights) -> Result<String, WeightError> {
+    let prefixed = weights.contains("model.embed_tokens.weight");
+    let bare = weights.contains("embed_tokens.weight");
+    match (prefixed, bare) {
+        (true, false) => Ok("model.".into()),
+        (false, true) => Ok(String::new()),
+        (true, true) => Err(WeightError::Duplicate {
+            name: "embed_tokens.weight".into(),
+            path: "model.embed_tokens.weight and embed_tokens.weight".into(),
+        }),
+        (false, false) => Err(WeightError::MissingTensor {
+            path: "text_encoder".into(),
+            name: "embed_tokens.weight".into(),
+        }),
+    }
+}
+
+fn named(prefix: &str, rest: &str) -> String {
+    format!("{prefix}{rest}")
+}
+
+fn infer_config(weights: &GgufWeights, prefix: &str) -> Result<Qwen3Config, WeightError> {
+    let embed_name = named(prefix, "embed_tokens.weight");
+    let q_name = named(prefix, "layers.0.self_attn.q_proj.weight");
+    let k_name = named(prefix, "layers.0.self_attn.k_proj.weight");
+    let norm_name = named(prefix, "layers.0.self_attn.q_norm.weight");
+    let gate_name = named(prefix, "layers.0.mlp.gate_proj.weight");
+    let embed = weights.shape(&embed_name)?;
+    let q = weights.shape(&q_name)?;
+    let k = weights.shape(&k_name)?;
+    let norm = weights.shape(&norm_name)?;
+    let gate = weights.shape(&gate_name)?;
     let hidden = embed[0];
     let vocab = embed[1];
     let head = norm[0];
     if hidden < 1 || vocab < 1 || head < 1 || q[0] != hidden || k[0] != hidden {
         return Err(WeightError::Shape {
-            name: "embed_tokens.weight".into(),
+            name: embed_name,
             expected: vec![hidden, vocab],
             got: vec![q[0], q[1], k[0], k[1], head],
         });
@@ -210,11 +261,11 @@ fn infer_config(weights: &GgufWeights) -> Result<Qwen3Config, WeightError> {
             "text encoder heads {heads} kv {kv_heads} head {head} do not match hidden {hidden}"
         )));
     }
-    let layers = count_layers(weights);
+    let layers = count_layers(weights, prefix);
     if layers < 1 {
         return Err(WeightError::MissingTensor {
             path: "text_encoder".into(),
-            name: "layers.0.self_attn.q_proj.weight".into(),
+            name: q_name,
         });
     }
     Ok(Qwen3Config {
@@ -229,10 +280,10 @@ fn infer_config(weights: &GgufWeights) -> Result<Qwen3Config, WeightError> {
     })
 }
 
-fn count_layers(weights: &GgufWeights) -> i64 {
+fn count_layers(weights: &GgufWeights, prefix: &str) -> i64 {
     let mut n = 0i64;
     loop {
-        let name = format!("layers.{n}.self_attn.q_proj.weight");
+        let name = named(prefix, &format!("layers.{n}.self_attn.q_proj.weight"));
         if !weights.contains(&name) {
             break;
         }
@@ -242,17 +293,21 @@ fn count_layers(weights: &GgufWeights) -> i64 {
 }
 
 pub fn encoder_layout(config: Qwen3Config) -> Vec<(String, i64, i64)> {
-    layout_prefix(config, config.layers)
+    layout_prefix(config, config.layers, "")
 }
 
-fn layout_prefix(config: Qwen3Config, layers: i64) -> Vec<(String, i64, i64)> {
+fn layout_prefix(config: Qwen3Config, layers: i64, prefix: &str) -> Vec<(String, i64, i64)> {
     let mut out = Vec::new();
     let mut push = |name: String, ne0: i64, ne1: i64| out.push((name, ne0, ne1));
-    push("embed_tokens.weight".into(), config.hidden, config.vocab);
+    push(
+        named(prefix, "embed_tokens.weight"),
+        config.hidden,
+        config.vocab,
+    );
     let q_out = config.heads * config.head_dim;
     let kv_out = config.kv_heads * config.head_dim;
     for i in 0..layers {
-        let p = format!("layers.{i}");
+        let p = named(prefix, &format!("layers.{i}"));
         push(format!("{p}.input_layernorm.weight"), config.hidden, 1);
         push(format!("{p}.self_attn.q_proj.weight"), config.hidden, q_out);
         push(

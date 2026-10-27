@@ -15,7 +15,7 @@ Operational rules: [`AGENTS.md`](../AGENTS.md).
 5. **Shared code does not know family ids.** It reads weight-file tensor names and the parameters the caller passes. `layers.*` and `decoder.*` are file formats, not family names.
 6. **Keep shared code small.** A real difference is a neutral parameter (a layer list, a `bool`, a `VaeSpec`). When the difference needs a pile of callbacks or mode switches, each family implements that piece itself.
 7. **Phases stay in order.** resolve → load → encode → schedule → infer → decode → persist. Families do not reorder them.
-8. **No key remap.** A missing GGUF tensor fails the task and asks for a re-download. Safetensors and MLX packs are not loaded.
+8. **No key remap.** The name in the file is the graph parameter name. The DiT is GGUF. The text encoder and VAE are GGUF or the published safetensors. A missing tensor fails the task. MLX packs are not loaded. Safetensors dimensions are the PyTorch order reversed into ggml; the bytes are not moved.
 
 ---
 
@@ -118,8 +118,8 @@ One graph is reserved and replayed. Steps replace inputs. The host reads the lat
 
 ## 7. Weights and backends
 
-A bundle directory holds `transformer.gguf`, `text_encoder.gguf`, `vae.gguf`, `tokenizer.json`, and `bundle.manifest.json`. Shards (`role-00001-of-000NN.gguf`) are mmap'd per file. Duplicate tensor names across shards fail. FLUX.2 Klein 4B and Z-Image version installs also download the published text encoder, VAE, and tokenizer into that version directory. When that install lists `components`, the downloader writes `bundle.manifest.json` after the last file lands: `quant` is the version key, and the three role paths are the planned weight files. The loader still reads GGUF role files.
+A bundle directory holds a GGUF DiT, a GGUF or safetensors text encoder, a GGUF or safetensors VAE, `tokenizer.json`, and `bundle.manifest.json`. Shards are mmap'd per file. Duplicate tensor names across shards fail. FLUX.2 Klein 4B and Z-Image version installs download the published text encoder, VAE, and tokenizer into that version directory. When that install lists `components`, the downloader writes `bundle.manifest.json` after the last file lands: `quant` is the version key, `transformer` is the GGUF, and `text_encoder` / `vae` are the planned weight files. The text encoder uses the `model.` prefix when `model.embed_tokens.weight` is in the file. `blk.*` names fail. The Flux2 DiT graph reads the published fused names (`double_blocks.*`, `single_blocks.*`, `img_in`, `txt_in`, `time_in`, `final_layer`). The Z-Image DiT graph reads the published unfused names already in its weight table.
 
-Version keys are `bf16`, `q8_0`, and `q4_k`. Inside a quantized file, norm, bias, and modulation stay F32 or F16. The VAE decoder reads F32.
+Version keys are `bf16`, `q8_0`, and `q4_k`. Inside a quantized DiT, norm scales stay F32. Matmul accepts F32, F16, BF16, Q8_0, and Q4_K. The VAE graph is F32, so BF16 and F16 VAE tensors are widened at the load boundary. A published 4B forward reserves one ggml compute buffer for the whole graph; a machine that cannot hold that buffer fails at reserve.
 
 `DANQING_GGML_BACKEND=cpu|cuda|vulkan|metal`. The cargo feature has to be on. Context init fails when the feature is missing.

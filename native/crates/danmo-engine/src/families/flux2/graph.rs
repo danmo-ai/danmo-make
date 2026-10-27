@@ -1,9 +1,10 @@
 //! Flux2 MM-DiT topology. This file only appends ggml nodes.
 //!
-//! The block order matches `Flux2DiTMLX`: timestep embed, x/context embed,
-//! double-stream joint blocks, single-stream blocks, AdaLN, proj_out.
+//! The block order is timestep embed, image/text embed, double-stream joint
+//! blocks, single-stream blocks, AdaLN, and the final projection.
 //! Attention is per-head. Head dims divisible by 8 use four-axis RoPE
-//! (`[head/4; 4]`, theta 2000) through `ggml_rope_ext`. Tensor names are the GGUF names.
+//! (`[head/4; 4]`, theta 2000) through `ggml_rope_ext`. Tensor names are the
+//! published GGUF names. Q, K, and V are one matrix, split Q then K then V.
 
 use super::weights::{weight_layout, Flux2Config};
 use crate::runtime::{
@@ -104,28 +105,24 @@ fn forward(
     let h = nn(b.silu(linear(
         b,
         temb_freq,
-        wt(weights, "time_guidance_embed.linear_1.weight")?,
+        wt(weights, "time_in.in_layer.weight")?,
     )))?;
-    let temb = nn(linear(
-        b,
-        h,
-        wt(weights, "time_guidance_embed.linear_2.weight")?,
-    ))?;
+    let temb = nn(linear(b, h, wt(weights, "time_in.out_layer.weight")?))?;
     let mod_img = nn(linear(
         b,
         nn(b.silu(temb))?,
-        wt(weights, "double_stream_modulation_img.linear.weight")?,
+        wt(weights, "double_stream_modulation_img.lin.weight")?,
     ))?;
     let mod_txt = nn(linear(
         b,
         nn(b.silu(temb))?,
-        wt(weights, "double_stream_modulation_txt.linear.weight")?,
+        wt(weights, "double_stream_modulation_txt.lin.weight")?,
     ))?;
-    let mut img = nn(linear(b, latent, wt(weights, "x_embedder.weight")?))?;
-    let mut txt = nn(linear(b, txt_in, wt(weights, "context_embedder.weight")?))?;
+    let mut img = nn(linear(b, latent, wt(weights, "img_in.weight")?))?;
+    let mut txt = nn(linear(b, txt_in, wt(weights, "txt_in.weight")?))?;
 
     for i in 0..config.num_layers {
-        let p = format!("transformer_blocks.{i}");
+        let p = format!("double_blocks.{i}");
         (txt, img) = joint_block(
             b, weights, &p, txt, img, mod_txt, mod_img, rope, dim, head, heads, hidden, seq_txt,
             seq_img,
@@ -136,10 +133,10 @@ fn forward(
     let mod_single = nn(linear(
         b,
         nn(b.silu(temb))?,
-        wt(weights, "single_stream_modulation.linear.weight")?,
+        wt(weights, "single_stream_modulation.lin.weight")?,
     ))?;
     for i in 0..config.num_single_layers {
-        let p = format!("single_transformer_blocks.{i}.attn");
+        let p = format!("single_blocks.{i}");
         seq_h = single_block(
             b, weights, &p, seq_h, mod_single, rope, dim, head, heads, hidden, seq,
         )?;
@@ -149,12 +146,13 @@ fn forward(
     let out_mod = nn(linear(
         b,
         nn(b.silu(temb))?,
-        wt(weights, "norm_out.linear.weight")?,
+        wt(weights, "final_layer.adaLN_modulation.1.weight")?,
     ))?;
-    let scale = features(b, out_mod, 0, dim, dim * 2, 1)?;
-    let shift = features(b, out_mod, dim, dim, dim * 2, 1)?;
+    // The published tensor stores shift, then scale.
+    let shift = features(b, out_mod, 0, dim, dim * 2, 1)?;
+    let scale = features(b, out_mod, dim, dim, dim * 2, 1)?;
     let normed = scale_shift(b, normed, scale, shift)?;
-    nn(linear(b, normed, wt(weights, "proj_out.weight")?))
+    nn(linear(b, normed, wt(weights, "final_layer.linear.weight")?))
 }
 
 fn joint_block(
@@ -179,72 +177,24 @@ fn joint_block(
         mods(b, mod_txt, dim)?;
     let n_img = scale_shift(b, nn(b.norm(img, LN_EPS))?, scale_msa, shift_msa)?;
     let n_txt = scale_shift(b, nn(b.norm(txt, LN_EPS))?, c_scale_msa, c_shift_msa)?;
-    let q_img = rms_heads(
+    let (q_img, k_img, v_img) = qkv_heads(
         b,
-        nn(linear(
-            b,
-            n_img,
-            wt(weights, &format!("{prefix}.attn.to_q.weight"))?,
-        ))?,
-        wt(weights, &format!("{prefix}.attn.norm_q.weight"))?,
+        n_img,
+        wt(weights, &format!("{prefix}.img_attn.qkv.weight"))?,
+        wt(weights, &format!("{prefix}.img_attn.norm.query_norm.scale"))?,
+        wt(weights, &format!("{prefix}.img_attn.norm.key_norm.scale"))?,
+        dim,
         head,
         heads,
         seq_img,
     )?;
-    let k_img = rms_heads(
+    let (q_txt, k_txt, v_txt) = qkv_heads(
         b,
-        nn(linear(
-            b,
-            n_img,
-            wt(weights, &format!("{prefix}.attn.to_k.weight"))?,
-        ))?,
-        wt(weights, &format!("{prefix}.attn.norm_k.weight"))?,
-        head,
-        heads,
-        seq_img,
-    )?;
-    let v_img = split_heads(
-        b,
-        nn(linear(
-            b,
-            n_img,
-            wt(weights, &format!("{prefix}.attn.to_v.weight"))?,
-        ))?,
-        head,
-        heads,
-        seq_img,
-    )?;
-    let q_txt = rms_heads(
-        b,
-        nn(linear(
-            b,
-            n_txt,
-            wt(weights, &format!("{prefix}.attn.add_q_proj.weight"))?,
-        ))?,
-        wt(weights, &format!("{prefix}.attn.norm_added_q.weight"))?,
-        head,
-        heads,
-        seq_txt,
-    )?;
-    let k_txt = rms_heads(
-        b,
-        nn(linear(
-            b,
-            n_txt,
-            wt(weights, &format!("{prefix}.attn.add_k_proj.weight"))?,
-        ))?,
-        wt(weights, &format!("{prefix}.attn.norm_added_k.weight"))?,
-        head,
-        heads,
-        seq_txt,
-    )?;
-    let v_txt = split_heads(
-        b,
-        nn(linear(
-            b,
-            n_txt,
-            wt(weights, &format!("{prefix}.attn.add_v_proj.weight"))?,
-        ))?,
+        n_txt,
+        wt(weights, &format!("{prefix}.txt_attn.qkv.weight"))?,
+        wt(weights, &format!("{prefix}.txt_attn.norm.query_norm.scale"))?,
+        wt(weights, &format!("{prefix}.txt_attn.norm.key_norm.scale"))?,
+        dim,
         head,
         heads,
         seq_txt,
@@ -262,7 +212,7 @@ fn joint_block(
         nn(linear(
             b,
             txt_tok,
-            wt(weights, &format!("{prefix}.attn.to_add_out.weight"))?,
+            wt(weights, &format!("{prefix}.txt_attn.proj.weight"))?,
         ))?,
     )?;
     let img = gate_add(
@@ -272,7 +222,7 @@ fn joint_block(
         nn(linear(
             b,
             img_tok,
-            wt(weights, &format!("{prefix}.attn.to_out.weight"))?,
+            wt(weights, &format!("{prefix}.img_attn.proj.weight"))?,
         ))?,
     )?;
     let n_img = scale_shift(b, nn(b.norm(img, LN_EPS))?, scale_mlp, shift_mlp)?;
@@ -284,8 +234,8 @@ fn joint_block(
         ffn(
             b,
             n_img,
-            wt(weights, &format!("{prefix}.ff.linear_in.weight"))?,
-            wt(weights, &format!("{prefix}.ff.linear_out.weight"))?,
+            wt(weights, &format!("{prefix}.img_mlp.0.weight"))?,
+            wt(weights, &format!("{prefix}.img_mlp.2.weight"))?,
             hidden,
         )?,
     )?;
@@ -296,8 +246,8 @@ fn joint_block(
         ffn(
             b,
             n_txt,
-            wt(weights, &format!("{prefix}.ff_context.linear_in.weight"))?,
-            wt(weights, &format!("{prefix}.ff_context.linear_out.weight"))?,
+            wt(weights, &format!("{prefix}.txt_mlp.0.weight"))?,
+            wt(weights, &format!("{prefix}.txt_mlp.2.weight"))?,
             hidden,
         )?,
     )?;
@@ -325,14 +275,14 @@ fn single_block(
     let proj = nn(linear(
         b,
         n,
-        wt(weights, &format!("{prefix}.to_qkv_mlp_proj.weight"))?,
+        wt(weights, &format!("{prefix}.linear1.weight"))?,
     ))?;
     let qkv = features(b, proj, 0, dim * 3, total, seq)?;
     let mlp = features(b, proj, dim * 3, hidden * 2, total, seq)?;
     let q = rms_heads(
         b,
         features(b, qkv, 0, dim, dim * 3, seq)?,
-        wt(weights, &format!("{prefix}.norm_q.weight"))?,
+        wt(weights, &format!("{prefix}.norm.query_norm.scale"))?,
         head,
         heads,
         seq,
@@ -340,7 +290,7 @@ fn single_block(
     let k = rms_heads(
         b,
         features(b, qkv, dim, dim, dim * 3, seq)?,
-        wt(weights, &format!("{prefix}.norm_k.weight"))?,
+        wt(weights, &format!("{prefix}.norm.key_norm.scale"))?,
         head,
         heads,
         seq,
@@ -358,7 +308,7 @@ fn single_block(
     let delta = nn(linear(
         b,
         fused,
-        wt(weights, &format!("{prefix}.to_out.weight"))?,
+        wt(weights, &format!("{prefix}.linear2.weight"))?,
     ))?;
     gate_add(b, seq_h, gate, delta)
 }
@@ -416,6 +366,45 @@ fn flux2_cos_sin(
         }
     }
     (cos, sin)
+}
+
+fn qkv_heads(
+    b: &GraphBuilder,
+    x: Tensor,
+    qkv_w: Tensor,
+    q_norm: Tensor,
+    k_norm: Tensor,
+    dim: i64,
+    head: i64,
+    heads: i64,
+    seq: i64,
+) -> Result<(Tensor, Tensor, Tensor), RuntimeError> {
+    let total = dim * 3;
+    let proj = nn(linear(b, x, qkv_w))?;
+    let q = rms_heads(
+        b,
+        features(b, proj, 0, dim, total, seq)?,
+        q_norm,
+        head,
+        heads,
+        seq,
+    )?;
+    let k = rms_heads(
+        b,
+        features(b, proj, dim, dim, total, seq)?,
+        k_norm,
+        head,
+        heads,
+        seq,
+    )?;
+    let v = split_heads(
+        b,
+        features(b, proj, dim * 2, dim, total, seq)?,
+        head,
+        heads,
+        seq,
+    )?;
+    Ok((q, k, v))
 }
 
 fn ffn(

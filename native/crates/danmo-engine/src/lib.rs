@@ -16,6 +16,7 @@ pub use weights::{assert_gguf_bundle, lora_base_name, write_f32_gguf, GgufWeight
 mod tests {
     use super::*;
     use crate::runtime::identity_probe;
+    use crate::weights::{write_safetensors, SafeTensor};
     use danmo_contracts::ImageGenerationRequest;
     use std::path::PathBuf;
 
@@ -102,9 +103,9 @@ mod tests {
         std::fs::write(&stale, b"not-gguf").unwrap();
         let err = match GgufWeights::open(&stale) {
             Err(err) => err,
-            Ok(_) => panic!("safetensors path was accepted"),
+            Ok(_) => panic!("garbage safetensors path was accepted"),
         };
-        assert!(err.to_string().contains("Re-download"), "{err}");
+        assert!(err.to_string().contains("safetensors"), "{err}");
 
         let legacy = dir.join("flux2-klein-4b-mlx-q4");
         write_smoke_bundle(&legacy, 4).unwrap();
@@ -146,7 +147,7 @@ mod tests {
         let grid = (64 / config.vae_scale) as i64;
         let mut model = Flux2Denoise::build(&ctx, config, grid, grid, 1).unwrap();
         let weights = GgufWeights::open(&dir.join("transformer.gguf")).unwrap();
-        assert!(weights.contains("transformer_blocks.0.attn.to_q.weight"));
+        assert!(weights.contains("double_blocks.0.img_attn.qkv.weight"));
         assert!(!weights.contains("velocity.weight"));
         for (name, ne0, ne1) in weight_layout(config) {
             let data = weights.f32_exact(&name, &[ne0, ne1]).unwrap();
@@ -187,12 +188,12 @@ mod tests {
         write_q8_bundle(&dir, config).unwrap();
         let weights = GgufWeights::open(&dir.join("transformer.gguf")).unwrap();
         assert_eq!(
-            weights.ggml_type_of("x_embedder.weight").unwrap(),
+            weights.ggml_type_of("img_in.weight").unwrap(),
             danmo_ggml_sys::ggml_type_GGML_TYPE_Q8_0
         );
         assert_eq!(
             weights
-                .ggml_type_of("transformer_blocks.0.attn.norm_q.weight")
+                .ggml_type_of("double_blocks.0.img_attn.norm.query_norm.scale")
                 .unwrap(),
             danmo_ggml_sys::ggml_type_GGML_TYPE_F32
         );
@@ -201,6 +202,73 @@ mod tests {
         assert!(out.latents.iter().all(|v| v.is_finite()));
         assert_eq!(&out.preview_png[..8], b"\x89PNG\r\n\x1a\n");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn flux2_safetensors_companions_still_decode() {
+        let dir = scratch("flux2-companions");
+        write_smoke_bundle(&dir, 4).unwrap();
+        let text = GgufWeights::open(&dir.join("text_encoder.gguf")).unwrap();
+        let embed = text.f32_exact("token_embed.weight", &[4, 1]).unwrap();
+        let vae = GgufWeights::open(&dir.join("vae.gguf")).unwrap();
+        let conv = vae.f32_exact("decoder.conv.weight", &[4, 3]).unwrap();
+        std::fs::create_dir_all(dir.join("text_encoder")).unwrap();
+        std::fs::create_dir_all(dir.join("vae")).unwrap();
+        write_safetensors(
+            &dir.join("text_encoder/model.safetensors"),
+            &[SafeTensor {
+                name: "token_embed.weight",
+                dtype: "F32",
+                shape: &[1, 4],
+                data: &f32_le(&embed),
+            }],
+        )
+        .unwrap();
+        write_safetensors(
+            &dir.join("vae/diffusion_pytorch_model.safetensors"),
+            &[SafeTensor {
+                name: "decoder.conv.weight",
+                dtype: "F32",
+                shape: &[3, 4],
+                data: &f32_le(&conv),
+            }],
+        )
+        .unwrap();
+        let manifest = r#"{
+  "format": "gguf",
+  "quant": "bf16",
+  "files": {
+    "transformer": "transformer.gguf",
+    "text_encoder": "text_encoder/model.safetensors",
+    "vae": "vae/diffusion_pytorch_model.safetensors"
+  }
+}
+"#;
+        std::fs::write(dir.join("bundle.manifest.json"), manifest).unwrap();
+        let bundle = assert_gguf_bundle(&dir).unwrap();
+        assert!(bundle.text_encoder[0].ends_with("text_encoder/model.safetensors"));
+        let out = image_create(&request(), "flux2", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert_eq!(out.graph_computes, 1);
+        assert_eq!(&out.preview_png[..8], b"\x89PNG\r\n\x1a\n");
+        let dit = manifest.replace(
+            "\"transformer\": \"transformer.gguf\"",
+            "\"transformer\": \"text_encoder/model.safetensors\"",
+        );
+        std::fs::write(dir.join("bundle.manifest.json"), dit).unwrap();
+        let err = match assert_gguf_bundle(&dir) {
+            Err(err) => err,
+            Ok(_) => panic!("a safetensors DiT was accepted"),
+        };
+        assert!(err.to_string().contains("DiT"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn f32_le(values: &[f32]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(values.len() * 4);
+        for value in values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes
     }
 
     #[test]

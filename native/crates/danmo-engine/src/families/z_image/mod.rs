@@ -169,7 +169,7 @@ fn encode_caption(
             "text encoder tensor names are blk.*; this graph reads layers.*".into(),
         ));
     }
-    if text.contains("layers.0.self_attn.q_proj.weight") {
+    if crate::common::qwen3::tower_present(&text) {
         let tokenizer = crate::common::qwen3::load_tokenizer(bundle)?;
         let loaded = crate::common::qwen3::Loaded::open(paths)?;
         let config = loaded.config();

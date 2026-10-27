@@ -10,9 +10,7 @@
 //!
 //! Output samples are the decoder tensor. The caller maps them to pixels.
 
-use crate::runtime::{
-    flash_attend, shape, GgmlContext, GraphBuilder, RuntimeError, Tensor, TYPE_F32,
-};
+use crate::runtime::{flash_attend, shape, GgmlContext, GraphBuilder, RuntimeError, Tensor};
 use crate::weights::{GgufWeights, WeightError};
 use std::collections::{BTreeSet, HashMap};
 
@@ -135,16 +133,9 @@ pub(crate) fn decode_samples(
     let params = parameter_list(spec)?;
     let mut loaded = Vec::with_capacity(params.len());
     for param in &params {
-        let ggml_type = vae.ggml_type_of(&param.name)?;
-        if ggml_type != TYPE_F32 {
-            return Err(WeightError::NotBuilt(format!(
-                "{} is ggml type {ggml_type}. The VAE decoder reads F32",
-                param.name
-            )));
-        }
         loaded.push((
             param.name.clone(),
-            vae.f32_exact(&param.name, &param.shape)?,
+            vae.f32_widened(&param.name, &param.shape)?,
         ));
     }
     let mut builder = ctx.builder(GRAPH_MEM)?;

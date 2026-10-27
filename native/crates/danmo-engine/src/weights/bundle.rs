@@ -1,4 +1,4 @@
-//! Installed bundle: `transformer.gguf`, `text_encoder.gguf`, `vae.gguf`,
+//! Installed bundle: GGUF DiT, GGUF or safetensors text encoder and VAE,
 //! tokenizer, and `bundle.manifest.json`. Old MLX directories are refused.
 
 use super::WeightError;
@@ -118,7 +118,8 @@ fn resolve_role(root: &Path, role: &str, names: &[String]) -> Result<Vec<PathBuf
             });
         }
         let path = root.join(name);
-        if path.extension().and_then(|ext| ext.to_str()) != Some("gguf") {
+        let ext = path.extension().and_then(|ext| ext.to_str());
+        if !role_file(role, ext) {
             return Err(WeightError::NotGguf {
                 path: path.display().to_string(),
             });
@@ -132,6 +133,14 @@ fn resolve_role(root: &Path, role: &str, names: &[String]) -> Result<Vec<PathBuf
         paths.push(path);
     }
     Ok(paths)
+}
+
+fn role_file(role: &str, ext: Option<&str>) -> bool {
+    match (role, ext) {
+        ("transformer", Some("gguf")) => true,
+        ("text_encoder" | "vae", Some("gguf" | "safetensors")) => true,
+        _ => false,
+    }
 }
 
 fn tokenizer_ready(root: &Path) -> bool {

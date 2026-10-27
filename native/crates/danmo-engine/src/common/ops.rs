@@ -152,7 +152,7 @@ pub fn empirical_mu_sigmas(steps: u32, image_seq_len: u32) -> Vec<f32> {
     sigmas
 }
 
-/// Flux2 timestep embedding. `dim` is `time_guidance_embed.linear_1`'s input
+/// Flux2 timestep embedding. `dim` is `time_in.in_layer`'s input
 /// width. Sigmas at or below 1 are scaled by 1000, then cosine occupies the
 /// first half and sine the second (`flip_sin_to_cos`).
 pub fn flux_timestep_embed(sigma: f32, dim: usize) -> Vec<f32> {

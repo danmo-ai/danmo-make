@@ -17,16 +17,17 @@ pub struct Flux2Config {
 }
 
 impl Flux2Config {
-    /// 4B Klein defaults. Head dim 128 uses four RoPE axes of 32.
+    /// 4B Klein counts read from the published GGUF: 5 double blocks, 20 single
+    /// blocks, joint width 7680. A loaded file still counts its own blocks.
     pub fn klein_4b() -> Self {
         Self {
             in_channels: 128,
             inner_dim: 3072,
             num_heads: 24,
             attn_head_dim: 128,
-            num_layers: 8,
-            num_single_layers: 24,
-            joint_attention_dim: 12288,
+            num_layers: 5,
+            num_single_layers: 20,
+            joint_attention_dim: 7680,
             freq_dim: 256,
             mlp_ratio: 3,
             requires_sigma_shift: true,
@@ -70,86 +71,63 @@ impl Flux2Config {
     }
 }
 
-/// `(name, ne0, ne1)` for every DiT weight the graph reads. ne0 is the ggml input axis.
+/// `(name, ne0, ne1)` for every DiT weight the graph reads. Names are the
+/// published GGUF names. ne0 is the ggml input axis. Q, K, and V are one matrix.
 pub fn weight_layout(config: Flux2Config) -> Vec<(String, i64, i64)> {
     let dim = config.inner_dim;
     let head = config.attn_head_dim;
     let hidden = config.hidden();
     let mut out = Vec::new();
     let mut push = |name: String, ne0: i64, ne1: i64| out.push((name, ne0, ne1));
+    push("time_in.in_layer.weight".into(), config.freq_dim, dim);
+    push("time_in.out_layer.weight".into(), dim, dim);
+    push("img_in.weight".into(), config.in_channels, dim);
+    push("txt_in.weight".into(), config.joint_attention_dim, dim);
     push(
-        "time_guidance_embed.linear_1.weight".into(),
-        config.freq_dim,
-        dim,
-    );
-    push("time_guidance_embed.linear_2.weight".into(), dim, dim);
-    push("x_embedder.weight".into(), config.in_channels, dim);
-    push(
-        "context_embedder.weight".into(),
-        config.joint_attention_dim,
-        dim,
-    );
-    push(
-        "double_stream_modulation_img.linear.weight".into(),
+        "double_stream_modulation_img.lin.weight".into(),
         dim,
         dim * 6,
     );
     push(
-        "double_stream_modulation_txt.linear.weight".into(),
+        "double_stream_modulation_txt.lin.weight".into(),
         dim,
         dim * 6,
     );
-    push(
-        "single_stream_modulation.linear.weight".into(),
-        dim,
-        dim * 3,
-    );
+    push("single_stream_modulation.lin.weight".into(), dim, dim * 3);
     for i in 0..config.num_layers {
-        let p = format!("transformer_blocks.{i}");
-        for name in [
-            "attn.to_q.weight",
-            "attn.to_k.weight",
-            "attn.to_v.weight",
-            "attn.to_out.weight",
-            "attn.add_q_proj.weight",
-            "attn.add_k_proj.weight",
-            "attn.add_v_proj.weight",
-            "attn.to_add_out.weight",
-        ] {
-            push(format!("{p}.{name}"), dim, dim);
+        let p = format!("double_blocks.{i}");
+        push(format!("{p}.img_attn.qkv.weight"), dim, dim * 3);
+        push(format!("{p}.img_attn.proj.weight"), dim, dim);
+        push(format!("{p}.txt_attn.qkv.weight"), dim, dim * 3);
+        push(format!("{p}.txt_attn.proj.weight"), dim, dim);
+        for side in ["img_attn", "txt_attn"] {
+            push(format!("{p}.{side}.norm.query_norm.scale"), head, 1);
+            push(format!("{p}.{side}.norm.key_norm.scale"), head, 1);
         }
-        for name in [
-            "attn.norm_q.weight",
-            "attn.norm_k.weight",
-            "attn.norm_added_q.weight",
-            "attn.norm_added_k.weight",
-        ] {
-            push(format!("{p}.{name}"), head, 1);
-        }
-        push(format!("{p}.ff.linear_in.weight"), dim, hidden * 2);
-        push(format!("{p}.ff.linear_out.weight"), hidden, dim);
-        push(format!("{p}.ff_context.linear_in.weight"), dim, hidden * 2);
-        push(format!("{p}.ff_context.linear_out.weight"), hidden, dim);
+        push(format!("{p}.img_mlp.0.weight"), dim, hidden * 2);
+        push(format!("{p}.img_mlp.2.weight"), hidden, dim);
+        push(format!("{p}.txt_mlp.0.weight"), dim, hidden * 2);
+        push(format!("{p}.txt_mlp.2.weight"), hidden, dim);
     }
     for i in 0..config.num_single_layers {
-        let p = format!("single_transformer_blocks.{i}.attn");
-        push(
-            format!("{p}.to_qkv_mlp_proj.weight"),
-            dim,
-            dim * 3 + hidden * 2,
-        );
-        push(format!("{p}.norm_q.weight"), head, 1);
-        push(format!("{p}.norm_k.weight"), head, 1);
-        push(format!("{p}.to_out.weight"), dim + hidden, dim);
+        let p = format!("single_blocks.{i}");
+        push(format!("{p}.linear1.weight"), dim, dim * 3 + hidden * 2);
+        push(format!("{p}.linear2.weight"), dim + hidden, dim);
+        push(format!("{p}.norm.query_norm.scale"), head, 1);
+        push(format!("{p}.norm.key_norm.scale"), head, 1);
     }
-    push("norm_out.linear.weight".into(), dim, dim * 2);
-    push("proj_out.weight".into(), dim, config.in_channels);
+    push("final_layer.adaLN_modulation.1.weight".into(), dim, dim * 2);
+    push("final_layer.linear.weight".into(), dim, config.in_channels);
     out
+}
+
+pub(super) fn stored_f32(name: &str) -> bool {
+    name.ends_with(".scale") || name.contains(".norm_")
 }
 
 pub fn smoke_values(name: &str, ne0: i64, ne1: i64) -> Vec<f32> {
     let n = (ne0 as usize).saturating_mul(ne1 as usize);
-    if name.contains(".norm_") {
+    if stored_f32(name) {
         return vec![1.0; n];
     }
     let mut data = vec![0f32; n];
@@ -163,20 +141,21 @@ pub fn smoke_values(name: &str, ne0: i64, ne1: i64) -> Vec<f32> {
 /// gate stays zero and the prompt never reaches the latent.
 pub fn chain_dit_values(name: &str, ne0: i64, ne1: i64) -> Vec<f32> {
     let mut data = smoke_values(name, ne0, ne1);
-    if name.starts_with("time_guidance_embed.linear_") {
+    if name.starts_with("time_in.") {
         paint_diag(&mut data, ne0, ne1, 0, ne0.min(ne1) as usize, 2.0);
     }
-    if name == "double_stream_modulation_img.linear.weight" {
+    if name == "double_stream_modulation_img.lin.weight" {
         let dim = ne0 as usize;
         paint_diag(&mut data, ne0, ne1, dim * 2, dim, 1.0);
     }
-    if name == "x_embedder.weight"
-        || name == "context_embedder.weight"
-        || name == "proj_out.weight"
-        || name.ends_with("attn.add_v_proj.weight")
-        || (name.contains("transformer_blocks.")
-            && !name.contains("single_")
-            && name.ends_with("attn.to_out.weight"))
+    if name.ends_with("txt_attn.qkv.weight") {
+        let dim = ne0 as usize;
+        paint_diag(&mut data, ne0, ne1, dim * 2, dim, 1.0);
+    }
+    if name == "img_in.weight"
+        || name == "txt_in.weight"
+        || name == "final_layer.linear.weight"
+        || name.ends_with("img_attn.proj.weight")
     {
         paint_diag(&mut data, ne0, ne1, 0, ne0.min(ne1) as usize, 1.0);
     }

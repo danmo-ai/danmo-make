@@ -53,13 +53,13 @@ pub(super) fn decode(
             "flux2 packed latent has {in_ch} channels, the decoder reads {PACKED_CHANNELS}"
         )));
     }
-    let mean = vae.f32_exact("bn.running_mean", &[PACKED_CHANNELS])?;
-    let var = vae.f32_exact("bn.running_var", &[PACKED_CHANNELS])?;
-    let weight = vae.f32_exact(
+    let mean = vae.f32_widened("bn.running_mean", &[PACKED_CHANNELS])?;
+    let var = vae.f32_widened("bn.running_var", &[PACKED_CHANNELS])?;
+    let weight = vae.f32_widened(
         "post_quant_conv.weight",
         &[1, 1, LATENT_CHANNELS, LATENT_CHANNELS],
     )?;
-    let bias = vae.f32_exact("post_quant_conv.bias", &[LATENT_CHANNELS])?;
+    let bias = vae.f32_widened("post_quant_conv.bias", &[LATENT_CHANNELS])?;
     let unpacked = unpatch(&latent, &mean, &var, grid_w, grid_h, PACKED_CHANNELS)?;
     let scaled = scale_shift(&unpacked, SCALING, SHIFT)?;
     let latent_w = grid_w * 2;
@@ -250,7 +250,7 @@ fn decode_preview(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, WeightError> {
-    let weight = vae.f32_exact("decoder.conv.weight", &[in_ch, 3])?;
+    let weight = vae.f32_widened("decoder.conv.weight", &[in_ch, 3])?;
     let seq = grid_w * grid_h;
     if latent.len() as i64 != in_ch * seq {
         return Err(WeightError::Shape {

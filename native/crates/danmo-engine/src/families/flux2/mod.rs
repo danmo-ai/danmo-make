@@ -9,6 +9,7 @@ pub use transformer::Flux2Denoise;
 pub use weights::{weight_layout, Flux2Config};
 
 use crate::common::ops::{empirical_mu_sigmas, normal_latent};
+use crate::common::qwen3::tower_present;
 use crate::runtime::{GgmlContext, TYPE_F32, TYPE_Q8_0};
 use crate::weights::{
     assert_gguf_bundle, matmul_type, quantize_q8_0, type_block, write_f32_tensors,
@@ -16,6 +17,7 @@ use crate::weights::{
 };
 use std::collections::HashMap;
 use std::path::Path;
+use weights::stored_f32;
 
 pub fn execute(
     ctx: &GgmlContext,
@@ -114,38 +116,34 @@ fn schedule(steps: u32, grid_w: i64, grid_h: i64) -> Vec<f32> {
 }
 
 fn config_from_weights(weights: &GgufWeights) -> Result<Flux2Config, WeightError> {
-    let x = weights.shape("x_embedder.weight")?;
-    let context = weights.shape("context_embedder.weight")?;
-    let freq = weights.shape("time_guidance_embed.linear_1.weight")?;
+    let x = weights.shape("img_in.weight")?;
+    let context = weights.shape("txt_in.weight")?;
+    let freq = weights.shape("time_in.in_layer.weight")?;
     let in_channels = x[0];
     let dim = x[1];
     if context[1] != dim || freq[1] != dim {
         return Err(WeightError::Shape {
-            name: "x_embedder.weight".into(),
+            name: "img_in.weight".into(),
             expected: vec![in_channels, dim],
             got: vec![context[0], context[1], freq[0], freq[1]],
         });
     }
-    let norm = weights.shape("transformer_blocks.0.attn.norm_q.weight")?;
+    let norm = weights.shape("double_blocks.0.img_attn.norm.query_norm.scale")?;
     let head = norm[0];
     if head < 1 || norm[1] != 1 || dim % head != 0 {
         return Err(WeightError::Shape {
-            name: "transformer_blocks.0.attn.norm_q.weight".into(),
+            name: "double_blocks.0.img_attn.norm.query_norm.scale".into(),
             expected: vec![head.max(1), 1],
             got: vec![norm[0], norm[1], dim],
         });
     }
     let heads = dim / head;
-    let layers = count_blocks(weights, "transformer_blocks", "attn.to_q.weight");
-    let singles = count_blocks(
-        weights,
-        "single_transformer_blocks",
-        "attn.to_qkv_mlp_proj.weight",
-    );
+    let layers = count_blocks(weights, "double_blocks", "img_attn.qkv.weight");
+    let singles = count_blocks(weights, "single_blocks", "linear1.weight");
     if layers < 1 || singles < 1 {
         return Err(WeightError::MissingTensor {
             path: "transformer".into(),
-            name: "transformer_blocks.0.attn.to_q.weight".into(),
+            name: "double_blocks.0.img_attn.qkv.weight".into(),
         });
     }
     Ok(Flux2Config {
@@ -165,7 +163,7 @@ fn config_from_weights(weights: &GgufWeights) -> Result<Flux2Config, WeightError
 }
 
 fn check_stored_type(name: &str, ggml_type: u32, ne0: i64) -> Result<(), WeightError> {
-    if name.contains(".norm_") {
+    if stored_f32(name) {
         if ggml_type != TYPE_F32 {
             return Err(WeightError::NotBuilt(format!(
                 "{name} is ggml type {ggml_type}. Norm weights stay F32 inside a quantized GGUF"
@@ -213,7 +211,7 @@ fn text_tokens(
             "text encoder tensor names are blk.*; this graph reads layers.*".into(),
         ));
     }
-    if text.contains("layers.0.self_attn.q_proj.weight") {
+    if tower_present(&text) {
         return text::encode_prompt(ctx, paths, tokenizer_json, prompt, joint);
     }
     let shape = text.shape("token_embed.weight")?;
@@ -342,7 +340,7 @@ pub fn write_q8_bundle(dir: &Path, config: Flux2Config) -> Result<(), WeightErro
     let mut owned = Vec::new();
     for (name, ne0, ne1) in &layout {
         let values = weights::smoke_values(name, *ne0, *ne1);
-        if name.contains(".norm_") {
+        if stored_f32(name) {
             let mut bytes = Vec::with_capacity(values.len() * 4);
             for value in values {
                 bytes.extend_from_slice(&value.to_le_bytes());

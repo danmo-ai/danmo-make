@@ -577,7 +577,7 @@ mod tests {
     use super::{chat_text, load_tokenizer, pretokenize, tokenize};
     use crate::common::qwen3::{encoder_layout, Loaded, Qwen3Config};
     use crate::runtime::{BackendKind, GgmlContext};
-    use crate::weights::{write_f32_tensors, F32Tensor};
+    use crate::weights::{write_f32_tensors, write_safetensors, F32Tensor, SafeTensor};
 
     #[test]
     fn qwen_pieces_match_the_chat_regex() {
@@ -698,6 +698,95 @@ mod tests {
         let long = "a".repeat(600);
         let err = tokenize(&loaded, &long, 260, true).unwrap_err();
         assert!(err.to_string().contains("accepts 512"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn model_prefix_safetensors_matches_the_unprefixed_tower() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-qwen-prefix-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let enc = Qwen3Config::smoke();
+        let owned: Vec<(String, i64, i64, Vec<f32>)> = encoder_layout(enc)
+            .into_iter()
+            .map(|(name, ne0, ne1)| {
+                let n = (ne0 as usize) * (ne1 as usize);
+                let data = if name.ends_with("norm.weight") || name.ends_with("layernorm.weight") {
+                    vec![1.0; n]
+                } else if name == "embed_tokens.weight" {
+                    embed_rows(ne0, ne1)
+                } else {
+                    (0..n).map(|i| ((i % 5) as f32 - 2.0) * 0.02).collect()
+                };
+                (name, ne0, ne1, data)
+            })
+            .collect();
+        let tensors: Vec<F32Tensor<'_>> = owned
+            .iter()
+            .map(|(name, ne0, ne1, data)| F32Tensor {
+                name,
+                ne0: *ne0,
+                ne1: *ne1,
+                data,
+            })
+            .collect();
+        write_f32_tensors(&dir.join("text_encoder.gguf"), &tensors).unwrap();
+        let safe: Vec<(String, Vec<u64>, String, Vec<u8>)> = owned
+            .iter()
+            .map(|(name, ne0, ne1, data)| {
+                let shape = if *ne1 == 1 {
+                    vec![*ne0 as u64]
+                } else {
+                    vec![*ne1 as u64, *ne0 as u64]
+                };
+                let rms = name.ends_with("norm.weight") || name.ends_with("layernorm.weight");
+                let (dtype, bytes) = if rms {
+                    let mut bytes = Vec::with_capacity(data.len() * 2);
+                    for value in data {
+                        bytes.extend_from_slice(&((value.to_bits() >> 16) as u16).to_le_bytes());
+                    }
+                    ("BF16".to_string(), bytes)
+                } else {
+                    let mut bytes = Vec::with_capacity(data.len() * 4);
+                    for value in data {
+                        bytes.extend_from_slice(&value.to_le_bytes());
+                    }
+                    ("F32".to_string(), bytes)
+                };
+                (format!("model.{name}"), shape, dtype, bytes)
+            })
+            .collect();
+        let views: Vec<SafeTensor<'_>> = safe
+            .iter()
+            .map(|(name, shape, dtype, data)| SafeTensor {
+                name,
+                dtype,
+                shape,
+                data,
+            })
+            .collect();
+        write_safetensors(&dir.join("model.safetensors"), &views).unwrap();
+        let tokenizer = "{\"vocab\":{\"a\":0}}\n";
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let bare = Loaded::open(&[dir.join("text_encoder.gguf")]).unwrap();
+        let prefixed = Loaded::open(&[dir.join("model.safetensors")]).unwrap();
+        assert_eq!(bare.config().layers, prefixed.config().layers);
+        let layer = bare.config().layers - 1;
+        let (left, left_len) = bare
+            .encode(&ctx, tokenizer, "a", &[layer], false, 8)
+            .unwrap();
+        let (right, right_len) = prefixed
+            .encode(&ctx, tokenizer, "a", &[layer], false, 8)
+            .unwrap();
+        assert_eq!(left_len, right_len);
+        assert_eq!(left, right);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

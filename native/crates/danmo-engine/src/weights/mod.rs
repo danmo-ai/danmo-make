@@ -10,14 +10,14 @@ pub use gguf::{
     F32Tensor, GgufWeights, TypedTensor,
 };
 #[cfg(test)]
-pub use gguf::{write_f32_nd, F32Nd};
+pub use gguf::{write_f32_nd, write_safetensors, F32Nd, SafeTensor};
 
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum WeightError {
     #[error(
-        "{path} is not a GGUF file. Re-download the GGUF version (bf16, q8_0, or q4_k). Safetensors and MLX weights are not loaded"
+        "{path} is not a weight file for this role. The DiT is GGUF (bf16, q8_0, or q4_k). The text encoder and VAE are GGUF or safetensors"
     )]
     NotGguf { path: String },
     #[error(
@@ -26,10 +26,10 @@ pub enum WeightError {
     LegacyBundle { path: String },
     #[error("{path} is not a ready GGUF bundle: {detail}. Re-download the GGUF version (bf16, q8_0, or q4_k)")]
     Bundle { path: String, detail: String },
-    #[error("failed to read GGUF {path}: {detail}")]
+    #[error("failed to read weights {path}: {detail}")]
     Open { path: String, detail: String },
     #[error(
-        "GGUF {path} has no tensor {name}. File names are graph parameter names; nothing is remapped"
+        "weights {path} has no tensor {name}. File names are graph parameter names; nothing is remapped"
     )]
     MissingTensor { path: String, name: String },
     #[error("tensor {name} shape {got:?} does not match the graph {expected:?}")]
@@ -42,7 +42,7 @@ pub enum WeightError {
         "tensor {name} is ggml type {ggml_type}. Matmul accepts F32, F16, BF16, Q8_0, and Q4_K; other types are not dequantized"
     )]
     Type { name: String, ggml_type: u32 },
-    #[error("duplicate GGUF tensor {name} in {path}")]
+    #[error("duplicate tensor {name} in {path}")]
     Duplicate { name: String, path: String },
     #[error("tensor name {name} is longer than GGML_MAX_NAME ({max})")]
     NameTooLong { name: String, max: usize },

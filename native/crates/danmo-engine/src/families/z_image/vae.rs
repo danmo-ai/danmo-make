@@ -65,7 +65,7 @@ fn decode_preview(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, WeightError> {
-    let weight = vae.f32_exact("decoder.conv.weight", &[in_ch, 3])?;
+    let weight = vae.f32_widened("decoder.conv.weight", &[in_ch, 3])?;
     let seq = grid_w * grid_h;
     if latent.len() as i64 != in_ch * seq {
         return Err(WeightError::Shape {
