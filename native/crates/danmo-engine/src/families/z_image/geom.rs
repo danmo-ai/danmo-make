@@ -186,3 +186,61 @@ pub fn timestep_features(t: f32, dim: usize) -> Vec<f32> {
     }
     embedding
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{patch_index, positions_image_first, positions_text_first, token_grid};
+
+    /// SD.cpp `gen_z_image_ids` at the two grids that produced real pictures.
+    /// 256 and 512 token counts are multiples of 32, so the image pad is empty.
+    /// Image ids stay `(cap_len + 1, row, col)`. Caption ids stay `(i + 1, 0, 0)`.
+    #[test]
+    fn sdcpp_ids_and_patch_index_at_256_and_512() {
+        assert_square(256, 15);
+        assert_square(512, 15);
+    }
+
+    fn assert_square(edge: u32, cap_real: i64) {
+        let grid = token_grid(edge, edge, cap_real, 8).unwrap();
+        let tokens = (edge as i64) / 8 / 2;
+        assert_eq!(grid.tokens_w, tokens);
+        assert_eq!(grid.tokens_h, tokens);
+        assert_eq!(grid.img_real, tokens * tokens);
+        assert_eq!(grid.img_pad, 0);
+        let cap_len = cap_real + (32 - (cap_real % 32)) % 32;
+        assert_eq!(grid.cap_len, cap_len);
+
+        let ids = positions_image_first(grid);
+        let origin = (cap_len + 1) as i32;
+        assert_eq!(ids[0], [origin, 0, 0]);
+        let last = (tokens * tokens - 1) as usize;
+        assert_eq!(
+            ids[last],
+            [origin, (tokens - 1) as i32, (tokens - 1) as i32]
+        );
+        let mid = ((tokens / 2) * tokens + tokens / 2) as usize;
+        assert_eq!(ids[mid], [origin, (tokens / 2) as i32, (tokens / 2) as i32]);
+        let text_at = grid.img_len as usize;
+        assert_eq!(ids[text_at], [1, 0, 0]);
+        assert_eq!(ids[text_at + cap_len as usize - 1], [cap_len as i32, 0, 0]);
+
+        let text_first = positions_text_first(grid);
+        assert_eq!(text_first[0], [1, 0, 0]);
+        assert_eq!(text_first[cap_len as usize], [origin, 0, 0]);
+
+        let channels = 16i64;
+        let index = patch_index(grid, channels);
+        assert_eq!(index.len() as i64, grid.img_real * 4 * channels);
+        let mut seen = vec![false; (grid.latent_w * grid.latent_h * channels) as usize];
+        for src in &index {
+            let slot = *src as usize;
+            assert!(slot < seen.len(), "patch index {src} is outside the latent");
+            assert!(!seen[slot], "patch index repeats {src}");
+            seen[slot] = true;
+        }
+        assert!(seen.iter().all(|flag| *flag));
+        assert_eq!(index[0], 0);
+        let second_row = (tokens * 4 * channels) as usize;
+        assert_eq!(index[second_row], (2 * grid.latent_w) as i32);
+    }
+}

@@ -1219,8 +1219,8 @@
       "catalog": {
         "media": "image",
         "description": {
-          "zh": "FLUX.2 Klein 4B。一次安装下载所选档的 DiT GGUF，以及魔塔 black-forest-labs/FLUX.2-klein-4B 的文本编码器、VAE 和分词器，全部落到该档自己的目录。默认档是 Q4_K_M，目录 models/flux2-klein-4b/q4_k。快速验证用 64 边。",
-          "en": "FLUX.2 Klein 4B. One install downloads the selected DiT GGUF plus the text encoder, VAE, and tokenizer from ModelScope black-forest-labs/FLUX.2-klein-4B into that tier's own directory. The default tier is Q4_K_M at models/flux2-klein-4b/q4_k. Quick checks use a 64-pixel edge."
+          "zh": "FLUX.2 Klein 4B。一次安装下载所选档的 DiT GGUF，以及魔塔 black-forest-labs/FLUX.2-klein-4B 的文本编码器、VAE 和分词器，全部落到该档自己的目录。默认档是 Q4_K_M，目录 models/flux2-klein-4b/q4_k。创建页默认 512 边，64 边仍可用来快速验证。",
+          "en": "FLUX.2 Klein 4B. One install downloads the selected DiT GGUF plus the text encoder, VAE, and tokenizer from ModelScope black-forest-labs/FLUX.2-klein-4B into that tier's own directory. The default tier is Q4_K_M at models/flux2-klein-4b/q4_k. The create page defaults to a 512-pixel edge. A 64-pixel edge remains available for a quick check."
         },
         "category": "base_models",
         "commercial_use_allowed": true,
@@ -1291,7 +1291,7 @@
             "type": "float"
           },
           "width": {
-            "default": 64,
+            "default": 512,
             "options": [
               64,
               128,
@@ -1304,7 +1304,7 @@
             "type": "enum"
           },
           "height": {
-            "default": 64,
+            "default": 512,
             "options": [
               64,
               128,
@@ -1331,7 +1331,7 @@
           "num_layers": 5,
           "num_single_layers": 20,
           "resolution_presets": {
-            "default": "64x64",
+            "default": "512x512",
             "options": [
               "64x64",
               "128x128",

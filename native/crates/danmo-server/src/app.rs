@@ -670,7 +670,7 @@ mod tests {
         assert_eq!(model["recommended"], true);
         assert_eq!(
             model["parameters"]["resolution_presets"]["default"],
-            "64x64"
+            "512x512"
         );
         let options = model["parameters"]["resolution_presets"]["options"]
             .as_array()
