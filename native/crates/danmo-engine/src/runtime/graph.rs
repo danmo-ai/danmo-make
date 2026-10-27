@@ -405,18 +405,37 @@ impl GraphBuilder {
                 return Err(RuntimeError::Init);
             }
             g::ggml_build_forward_expand(graph, output);
+            // Gallocr reuses an input after its last reader. The next compute
+            // would then see activations where the weights were. Inputs stay
+            // in their own buffer for every replay.
+            let inputs_buffer = match pin_inputs(self.backend, self.buft, &self.inputs) {
+                Ok(buffer) => buffer,
+                Err(err) => {
+                    g::ggml_free(self.ctx);
+                    return Err(err);
+                }
+            };
             let galloc = g::ggml_gallocr_new(self.buft);
             if galloc.is_null() {
+                if !inputs_buffer.is_null() {
+                    g::ggml_backend_buffer_free(inputs_buffer);
+                }
                 g::ggml_free(self.ctx);
                 return Err(RuntimeError::Init);
             }
             if !g::ggml_gallocr_reserve(galloc, graph) {
                 g::ggml_gallocr_free(galloc);
+                if !inputs_buffer.is_null() {
+                    g::ggml_backend_buffer_free(inputs_buffer);
+                }
                 g::ggml_free(self.ctx);
                 return Err(RuntimeError::Reserve);
             }
             if !g::ggml_gallocr_alloc_graph(galloc, graph) {
                 g::ggml_gallocr_free(galloc);
+                if !inputs_buffer.is_null() {
+                    g::ggml_backend_buffer_free(inputs_buffer);
+                }
                 g::ggml_free(self.ctx);
                 return Err(RuntimeError::Reserve);
             }
@@ -424,6 +443,7 @@ impl GraphBuilder {
                 ctx: self.ctx,
                 graph,
                 galloc,
+                inputs_buffer,
                 backend: self.backend,
                 buft: self.buft,
                 inputs: self.inputs,
@@ -439,12 +459,62 @@ pub struct ReusedGraph {
     ctx: *mut g::ggml_context,
     graph: *mut g::ggml_cgraph,
     galloc: g::ggml_gallocr_t,
+    inputs_buffer: g::ggml_backend_buffer_t,
     backend: g::ggml_backend_t,
     buft: g::ggml_backend_buffer_type_t,
     inputs: Vec<NamedTensor>,
     output: *mut g::ggml_tensor,
     computes: u32,
     readbacks: u32,
+}
+
+/// Place graph inputs in a buffer gallocr does not recycle.
+fn pin_inputs(
+    backend: g::ggml_backend_t,
+    buft: g::ggml_backend_buffer_type_t,
+    inputs: &[NamedTensor],
+) -> Result<g::ggml_backend_buffer_t, RuntimeError> {
+    if inputs.is_empty() {
+        return Ok(std::ptr::null_mut());
+    }
+    let align = unsafe { g::ggml_backend_buft_get_alignment(buft) }.max(1);
+    let mut cursor = 0usize;
+    let mut placed = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        if input.tensor.is_null() {
+            return Err(RuntimeError::Init);
+        }
+        let size = unsafe { g::ggml_backend_buft_get_alloc_size(buft, input.tensor) };
+        let offset = align_up(cursor, align);
+        cursor = offset.saturating_add(size);
+        if cursor < offset {
+            return Err(RuntimeError::Reserve);
+        }
+        placed.push((input.tensor, offset));
+    }
+    let buffer = unsafe { g::ggml_backend_alloc_buffer(backend, cursor) };
+    if buffer.is_null() {
+        return Err(RuntimeError::Reserve);
+    }
+    let base = unsafe { g::ggml_backend_buffer_get_base(buffer) };
+    if base.is_null() {
+        unsafe { g::ggml_backend_buffer_free(buffer) };
+        return Err(RuntimeError::Reserve);
+    }
+    for (tensor, offset) in placed {
+        let addr = unsafe { base.add(offset) };
+        let status = unsafe { g::ggml_backend_tensor_alloc(buffer, tensor, addr) };
+        if status != g::ggml_status_GGML_STATUS_SUCCESS {
+            unsafe { g::ggml_backend_buffer_free(buffer) };
+            return Err(RuntimeError::Reserve);
+        }
+    }
+    Ok(buffer)
+}
+
+fn align_up(value: usize, align: usize) -> usize {
+    let align = align.max(1);
+    value.saturating_add(align - 1) / align * align
 }
 
 impl ReusedGraph {
@@ -576,6 +646,25 @@ impl ReusedGraph {
         Ok(out)
     }
 
+    /// Read the graph output without counting a host readback. The device tensor stays.
+    pub fn peek_output(&self) -> Result<Vec<f32>, RuntimeError> {
+        if self.output.is_null() {
+            return Err(RuntimeError::Init);
+        }
+        let ggml_type = unsafe { (*self.output).type_ };
+        if ggml_type != g::ggml_type_GGML_TYPE_F32 {
+            return Err(RuntimeError::Message(format!(
+                "graph output is ggml type {ggml_type}, expected F32"
+            )));
+        }
+        let nbytes = unsafe { g::ggml_nbytes(self.output) };
+        let mut out = vec![0f32; nbytes / std::mem::size_of::<f32>()];
+        unsafe {
+            g::ggml_backend_tensor_get(self.output, out.as_mut_ptr().cast(), 0, nbytes);
+        }
+        Ok(out)
+    }
+
     /// Recompute the reserved graph and read the output back to the host.
     pub fn compute(&mut self) -> Result<Vec<f32>, RuntimeError> {
         self.compute_device()?;
@@ -601,6 +690,9 @@ impl Drop for ReusedGraph {
     fn drop(&mut self) {
         unsafe {
             g::ggml_gallocr_free(self.galloc);
+            if !self.inputs_buffer.is_null() {
+                g::ggml_backend_buffer_free(self.inputs_buffer);
+            }
             g::ggml_free(self.ctx);
         }
     }

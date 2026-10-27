@@ -87,6 +87,9 @@ impl Loaded {
         }
         let ids = tokenize(tokenizer_json, prompt, self.config.vocab, thinking)?;
         let embed = run_tower(ctx, &self.weights, self.config, &self.prefix, layers, &ids)?;
+        if let Some(detail) = crate::common::ops::non_finite("text embedding", &embed) {
+            return Err(WeightError::NotBuilt(detail));
+        }
         let seq = ids.len() as i64;
         if embed.len() as i64 != width * seq {
             return Err(WeightError::Shape {

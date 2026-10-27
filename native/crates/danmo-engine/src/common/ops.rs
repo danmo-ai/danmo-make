@@ -152,6 +152,28 @@ pub fn empirical_mu_sigmas(steps: u32, image_seq_len: u32) -> Vec<f32> {
     sigmas
 }
 
+/// Fail-loud summary when a host vector contains NaN or Inf.
+pub fn non_finite(label: &str, data: &[f32]) -> Option<String> {
+    let mut bad = 0usize;
+    let mut finite = 0usize;
+    let mut absmax = 0f32;
+    for value in data {
+        if value.is_finite() {
+            finite += 1;
+            absmax = absmax.max(value.abs());
+        } else {
+            bad += 1;
+        }
+    }
+    if bad == 0 {
+        return None;
+    }
+    Some(format!(
+        "{label} has {bad} non-finite values out of {} ({finite} finite, abs max {absmax})",
+        data.len()
+    ))
+}
+
 /// Flux2 timestep embedding. `dim` is `time_in.in_layer`'s input
 /// width. Sigmas at or below 1 are scaled by 1000, then cosine occupies the
 /// first half and sine the second (`flip_sin_to_cos`).

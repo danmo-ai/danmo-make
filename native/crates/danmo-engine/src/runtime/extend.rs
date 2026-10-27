@@ -353,6 +353,36 @@ mod tests {
     }
 
     #[test]
+    fn weight_values_survive_a_second_compute() {
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let mut b = ctx.builder(4 * 1024 * 1024).unwrap();
+        let w = b.f32_2d("w", 32, 32, true);
+        let x = b.f32_2d("x", 32, 1, true);
+        let a = b.f32_2d("a", 32, 32, true);
+        let c = b.f32_2d("c", 32, 32, true);
+        let h = b.mul_mat(w, x);
+        let sum = b.add(a, c);
+        let extra = b.mul_mat(sum, x);
+        let out = b.add(h, extra);
+        let mut graph = b.finish(out).unwrap();
+        let mut weight = vec![0f32; 32 * 32];
+        for i in 0..32 {
+            weight[i + i * 32] = 3.0;
+        }
+        graph.set_f32("w", &weight).unwrap();
+        graph.set_f32("x", &vec![1.0; 32]).unwrap();
+        graph.set_f32("a", &vec![0.0; 32 * 32]).unwrap();
+        graph.set_f32("c", &vec![0.0; 32 * 32]).unwrap();
+        let first = graph.compute().unwrap();
+        let second = graph.compute().unwrap();
+        assert_eq!(first.len(), 32);
+        for (got, again) in first.iter().zip(second.iter()) {
+            assert!((got - 3.0).abs() < 1e-4, "first {first:?}");
+            assert!((again - 3.0).abs() < 1e-4, "second {second:?}");
+        }
+    }
+
+    #[test]
     fn direct_conv_matches_the_channel_dot() {
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
         let latent = [1.0f32, 2.0, 3.0, 4.0];

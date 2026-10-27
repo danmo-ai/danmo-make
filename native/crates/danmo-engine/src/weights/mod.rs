@@ -39,7 +39,7 @@ pub enum WeightError {
         got: Vec<i64>,
     },
     #[error(
-        "tensor {name} is ggml type {ggml_type}. Matmul accepts F32, F16, BF16, Q8_0, and Q4_K; other types are not dequantized"
+        "tensor {name} is ggml type {ggml_type}. Matmul accepts F32, F16, BF16, Q8_0, Q4_K, and Q5_K; other types are not dequantized"
     )]
     Type { name: String, ggml_type: u32 },
     #[error("duplicate tensor {name} in {path}")]
