@@ -54,6 +54,18 @@ const client = axios.create({
   },
 });
 
+client.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const data = error?.response?.data;
+    const detail = data && typeof data === 'object' ? data.detail : data;
+    if (typeof detail === 'string' && detail.trim()) {
+      error.message = detail.trim();
+    }
+    return Promise.reject(error);
+  },
+);
+
 client.interceptors.request.use((config) => {
   const lang = getItem(DQ_STORAGE.LANG) || 'zh';
   config.headers = config.headers ?? {};
@@ -296,21 +308,6 @@ export const api = {
       return withAccessApiKey(
         `${API_BASE}/api/download/progress/${encodeURIComponent(taskId)}/stream`,
       );
-    },
-
-    async startConvert(body: Record<string, unknown>): Promise<unknown> {
-      const response = await client.post('/api/download/convert', body);
-      return response.data;
-    },
-
-    convertProgressStreamUrl(taskId: string): string {
-      return withAccessApiKey(
-        `${API_BASE}/api/download/convert/${encodeURIComponent(taskId)}/stream`,
-      );
-    },
-
-    async cancelConversion(taskId: string): Promise<void> {
-      await client.post(`/api/download/convert/${encodeURIComponent(taskId)}/cancel`);
     },
   },
 

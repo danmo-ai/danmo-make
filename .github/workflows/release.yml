@@ -1,6 +1,4 @@
-# macOS MLX desktop + Linux MLX (mlx[cuda]) thin server tar.gz.
-# Linux desktop (AppImage/deb) temporarily omitted from CI (local: make pack-linux-desktop).
-# Windows temporarily unsupported. Linux thin pack omits mlx wheels; first run installs via bootstrap.
+# ggml desktop and headless server. The sidecar is the Rust danqing-api binary.
 name: Build Release Artifacts
 
 on:
@@ -10,34 +8,29 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release version label (e.g. 0.2.0). Used for desktop semver and Linux archive names.
+        description: Release version label (e.g. 0.2.0).
         required: false
         type: string
 
-# Required to attach release assets (not only Actions artifacts).
 permissions:
   contents: write
 
 jobs:
   build-desktop:
-    name: macOS desktop (MLX)
+    name: macOS desktop (ggml Metal)
     runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           path: danmo-make
+          submodules: true
 
       - name: Checkout dq-ui
         uses: actions/checkout@v6
         with:
           repository: danmo-ai/dq-ui
           path: dq-ui
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -51,70 +44,49 @@ jobs:
         working-directory: ${{ github.workspace }}/dq-ui
 
       - name: Setup Rust
-        run: rustup target add aarch64-apple-darwin
-
-      - name: Create venv and install dependencies
-        working-directory: danmo-make
-        run: |
-          python3 -m venv .venv
-          source .venv/bin/activate
-          pip install --upgrade pip
-          pip install -r requirements-macos.txt
-          pip install pyinstaller
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
 
       - name: Set release version
         working-directory: danmo-make
         run: |
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+            echo "DANQING_DESKTOP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           elif [[ -n "${{ inputs.version }}" ]]; then
             echo "RELEASE_VERSION=${{ inputs.version }}" >> "$GITHUB_ENV"
+            echo "DANQING_DESKTOP_VERSION=${{ inputs.version }}" >> "$GITHUB_ENV"
           else
             echo "RELEASE_VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
           fi
 
-      - name: Set desktop version from tag
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Build desktop bundle
         working-directory: danmo-make
-        run: python3 scripts/set_desktop_version.py "${GITHUB_REF_NAME#v}"
-
-      - name: Set desktop version (manual dispatch)
-        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
-        working-directory: danmo-make
-        run: python3 scripts/set_desktop_version.py "${{ inputs.version }}"
-
-      - name: Build desktop bundle (MLX sidecar)
-        working-directory: danmo-make
-        env:
-          DANQING_PYINSTALLER_PROFILE: mlx
-        run: |
-          source .venv/bin/activate
-          make pack-macos-desktop
+        run: make pack-macos-desktop
 
       - name: Verify DMG was produced
         working-directory: danmo-make
         run: |
-          ls -la out/desktop/bundle/
-          ls -la out/desktop/bundle/dmg/
-          test -n "$(find out/desktop/bundle/dmg -maxdepth 1 -name '*.dmg' -print -quit)"
+          ls -la out/desktop/bundle/ || true
+          test -n "$(find out/desktop/bundle -name '*.dmg' -print -quit)"
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: danqing-desktop-macos
-          path: |
-            danmo-make/out/desktop/bundle/dmg/*.dmg
-            danmo-make/out/desktop/bundle/macos/*.app
+          name: danmo-make-desktop-macos
+          path: danmo-make/out/desktop/bundle/**/*.dmg
           if-no-files-found: error
 
-  build-linux-mlx:
-    name: Linux MLX server (tar.gz)
+  build-linux-server:
+    name: Linux ggml server (tar.gz)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           path: danmo-make
+          submodules: true
 
       - name: Checkout dq-ui
         uses: actions/checkout@v6
@@ -122,10 +94,8 @@ jobs:
           repository: danmo-ai/dq-ui
           path: dq-ui
 
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
+      - name: Install libstdc++
+        run: sudo apt-get update && sudo apt-get install -y g++ cmake
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -138,6 +108,9 @@ jobs:
           npm run build
         working-directory: ${{ github.workspace }}/dq-ui
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Set release version
         working-directory: danmo-make
         run: |
@@ -149,50 +122,39 @@ jobs:
             echo "RELEASE_VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
           fi
 
-      - name: Create build venv
+      - name: Build Linux ggml archive
         working-directory: danmo-make
-        run: |
-          python3 -m venv .venv
-          source .venv/bin/activate
-          python -m pip install --upgrade pip
-
-      - name: Build Linux MLX thin tar.gz
-        working-directory: danmo-make
-        env:
-          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
-        run: |
-          source .venv/bin/activate
-          make pack-linux-server-archive RELEASE_VERSION="$RELEASE_VERSION"
+        run: make pack-linux-server RELEASE_VERSION="$RELEASE_VERSION"
 
       - name: Verify tar.gz was produced
         working-directory: danmo-make
         run: |
           ls -la out/dist/
-          test -f "out/dist/danmo-make-linux-mlx-x86_64-${RELEASE_VERSION}.tar.gz"
+          test -n "$(find out/dist -name 'danmo-make-linux-ggml-*.tar.gz' -print -quit)"
 
-      - name: Upload Linux MLX artifact
+      - name: Upload Linux artifact
         uses: actions/upload-artifact@v6
         with:
-          name: danqing-linux-mlx
-          path: danmo-make/out/dist/danmo-make-linux-mlx-x86_64-*.tar.gz
+          name: danmo-make-linux-ggml
+          path: danmo-make/out/dist/danmo-make-linux-ggml-*.tar.gz
           if-no-files-found: error
 
   publish-release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build-desktop, build-linux-mlx]
+    needs: [build-desktop, build-linux-server]
     runs-on: ubuntu-latest
     steps:
       - name: Download macOS artifact
         uses: actions/download-artifact@v6
         with:
-          name: danqing-desktop-macos
+          name: danmo-make-desktop-macos
           path: release-assets/macos
 
-      - name: Download Linux MLX server artifact
+      - name: Download Linux server artifact
         uses: actions/download-artifact@v6
         with:
-          name: danqing-linux-mlx
+          name: danmo-make-linux-ggml
           path: release-assets/linux-server
 
       - name: Attach assets to GitHub Release

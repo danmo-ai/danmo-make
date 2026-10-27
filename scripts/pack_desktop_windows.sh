@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Windows desktop packaging — temporarily unsupported (MLX-only product path).
+# Windows Tauri desktop is not wired. The ggml sidecar is:
+#   make pack-windows-sidecar
 set -euo pipefail
-
-echo "Windows temporarily unsupported" >&2
+echo "Windows desktop pack is not wired. Build the sidecar with: make pack-windows-sidecar" >&2
 exit 1

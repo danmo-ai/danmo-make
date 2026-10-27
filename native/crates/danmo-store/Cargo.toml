@@ -1,0 +1,10 @@
+[package]
+name = "danmo-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusqlite = { workspace = true }
+thiserror = { workspace = true }

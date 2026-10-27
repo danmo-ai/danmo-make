@@ -5,7 +5,6 @@ export interface ModelVersion {
   size?: string;
   source?: string;
   source_type?: string;
-  from_version?: string;
   default?: boolean;
 }
 
@@ -28,44 +27,13 @@ export interface VersionRow {
   vstatus: string;
 }
 
-export interface FullVersionBlock extends VersionRow {
-  derivedVariants: VersionRow[];
-  parentReady: boolean;
-}
+export interface FullVersionBlock extends VersionRow {}
 
 export interface ModelVersionLayout {
   fullBlocks: FullVersionBlock[];
   lightweightRows: VersionRow[];
   fullBlockSource: string | null;
   lightweightBlockSource: string | null;
-}
-
-export interface LightweightSplit {
-  primary: VersionRow | null;
-  extra: VersionRow[];
-  hasExtra: boolean;
-}
-
-function isFourBitLightweight(row: VersionRow): boolean {
-  const label = versionNamePlain(row.ver.name);
-  return /(?:^|-)q4$|(?:^|-)4bit$|int4/i.test(row.verKey) || /4\s*bit|int4/i.test(label);
-}
-
-/** 轻量版默认只展示推荐位（default → 4bit → 首个），其余收进「更多」。 */
-export function splitLightweightRows(rows: VersionRow[]): LightweightSplit {
-  if (rows.length === 0) {
-    return { primary: null, extra: [], hasExtra: false };
-  }
-  if (rows.length === 1) {
-    return { primary: rows[0], extra: [], hasExtra: false };
-  }
-
-  const primary =
-    rows.find((row) => row.ver.default === true) ||
-    rows.find(isFourBitLightweight) ||
-    rows[0];
-  const extra = rows.filter((row) => row.verKey !== primary.verKey);
-  return { primary, extra, hasExtra: extra.length > 0 };
 }
 
 export function resolveVersionSource(
@@ -77,9 +45,7 @@ export function resolveVersionSource(
 
 export function uniformDownloadSource(model: ModelVersionLayoutInput): string {
   if (!model.versions) return model.source || '';
-  const downloadable = Object.values(model.versions).filter(
-    (ver) => ver.source_type !== 'derived',
-  );
+  const downloadable = Object.values(model.versions);
   if (downloadable.length === 0) return model.source || '';
   const sources = downloadable.map((ver) => resolveVersionSource(model, ver));
   const unique = [...new Set(sources.filter(Boolean))];
@@ -94,18 +60,6 @@ function uniformBlockSource(
   const sources = rows.map((row) => resolveVersionSource(model, row.ver));
   const unique = [...new Set(sources.filter(Boolean))];
   return unique.length === 1 ? unique[0] : null;
-}
-
-function derivedChipStatus(
-  getVersionStatus: (modelId: string, verKey: string) => string,
-  modelId: string,
-  verKey: string,
-  parentReady: boolean,
-): string {
-  const st = getVersionStatus(modelId, verKey);
-  if (st === 'ready') return 'ready';
-  if (parentReady) return 'quantize';
-  return 'waiting';
 }
 
 export function buildModelVersionLayout(
@@ -123,7 +77,6 @@ export function buildModelVersionLayout(
 
   const fullRows: VersionRow[] = [];
   const lightweightRows: VersionRow[] = [];
-  const derivedByParent: Record<string, VersionRow[]> = {};
 
   for (const [verKey, ver] of Object.entries(model.versions)) {
     const row: VersionRow = {
@@ -131,12 +84,7 @@ export function buildModelVersionLayout(
       ver,
       vstatus: getVersionStatus(model.id, verKey),
     };
-    if (ver.source_type === 'derived') {
-      const parent = ver.from_version;
-      if (!parent) continue;
-      if (!derivedByParent[parent]) derivedByParent[parent] = [];
-      derivedByParent[parent].push(row);
-    } else if (ver.source_type === 'prequantized') {
+    if (ver.source_type === 'prequantized') {
       lightweightRows.push(row);
     } else {
       fullRows.push(row);
@@ -153,20 +101,7 @@ export function buildModelVersionLayout(
     versionNamePlain(a.ver.name).localeCompare(versionNamePlain(b.ver.name))
   );
 
-  const fullBlocks: FullVersionBlock[] = fullRows.map((row) => {
-    const parentReady = row.vstatus === 'ready';
-    const derivedVariants = (derivedByParent[row.verKey] || [])
-      .sort((a, b) => a.verKey.localeCompare(b.verKey))
-      .map((derived) => ({
-        ...derived,
-        vstatus: derivedChipStatus(getVersionStatus, model.id, derived.verKey, parentReady),
-      }));
-    return {
-      ...row,
-      parentReady,
-      derivedVariants,
-    };
-  });
+  const fullBlocks: FullVersionBlock[] = fullRows;
 
   return {
     fullBlocks,
@@ -183,17 +118,4 @@ export function simplifyPrequantizedName(name: string, source: string): string {
   }
   text = text.replace(/预量化\s*/gu, '');
   return text.replace(/\s+/g, ' ').trim();
-}
-
-export function shortDerivedLabel(verKey: string, name: string): string {
-  const key = verKey.toLowerCase();
-  if (key === 'int8' || key.endsWith('-int8')) return 'INT8';
-  if (key === 'int4' || key.endsWith('-int4')) return 'INT4';
-  if (key === 'mlx-q8' || key.endsWith('-q8')) return 'Q8';
-  if (key === 'mlx-q4' || key.endsWith('-q4')) return 'Q4';
-  const upper = verKey.toUpperCase();
-  if (/^INT[48]$/.test(upper)) return upper;
-  const match = name.match(/INT[48]/i);
-  if (match) return match[0].toUpperCase();
-  return name.replace(/\s*量化版\s*/u, '').trim() || name;
 }

@@ -1,1 +1,0 @@
-"""DiffRhythm 2 music generation family (ASLP-lab/DiffRhythm2, MLX + CUDA)."""

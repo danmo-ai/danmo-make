@@ -270,7 +270,6 @@
                   :bundle-components-for="(verKey) => versionBundleComponents(model.id, verKey)"
                   @download="downloadVersion(model, $event)"
                   @delete="deleteVersion(model, $event)"
-                  @quantize="quantizeVersion(model, $event)"
                 />
 
               </div>
@@ -536,7 +535,6 @@ interface ModelVersion {
   size?: string;
   source?: string;
   source_type?: string;
-  from_version?: string;
 }
 
 interface ModelConfig {
@@ -572,7 +570,6 @@ interface DownloadItem {
   error: string;
   total_size: number;
   downloaded_size: number;
-  kind?: string;
 }
 
 interface DiskInfo {
@@ -1076,17 +1073,6 @@ function getVersionStatus(modelId: string, versionKey: string): string {
 
   if (verStatus.ready) return 'ready';
 
-  const model = modelRegistry.value[modelId];
-  const ver = model?.versions?.[versionKey];
-  if (ver && ver.source_type === 'derived' && ver.from_version) {
-    const parentVer = ver.from_version;
-    const parentSt = parentVer ? detail.versions[parentVer] : null;
-    if (!parentSt || !parentSt.ready) {
-      return 'parent_missing';
-    }
-    return 'quantize';
-  }
-
   return 'missing';
 }
 
@@ -1103,7 +1089,7 @@ function versionBundleComponents(modelId: string, verKey: string) {
   }));
 }
 
-/* ───── Download / Quantize / Delete ───── */
+/* ───── Download / Delete ───── */
 
 async function downloadVersion(
   model: ModelRow,
@@ -1156,42 +1142,6 @@ async function downloadVersion(
   } catch (e: any) {
     console.error('Download failed:', e);
     toast.error($tt('download.downloadFailed', { msg: e.message }));
-    delete downloadingModels.value[uiKey];
-  }
-}
-
-async function quantizeVersion(model: ModelRow, versionKey: string) {
-  const ver = model.versions?.[versionKey];
-  const fromV = ver?.from_version;
-  if (!fromV) {
-    toast.error($tt('download.versionConfigError'));
-    return;
-  }
-  const uiKey = `${model.id}-${versionKey}`;
-  if (downloadingModels.value[uiKey]) return;
-
-  downloadingModels.value[uiKey] = true;
-  try {
-    const data = (await api.download.startConvert({
-      model_name: model.id,
-      from_version: fromV,
-      to_version: versionKey,
-    })) as any;
-    const taskId = data.task_id;
-    const label = ver
-      ? $mvn(model.id, model, ver)
-      : `${$mn(model, model.id)} ${versionKey}`;
-    connectConversionSSE(taskId, label, uiKey);
-  } catch (e: any) {
-    console.error('Quantize failed:', e);
-    const detail = e?.response?.data?.detail;
-    const msg =
-      typeof detail === 'string'
-        ? detail
-        : Array.isArray(detail)
-          ? detail.map((d: any) => d?.msg || String(d)).join('; ')
-          : e.message || String(e);
-    toast.error($tt('download.quantizeFailed', { msg }));
     delete downloadingModels.value[uiKey];
   }
 }
@@ -1296,84 +1246,9 @@ function connectProgressSSE(
   };
 }
 
-function connectConversionSSE(
-  taskId: string,
-  name: string,
-  dmKey: string | null = null
-) {
-  const rowKey = dmKey != null ? dmKey : taskId;
-  if (sseConnections.value[taskId]) {
-    try {
-      sseConnections.value[taskId].close();
-    } catch (e) {}
-  }
-
-  const eventSource = new EventSource(
-    api.download.convertProgressStreamUrl(taskId)
-  );
-  sseConnections.value[taskId] = eventSource;
-
-  eventSource.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      activeDownloads.value[taskId] = {
-        kind: 'quantize',
-        name,
-        progress: typeof data.progress === 'number' ? data.progress : 0,
-        status: data.status || 'running',
-        speed: '',
-        total_size: 1,
-        downloaded_size: 0,
-        error: data.error_message || '',
-      };
-
-      if (data.status === 'completed') {
-        eventSource.close();
-        delete sseConnections.value[taskId];
-        setTimeout(() => {
-          delete activeDownloads.value[taskId];
-          delete downloadingModels.value[rowKey];
-        }, 2000);
-        toast.success($tt('download.quantizeComplete', { name }));
-        refreshStatus();
-      } else if (data.status === 'failed') {
-        eventSource.close();
-        delete sseConnections.value[taskId];
-        delete downloadingModels.value[rowKey];
-        toast.error(
-          $tt('download.quantizeFailed', { msg: data.error_message || '' })
-        );
-      } else if (data.status === 'cancelled') {
-        eventSource.close();
-        delete sseConnections.value[taskId];
-        delete activeDownloads.value[taskId];
-        delete downloadingModels.value[rowKey];
-        toast.info($tt('download.genCancelled', { name }));
-      }
-    } catch (e) {
-      console.error('Conversion SSE parse error:', e);
-    }
-  };
-
-  eventSource.onerror = () => {
-    eventSource.close();
-    delete sseConnections.value[taskId];
-    delete downloadingModels.value[rowKey];
-  };
-}
-
 /* ───── Batch / Cancel / Resume ───── */
 
 async function cancelDownload(taskId: string) {
-  const item = activeDownloads.value[taskId];
-  if (item && item.kind === 'quantize') {
-    try {
-      await api.download.cancelConversion(taskId);
-    } catch (e) {
-      console.error('Cancel conversion failed:', e);
-    }
-    return;
-  }
   try {
     await api.download.cancel(taskId);
   } catch (e) {
@@ -1400,10 +1275,7 @@ async function resumeDownload(taskId: string) {
 
 async function deleteDownload(taskId: string) {
   try {
-    const item = activeDownloads.value[taskId];
-    if (!item || item.kind !== 'quantize') {
-      await api.download.delete(taskId);
-    }
+    await api.download.delete(taskId);
     delete activeDownloads.value[taskId];
     toast.success($tt('download.deleteSuccess'));
   } catch (e) {
