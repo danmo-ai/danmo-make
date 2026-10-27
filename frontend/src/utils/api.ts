@@ -297,21 +297,6 @@ export const api = {
         `${API_BASE}/api/download/progress/${encodeURIComponent(taskId)}/stream`,
       );
     },
-
-    async startConvert(body: Record<string, unknown>): Promise<unknown> {
-      const response = await client.post('/api/download/convert', body);
-      return response.data;
-    },
-
-    convertProgressStreamUrl(taskId: string): string {
-      return withAccessApiKey(
-        `${API_BASE}/api/download/convert/${encodeURIComponent(taskId)}/stream`,
-      );
-    },
-
-    async cancelConversion(taskId: string): Promise<void> {
-      await client.post(`/api/download/convert/${encodeURIComponent(taskId)}/cancel`);
-    },
   },
 
   tasks: {

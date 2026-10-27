@@ -684,13 +684,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(convert.status(), StatusCode::BAD_REQUEST);
-        let bytes = convert.into_body().collect().await.unwrap().to_bytes();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(
-            body["detail"].as_str().unwrap_or("").contains("GGUF"),
-            "{body}"
-        );
+        assert_eq!(convert.status(), StatusCode::NOT_FOUND);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

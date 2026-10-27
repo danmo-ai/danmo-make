@@ -129,7 +129,6 @@ pub fn routes() -> Router<AppState> {
         .route("/api/download/lora/base-models", get(lora_base_models))
         .route("/api/download/lora/hub", post(start_lora_download))
         .route("/api/download/lora", post(start_lora_download))
-        .route("/api/download/convert", post(reject_convert))
         .route("/api/loras/datasets", get(empty_items))
         .route("/api/loras/user-adapters", get(empty_items))
         .route(
@@ -1651,13 +1650,6 @@ async fn delete_preset(
     }
     save_json(&presets_path(&state), &all)?;
     Ok(Json(json!({ "ok": true })))
-}
-
-async fn reject_convert() -> Result<Json<Value>, ApiError> {
-    Err(fail(
-        StatusCode::BAD_REQUEST,
-        "safetensors conversion was removed. Download a GGUF bundle (bf16, q8_0, or q4_k)",
-    ))
 }
 
 async fn reject_training() -> Result<Json<Value>, ApiError> {

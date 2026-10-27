@@ -3253,8 +3253,8 @@
       "catalog": {
         "media": "image",
         "description": {
-          "zh": "HiDream-O1-Image Dev（28 步蒸馏），Qwen3-VL 统一像素块 Transformer，无 VAE；支持文生图、指令编辑与多参考合成。MLX BF16。",
-          "en": "HiDream-O1-Image Dev (28-step distill) — Qwen3-VL unified pixel-patch UiT, no VAE; T2I, instruction edit, multi-reference. MLX BF16."
+          "zh": "HiDream-O1-Image Dev（28 步蒸馏），Qwen3-VL 统一像素块 Transformer，无 VAE；支持文生图、指令编辑与多参考合成。",
+          "en": "HiDream-O1-Image Dev (28-step distill) — Qwen3-VL unified pixel-patch UiT, no VAE; T2I, instruction edit, multi-reference."
         },
         "category": "base_models",
         "commercial_use_allowed": true,
@@ -3335,8 +3335,8 @@
       "catalog": {
         "media": "image",
         "description": {
-          "zh": "HiDream-O1-Image 完整版（50 步），需自行转换为 MLX BF16 或使用上游 PyTorch 权重转换脚本。",
-          "en": "HiDream-O1-Image Full (50 steps); convert upstream weights to MLX BF16 bundle layout."
+          "zh": "HiDream-O1-Image 完整版（50 步）。",
+          "en": "HiDream-O1-Image Full (50 steps)."
         },
         "category": "base_models",
         "commercial_use_allowed": true,
@@ -3482,8 +3482,8 @@
       "catalog": {
         "media": "image",
         "description": {
-          "zh": "Boogu-Image-0.1-Turbo — 10B 蒸馏版，默认 8 步快速写实与中英文字渲染；Apache-2.0。人像虚化背景在 Turbo+量化版上可能出现细网格（模型/VAE 固有限制，风景纹理区不明显）；可试 mlx-bf16。",
-          "en": "Boogu-Image-0.1-Turbo — 10B distilled default 8-step photorealistic generation with bilingual text rendering. Apache-2.0. Bokeh backgrounds may show a fine grid on Turbo+quantized weights (upstream/VAE limit; less visible on textured landscapes); try mlx-bf16."
+          "zh": "Boogu-Image-0.1-Turbo — 10B 蒸馏版，默认 8 步快速写实与中英文字渲染；Apache-2.0。人像虚化背景在 Turbo+量化版上可能出现细网格（模型/VAE 固有限制，风景纹理区不明显）。",
+          "en": "Boogu-Image-0.1-Turbo — 10B distilled default 8-step photorealistic generation with bilingual text rendering. Apache-2.0. Bokeh backgrounds may show a fine grid on Turbo+quantized weights (upstream/VAE limit; less visible on textured landscapes)."
         },
         "category": "base_models",
         "commercial_use_allowed": true,
