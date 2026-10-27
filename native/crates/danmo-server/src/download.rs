@@ -2,7 +2,8 @@
 //! File URLs come from the registry or from a hub file listing. Names are not invented.
 //! The DiT weight must be GGUF. A version may also list `components`: the text encoder,
 //! VAE, and tokenizer published beside that GGUF. Those files land in the version
-//! directory. The engine still loads GGUF only.
+//! directory. When the last file lands, that install writes `bundle.manifest.json`
+//! there. The engine still loads GGUF only.
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -574,7 +575,32 @@ impl Downloads {
         })?;
         let Plan::Files(files) = plan;
         self.remember_files(id, &files);
-        self.run_files(id, &files, force, cancel)
+        let done = self.run_files(id, &files, force, cancel)?;
+        if matches!(done, Done::Finished) && version_lists_components(spec) {
+            let quant = self.task_version(id)?;
+            let local = spec
+                .get("local_path")
+                .and_then(|v| v.as_str())
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| "version has no local_path".to_string())?;
+            let root = resolve_model_path(&workspace, local);
+            write_bundle_manifest(&root, &quant, &files)?;
+        }
+        Ok(done)
+    }
+
+    fn task_version(&self, id: &str) -> Result<String, String> {
+        let inner = self.lock();
+        let version = inner
+            .tasks
+            .iter()
+            .find(|task| task.id == id)
+            .map(|task| task.version.clone())
+            .unwrap_or_default();
+        if !matches!(version.as_str(), "bf16" | "q8_0" | "q4_k") {
+            return Err(format!("version {version} is not bf16, q8_0, or q4_k"));
+        }
+        Ok(version)
     }
 
     fn run_lora(
@@ -1898,6 +1924,105 @@ fn token_header<'a>(hub: &str, auth: &'a HubAuth) -> Option<&'a str> {
     }
 }
 
+fn version_lists_components(spec: &Value) -> bool {
+    spec.get("components")
+        .and_then(|v| v.as_array())
+        .is_some_and(|rows| !rows.is_empty())
+}
+
+fn write_bundle_manifest(root: &Path, quant: &str, files: &[PlannedFile]) -> Result<(), String> {
+    let body = bundle_manifest_value(quant, root, files)?;
+    fs::create_dir_all(root).map_err(|err| err.to_string())?;
+    let mut bytes = serde_json::to_vec_pretty(&body).map_err(|err| err.to_string())?;
+    bytes.push(b'\n');
+    fs::write(root.join("bundle.manifest.json"), bytes).map_err(|err| err.to_string())
+}
+
+fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Result<Value, String> {
+    if !matches!(quant, "bf16" | "q8_0" | "q4_k") {
+        return Err(format!("version {quant} is not bf16, q8_0, or q4_k"));
+    }
+    let mut transformer = Vec::new();
+    let mut text_encoder = Vec::new();
+    let mut vae = Vec::new();
+    for file in files {
+        let rel = rel_under(root, &file.dest)?;
+        let Some(role) = manifest_role(&rel) else {
+            continue;
+        };
+        let slot = match role {
+            "transformer" => &mut transformer,
+            "text_encoder" => &mut text_encoder,
+            "vae" => &mut vae,
+            _ => continue,
+        };
+        if !slot.iter().any(|path| path == &rel) {
+            slot.push(rel);
+        }
+    }
+    transformer.sort();
+    text_encoder.sort();
+    vae.sort();
+    if transformer.is_empty() {
+        return Err("bundle manifest has no transformer file".into());
+    }
+    if text_encoder.is_empty() {
+        return Err("bundle manifest has no text_encoder file".into());
+    }
+    if vae.is_empty() {
+        return Err("bundle manifest has no vae file".into());
+    }
+    Ok(json!({
+        "format": "gguf",
+        "quant": quant,
+        "files": {
+            "transformer": role_value(transformer),
+            "text_encoder": role_value(text_encoder),
+            "vae": role_value(vae),
+        }
+    }))
+}
+
+fn role_value(paths: Vec<String>) -> Value {
+    if paths.len() == 1 {
+        json!(paths[0])
+    } else {
+        json!(paths)
+    }
+}
+
+fn rel_under(root: &Path, dest: &str) -> Result<String, String> {
+    let rel = Path::new(dest)
+        .strip_prefix(root)
+        .map_err(|_| format!("{} is outside {}", dest, root.display()))?;
+    let text = rel
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join("/");
+    if text.is_empty() || text.split('/').any(|part| part == "..") {
+        return Err(format!("manifest path escapes the bundle: {text}"));
+    }
+    Ok(text)
+}
+
+fn manifest_role(rel: &str) -> Option<&'static str> {
+    let lower = rel.to_ascii_lowercase();
+    let weight = lower.ends_with(".gguf") || lower.ends_with(".safetensors");
+    if !weight {
+        return None;
+    }
+    if rel.starts_with("text_encoder/") {
+        Some("text_encoder")
+    } else if rel.starts_with("vae/") {
+        Some("vae")
+    } else if lower.ends_with(".gguf") {
+        Some("transformer")
+    } else {
+        None
+    }
+}
+
 fn write_receipts(files: &[PlannedFile]) -> Result<(), String> {
     let mut roots: Vec<PathBuf> = Vec::new();
     for file in files {
@@ -2336,6 +2461,125 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("component allow_patterns is empty"), "{err}");
+    }
+
+    #[test]
+    fn component_install_writes_manifest_from_the_planned_files() {
+        let workspace = PathBuf::from("/tmp/danmo-weight-root");
+        let spec = published_version("flux2-klein-4b", "q4_k");
+        assert!(version_lists_components(&spec));
+        let root = resolve_model_path(&workspace, spec["local_path"].as_str().unwrap());
+        let Plan::Files(files) = plan_version(&spec, &mut published_listing, &|path| {
+            resolve_model_path(&workspace, path)
+        })
+        .unwrap();
+        let body = bundle_manifest_value("q4_k", &root, &files).unwrap();
+        assert_eq!(body["format"], "gguf");
+        assert_eq!(body["quant"], "q4_k");
+        assert_eq!(body["files"]["transformer"], "flux-2-klein-4b-Q4_K_M.gguf");
+        assert_eq!(
+            body["files"]["vae"],
+            "vae/diffusion_pytorch_model.safetensors"
+        );
+        let text: Vec<_> = body["files"]["text_encoder"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            text,
+            [
+                "text_encoder/model-00001-of-00002.safetensors",
+                "text_encoder/model-00002-of-00002.safetensors"
+            ]
+        );
+        assert!(!body.to_string().contains("tokenizer.json"));
+        assert!(!body.to_string().contains("transformer/"));
+
+        let z = published_version("z-image", "bf16");
+        let zroot = resolve_model_path(&workspace, z["local_path"].as_str().unwrap());
+        let Plan::Files(zfiles) = plan_version(&z, &mut published_listing, &|path| {
+            resolve_model_path(&workspace, path)
+        })
+        .unwrap();
+        let zbody = bundle_manifest_value("bf16", &zroot, &zfiles).unwrap();
+        assert_eq!(zbody["files"]["transformer"], "z-image-BF16.gguf");
+        assert_eq!(
+            zbody["files"]["vae"],
+            "vae/diffusion_pytorch_model.safetensors"
+        );
+        assert!(zbody["files"]["text_encoder"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "text_encoder/model-00001-of-00003.safetensors"));
+        assert!(!zbody.to_string().contains("models/flux2-klein-4b"));
+
+        let bare = json!({
+            "local_path": "models/demo/q4_k",
+            "repo_id": "acme/dit",
+            "allow_patterns": ["a.gguf"]
+        });
+        assert!(!version_lists_components(&bare));
+        let err = bundle_manifest_value("fp16", &root, &files).unwrap_err();
+        assert!(err.contains("fp16"), "{err}");
+        let err = bundle_manifest_value("q4_k", &root, &files[..1]).unwrap_err();
+        assert!(err.contains("text_encoder"), "{err}");
+
+        let scratch = std::env::temp_dir().join(format!(
+            "danmo-manifest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let files = vec![
+            PlannedFile {
+                url: "https://example.com/dit.gguf".into(),
+                dest: scratch.join("dit.gguf").display().to_string(),
+                size: Some(4),
+            },
+            PlannedFile {
+                url: "https://example.com/te".into(),
+                dest: scratch
+                    .join("text_encoder/model.safetensors")
+                    .display()
+                    .to_string(),
+                size: Some(8),
+            },
+            PlannedFile {
+                url: "https://example.com/tok".into(),
+                dest: scratch
+                    .join("tokenizer/tokenizer.json")
+                    .display()
+                    .to_string(),
+                size: Some(2),
+            },
+            PlannedFile {
+                url: "https://example.com/vae".into(),
+                dest: scratch
+                    .join("vae/diffusion_pytorch_model.safetensors")
+                    .display()
+                    .to_string(),
+                size: Some(3),
+            },
+        ];
+        write_bundle_manifest(&scratch, "q8_0", &files).unwrap();
+        let text = fs::read_to_string(scratch.join("bundle.manifest.json")).unwrap();
+        let written: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(written["quant"], "q8_0");
+        assert_eq!(written["files"]["transformer"], "dit.gguf");
+        assert_eq!(
+            written["files"]["text_encoder"],
+            "text_encoder/model.safetensors"
+        );
+        assert_eq!(
+            written["files"]["vae"],
+            "vae/diffusion_pytorch_model.safetensors"
+        );
+        let _ = fs::remove_dir_all(&scratch);
     }
 
     #[test]
