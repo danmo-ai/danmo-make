@@ -63,17 +63,17 @@ pub fn execute(
         guidance,
     )?;
     let grid = geom::token_grid(width, height, cap_real, config.vae_scale)?;
+    let layout = weight_layout(config);
     let mut types = HashMap::new();
-    let mut stored = Vec::new();
-    for (name, ne0, ne1) in weight_layout(config) {
-        let ggml_type = loaded.ggml_type_of(&name)?;
-        check_stored_type(&name, ggml_type, ne0)?;
+    for (name, ne0, _) in &layout {
+        let ggml_type = loaded.ggml_type_of(name)?;
+        check_stored_type(name, ggml_type, *ne0)?;
         types.insert(name.clone(), ggml_type);
-        stored.push((name.clone(), loaded.raw_exact(&name, &[ne0, ne1])?));
     }
     let mut denoise = ZImageDenoise::build(ctx, config, width, height, cap_real, &types)?;
-    for (name, raw) in &stored {
-        denoise.load_bytes(name, raw)?;
+    for (name, ne0, ne1) in &layout {
+        let raw = loaded.raw_exact(name, &[*ne0, *ne1])?;
+        denoise.load_bytes(name, &raw)?;
     }
     let latent = match seed {
         Some(seed) => normal_latent(seed, denoise.latent_len()),
@@ -96,6 +96,9 @@ pub fn execute(
         guidance,
         on_progress,
     )?;
+    if let Some(detail) = crate::common::ops::non_finite("z-image latent", &latents) {
+        return Err(WeightError::NotBuilt(detail));
+    }
     let png = vae::decode(
         ctx,
         &files.vae,

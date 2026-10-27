@@ -573,7 +573,7 @@ pub struct TypedTensor<'a> {
 }
 
 pub fn matmul_type(ggml_type: u32) -> bool {
-    // Q4_K_M stores some rows as Q5_K. Both are ggml matmul types.
+    // Q4_K_M stores some rows as Q5_K (Klein) or Q6_K (Z-Image). All three are ggml matmul types.
     matches!(
         ggml_type,
         g::ggml_type_GGML_TYPE_F32
@@ -582,6 +582,7 @@ pub fn matmul_type(ggml_type: u32) -> bool {
             | g::ggml_type_GGML_TYPE_Q8_0
             | g::ggml_type_GGML_TYPE_Q4_K
             | g::ggml_type_GGML_TYPE_Q5_K
+            | g::ggml_type_GGML_TYPE_Q6_K
     )
 }
 
@@ -1177,8 +1178,15 @@ fn align8(n: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{bf16_to_f32, write_safetensors, GgufWeights, SafeTensor};
+    use super::{bf16_to_f32, matmul_type, type_block, write_safetensors, GgufWeights, SafeTensor};
     use crate::weights::WeightError;
+    use danmo_ggml_sys as g;
+
+    #[test]
+    fn q6_k_is_a_matmul_type() {
+        assert!(matmul_type(g::ggml_type_GGML_TYPE_Q6_K));
+        assert_eq!(type_block(g::ggml_type_GGML_TYPE_Q6_K), 256);
+    }
 
     #[test]
     fn safetensors_reverses_pytorch_dims_and_widens_bf16() {

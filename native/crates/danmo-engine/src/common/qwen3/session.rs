@@ -114,26 +114,31 @@ fn run_tower(
     let last = *selected.iter().max().unwrap_or(&0);
     let layout = layout_prefix(config, last, prefix);
     let mut types = HashMap::new();
-    let mut stored = Vec::with_capacity(layout.len());
+    for (name, ne0, _) in &layout {
+        let ggml_type = if is_rms(name) {
+            TYPE_F32
+        } else {
+            let ggml_type = weights.ggml_type_of(name)?;
+            check_stored_type(name, ggml_type, *ne0)?;
+            ggml_type
+        };
+        types.insert(name.clone(), ggml_type);
+    }
+    let mut graph = Qwen3Encode::build(ctx, config, prefix, selected, seq, &types)?;
+    // One tensor at a time. Holding every host copy next to the device buffer
+    // doubles a multi-gigabyte tower.
     for (name, ne0, ne1) in &layout {
-        let (ggml_type, raw) = if is_rms(name) {
+        let raw = if is_rms(name) {
             let values = weights.f32_widened(name, &[*ne0, *ne1])?;
             let mut raw = Vec::with_capacity(values.len() * 4);
             for value in values {
                 raw.extend_from_slice(&value.to_le_bytes());
             }
-            (TYPE_F32, raw)
+            raw
         } else {
-            let ggml_type = weights.ggml_type_of(name)?;
-            check_stored_type(name, ggml_type, *ne0)?;
-            (ggml_type, weights.raw_exact(name, &[*ne0, *ne1])?)
+            weights.raw_exact(name, &[*ne0, *ne1])?
         };
-        types.insert(name.clone(), ggml_type);
-        stored.push((name.clone(), raw));
-    }
-    let mut graph = Qwen3Encode::build(ctx, config, prefix, selected, seq, &types)?;
-    for (name, raw) in &stored {
-        graph.load_bytes(name, raw)?;
+        graph.load_bytes(name, &raw)?;
     }
     Ok(graph.compute(ids)?)
 }
