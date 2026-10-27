@@ -1,8 +1,11 @@
 mod graph;
 mod png;
 mod text;
+mod tokenizer;
 mod transformer;
 mod weights;
+
+pub(crate) use tokenizer::load_tokenizer;
 
 pub use png::encode_rgb;
 pub use text::{encode_penultimate, write_chain_bundle, write_qwen3_bundle};
@@ -65,12 +68,7 @@ pub fn execute(
     let grid_w = (width / scale) as i64;
     let grid_h = (height / scale) as i64;
     let seq_img = grid_w * grid_h;
-    let tokenizer = std::fs::read_to_string(bundle.join("tokenizer.json")).map_err(|err| {
-        WeightError::Open {
-            path: bundle.join("tokenizer.json").display().to_string(),
-            detail: err.to_string(),
-        }
-    })?;
+    let tokenizer = load_tokenizer(bundle)?;
     let (txt, seq_txt) = text_tokens(
         ctx,
         &files.text_encoder,

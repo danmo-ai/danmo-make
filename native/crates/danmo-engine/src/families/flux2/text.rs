@@ -55,7 +55,8 @@ pub fn encode_prompt(
     }
     let config = infer_config(&weights)?;
     let selected = select_layers(config.layers, config.hidden, joint)?;
-    let ids = tokenize(tokenizer_json, prompt, config.vocab)?;
+    // Flux2 Klein passes enable_thinking=False into the Qwen3 chat template.
+    let ids = super::tokenizer::tokenize(tokenizer_json, prompt, config.vocab, false)?;
     let embed = run_tower(ctx, &weights, config, &selected, &ids)?;
     let seq = ids.len() as i64;
     if embed.len() as i64 != joint * seq {
@@ -95,7 +96,8 @@ pub fn encode_penultimate(
             config.hidden
         )));
     }
-    let ids = tokenize(tokenizer_json, prompt, config.vocab)?;
+    // Z-Image registry override enable_thinking is true, so the empty think block is omitted.
+    let ids = super::tokenizer::tokenize(tokenizer_json, prompt, config.vocab, true)?;
     let selected = vec![config.layers - 1];
     let embed = run_tower(ctx, &weights, config, &selected, &ids)?;
     let seq = ids.len() as i64;
@@ -318,63 +320,6 @@ fn layout_prefix(config: Qwen3Config, layers: i64) -> Vec<(String, i64, i64)> {
         );
     }
     out
-}
-
-fn tokenize(json: &str, prompt: &str, vocab_size: i64) -> Result<Vec<i32>, WeightError> {
-    let value: serde_json::Value = serde_json::from_str(json)
-        .map_err(|err| WeightError::NotBuilt(format!("tokenizer.json is not json: {err}")))?;
-    if value.get("encoding").and_then(|item| item.as_str()) == Some("bytes") {
-        return tokenize_bytes(prompt, vocab_size);
-    }
-    if value.get("model").is_some() {
-        return Err(WeightError::NotBuilt("chat tokenizer is not built".into()));
-    }
-    let Some(vocab) = value.get("vocab").and_then(|item| item.as_object()) else {
-        return Err(WeightError::NotBuilt("tokenizer has no vocab".into()));
-    };
-    let words: Vec<&str> = prompt
-        .split_whitespace()
-        .filter(|word| !word.is_empty())
-        .collect();
-    if words.is_empty() {
-        return Err(WeightError::NotBuilt("prompt has no tokens".into()));
-    }
-    let mut ids = Vec::with_capacity(words.len());
-    for word in words {
-        let Some(id) = vocab.get(word).and_then(|item| item.as_i64()) else {
-            return Err(WeightError::NotBuilt(format!(
-                "tokenizer has no id for {word}"
-            )));
-        };
-        if id < 0 || id >= vocab_size {
-            return Err(WeightError::NotBuilt(format!(
-                "tokenizer id {id} for {word} is outside vocab {vocab_size}"
-            )));
-        }
-        ids.push(id as i32);
-    }
-    Ok(ids)
-}
-
-/// One token per UTF-8 byte. Any non-empty prompt maps into a 256-id table.
-fn tokenize_bytes(prompt: &str, vocab_size: i64) -> Result<Vec<i32>, WeightError> {
-    if vocab_size < 256 {
-        return Err(WeightError::NotBuilt(format!(
-            "byte tokenizer needs vocab >= 256, weights have {vocab_size}"
-        )));
-    }
-    let bytes = prompt.as_bytes();
-    if bytes.is_empty() {
-        return Err(WeightError::NotBuilt("prompt has no tokens".into()));
-    }
-    const MAX_BYTES: usize = 1024;
-    if bytes.len() > MAX_BYTES {
-        return Err(WeightError::NotBuilt(format!(
-            "byte tokenizer accepts at most {MAX_BYTES} bytes, prompt is {}",
-            bytes.len()
-        )));
-    }
-    Ok(bytes.iter().map(|byte| i32::from(*byte)).collect())
 }
 
 fn check_stored_type(name: &str, ggml_type: u32, ne0: i64) -> Result<(), WeightError> {

@@ -7,7 +7,9 @@
 //! full attention makes the image tokens match.
 //!
 //! The caption is the shared Qwen3 tower's penultimate hidden state, the same
-//! graph Flux2 uses. A one-vector `token_embed` fixture does not read the prompt.
+//! graph Flux2 uses. A Qwen byte-level tokenizer runs the single-user chat
+//! template with thinking left on. A one-vector `token_embed` fixture does not
+//! read the prompt.
 
 mod geom;
 mod graph;
@@ -168,7 +170,7 @@ fn encode_caption(
         ));
     }
     if text.contains("layers.0.self_attn.q_proj.weight") {
-        let tokenizer = read_tokenizer(bundle)?;
+        let tokenizer = super::flux2::load_tokenizer(bundle)?;
         return super::flux2::encode_penultimate(ctx, paths, &tokenizer, prompt, cap_dim);
     }
     let shape = text.shape("token_embed.weight")?;
@@ -206,14 +208,6 @@ fn encode_negative(
         )));
     }
     Ok(Some(encoded))
-}
-
-fn read_tokenizer(bundle: &Path) -> Result<String, WeightError> {
-    let path = bundle.join("tokenizer.json");
-    std::fs::read_to_string(&path).map_err(|err| WeightError::Open {
-        path: path.display().to_string(),
-        detail: err.to_string(),
-    })
 }
 
 fn check_stored_type(name: &str, ggml_type: u32, ne0: i64) -> Result<(), WeightError> {

@@ -14,6 +14,7 @@ metal = ["danmo-ggml-sys/metal"]
 [dependencies]
 danmo-ggml-sys = { path = "../danmo-ggml-sys" }
 danmo-contracts = { path = "../danmo-contracts" }
+regex = "1.13"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
