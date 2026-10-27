@@ -23,9 +23,9 @@ Language: [English](README.md) | **中文**
 - **全局单队列** — 图像 / 视频 / 音频串行；SSE 进度、优先级、日志落库。
 - **Studio UI** — Vue 3 + Vite + TypeScript + `@danqing/dq-ui`；创作 / 图库 / 模型 / 设置。
 - **无限画布** — 网格与画布共用资产库；会话、谱系、落点、创作器绑定。
-- **音频** — ACE-Step 文生音乐（`danqing-audio`，MLX）。
-- **MCP（给 Agent）** — `/mcp/` streamable HTTP；可与 **Danmo Work** 内置 `danmo-make` 专家（仅绑定，非 Ambient）配合。
-- **桌面发布** — macOS MLX `.dmg`；Linux mlx[cuda] 桌面 / **服务端** tar.gz。Windows 打包暂不支持。
+- **音频** — ACE-Step 与 DiffRhythm 已注册；图还没建，生成会显式失败。
+- **Agent** — 走 HTTP API。`/mcp/` 和 `bin/danqing-mcp` 这版没有接上。
+- **桌面发布** — macOS ggml Metal `.dmg`；Linux ggml 桌面 / 服务端 tar.gz。Windows 桌面包未接上；sidecar 用 `make pack-windows-sidecar`。
 
 ---
 
@@ -61,24 +61,21 @@ xattr -dr com.apple.quarantine "/Applications/Danmo Make.app"
 
 ### Linux（x86_64 + NVIDIA）— thin 服务端 `.tar.gz`
 
-CI 产物为 **`danmo-make-linux-mlx-x86_64-<version>.tar.gz`**（内置 API + 前端静态资源）。需要 NVIDIA 驱动；**首次** `./run.sh` 会把 **mlx[cuda]** 装到 `~/.danmo-make/runtime-venv`（控制台进度）。无 CPU 回退。
+CI 产物为 **`danmo-make-linux-ggml-x86_64-<version>.tar.gz`**（无头 `danqing-api` + 已构建的界面）。`./run.sh` 启动这个二进制。设备由 `DANQING_GGML_BACKEND` 决定（`cpu`、`cuda`、`vulkan`、`metal`）。二进制没编进的后端会在启动时失败。
 
 ```bash
-tar -xzf danmo-make-linux-mlx-x86_64-*.tar.gz
-cd danmo-make-linux-mlx-x86_64-*
+tar -xzf danmo-make-linux-ggml-x86_64-*.tar.gz
+cd danmo-make-linux-ggml-x86_64-*
 
 # 可选：
-# export DANQING_USER_DATA_DIR=$HOME/.danmo-make
-# export DANQING_PIP_MIRROR=tuna    # official | tuna | aliyun
 # export DANQING_HTTP_HOST=0.0.0.0
 # export DANQING_HTTP_PORT=7800
+# export DANQING_GGML_BACKEND=cuda
 
 ./run.sh
 ```
 
-- 界面 / API：**http://127.0.0.1:7800** · 文档 **/docs** · MCP **/mcp/**
-- 修复：`./run.sh --repair-runtime` · 重装：`./run.sh --reinstall-runtime` · 状态：`./run.sh --status-runtime`
-- 包内另有 `README.txt`、`danqing-runtime-setup`
+- 界面 / API：**http://127.0.0.1:7800** · 文档 **/docs**
 
 Linux **桌面包**（AppImage / `.deb`）可本地打包（`make pack-linux-desktop`），**当前 CI 不挂载**。
 
@@ -104,7 +101,6 @@ make dev      # danqing-api (:7800) + Vite HMR (:5800)
 
 - UI：**http://localhost:5800**（`/api` → :7800）
 - API / Swagger：**http://localhost:7800/docs**
-- MCP：**http://127.0.0.1:7800/mcp/**（需尾斜杠）
 
 ### 开发端口（Danmo 产品线）
 
@@ -119,24 +115,14 @@ make dev      # danqing-api (:7800) + Vite HMR (:5800)
 ### 从源码打包桌面 / 服务端
 
 ```bash
-make pack-macos-desktop    # .app / .dmg（MLX Metal sidecar）
-make pack-linux-desktop    # AppImage / .deb（mlx[cuda]；本地）
-make pack-linux-server     # Linux MLX thin 服务端 tar.gz
+make pack-macos-desktop    # .app / .dmg（ggml Metal sidecar）
+make pack-linux-desktop    # AppImage / .deb（ggml sidecar；本地）
+make pack-linux-server     # 无头 ggml danqing-api + 界面
 ```
 
-Windows 暂不支持。详见 [desktop/README.md](desktop/README.md)。
+Windows 桌面包未接线。`make pack-windows-sidecar` 只打 ggml sidecar。详见 [desktop/README.md](desktop/README.md)。
 
-### CLI
-
-```bash
-bin/danqing-generate --model z-image-turbo --prompt "窗台上的猫"
-bin/danqing-edit --model <id> --image input.png --prompt "加一顶帽子" --operation rewrite
-bin/danqing-video-generate --model <id> --prompt "夕阳下的海浪"
-bin/danqing-audio-generate --model ace-step-xl-sft --prompt "lofi" --duration 10 --output /tmp/t.wav
-bin/danqing-mcp   # stdio MCP；经环境变量 / ~/.danmo-make/api.port / 7800 发现端口
-```
-
-CLI ↔ REST：[AGENTS.md](AGENTS.md#cli-vs-rest-api)。
+生成走 HTTP API（`POST /api/images/generations` 及同组路由）。没有 `bin/danqing-*` 命令行。
 
 ---
 
@@ -144,7 +130,7 @@ CLI ↔ REST：[AGENTS.md](AGENTS.md#cli-vs-rest-api)。
 
 | 路径 | 作用 |
 |------|------|
-| `~/.danmo-make/` | 控制面：工作区指针、应用配置、日志、`api.port`、可选 Linux `runtime-venv` |
+| `~/.danmo-make/` | 控制面：工作区指针、应用配置、日志、`api.port` |
 | `{workspace}/config/` | 运行时注册表 / 预设（从 `default_config/` 种子） |
 | `{workspace}/models/` | 权重 / LoRA |
 | `{workspace}/outputs/` | 生成物 |
@@ -158,19 +144,7 @@ CLI ↔ REST：[AGENTS.md](AGENTS.md#cli-vs-rest-api)。
 
 ## Agent / MCP
 
-API 启动后：
-
-| | |
-|---|---|
-| 端点 | `http://127.0.0.1:7800/mcp/`（streamable HTTP；`/mcp` 会归一到 `/mcp/`） |
-| Stdio | `bin/danqing-mcp` |
-| 鉴权 | 本机 loopback 免密；远程需 `Authorization: Bearer <key>` — HTTP 与 MCP **两套钥匙**（**设置 → 集成**） |
-
-`list_models` 按 API **action** 过滤（`generate` / `edit` / `upscale`；别名 `create`→`generate`）。卡片含 `actions` / `type`，不含 LoRA。文生图/视频前请传 `action=generate`。
-
-Danmo Work：启用内置连接器 **danmo-make** + 专家（仅绑定，非 Ambient）。
-
-环境变量：`DANQING_HTTP_API_KEY`、`DANQING_MCP_API_KEY`、`DANQING_MCP_BASE_URL`。
+这版没有 `/mcp/`，也没有 `bin/danqing-mcp`。设置里仍可以单独存一把 MCP 钥匙。Agent 走 HTTP API。本机 loopback 免密；远程要带 `Authorization: Bearer`，钥匙在 **设置 → 集成**（`DANQING_HTTP_API_KEY`）。
 
 ---
 
@@ -188,7 +162,7 @@ Danmo Work：启用内置连接器 **danmo-make** + 专家（仅绑定，非 Amb
 | 扩图 | `extend` | `POST /api/images/edits` |
 | 放大 | `upscale` | `POST /api/images/upscales` |
 
-API / MCP：`create`→`generate`，rewrite/retouch/extend→`edit`。
+注册表 `create` 对应 `POST /api/images/generations`。`rewrite`、`retouch`、`extend` 对应 `POST /api/images/edits`。
 
 ### 视频
 
@@ -197,7 +171,7 @@ API / MCP：`create`→`generate`，rewrite/retouch/extend→`edit`。
 | 文生视频 | `create` | `POST /api/videos/generations` |
 | 图生视频 | `animate` | `POST /api/videos/edits` |
 
-**MiniMax H3（`minimax-h3-fl2va`）** — MLX 音视频联合 FL2VA（Metal / mlx[cuda]，**mlx >= 0.32.3**，**mlx-vlm >= 0.7.6**，**transformers >= 5.19**）。正确性对标 [PipeNetwork/minimax-h3-mlx](https://github.com/PipeNetwork/minimax-h3-mlx)（scheduler `t=1−σ`、宽高比归一 RoPE、关键帧 posterior 采样）。生成 **算力瓶颈**；mlx-q4/q8 主要省显存/内存。`balanced` / `quality` / `oracle` 走完整 Euler。`draft` 只打开 Turbo LoRA（建议 6–8 步）。非 Turbo 常用 8–16 步；注册表默认仍是 30 步，避免静默改变采样积分。复用速度场、减少 DiT 层、缩小内部画布都是有损开关，质量预设不会打开。测试：`make test-h3-parity`；冒烟基准（需已安装 bundle）：`make bench-h3-smoke`。
+**MiniMax H3（`minimax-h3-fl2va`）** — 已注册。ggml 图还没建，生成任务会显式失败。
 
 ### 音频
 
@@ -212,7 +186,7 @@ API / MCP：`create`→`generate`，rewrite/retouch/extend→`edit`。
 
 ### ControlNet（FLUX.1）
 
-`flux1*` 文生图结构引导（Canny / Depth / Redux）；Fill 用于重绘/扩图。仅 MLX 栈。详见 [AGENTS.md](AGENTS.md) → Gotchas。
+结构引导和 Fill 还没建。带上这些参数的请求会让任务失败。见 [docs/engine_architecture.md](docs/engine_architecture.md)。
 
 ---
 
@@ -247,7 +221,7 @@ ggml 图
 按张量名 mmap GGUF
 ```
 
-没有 remap。注册表里还是 `fp16` / `mlx-q4` / `mlx-q8` 的模型会要求重新下载 GGUF。目前只有 flux2 的冒烟去噪图能跑，其余族会明确失败。
+现在能跑的图像图是 Flux2（MM-DiT）和 Z-Image（DiT）。它们共用 Qwen3 文本塔和 PNG 写出；Z-Image 另用共享的 AutoencoderKL 解码器。共享代码只收参数，不认识家族 id。家族之间不互相引用。其余家族在检查完 bundle 之后显式失败。注册表里还是 `fp16` / `mlx-q4` / `mlx-q8` 的版本会要求重新下载 GGUF。没有 remap。原则见 [docs/engine_architecture.md](docs/engine_architecture.md)。
 
 ---
 
@@ -279,8 +253,11 @@ make pack-ggml-sidecar
 **常用环境变量**：
 
 ```bash
-HF_ENDPOINT=https://hf-mirror.com
-MLX_METAL_MEMORY_LIMIT=120
+DANQING_HTTP_HOST=127.0.0.1
+DANQING_HTTP_PORT=7800
+DANQING_DB=db/studio.db
+DANQING_REGISTRY=default_config/models_registry.json
+DANQING_GGML_BACKEND=cpu
 DANQING_USER_DATA_DIR=~/.danmo-make
 # 优先在「设置 → 集成」创建钥匙，而不是长期写明文：
 # DANQING_HTTP_API_KEY=...
@@ -293,13 +270,12 @@ DANQING_USER_DATA_DIR=~/.danmo-make
 
 | 命令 | 用途 |
 |------|------|
-| `make dev` / `stop` | API + Vite |
+| `make dev` / `stop` | `danqing-api` + Vite |
 | `make dev-desktop` | Tauri + Vite（已有 API 时 `SKIP_BACKEND=1`） |
 | `make frontend-build` | → `out/frontend/dist/` |
-| `make verify-engine-stack` | 引擎治理 + 单元测试 |
-| `make check-consistency` | 注册表 / 路由 / i18n / 前端门禁 |
-| `make bench-eval-smoke` | 图像评估冒烟 |
-| `make clean` | 清理 `out/` |
+| `make test` | ggml 后端的 `cargo test` |
+| `make pack-ggml-sidecar` | 发布用 `danqing-api` |
+| `make clean` | `cargo clean` 并清掉 `out/` |
 
 ---
 
@@ -313,7 +289,6 @@ DANQING_USER_DATA_DIR=~/.danmo-make
 | 任务 | `GET/PATCH/DELETE /api/tasks/{id}`，SSE `…/stream`，`…/diagnose` |
 | 资产 / 画布 | `/api/assets`，`/api/canvas/sessions` |
 | 模型 | `/api/models`，`/api/registry` |
-| MCP | `/mcp/` |
 | 系统 | `/api/system/health`，`/api/settings/*` |
 
 交互文档：**http://localhost:7800/docs**

@@ -42,12 +42,16 @@ Runtime files are GGUF only. Users re-download. Safetensors and MLX `fp16` / `in
 
 ## Engine rules
 
-- Pipelines do not branch on `family == ...`. The factory table in `families/mod.rs` is the only family match.
-- Phases stay resolve → load → encode → schedule → infer → decode → persist.
-- One cgraph is reserved and replayed. Steps only replace inputs.
-- `import` of ggml stays inside `danmo-ggml-sys` and `danmo-engine` runtime/weight code.
-- Fail loud. No identity weight fill when a file was requested.
-- Flux2 currently runs a smoke velocity block (`velocity.weight`) so CPU tests can load a tiny GGUF. It is not the full MM-DiT. Other families return `GraphNotBuilt` after the bundle check.
+Long form: [docs/engine_architecture.md](docs/engine_architecture.md).
+
+- Fail loud. No filled-in weights, no truncated prompt, no second CPU backend for an operator the chosen device cannot run. CPU as `DANQING_GGML_BACKEND` is a real device.
+- One `GgmlContext` owns the device. The whole graph stays on it. Families add models. A new chip backend is a `GgmlContext` backend, not a family.
+- Families are isolated. A family does not import another family. `families/mod.rs` is the only match on a family id. Pipelines do not branch on `family == ...`.
+- Shared modules (`common/qwen3`, `common/vae`, `common/png`, `common/ops`, `runtime`) do not know family ids. Callers pass layer indices, a thinking flag, or a `VaeSpec`. Weight-file names such as `layers.*` and `decoder.*` are the file format.
+- A difference that needs many callbacks or mode switches stays in the family. Denoise does: Flux2 steps `x + dt * (u + g * (c - u))` on `[channels, seq]`; Z-Image steps `x + dt * (c + g * (c - u))` on `[W, H, C]`.
+- Phases stay resolve → load → encode → schedule → infer → decode → persist. One cgraph is reserved and replayed.
+- ggml calls stay in `danmo-ggml-sys` and `danmo-engine` runtime / weight code.
+- Built image graphs: `flux2` (MM-DiT; Qwen layers 9/18/27; 1×1 VAE preview) and `z_image` (DiT; Qwen penultimate state; AutoencoderKL when `decoder.conv_in.weight` is present). Every other family fails after the bundle check.
 
 ## Backend selection
 

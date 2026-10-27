@@ -60,7 +60,7 @@ More detail: [desktop/README.md](desktop/README.md) → quarantine tip.
 
 ### Linux (x86_64 + NVIDIA) — thin server `.tar.gz`
 
-CI ships **`danmo-make-linux-ggml-x86_64-<version>.tar.gz`** (headless `danqing-api` + built UI).
+CI ships **`danmo-make-linux-ggml-x86_64-<version>.tar.gz`** (headless `danqing-api` + built UI). `./run.sh` starts that binary. The device is `DANQING_GGML_BACKEND` (`cpu`, `cuda`, `vulkan`, `metal`). A backend the binary was not built with fails at startup.
 
 ```bash
 tar -xzf danmo-make-linux-ggml-x86_64-*.tar.gz
@@ -69,13 +69,12 @@ cd danmo-make-linux-ggml-x86_64-*
 # optional:
 # export DANQING_HTTP_HOST=0.0.0.0
 # export DANQING_HTTP_PORT=7800
+# export DANQING_GGML_BACKEND=cuda
 
 ./run.sh
 ```
 
-- UI / API: **http://127.0.0.1:7800** · docs **/docs** · MCP **/mcp/**
-- Repair: `./run.sh --repair-runtime` · reinstall: `./run.sh --reinstall-runtime` · status: `./run.sh --status-runtime`
-- Bundle also includes `README.txt` and `danqing-runtime-setup`
+- UI / API: **http://127.0.0.1:7800** · docs **/docs**
 
 Linux **desktop** (AppImage / `.deb`) is packable locally (`make pack-linux-desktop`) but **not** attached by current CI.
 
@@ -117,24 +116,14 @@ Override: `DQ_BACKEND_PORT`, `DQ_FRONTEND_PORT`.
 ### Pack desktop / server (from source)
 
 ```bash
-make pack-macos-desktop    # .app / .dmg (MLX Metal sidecar)
-make pack-linux-desktop    # AppImage / .deb (mlx[cuda]; local)
-make pack-linux-server     # Linux MLX thin server tar.gz
+make pack-macos-desktop    # .app / .dmg (ggml Metal sidecar)
+make pack-linux-desktop    # AppImage / .deb (ggml sidecar; local)
+make pack-linux-server     # headless ggml danqing-api + UI
 ```
 
-Windows is temporarily unsupported. Details: [desktop/README.md](desktop/README.md).
+Windows desktop pack is not wired. `make pack-windows-sidecar` builds the ggml sidecar. Details: [desktop/README.md](desktop/README.md).
 
-### CLI
-
-```bash
-bin/danqing-generate --model z-image-turbo --prompt "a cat on a windowsill"
-bin/danqing-edit --model <id> --image input.png --prompt "add a hat" --operation rewrite
-bin/danqing-video-generate --model <id> --prompt "ocean waves at sunset"
-bin/danqing-audio-generate --model ace-step-xl-sft --prompt "lofi beat" --duration 10 --output /tmp/t.wav
-bin/danqing-mcp   # stdio MCP host; discovers port via env / ~/.danmo-make/api.port / 7800
-```
-
-CLI ↔ REST: [AGENTS.md](AGENTS.md#cli-vs-rest-api).
+Generation goes through the HTTP API (`POST /api/images/generations` and the sibling routes). There is no `bin/danqing-*` CLI.
 
 ---
 
@@ -142,7 +131,7 @@ CLI ↔ REST: [AGENTS.md](AGENTS.md#cli-vs-rest-api).
 
 | Path | Role |
 |------|------|
-| `~/.danmo-make/` | Control plane: workspace pointer, app config, logs, `api.port`, optional Linux `runtime-venv` |
+| `~/.danmo-make/` | Control plane: workspace pointer, app config, logs, `api.port` |
 | `{workspace}/config/` | Runtime `models_registry.json`, presets (seeded from `default_config/`) |
 | `{workspace}/models/` | Weights / LoRAs |
 | `{workspace}/outputs/` | Generations |
@@ -156,19 +145,7 @@ Override control plane: `DANQING_USER_DATA_DIR`.
 
 ## Agent / MCP
 
-With the API up:
-
-| | |
-|---|---|
-| Endpoint | `http://127.0.0.1:7800/mcp/` (streamable HTTP; `/mcp` is normalized to `/mcp/`) |
-| Stdio | `bin/danqing-mcp` |
-| Auth | Loopback free; remote needs `Authorization: Bearer <key>` — **separate** HTTP vs MCP keys (**Settings → Integrations**) |
-
-`list_models` filters by API **action** (`generate` / `edit` / `upscale`; aliases `create`→`generate`). Cards expose `actions` and `type`; LoRA adapters are omitted. Use `action=generate` before `generate_image` / `generate_video`.
-
-Danmo Work: enable builtin connector **danmo-make** + expert (bound-only, not ambient).
-
-Env overrides: `DANQING_HTTP_API_KEY`, `DANQING_MCP_API_KEY`, `DANQING_MCP_BASE_URL`.
+The streamable HTTP route `/mcp/` and `bin/danqing-mcp` are not in this build. Settings can still store a separate MCP key. Agents talk to the HTTP API. Loopback skips auth; a remote client needs `Authorization: Bearer` with the HTTP key from **Settings → Integrations** (`DANQING_HTTP_API_KEY`).
 
 ---
 
@@ -186,7 +163,7 @@ Tabs only list models that declare the required registry action (seeded from `de
 | Outpaint | `extend` | `POST /api/images/edits` |
 | Upscale | `upscale` | `POST /api/images/upscales` |
 
-API / MCP surface maps `create`→`generate`, rewrite/retouch/extend→`edit`.
+Registry `create` is `POST /api/images/generations`. `rewrite`, `retouch`, and `extend` are `POST /api/images/edits`.
 
 ### Video
 
@@ -195,7 +172,7 @@ API / MCP surface maps `create`→`generate`, rewrite/retouch/extend→`edit`.
 | Text-to-video | `create` | `POST /api/videos/generations` |
 | Image-to-video | `animate` | `POST /api/videos/edits` |
 
-**MiniMax H3 (`minimax-h3-fl2va`)** — joint audio+video FL2VA on MLX (Metal / mlx[cuda], **mlx >= 0.32.3**, **mlx-vlm >= 0.7.6**, **transformers >= 5.19**). Correctness aligned with [PipeNetwork/minimax-h3-mlx](https://github.com/PipeNetwork/minimax-h3-mlx) (scheduler `t=1−σ`, aspect-normalized RoPE, keyframe posterior sample). Generation is **compute-bound**; mlx-q4/q8 mainly reduces footprint. `balanced` / `quality` / `oracle` run the full Euler trajectory. `draft` only enables Turbo LoRA (6–8 steps recommended). Non-turbo clips are usually run at 8–16 steps; the registry default stays 30 so the sampling integral does not change silently. Denoiser reuse, fewer DiT layers, and a smaller internal canvas are lossy and are not turned on by presets. Tests: `make test-h3-parity`; smoke benchmark (installed bundle): `make bench-h3-smoke`.
+**MiniMax H3 (`minimax-h3-fl2va`)** — registered. Its ggml graph is not built, so a generate task fails loud.
 
 ### Audio
 
@@ -210,7 +187,7 @@ Create → **Canvas** view: import (`I`), generate into staging (`S` snap), line
 
 ### ControlNet (FLUX.1)
 
-Structural guide on text-to-image for `flux1*` (Canny / Depth / Redux); Fill model for retouch/extend. MLX stack only. Details in [AGENTS.md](AGENTS.md) → Gotchas.
+Structural guide and Fill are not built. A request that sets them fails the task. See [docs/engine_architecture.md](docs/engine_architecture.md).
 
 ---
 
@@ -245,7 +222,7 @@ Family graph on ggml
 GGUF mmap by tensor name
 ```
 
-Flux2 is the only graph that runs today, and it is a smoke velocity block checked against a tiny GGUF, not the full MM-DiT. Every other family fails loud with “no ggml graph”. A model whose registry versions are still `fp16` / `mlx-q4` / `mlx-q8` fails the task and asks for a GGUF re-download. There is no key remap.
+Image graphs that run today are Flux2 (MM-DiT) and Z-Image (DiT). They share the Qwen3 tower, the PNG writer, and, for Z-Image, the AutoencoderKL decoder. Shared code takes parameters and does not know the family id. Families do not import each other. Every other family fails loud after the bundle check. A registry version that is still `fp16` / `mlx-q4` / `mlx-q8` fails the task and asks for a GGUF re-download. There is no key remap. Principles: [docs/engine_architecture.md](docs/engine_architecture.md).
 
 ---
 
@@ -309,7 +286,6 @@ DANQING_GGML_BACKEND=cpu
 | Tasks | `GET/PATCH/DELETE /api/tasks/{id}`, SSE `…/stream`, `…/diagnose` |
 | Assets / canvas | `/api/assets`, `/api/canvas/sessions` |
 | Models | `/api/models`, `/api/registry` |
-| MCP | `/mcp/` |
 | System | `/api/system/health`, `/api/settings/*` |
 
 Interactive docs: **http://localhost:7800/docs**
