@@ -136,6 +136,54 @@ fn rope_axes(
     Ok(acc)
 }
 
+/// Interleaved RoPE on unequal axes. `x` is `[head, heads, seq]`. Each axis is a
+/// contiguous even slice and its own position vector. `ggml_rope_ext` uses
+/// `theta^(-2i/n)` on that slice, which is the complex RoPE Z-Image and SD.cpp share.
+pub fn rope_nd(
+    b: &GraphBuilder,
+    x: Tensor,
+    pos: &[Tensor],
+    dims: &[i64],
+    theta: f32,
+) -> Result<Tensor, RuntimeError> {
+    if pos.len() != dims.len() || dims.is_empty() {
+        return Err(RuntimeError::Message(
+            "rope axes and position vectors have different lengths".into(),
+        ));
+    }
+    let dims_x = shape(x);
+    let head: i64 = dims.iter().sum();
+    if dims_x[0] != head {
+        return Err(RuntimeError::Message(format!(
+            "rope head {} does not match axis sum {head}",
+            dims_x[0]
+        )));
+    }
+    let heads = dims_x[1];
+    let seq = dims_x[2];
+    let bytes = std::mem::size_of::<f32>();
+    let nb1 = (head as usize) * bytes;
+    let nb2 = nb1 * (heads as usize);
+    let mut acc: Tensor = std::ptr::null_mut();
+    let mut offset = 0usize;
+    for (dim, p) in dims.iter().copied().zip(pos.iter().copied()) {
+        if dim < 2 || dim % 2 != 0 {
+            return Err(RuntimeError::Message(format!(
+                "rope axis {dim} is not a positive even width"
+            )));
+        }
+        let view = nn(b.cont(b.view_3d(x, dim, heads, seq, nb1, nb2, offset)))?;
+        let rotated = nn(b.cont(b.rope(view, p, dim as i32, theta)))?;
+        acc = if acc.is_null() {
+            rotated
+        } else {
+            nn(b.cont(b.concat(acc, rotated, 0)))?
+        };
+        offset += (dim as usize) * bytes;
+    }
+    Ok(acc)
+}
+
 /// CFG and Euler on one reused graph: `x + dt * (u + g * (c - u))`.
 pub(crate) fn euler_graph(
     parent: &ReusedGraph,

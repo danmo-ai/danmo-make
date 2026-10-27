@@ -4,6 +4,7 @@ mod text;
 mod transformer;
 mod weights;
 
+pub use png::encode_rgb;
 pub use text::{write_chain_bundle, write_qwen3_bundle};
 pub use transformer::Flux2Denoise;
 pub use weights::{weight_layout, Flux2Config};

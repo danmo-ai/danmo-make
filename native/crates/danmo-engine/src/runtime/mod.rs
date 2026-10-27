@@ -10,8 +10,8 @@ use thiserror::Error;
 pub use context::GgmlContext;
 pub(crate) use extend::euler_graph;
 pub use extend::{
-    flash_attend, measure_diffusion_steps, preview_conv, rope_pair, DeviceStep, DiffusionTiming,
-    RopeIn,
+    flash_attend, measure_diffusion_steps, preview_conv, rope_nd, rope_pair, DeviceStep,
+    DiffusionTiming, RopeIn,
 };
 pub use graph::{shape, GraphBuilder, ReusedGraph};
 

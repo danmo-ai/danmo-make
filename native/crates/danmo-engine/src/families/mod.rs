@@ -1,6 +1,7 @@
 //! One factory row per registry family. Shape A/B/C matches `docs/engine_architecture.md`.
 
 mod flux2;
+mod z_image;
 
 pub use flux2::{
     weight_layout, write_chain_bundle, write_config_bundle, write_q8_bundle, write_qwen3_bundle,
@@ -178,6 +179,16 @@ pub fn run_dit_image(
 ) -> Result<Option<DitImageRun>, crate::weights::WeightError> {
     match family {
         "flux2" => Ok(Some(flux2::execute(
+            ctx,
+            bundle,
+            prompt,
+            steps,
+            width,
+            height,
+            guidance,
+            on_progress,
+        )?)),
+        "z_image" => Ok(Some(z_image::execute(
             ctx,
             bundle,
             prompt,

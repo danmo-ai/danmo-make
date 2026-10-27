@@ -257,9 +257,9 @@ mod tests {
         write_smoke_bundle(&dir, 4).unwrap();
         let req = request();
         assert!(image_create(&req, "not-a-family", &dir, BackendKind::Cpu, |_, _| ()).is_err());
-        let err = match image_create(&req, "z_image", &dir, BackendKind::Cpu, |_, _| ()) {
+        let err = match image_create(&req, "fibo", &dir, BackendKind::Cpu, |_, _| ()) {
             Err(err) => err,
-            Ok(_) => panic!("z_image graph should not be built"),
+            Ok(_) => panic!("fibo graph should not be built"),
         };
         assert!(err.to_string().contains("no ggml graph"), "{err}");
         assert!(video_create("wan", &dir)

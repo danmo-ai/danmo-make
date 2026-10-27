@@ -42,8 +42,8 @@ fn shape_name(shape: Shape) -> &'static str {
     }
 }
 
-/// Image create. Flux2 runs the reserved denoise graph. Every other registered
-/// family still walks the same phases and then fails loud.
+/// Image create. A family with a ggml graph runs that denoise graph. Every
+/// other registered family still walks the same phases and then fails loud.
 pub fn image_create(
     request: &ImageGenerationRequest,
     family: &str,

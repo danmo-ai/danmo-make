@@ -96,6 +96,10 @@ impl GraphBuilder {
         unsafe { g::ggml_silu(self.ctx, a) }
     }
 
+    pub fn tanh(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_tanh(self.ctx, a) }
+    }
+
     pub fn mul(&self, a: *mut g::ggml_tensor, b: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
         unsafe { g::ggml_mul(self.ctx, a, b) }
     }
@@ -225,6 +229,25 @@ impl GraphBuilder {
         rows: *mut g::ggml_tensor,
     ) -> *mut g::ggml_tensor {
         unsafe { g::ggml_get_rows(self.ctx, table, rows) }
+    }
+
+    /// Scatter rows back. Destination shape comes from `shape`; its values are not read.
+    pub fn get_rows_back(
+        &self,
+        values: *mut g::ggml_tensor,
+        rows: *mut g::ggml_tensor,
+        shape: *mut g::ggml_tensor,
+    ) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_get_rows_back(self.ctx, values, rows, shape) }
+    }
+
+    pub fn view_1d(&self, a: *mut g::ggml_tensor, ne0: i64, offset: usize) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_view_1d(self.ctx, a, ne0, offset) }
+    }
+
+    /// Shape carrier for `ggml_repeat`. Not an input; its values are never read.
+    pub fn blank_f32_2d(&self, ne0: i64, ne1: i64) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_new_tensor_2d(self.ctx, g::ggml_type_GGML_TYPE_F32, ne0, ne1) }
     }
 
     pub fn repeat(&self, a: *mut g::ggml_tensor, b: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
