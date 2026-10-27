@@ -808,7 +808,7 @@ mod tests {
         let types = HashMap::new();
         let loaded = GgufWeights::open(&dir.join("transformer.gguf")).unwrap();
         let mut denoise =
-            ZImageDenoise::build(&ctx, config, 64, 64, grid.cap_real, &types).unwrap();
+            ZImageDenoise::build(&ctx, config, 64, 64, grid.cap_real, &types, &[]).unwrap();
         for (name, ne0, ne1) in weight_layout(config) {
             let raw = loaded.raw_exact(&name, &[ne0, ne1]).unwrap();
             denoise.load_bytes(&name, &raw).unwrap();
@@ -823,7 +823,7 @@ mod tests {
             &expect[..8]
         );
         let mut session =
-            ZImageDenoise::build(&ctx, config, 64, 64, grid.cap_real, &types).unwrap();
+            ZImageDenoise::build(&ctx, config, 64, 64, grid.cap_real, &types, &[]).unwrap();
         for (name, ne0, ne1) in weight_layout(config) {
             let raw = loaded.raw_exact(&name, &[ne0, ne1]).unwrap();
             session.load_bytes(&name, &raw).unwrap();

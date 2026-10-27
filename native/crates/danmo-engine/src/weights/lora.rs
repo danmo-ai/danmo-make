@@ -29,7 +29,7 @@ pub struct LoraFactor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Part {
+pub(crate) enum Part {
     Down,
     Up,
     Alpha,

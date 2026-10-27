@@ -75,8 +75,7 @@ pub fn execute(
         check_stored_type(name, ggml_type, *ne0)?;
         types.insert(name.clone(), ggml_type);
     }
-    let mut denoise =
-        ZImageDenoise::build_with_loras(ctx, config, width, height, cap_real, &types, &factors)?;
+    let mut denoise = ZImageDenoise::build(ctx, config, width, height, cap_real, &types, &factors)?;
     for (name, ne0, ne1) in &layout {
         let raw = loaded.raw_exact(name, &[*ne0, *ne1])?;
         denoise.load_bytes(name, &raw)?;
@@ -403,7 +402,7 @@ mod tests {
             types.insert(name, TYPE_F32);
         }
         let ctx = GgmlContext::new(BackendKind::Cpu).expect("cpu");
-        let graph = ZImageDenoise::build(&ctx, config, 64, 64, 4, &types)
+        let graph = ZImageDenoise::build(&ctx, config, 64, 64, 4, &types, &[])
             .expect("published-depth z-image graph reserves");
         drop(graph);
     }

@@ -28,17 +28,6 @@ impl ZImageDenoise {
         height: u32,
         cap_real: i64,
         types: &HashMap<String, u32>,
-    ) -> Result<Self, RuntimeError> {
-        Self::build_with_loras(ctx, config, width, height, cap_real, types, &[])
-    }
-
-    pub fn build_with_loras(
-        ctx: &GgmlContext,
-        config: ZImageConfig,
-        width: u32,
-        height: u32,
-        cap_real: i64,
-        types: &HashMap<String, u32>,
         loras: &[LoraFactor],
     ) -> Result<Self, RuntimeError> {
         let grid = token_grid(width, height, cap_real, config.vae_scale)?;

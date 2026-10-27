@@ -760,7 +760,6 @@ unsafe fn name_tensor(tensor: *mut g::ggml_tensor, name: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::GraphBuilder;
     use crate::runtime::{BackendKind, GgmlContext};
 
     /// y = Wx + scale * B(Ax). W is identity, so the residual is the only change.
