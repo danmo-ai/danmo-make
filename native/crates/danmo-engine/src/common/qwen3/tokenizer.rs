@@ -11,6 +11,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::LazyLock;
+use unicode_normalization::UnicodeNormalization;
 
 const MAX_TEXT_TOKENS: usize = 512;
 const QWEN_SPLIT: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
@@ -36,14 +37,28 @@ pub(crate) fn load_tokenizer(bundle: &Path) -> Result<String, WeightError> {
         detail: err.to_string(),
     })?;
     let config_path = path.with_file_name("tokenizer_config.json");
-    if !config_path.is_file() {
-        return Ok(json);
-    }
-    let config = std::fs::read_to_string(&config_path).map_err(|err| WeightError::Open {
-        path: config_path.display().to_string(),
-        detail: err.to_string(),
-    })?;
-    merge_chat_template(&json, &config)
+    let config = if config_path.is_file() {
+        Some(
+            std::fs::read_to_string(&config_path).map_err(|err| WeightError::Open {
+                path: config_path.display().to_string(),
+                detail: err.to_string(),
+            })?,
+        )
+    } else {
+        None
+    };
+    let jinja_path = path.with_file_name("chat_template.jinja");
+    let jinja = if jinja_path.is_file() {
+        Some(
+            std::fs::read_to_string(&jinja_path).map_err(|err| WeightError::Open {
+                path: jinja_path.display().to_string(),
+                detail: err.to_string(),
+            })?,
+        )
+    } else {
+        None
+    };
+    merge_chat_template(&json, config.as_deref(), jinja.as_deref())
 }
 
 pub(crate) fn tokenize(
@@ -82,24 +97,45 @@ pub(crate) fn tokenize(
     Ok(ids)
 }
 
-fn merge_chat_template(tokenizer_json: &str, config_json: &str) -> Result<String, WeightError> {
+fn merge_chat_template(
+    tokenizer_json: &str,
+    config_json: Option<&str>,
+    jinja: Option<&str>,
+) -> Result<String, WeightError> {
     let mut tokenizer: Value = serde_json::from_str(tokenizer_json)
         .map_err(|err| WeightError::NotBuilt(format!("tokenizer.json is not json: {err}")))?;
-    let config: Value = serde_json::from_str(config_json).map_err(|err| {
-        WeightError::NotBuilt(format!("tokenizer_config.json is not json: {err}"))
-    })?;
-    let Some(template) = config.get("chat_template") else {
-        return Ok(tokenizer_json.to_string());
+    let from_config = match config_json {
+        Some(text) => {
+            let config: Value = serde_json::from_str(text).map_err(|err| {
+                WeightError::NotBuilt(format!("tokenizer_config.json is not json: {err}"))
+            })?;
+            config.get("chat_template").and_then(|item| {
+                if item.is_null() {
+                    None
+                } else {
+                    Some(item.clone())
+                }
+            })
+        }
+        None => None,
     };
-    if template.is_null() {
-        return Ok(tokenizer_json.to_string());
-    }
+    let template = if let Some(template) = from_config {
+        Some(template)
+    } else {
+        jinja
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| Value::String(text.to_string()))
+    };
+    let Some(template) = template else {
+        return Ok(tokenizer.to_string());
+    };
     let Some(object) = tokenizer.as_object_mut() else {
         return Err(WeightError::NotBuilt(
             "tokenizer.json is not an object".into(),
         ));
     };
-    object.insert("chat_template".into(), template.clone());
+    object.insert("chat_template".into(), template);
     Ok(tokenizer.to_string())
 }
 
@@ -124,11 +160,7 @@ fn tokenize_bpe(
             "tokenizer model {model_type} is not built"
         )));
     }
-    if value.get("normalizer").is_some_and(|item| !item.is_null()) {
-        return Err(WeightError::NotBuilt(
-            "tokenizer normalizer is not built".into(),
-        ));
-    }
+    let normalizer = normalizer_kind(value)?;
     if model.get("byte_fallback").and_then(|item| item.as_bool()) == Some(true) {
         return Err(WeightError::NotBuilt(
             "tokenizer byte fallback is not built".into(),
@@ -148,6 +180,7 @@ fn tokenize_bpe(
         Some(template) => chat_text(prompt, thinking, template.contains("enable_thinking")),
         None => prompt.to_string(),
     };
+    let text = normalize_text(&text, normalizer)?;
     let mut ids = Vec::new();
     for piece in split_specials(&text, &specials) {
         match piece {
@@ -189,6 +222,35 @@ fn tokenize_bpe(
         )));
     }
     Ok(ids)
+}
+
+fn normalizer_kind(value: &Value) -> Result<Option<&str>, WeightError> {
+    let Some(normalizer) = value.get("normalizer") else {
+        return Ok(None);
+    };
+    if normalizer.is_null() {
+        return Ok(None);
+    }
+    let kind = normalizer
+        .get("type")
+        .and_then(|item| item.as_str())
+        .unwrap_or("");
+    if kind == "NFC" {
+        return Ok(Some("NFC"));
+    }
+    Err(WeightError::NotBuilt(
+        "tokenizer normalizer is not built".into(),
+    ))
+}
+
+fn normalize_text(text: &str, kind: Option<&str>) -> Result<String, WeightError> {
+    match kind {
+        None => Ok(text.to_string()),
+        Some("NFC") => Ok(text.nfc().collect()),
+        Some(_) => Err(WeightError::NotBuilt(
+            "tokenizer normalizer is not built".into(),
+        )),
+    }
 }
 
 fn chat_template(value: &Value) -> Result<Option<&str>, WeightError> {
@@ -827,6 +889,69 @@ mod tests {
         assert_eq!(ids[hi + 1], i32::from(b'i'));
         ids.splice(hi..hi + 2, std::iter::once(260));
         ids
+    }
+
+    #[test]
+    fn nfc_normalizer_joins_a_decomposed_letter() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&tokenizer_without_template()).unwrap();
+        value["normalizer"] = serde_json::json!({"type": "NFC"});
+        let json = value.to_string();
+        let composed = tokenize(&json, "caf\u{00e9}", 260, true).unwrap();
+        let decomposed = tokenize(&json, "cafe\u{0301}", 260, true).unwrap();
+        assert_eq!(composed, decomposed);
+        let other = tokenize(&json, "cafe", 260, true).unwrap();
+        assert_ne!(composed, other);
+        value["normalizer"] = serde_json::json!({"type": "NFD"});
+        let err = tokenize(&value.to_string(), "hi", 260, true).unwrap_err();
+        assert!(err.to_string().contains("normalizer is not built"), "{err}");
+    }
+
+    #[test]
+    fn published_klein_tokenizer_wraps_a_prompt() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../models/flux2-klein-4b/q4_k");
+        if !root.join("tokenizer/tokenizer.json").is_file() {
+            return;
+        }
+        let loaded = load_tokenizer(&root).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&loaded).unwrap();
+        assert!(value
+            .get("chat_template")
+            .and_then(|item| item.as_str())
+            .is_some());
+        let ids = tokenize(&loaded, "a red cube", 151_936, false).unwrap();
+        assert!(ids.len() > 8, "{ids:?}");
+        let again = tokenize(&loaded, "a red cube", 151_936, false).unwrap();
+        assert_eq!(ids, again);
+        let other = tokenize(&loaded, "a blue cube", 151_936, false).unwrap();
+        assert_ne!(ids, other);
+    }
+
+    #[test]
+    fn jinja_file_supplies_the_chat_template() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-qwen-jinja-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("tokenizer")).unwrap();
+        let tokenizer = tokenizer_without_template();
+        std::fs::write(dir.join("tokenizer/tokenizer.json"), &tokenizer).unwrap();
+        std::fs::write(dir.join("tokenizer/tokenizer_config.json"), "{}\n").unwrap();
+        std::fs::write(
+            dir.join("tokenizer/chat_template.jinja"),
+            "<|im_start|>user\n{{ content }}<|im_end|>\n{% if enable_thinking is defined and enable_thinking is false %}<think>\n\n</think>\n\n{% endif %}\n",
+        )
+        .unwrap();
+        let loaded = load_tokenizer(&dir).unwrap();
+        let ids = tokenize(&loaded, "hi", 260, false).unwrap();
+        assert_eq!(ids, hi_ids(true));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn qwen_tokenizer(merge_hi: bool) -> String {

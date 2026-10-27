@@ -413,6 +413,11 @@ pub fn write_q8_bundle(dir: &Path, config: Flux2Config) -> Result<(), WeightErro
 #[cfg(test)]
 mod tests {
     use super::schedule;
+    use super::weights::{stored_f32, weight_layout, Flux2Config};
+    use super::Flux2Denoise;
+    use crate::runtime::{BackendKind, GgmlContext, TYPE_F32};
+    use danmo_ggml_sys as g;
+    use std::collections::HashMap;
 
     #[test]
     fn klein_64_uses_the_vae_grid_empirical_schedule() {
@@ -423,5 +428,40 @@ mod tests {
         for (got, want) in sigmas.iter().zip(expect) {
             assert!((got - want).abs() < 1e-5, "{got} vs {want}");
         }
+    }
+
+    /// Allocates the published Klein 4B DiT at 64×64. Set `DANQING_PROBE_KLEIN=1`.
+    #[test]
+    fn klein_dit_reserves() {
+        if std::env::var("DANQING_PROBE_KLEIN").ok().as_deref() != Some("1") {
+            return;
+        }
+        let config = Flux2Config::klein_4b();
+        let bf16 = [
+            "double_stream_modulation_img.lin.weight",
+            "double_stream_modulation_txt.lin.weight",
+            "final_layer.adaLN_modulation.1.weight",
+            "final_layer.linear.weight",
+            "img_in.weight",
+            "single_stream_modulation.lin.weight",
+            "time_in.in_layer.weight",
+            "time_in.out_layer.weight",
+            "txt_in.weight",
+        ];
+        let mut types = HashMap::new();
+        for (name, _, _) in weight_layout(config) {
+            let ggml_type = if stored_f32(&name) {
+                TYPE_F32
+            } else if bf16.contains(&name.as_str()) {
+                g::ggml_type_GGML_TYPE_BF16
+            } else {
+                g::ggml_type_GGML_TYPE_Q5_K
+            };
+            types.insert(name, ggml_type);
+        }
+        let ctx = GgmlContext::new(BackendKind::Cpu).expect("cpu");
+        let graph =
+            Flux2Denoise::build_typed(&ctx, config, 4, 4, 32, &types).expect("klein dit reserves");
+        drop(graph);
     }
 }

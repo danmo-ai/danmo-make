@@ -6,7 +6,6 @@ use std::collections::HashMap;
 const QWEN_RMS_EPS: f32 = 1e-6;
 
 pub(crate) struct QwenTower {
-    pub hidden: i64,
     pub heads: i64,
     pub kv_heads: i64,
     pub head_dim: i64,
@@ -152,7 +151,8 @@ fn qwen_attention(
     let q = nn(b.cont(b.rope_neox(q, pos, head as i32, tower.rope_theta)))?;
     let k = nn(b.cont(b.rope_neox(k, pos, head as i32, tower.rope_theta)))?;
     let mixed = flash_attend(b, q, k, v, mask)?;
-    let mixed = nn(b.reshape_2d(mixed, tower.hidden, seq))?;
+    // Qwen3 query width is heads * head_dim. It is wider than the residual.
+    let mixed = nn(b.reshape_2d(mixed, tower.heads * tower.head_dim, seq))?;
     nn(linear(
         b,
         mixed,

@@ -573,6 +573,7 @@ pub struct TypedTensor<'a> {
 }
 
 pub fn matmul_type(ggml_type: u32) -> bool {
+    // Q4_K_M stores some rows as Q5_K. Both are ggml matmul types.
     matches!(
         ggml_type,
         g::ggml_type_GGML_TYPE_F32
@@ -580,6 +581,7 @@ pub fn matmul_type(ggml_type: u32) -> bool {
             | g::ggml_type_GGML_TYPE_BF16
             | g::ggml_type_GGML_TYPE_Q8_0
             | g::ggml_type_GGML_TYPE_Q4_K
+            | g::ggml_type_GGML_TYPE_Q5_K
     )
 }
 

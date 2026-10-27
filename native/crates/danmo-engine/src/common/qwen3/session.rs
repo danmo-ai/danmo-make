@@ -158,7 +158,6 @@ impl Qwen3Encode {
         let out = build_qwen3(
             &mut b,
             QwenTower {
-                hidden: config.hidden,
                 heads: config.heads,
                 kv_heads: config.kv_heads,
                 head_dim: config.head_dim,
@@ -256,10 +255,20 @@ fn infer_config(weights: &GgufWeights, prefix: &str) -> Result<Qwen3Config, Weig
     }
     let heads = q[1] / head;
     let kv_heads = k[1] / head;
-    if kv_heads < 1 || heads % kv_heads != 0 || heads * head != hidden {
+    if kv_heads < 1 || heads % kv_heads != 0 {
         return Err(WeightError::NotBuilt(format!(
-            "text encoder heads {heads} kv {kv_heads} head {head} do not match hidden {hidden}"
+            "text encoder heads {heads} kv {kv_heads} head {head} do not divide"
         )));
+    }
+    let o_name = named(prefix, "layers.0.self_attn.o_proj.weight");
+    let o = weights.shape(&o_name)?;
+    let q_width = heads * head;
+    if o[0] != q_width || o[1] != hidden {
+        return Err(WeightError::Shape {
+            name: o_name,
+            expected: vec![q_width, hidden],
+            got: vec![o[0], o[1]],
+        });
     }
     let layers = count_layers(weights, prefix);
     if layers < 1 {
@@ -375,4 +384,70 @@ pub(crate) fn is_rms(name: &str) -> bool {
     name.ends_with("layernorm.weight")
         || name.ends_with("q_norm.weight")
         || name.ends_with("k_norm.weight")
+}
+
+#[cfg(test)]
+mod probe {
+    use super::{is_rms, layout_prefix, Qwen3Config, Qwen3Encode};
+    use crate::runtime::{BackendKind, GgmlContext, TYPE_F32};
+    use danmo_ggml_sys as g;
+    use std::collections::HashMap;
+
+    /// Allocates the published Klein text tower (layers 1..=27). Set
+    /// `DANQING_PROBE_KLEIN=1` to run it. The default suite skips it.
+    #[test]
+    fn klein_text_tower_reserves() {
+        if std::env::var("DANQING_PROBE_KLEIN").ok().as_deref() != Some("1") {
+            return;
+        }
+        let config = Qwen3Config {
+            vocab: 151_936,
+            hidden: 2560,
+            layers: 36,
+            heads: 32,
+            kv_heads: 8,
+            head_dim: 128,
+            intermediate: 9728,
+            rope_theta: 1_000_000.0,
+        };
+        let prefix = "model.";
+        let selected = [9_i64, 18, 27];
+        let layout = layout_prefix(config, 27, prefix);
+        let mut types = HashMap::new();
+        for (name, _, _) in &layout {
+            let ggml_type = if is_rms(name) {
+                TYPE_F32
+            } else {
+                g::ggml_type_GGML_TYPE_BF16
+            };
+            types.insert(name.clone(), ggml_type);
+        }
+        let ctx = GgmlContext::new(BackendKind::Cpu).expect("cpu");
+        let graph = Qwen3Encode::build(&ctx, config, prefix, &selected, 32, &types)
+            .expect("klein text tower reserves");
+        drop(graph);
+    }
+
+    #[test]
+    fn qwen_query_width_can_exceed_the_residual() {
+        let config = Qwen3Config {
+            vocab: 4,
+            hidden: 4,
+            layers: 2,
+            heads: 2,
+            kv_heads: 1,
+            head_dim: 4,
+            intermediate: 8,
+            rope_theta: 1_000_000.0,
+        };
+        let layout = layout_prefix(config, 1, "");
+        let mut types = HashMap::new();
+        for (name, _, _) in &layout {
+            types.insert(name.clone(), TYPE_F32);
+        }
+        let ctx = GgmlContext::new(BackendKind::Cpu).expect("cpu");
+        let graph = Qwen3Encode::build(&ctx, config, "", &[1], 2, &types)
+            .expect("qwen graph with query width 8 and residual 4");
+        drop(graph);
+    }
 }
