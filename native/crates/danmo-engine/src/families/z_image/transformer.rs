@@ -56,6 +56,7 @@ impl ZImageDenoise {
         &mut self,
         latent: Vec<f32>,
         txt: &[f32],
+        uncond_txt: Option<&[f32]>,
         sigmas: &[f32],
         guidance: f32,
         mut on_step: impl FnMut(u32, u32),
@@ -72,7 +73,17 @@ impl ZImageDenoise {
         // reuse that buffer for the graph output. Keep x on the euler graph,
         // which the forward does not write, and copy it back before each pass.
         euler.set_f32("latent", &latent)?;
+        if let Some(uncond) = uncond_txt {
+            if uncond.len() != txt.len() {
+                return Err(RuntimeError::Message(format!(
+                    "negative embedding has {} values, prompt has {}",
+                    uncond.len(),
+                    txt.len()
+                )));
+            }
+        }
         let zeros = vec![0f32; txt.len()];
+        let uncond_ref = uncond_txt.unwrap_or(zeros.as_slice());
         let mut text_is_cond = true;
         for index in 0..total {
             let sigma = sigmas[index as usize];
@@ -87,7 +98,7 @@ impl ZImageDenoise {
             if guidance.abs() < f32::EPSILON {
                 ReusedGraph::copy(self.graph.output(), euler.tensor("vel_uncond")?)?;
             } else {
-                self.graph.set_f32("txt", &zeros)?;
+                self.graph.set_f32("txt", uncond_ref)?;
                 text_is_cond = false;
                 ReusedGraph::copy(euler.tensor("latent")?, self.graph.tensor("latent")?)?;
                 self.graph.compute_device()?;

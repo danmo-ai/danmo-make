@@ -56,6 +56,66 @@ pub fn encode_prompt(
     let config = infer_config(&weights)?;
     let selected = select_layers(config.layers, config.hidden, joint)?;
     let ids = tokenize(tokenizer_json, prompt, config.vocab)?;
+    let embed = run_tower(ctx, &weights, config, &selected, &ids)?;
+    let seq = ids.len() as i64;
+    if embed.len() as i64 != joint * seq {
+        return Err(WeightError::Shape {
+            name: "prompt_embeds".into(),
+            expected: vec![joint, seq],
+            got: vec![embed.len() as i64],
+        });
+    }
+    Ok((embed, seq))
+}
+
+/// Z-Image caption. Run every layer except the last and return that hidden state.
+/// The output width is `hidden`, not the Flux2 concatenation of layers 9, 18, and 27.
+pub fn encode_penultimate(
+    ctx: &GgmlContext,
+    paths: &[std::path::PathBuf],
+    tokenizer_json: &str,
+    prompt: &str,
+    hidden: i64,
+) -> Result<(Vec<f32>, i64), WeightError> {
+    let weights = GgufWeights::open_parts(paths)?;
+    if weights.names().any(|name| name.starts_with("blk.")) {
+        return Err(WeightError::NotBuilt(
+            "text encoder tensor names are blk.*; this graph reads layers.*".into(),
+        ));
+    }
+    let config = infer_config(&weights)?;
+    if config.layers < 2 {
+        return Err(WeightError::NotBuilt(
+            "penultimate text encoder needs at least 2 layers".into(),
+        ));
+    }
+    if config.hidden != hidden {
+        return Err(WeightError::NotBuilt(format!(
+            "text encoder hidden {} is not the caption width {hidden}",
+            config.hidden
+        )));
+    }
+    let ids = tokenize(tokenizer_json, prompt, config.vocab)?;
+    let selected = vec![config.layers - 1];
+    let embed = run_tower(ctx, &weights, config, &selected, &ids)?;
+    let seq = ids.len() as i64;
+    if embed.len() as i64 != hidden * seq {
+        return Err(WeightError::Shape {
+            name: "prompt_embeds".into(),
+            expected: vec![hidden, seq],
+            got: vec![embed.len() as i64],
+        });
+    }
+    Ok((embed, seq))
+}
+
+fn run_tower(
+    ctx: &GgmlContext,
+    weights: &GgufWeights,
+    config: Qwen3Config,
+    selected: &[i64],
+    ids: &[i32],
+) -> Result<Vec<f32>, WeightError> {
     let seq = ids.len() as i64;
     let last = *selected.iter().max().unwrap_or(&0);
     let layout = layout_prefix(config, last);
@@ -65,20 +125,12 @@ pub fn encode_prompt(
         check_stored_type(name, ggml_type, *ne0)?;
         types.insert(name.clone(), ggml_type);
     }
-    let mut graph = Qwen3Encode::build(ctx, config, &selected, seq, &types)?;
+    let mut graph = Qwen3Encode::build(ctx, config, selected, seq, &types)?;
     for (name, ne0, ne1) in &layout {
         let raw = weights.raw_exact(name, &[*ne0, *ne1])?;
         graph.load_bytes(name, &raw)?;
     }
-    let embed = graph.compute(&ids)?;
-    if embed.len() as i64 != joint * seq {
-        return Err(WeightError::Shape {
-            name: "prompt_embeds".into(),
-            expected: vec![joint, seq],
-            got: vec![embed.len() as i64],
-        });
-    }
-    Ok((embed, seq))
+    Ok(graph.compute(ids)?)
 }
 
 struct Qwen3Encode {

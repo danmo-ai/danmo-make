@@ -830,7 +830,7 @@ mod tests {
         }
         let sigmas = linear_sigmas(1, 64, 64, true);
         let stepped = session
-            .denoise(latent.clone(), &txt, &sigmas, 0.0, |_, _| ())
+            .denoise(latent.clone(), &txt, None, &sigmas, 0.0, |_, _| ())
             .unwrap();
         assert_eq!(session.graph_computes(), 1);
         assert_eq!(session.host_readbacks(), 0);
@@ -927,10 +927,11 @@ mod tests {
         for (name, ne0, ne1) in weight_layout(config) {
             weights.insert(name.clone(), loaded.f32_exact(&name, &[ne0, ne1]).unwrap());
         }
-        let text = GgufWeights::open(&dir.join("text_encoder.gguf")).unwrap();
-        let txt = text
-            .f32_exact("token_embed.weight", &[config.cap_dim, 1])
-            .unwrap();
+        // The DiT parity case feeds a fixed caption. Prompt encoding is a
+        // separate graph and is not part of this host reference.
+        let txt: Vec<f32> = (0..config.cap_dim)
+            .map(|i| ((i % 5) as f32 - 2.0) * 0.05)
+            .collect();
         let latent: Vec<f32> = (0..grid.latent_w * grid.latent_h * config.in_channels)
             .map(|i| ((i % 7) as f32 - 3.0) * 0.02)
             .collect();

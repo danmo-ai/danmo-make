@@ -76,6 +76,7 @@ pub fn image_create(
                 request.scheduler.as_deref(),
                 request.scheduler_shift,
                 request.use_empirical_mu,
+                &request.negative_prompt,
                 on_progress,
             )?
             else {

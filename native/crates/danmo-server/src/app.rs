@@ -563,14 +563,12 @@ mod tests {
         );
         body["adapters"] = json!([]);
         body["negative_prompt"] = json!("blurry");
-        let refused = post_json(&app, "/api/images/generations", &body).await;
-        assert!(
-            refused.1["detail"]
-                .as_str()
-                .unwrap()
-                .contains("text encoder"),
+        let accepted_negative = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(
+            accepted_negative.0,
+            StatusCode::ACCEPTED,
             "{}",
-            refused.1
+            accepted_negative.1
         );
         body["negative_prompt"] = json!("");
         body["scheduler"] = json!("flow_match_euler");
@@ -1142,12 +1140,6 @@ fn prepare_image_request(
 }
 
 fn reject_unbuilt_inference(family: &str, body: &Value) -> Result<(), ApiError> {
-    if text_field(body, "negative_prompt").is_some_and(|text| !text.is_empty()) {
-        return Err(fail(
-            StatusCode::NOT_IMPLEMENTED,
-            "negative prompt needs the text encoder graph",
-        ));
-    }
     if body
         .get("adapters")
         .and_then(|v| v.as_array())

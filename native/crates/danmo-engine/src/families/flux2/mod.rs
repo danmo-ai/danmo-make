@@ -5,7 +5,9 @@ mod transformer;
 mod weights;
 
 pub use png::encode_rgb;
-pub use text::{write_chain_bundle, write_qwen3_bundle};
+pub use text::{encode_penultimate, write_chain_bundle, write_qwen3_bundle};
+#[cfg(test)]
+pub use text::{encoder_layout, Qwen3Config};
 pub use transformer::Flux2Denoise;
 pub use weights::{weight_layout, Flux2Config};
 
@@ -28,8 +30,14 @@ pub fn execute(
     guidance: f32,
     seed: Option<i64>,
     scheduler: Option<&str>,
+    negative: &str,
     on_progress: impl FnMut(u32, u32),
 ) -> Result<crate::families::DitImageRun, WeightError> {
+    if !negative.trim().is_empty() {
+        return Err(WeightError::NotBuilt(
+            "negative prompt is not built for this family".into(),
+        ));
+    }
     match scheduler.unwrap_or("flow_match_euler_discrete") {
         "flow_match_euler" | "flow_match_euler_discrete" => {}
         other => {

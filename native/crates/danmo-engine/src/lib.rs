@@ -212,6 +212,16 @@ mod tests {
             Ok(_) => panic!("unknown prompt token was accepted"),
         };
         assert!(err.to_string().contains("no id for missing"), "{err}");
+        let mut negative = request();
+        negative.negative_prompt = "a dog".into();
+        let err = match image_create(&negative, "flux2", &dir, BackendKind::Cpu, |_, _| ()) {
+            Err(err) => err,
+            Ok(_) => panic!("flux2 accepted a negative prompt"),
+        };
+        assert!(
+            err.to_string().contains("negative prompt is not built"),
+            "{err}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

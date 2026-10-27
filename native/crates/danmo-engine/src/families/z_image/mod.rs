@@ -5,6 +5,9 @@
 //! applied: the flash-attention `1/128` rescale, and the w2 `1/128` rescale.
 //! Sequence order is image then caption. SD.cpp concatenates caption then image;
 //! full attention makes the image tokens match.
+//!
+//! The caption is the shared Qwen3 tower's penultimate hidden state, the same
+//! graph Flux2 uses. A one-vector `token_embed` fixture does not read the prompt.
 
 mod geom;
 mod graph;
@@ -38,14 +41,22 @@ pub fn execute(
     scheduler: Option<&str>,
     scheduler_shift: Option<f32>,
     empirical_mu: bool,
+    negative: &str,
     on_progress: impl FnMut(u32, u32),
 ) -> Result<crate::families::DitImageRun, WeightError> {
-    let _ = prompt;
     let files = assert_gguf_bundle(bundle)?;
     let loaded = GgufWeights::open_parts(&files.transformer)?;
     let config = config_from_weights(&loaded)?;
-    let txt = text_tokens(&files.text_encoder, config.cap_dim)?;
-    let cap_real = 1;
+    let (txt, cap_real) = encode_caption(ctx, bundle, &files.text_encoder, prompt, config.cap_dim)?;
+    let uncond = encode_negative(
+        ctx,
+        bundle,
+        &files.text_encoder,
+        negative,
+        config.cap_dim,
+        cap_real,
+        guidance,
+    )?;
     let grid = geom::token_grid(width, height, cap_real, config.vae_scale)?;
     let mut types = HashMap::new();
     let mut stored = Vec::new();
@@ -72,7 +83,14 @@ pub fn execute(
         scheduler_shift,
         empirical_mu,
     )?;
-    let latents = denoise.denoise(latent, &txt, &sigmas, guidance, on_progress)?;
+    let latents = denoise.denoise(
+        latent,
+        &txt,
+        uncond.as_deref(),
+        &sigmas,
+        guidance,
+        on_progress,
+    )?;
     let png = decode_preview(
         ctx,
         &files.vae,
@@ -136,14 +154,22 @@ fn schedule(
     }
 }
 
-fn text_tokens(paths: &[std::path::PathBuf], cap_dim: i64) -> Result<Vec<f32>, WeightError> {
+fn encode_caption(
+    ctx: &GgmlContext,
+    bundle: &Path,
+    paths: &[std::path::PathBuf],
+    prompt: &str,
+    cap_dim: i64,
+) -> Result<(Vec<f32>, i64), WeightError> {
     let text = GgufWeights::open_parts(paths)?;
-    if text.names().any(|name| name.starts_with("blk."))
-        || text.contains("layers.0.self_attn.q_proj.weight")
-    {
+    if text.names().any(|name| name.starts_with("blk.")) {
         return Err(WeightError::NotBuilt(
-            "text encoder graph is not built".into(),
+            "text encoder tensor names are blk.*; this graph reads layers.*".into(),
         ));
+    }
+    if text.contains("layers.0.self_attn.q_proj.weight") {
+        let tokenizer = read_tokenizer(bundle)?;
+        return super::flux2::encode_penultimate(ctx, paths, &tokenizer, prompt, cap_dim);
     }
     let shape = text.shape("token_embed.weight")?;
     if shape[0] != cap_dim || shape[1] != 1 {
@@ -152,7 +178,42 @@ fn text_tokens(paths: &[std::path::PathBuf], cap_dim: i64) -> Result<Vec<f32>, W
             shape
         )));
     }
-    text.f32_exact("token_embed.weight", &[cap_dim, 1])
+    let _ = prompt;
+    Ok((text.f32_exact("token_embed.weight", &[cap_dim, 1])?, 1))
+}
+
+fn encode_negative(
+    ctx: &GgmlContext,
+    bundle: &Path,
+    paths: &[std::path::PathBuf],
+    negative: &str,
+    cap_dim: i64,
+    cap_real: i64,
+    guidance: f32,
+) -> Result<Option<Vec<f32>>, WeightError> {
+    if negative.trim().is_empty() {
+        return Ok(None);
+    }
+    if guidance.abs() < f32::EPSILON {
+        return Err(WeightError::NotBuilt(
+            "negative prompt needs a guidance other than 0".into(),
+        ));
+    }
+    let (encoded, seq) = encode_caption(ctx, bundle, paths, negative, cap_dim)?;
+    if seq != cap_real {
+        return Err(WeightError::NotBuilt(format!(
+            "negative prompt tokenized to {seq} tokens, prompt has {cap_real}"
+        )));
+    }
+    Ok(Some(encoded))
+}
+
+fn read_tokenizer(bundle: &Path) -> Result<String, WeightError> {
+    let path = bundle.join("tokenizer.json");
+    std::fs::read_to_string(&path).map_err(|err| WeightError::Open {
+        path: path.display().to_string(),
+        detail: err.to_string(),
+    })
 }
 
 fn check_stored_type(name: &str, ggml_type: u32, ne0: i64) -> Result<(), WeightError> {
@@ -265,6 +326,39 @@ fn nearest_expand(src: &[u8], grid_w: u32, grid_h: u32, width: u32, height: u32)
 }
 
 #[cfg(test)]
+fn write_smoke_text(dir: &Path, cap_dim: i64) -> Result<(), WeightError> {
+    let enc = super::flux2::Qwen3Config::smoke();
+    if enc.hidden != cap_dim {
+        return Err(WeightError::NotBuilt(format!(
+            "smoke text hidden {} is not caption {cap_dim}",
+            enc.hidden
+        )));
+    }
+    let owned: Vec<(String, i64, i64, Vec<f32>)> = super::flux2::encoder_layout(enc)
+        .into_iter()
+        .map(|(name, ne0, ne1)| {
+            let n = (ne0 as usize) * (ne1 as usize);
+            let data = if name.ends_with("norm.weight") || name.ends_with("layernorm.weight") {
+                vec![1.0; n]
+            } else {
+                (0..n).map(|i| ((i % 5) as f32 - 2.0) * 0.02).collect()
+            };
+            (name, ne0, ne1, data)
+        })
+        .collect();
+    let tensors: Vec<F32Tensor<'_>> = owned
+        .iter()
+        .map(|(name, ne0, ne1, data)| F32Tensor {
+            name,
+            ne0: *ne0,
+            ne1: *ne1,
+            data,
+        })
+        .collect();
+    write_f32_tensors(&dir.join("text_encoder.gguf"), &tensors)
+}
+
+#[cfg(test)]
 pub fn write_smoke_bundle(dir: &Path) -> Result<(), WeightError> {
     let config = ZImageConfig::smoke();
     std::fs::create_dir_all(dir).map_err(|err| WeightError::Open {
@@ -293,17 +387,7 @@ pub fn write_smoke_bundle(dir: &Path) -> Result<(), WeightError> {
         })
         .collect();
     write_f32_tensors(&dir.join("transformer.gguf"), &tensors)?;
-    let cap = config.cap_dim as usize;
-    let embed: Vec<f32> = (0..cap).map(|i| ((i % 5) as f32 - 2.0) * 0.05).collect();
-    write_f32_tensors(
-        &dir.join("text_encoder.gguf"),
-        &[F32Tensor {
-            name: "token_embed.weight",
-            ne0: config.cap_dim,
-            ne1: 1,
-            data: &embed,
-        }],
-    )?;
+    write_smoke_text(dir, config.cap_dim)?;
     let in_ch = config.in_channels as usize;
     let mut conv = vec![0f32; in_ch * 3];
     for i in 0..in_ch.min(3) {
@@ -318,7 +402,11 @@ pub fn write_smoke_bundle(dir: &Path) -> Result<(), WeightError> {
             data: &conv,
         }],
     )?;
-    std::fs::write(dir.join("tokenizer.json"), "{}\n").map_err(|err| WeightError::Open {
+    std::fs::write(
+        dir.join("tokenizer.json"),
+        "{\"vocab\":{\"a\":0,\"cat\":1,\"dog\":2}}\n",
+    )
+    .map_err(|err| WeightError::Open {
         path: dir.display().to_string(),
         detail: err.to_string(),
     })?;
@@ -394,6 +482,56 @@ mod tests {
     }
 
     #[test]
+    fn prompt_changes_the_latent_and_a_same_length_negative_is_uncond() {
+        let dir = scratch("z-image-prompt");
+        write_smoke_bundle(&dir).unwrap();
+        let mut cat = request();
+        cat.guidance = Some(0.0);
+        cat.prompt = "a cat".into();
+        let cat_out = image_create(&cat, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert_eq!(cat_out.graph_computes, 1);
+        let mut dog = cat.clone();
+        dog.prompt = "a dog".into();
+        let dog_out = image_create(&dog, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert_ne!(cat_out.latents, dog_out.latents);
+        assert!(cat_out.latents.iter().all(|v| v.is_finite()));
+        assert!(dog_out.latents.iter().all(|v| v.is_finite()));
+
+        let mut guided = cat.clone();
+        guided.guidance = Some(2.0);
+        let zeros = image_create(&guided, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert_eq!(zeros.graph_computes, 2);
+        guided.negative_prompt = "a dog".into();
+        let negated = image_create(&guided, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        assert_eq!(negated.graph_computes, 2);
+        assert_ne!(zeros.latents, negated.latents);
+        assert!(negated.latents.iter().all(|v| v.is_finite()));
+
+        guided.negative_prompt = "cat".into();
+        let mismatch = match image_create(&guided, "z_image", &dir, BackendKind::Cpu, |_, _| ()) {
+            Err(err) => err,
+            Ok(_) => panic!("a shorter negative prompt was accepted"),
+        };
+        assert!(
+            mismatch.to_string().contains("tokenized to 1"),
+            "{mismatch}"
+        );
+        guided.guidance = Some(0.0);
+        guided.negative_prompt = "a dog".into();
+        let unguided = match image_create(&guided, "z_image", &dir, BackendKind::Cpu, |_, _| ()) {
+            Err(err) => err,
+            Ok(_) => panic!("guidance 0 accepted a negative prompt"),
+        };
+        assert!(
+            unguided
+                .to_string()
+                .contains("needs a guidance other than 0"),
+            "{unguided}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn qwen_text_tower_fails_loud() {
         let dir = scratch("z-image-qwen");
         write_smoke_bundle(&dir).unwrap();
@@ -414,9 +552,10 @@ mod tests {
             Err(err) => err,
             Ok(_) => panic!("qwen text tower was accepted"),
         };
+        let message = err.to_string();
         assert!(
-            err.to_string().contains("text encoder graph is not built"),
-            "{err}"
+            message.contains("embed_tokens") || message.contains("not built"),
+            "{message}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
