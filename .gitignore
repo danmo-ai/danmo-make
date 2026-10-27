@@ -24,6 +24,10 @@ __pycache__/
 outputs/
 db/*.db
 /native/target/
+# Dev workspace when the API cwd is the repo. Seeds stay in default_config/.
+/config/
+# Weights when a process resolves its workspace inside a crate.
+/native/**/models/
 
 # Node
 node_modules/
