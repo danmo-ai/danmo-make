@@ -357,11 +357,46 @@ pub fn write_smoke_bundle(dir: &Path) -> Result<(), WeightError> {
 
 #[cfg(test)]
 mod tests {
+    use super::weights::ZImageConfig;
     use super::write_smoke_bundle;
+    use super::{weight_layout, ZImageDenoise};
     use crate::image_create;
-    use crate::runtime::BackendKind;
+    use crate::runtime::{BackendKind, GgmlContext, TYPE_F32};
     use crate::weights::{write_f32_tensors, F32Tensor};
     use danmo_contracts::ImageGenerationRequest;
+    use std::collections::HashMap;
+
+    /// 30 layers and 2 refiner pairs. Same node count as the published DiT.
+    #[test]
+    fn published_depth_reserves() {
+        let config = ZImageConfig {
+            dim: 8,
+            heads: 1,
+            head_dim: 8,
+            axes: [2, 2, 4],
+            layers: 30,
+            refiners: 2,
+            in_channels: 4,
+            cap_dim: 8,
+            ffn: 16,
+            mid: 32,
+            freq: 8,
+            adaln: 8,
+            rope_theta: 256.0,
+            t_scale: 1000.0,
+            vae_scale: 8,
+            patch: 2,
+            requires_sigma_shift: true,
+        };
+        let mut types = HashMap::new();
+        for (name, _, _) in weight_layout(config) {
+            types.insert(name, TYPE_F32);
+        }
+        let ctx = GgmlContext::new(BackendKind::Cpu).expect("cpu");
+        let graph = ZImageDenoise::build(&ctx, config, 64, 64, 4, &types)
+            .expect("published-depth z-image graph reserves");
+        drop(graph);
+    }
 
     #[test]
     fn same_seed_repeats_and_flow_match_runs() {

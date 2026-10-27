@@ -436,6 +436,30 @@ mod probe {
         drop(graph);
     }
 
+    /// 36-layer tower, penultimate capture. Same node count as the published file.
+    #[test]
+    fn penultimate_of_36_layers_reserves() {
+        let config = Qwen3Config {
+            vocab: 8,
+            hidden: 8,
+            layers: 36,
+            heads: 2,
+            kv_heads: 1,
+            head_dim: 4,
+            intermediate: 16,
+            rope_theta: 1_000_000.0,
+        };
+        let layout = layout_prefix(config, 35, "");
+        let mut types = HashMap::new();
+        for (name, _, _) in &layout {
+            types.insert(name.clone(), TYPE_F32);
+        }
+        let ctx = GgmlContext::new(BackendKind::Cpu).expect("cpu");
+        let graph = Qwen3Encode::build(&ctx, config, "", &[35], 8, &types)
+            .expect("36-layer penultimate tower reserves");
+        drop(graph);
+    }
+
     #[test]
     fn qwen_query_width_can_exceed_the_residual() {
         let config = Qwen3Config {
