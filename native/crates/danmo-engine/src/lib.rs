@@ -153,6 +153,7 @@ mod tests {
             .unwrap();
         assert_eq!(ticks, 3);
         assert_eq!(model.graph_computes(), 6);
+        assert_eq!(model.host_readbacks(), 0);
         assert!(latents.iter().all(|v| v.is_finite()));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -281,5 +282,27 @@ mod tests {
     #[test]
     fn missing_backend_fails_loud() {
         assert!(GgmlContext::new(BackendKind::Cuda).is_err());
+    }
+
+    #[test]
+    fn metal_diffusion_uses_the_ggml_device_or_fails_loud() {
+        match crate::runtime::measure_diffusion_steps(BackendKind::Metal, 2) {
+            Ok(timing) => {
+                assert!(
+                    timing.device.to_lowercase().contains("metal"),
+                    "device {}",
+                    timing.device
+                );
+                assert_eq!(timing.forward_readbacks, 0);
+                assert_eq!(timing.steps, 2);
+            }
+            Err(err) => {
+                let msg = err.to_string();
+                assert!(msg.contains("metal") || msg.contains("init"), "{msg}");
+            }
+        }
+        let cpu = crate::runtime::measure_diffusion_steps(BackendKind::Cpu, 2).unwrap();
+        assert_eq!(cpu.forward_readbacks, 0);
+        assert!(!cpu.device.is_empty(), "cpu device name was empty");
     }
 }

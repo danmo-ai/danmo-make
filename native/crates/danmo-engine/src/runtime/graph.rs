@@ -1,137 +1,12 @@
-//! ggml runtime. The only module that touches ggml tensor types.
+//! Graph construction. Raw ggml operators are called from this file.
 
+use super::{RuntimeError, Tensor, TYPE_F16};
 use danmo_ggml_sys as g;
 use std::ffi::CString;
-use thiserror::Error;
 
-#[derive(Debug, Error)]
-pub enum RuntimeError {
-    #[error("ggml backend {0} was requested but this binary was not built with it")]
-    BackendUnavailable(String),
-    #[error("ggml init failed")]
-    Init,
-    #[error("ggml graph reserve failed")]
-    Reserve,
-    #[error("ggml graph compute failed: {0}")]
-    Compute(i32),
-    #[error("tensor {0} was not declared as a graph input")]
-    MissingInput(String),
-    #[error("tensor {name} has {expected} bytes, got {got}")]
-    SizeMismatch {
-        name: String,
-        expected: usize,
-        got: usize,
-    },
-    #[error("{0}")]
-    Message(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendKind {
-    Cpu,
-    Cuda,
-    Vulkan,
-    Metal,
-}
-
-impl BackendKind {
-    pub fn parse(name: &str) -> Result<Self, RuntimeError> {
-        match name {
-            "cpu" => Ok(Self::Cpu),
-            "cuda" => Ok(Self::Cuda),
-            "vulkan" => Ok(Self::Vulkan),
-            "metal" => Ok(Self::Metal),
-            other => Err(RuntimeError::BackendUnavailable(other.to_string())),
-        }
-    }
-
-    pub fn from_env() -> Result<Self, RuntimeError> {
-        match std::env::var("DANQING_GGML_BACKEND") {
-            Ok(name) => Self::parse(name.trim()),
-            Err(_) => Ok(Self::Cpu),
-        }
-    }
-}
-
-pub struct GgmlContext {
+pub struct GraphBuilder {
     backend: g::ggml_backend_t,
     buft: g::ggml_backend_buffer_type_t,
-    kind: BackendKind,
-}
-
-impl GgmlContext {
-    pub fn new(kind: BackendKind) -> Result<Self, RuntimeError> {
-        let backend = unsafe { init_backend(kind)? };
-        let buft = unsafe { g::ggml_backend_get_default_buffer_type(backend) };
-        if buft.is_null() {
-            unsafe { g::ggml_backend_free(backend) };
-            return Err(RuntimeError::Init);
-        }
-        Ok(Self {
-            backend,
-            buft,
-            kind,
-        })
-    }
-
-    pub fn kind(&self) -> BackendKind {
-        self.kind
-    }
-
-    pub fn builder(&self, mem_size: usize) -> Result<GraphBuilder<'_>, RuntimeError> {
-        GraphBuilder::new(self, mem_size)
-    }
-}
-
-impl Drop for GgmlContext {
-    fn drop(&mut self) {
-        unsafe { g::ggml_backend_free(self.backend) };
-    }
-}
-
-unsafe fn init_backend(kind: BackendKind) -> Result<g::ggml_backend_t, RuntimeError> {
-    let backend = match kind {
-        BackendKind::Cpu => g::ggml_backend_cpu_init(),
-        BackendKind::Cuda => {
-            #[cfg(feature = "cuda")]
-            {
-                g::ggml_backend_cuda_init(0)
-            }
-            #[cfg(not(feature = "cuda"))]
-            {
-                return Err(RuntimeError::BackendUnavailable("cuda".into()));
-            }
-        }
-        BackendKind::Vulkan => {
-            #[cfg(feature = "vulkan")]
-            {
-                g::ggml_backend_vk_init(0)
-            }
-            #[cfg(not(feature = "vulkan"))]
-            {
-                return Err(RuntimeError::BackendUnavailable("vulkan".into()));
-            }
-        }
-        BackendKind::Metal => {
-            #[cfg(feature = "metal")]
-            {
-                g::ggml_backend_metal_init()
-            }
-            #[cfg(not(feature = "metal"))]
-            {
-                return Err(RuntimeError::BackendUnavailable("metal".into()));
-            }
-        }
-    };
-    if backend.is_null() {
-        Err(RuntimeError::Init)
-    } else {
-        Ok(backend)
-    }
-}
-
-pub struct GraphBuilder<'a> {
-    owner: &'a GgmlContext,
     ctx: *mut g::ggml_context,
     inputs: Vec<NamedTensor>,
 }
@@ -141,8 +16,12 @@ pub struct NamedTensor {
     pub tensor: *mut g::ggml_tensor,
 }
 
-impl<'a> GraphBuilder<'a> {
-    fn new(owner: &'a GgmlContext, mem_size: usize) -> Result<Self, RuntimeError> {
+impl GraphBuilder {
+    pub(crate) fn new(
+        backend: g::ggml_backend_t,
+        buft: g::ggml_backend_buffer_type_t,
+        mem_size: usize,
+    ) -> Result<Self, RuntimeError> {
         let params = g::ggml_init_params {
             mem_size,
             mem_buffer: std::ptr::null_mut(),
@@ -153,14 +32,11 @@ impl<'a> GraphBuilder<'a> {
             return Err(RuntimeError::Init);
         }
         Ok(Self {
-            owner,
+            backend,
+            buft,
             ctx,
             inputs: Vec::new(),
         })
-    }
-
-    pub fn ctx(&self) -> *mut g::ggml_context {
-        self.ctx
     }
 
     pub fn f32_2d(&mut self, name: &str, ne0: i64, ne1: i64, input: bool) -> *mut g::ggml_tensor {
@@ -418,6 +294,36 @@ impl<'a> GraphBuilder<'a> {
         }
     }
 
+    /// Fused attention. `q` is `[n_embd, n_batch, n_head]`, `k` and `v` are
+    /// `[n_embd, n_kv, n_head_kv]` (v is not transposed). `mask` is F16 or null.
+    pub fn flash_attn(&self, q: Tensor, k: Tensor, v: Tensor, mask: Tensor, scale: f32) -> Tensor {
+        unsafe { g::ggml_flash_attn_ext(self.ctx, q, k, v, mask, scale, 0.0, 0.0) }
+    }
+
+    pub fn cast_f16(&self, a: Tensor) -> Tensor {
+        unsafe { g::ggml_cast(self.ctx, a, TYPE_F16) }
+    }
+
+    /// Direct 2D convolution. Kernel is `[KW, KH, IC, OC]`, data is `[W, H, C, N]`.
+    /// This is ggml's direct conv, not the im2col plus matmul path.
+    pub fn conv2d_direct(
+        &self,
+        kernel: Tensor,
+        data: Tensor,
+        stride0: i32,
+        stride1: i32,
+        pad0: i32,
+        pad1: i32,
+        dil0: i32,
+        dil1: i32,
+    ) -> Tensor {
+        unsafe {
+            g::ggml_conv_2d_direct(
+                self.ctx, kernel, data, stride0, stride1, pad0, pad1, dil0, dil1,
+            )
+        }
+    }
+
     pub fn i32_1d(&mut self, name: &str, ne0: i64, input: bool) -> *mut g::ggml_tensor {
         unsafe {
             let t = g::ggml_new_tensor_1d(self.ctx, g::ggml_type_GGML_TYPE_I32, ne0);
@@ -443,7 +349,7 @@ impl<'a> GraphBuilder<'a> {
                 return Err(RuntimeError::Init);
             }
             g::ggml_build_forward_expand(graph, output);
-            let galloc = g::ggml_gallocr_new(self.owner.buft);
+            let galloc = g::ggml_gallocr_new(self.buft);
             if galloc.is_null() {
                 g::ggml_free(self.ctx);
                 return Err(RuntimeError::Init);
@@ -462,10 +368,12 @@ impl<'a> GraphBuilder<'a> {
                 ctx: self.ctx,
                 graph,
                 galloc,
-                backend: self.owner.backend,
+                backend: self.backend,
+                buft: self.buft,
                 inputs: self.inputs,
                 output,
                 computes: 0,
+                readbacks: 0,
             })
         }
     }
@@ -476,14 +384,37 @@ pub struct ReusedGraph {
     graph: *mut g::ggml_cgraph,
     galloc: g::ggml_gallocr_t,
     backend: g::ggml_backend_t,
+    buft: g::ggml_backend_buffer_type_t,
     inputs: Vec<NamedTensor>,
     output: *mut g::ggml_tensor,
     computes: u32,
+    readbacks: u32,
 }
 
 impl ReusedGraph {
     pub fn compute_count(&self) -> u32 {
         self.computes
+    }
+
+    pub fn host_readbacks(&self) -> u32 {
+        self.readbacks
+    }
+
+    pub fn output(&self) -> Tensor {
+        self.output
+    }
+
+    pub fn tensor(&self, name: &str) -> Result<Tensor, RuntimeError> {
+        self.inputs
+            .iter()
+            .find(|t| t.name == name)
+            .map(|t| t.tensor)
+            .ok_or_else(|| RuntimeError::MissingInput(name.to_string()))
+    }
+
+    /// Another graph on the same ggml device. Used for the step that stays resident.
+    pub fn child(&self, mem_size: usize) -> Result<GraphBuilder, RuntimeError> {
+        GraphBuilder::new(self.backend, self.buft, mem_size)
     }
 
     pub fn set_bytes(&self, name: &str, data: &[u8]) -> Result<(), RuntimeError> {
@@ -551,19 +482,62 @@ impl ReusedGraph {
         Ok(())
     }
 
-    /// Recompute the reserved graph. The cgraph and gallocr stay in place.
-    pub fn compute(&mut self) -> Result<Vec<f32>, RuntimeError> {
+    /// Recompute the reserved graph and leave the output on the device.
+    pub fn compute_device(&mut self) -> Result<(), RuntimeError> {
         let status = unsafe { g::ggml_backend_graph_compute(self.backend, self.graph) };
         if status != g::ggml_status_GGML_STATUS_SUCCESS {
             return Err(RuntimeError::Compute(status));
         }
         self.computes += 1;
+        Ok(())
+    }
+
+    /// Copy `src` onto `dst` on the ggml backend. Both tensors stay on device.
+    pub fn copy(src: Tensor, dst: Tensor) -> Result<(), RuntimeError> {
+        if src.is_null() || dst.is_null() {
+            return Err(RuntimeError::Init);
+        }
+        let expected = unsafe { g::ggml_nbytes(dst) };
+        let got = unsafe { g::ggml_nbytes(src) };
+        if expected != got {
+            return Err(RuntimeError::SizeMismatch {
+                name: "tensor copy".into(),
+                expected,
+                got,
+            });
+        }
+        unsafe { g::ggml_backend_tensor_copy(src, dst) };
+        Ok(())
+    }
+
+    pub fn read_output(&mut self) -> Result<Vec<f32>, RuntimeError> {
+        self.readbacks += 1;
         let nbytes = unsafe { g::ggml_nbytes(self.output) };
         let mut out = vec![0f32; nbytes / std::mem::size_of::<f32>()];
         unsafe {
             g::ggml_backend_tensor_get(self.output, out.as_mut_ptr().cast(), 0, nbytes);
         }
         Ok(out)
+    }
+
+    /// Recompute the reserved graph and read the output back to the host.
+    pub fn compute(&mut self) -> Result<Vec<f32>, RuntimeError> {
+        self.compute_device()?;
+        self.read_output()
+    }
+}
+
+pub fn shape(tensor: Tensor) -> [i64; 4] {
+    if tensor.is_null() {
+        return [0, 0, 0, 0];
+    }
+    unsafe {
+        [
+            (*tensor).ne[0],
+            (*tensor).ne[1],
+            (*tensor).ne[2],
+            (*tensor).ne[3],
+        ]
     }
 }
 
@@ -582,13 +556,4 @@ unsafe fn name_tensor(tensor: *mut g::ggml_tensor, name: &str) {
     }
     let c = CString::new(name).unwrap_or_else(|_| CString::new("tensor").unwrap());
     g::ggml_set_name(tensor, c.as_ptr());
-}
-
-/// Identity matmul used to prove gallocr reuse: y = W x, W fixed, x replaced between computes.
-pub fn identity_probe(ctx: &GgmlContext) -> Result<ReusedGraph, RuntimeError> {
-    let mut b = ctx.builder(8 * 1024 * 1024)?;
-    let w = b.f32_2d("w", 2, 2, true);
-    let x = b.f32_2d("x", 2, 1, true);
-    let y = b.mul_mat(w, x);
-    b.finish(y)
 }

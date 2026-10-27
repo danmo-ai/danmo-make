@@ -1,7 +1,9 @@
 //! Fixed phase order: resolve → load → encode → schedule → infer → decode → persist.
 
+pub(crate) mod denoise;
+
 use crate::families::{self, Media, Shape};
-use crate::runtime::BackendKind;
+use crate::runtime::{BackendKind, GgmlContext};
 use crate::weights::{self, WeightError};
 use danmo_contracts::{parse_size, ImageGenerationRequest};
 use std::path::Path;
@@ -17,6 +19,8 @@ pub enum EngineError {
     GraphNotBuilt { family: String, shape: String },
     #[error("{0}")]
     BadRequest(String),
+    #[error(transparent)]
+    Runtime(#[from] crate::runtime::RuntimeError),
 }
 
 pub struct RunOutput {
@@ -58,15 +62,16 @@ pub fn image_create(
     let steps = request.steps.unwrap_or(4);
     match spec.shape {
         Shape::DitPipeline => {
+            let ctx = GgmlContext::new(backend)?;
             let Some(done) = families::run_dit_image(
                 family,
+                &ctx,
                 bundle,
                 &request.prompt,
                 steps,
                 width,
                 height,
                 request.guidance.unwrap_or(1.0),
-                backend,
                 on_progress,
             )?
             else {

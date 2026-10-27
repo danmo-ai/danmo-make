@@ -4,16 +4,14 @@
 //! the DiT joint width. A shorter tower concatenates every layer output when
 //! `hidden * layers` equals the joint width. `blk.*` names are not rewritten.
 
+use super::graph::{build_qwen3, QwenTower};
 use super::weights::Flux2Config;
-use crate::runtime::{BackendKind, GgmlContext, GraphBuilder, ReusedGraph, RuntimeError};
+use crate::runtime::{GgmlContext, ReusedGraph, RuntimeError, TYPE_F32};
 use crate::weights::{
     matmul_type, type_block, write_f32_tensors, F32Tensor, GgufWeights, WeightError,
 };
-use danmo_ggml_sys::{ggml_tensor, ggml_type_GGML_TYPE_F32};
 use std::collections::HashMap;
 use std::path::Path;
-
-const RMS_EPS: f32 = 1e-6;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Qwen3Config {
@@ -43,11 +41,11 @@ impl Qwen3Config {
 }
 
 pub fn encode_prompt(
+    ctx: &GgmlContext,
     paths: &[std::path::PathBuf],
     tokenizer_json: &str,
     prompt: &str,
     joint: i64,
-    backend: BackendKind,
 ) -> Result<(Vec<f32>, i64), WeightError> {
     let weights = GgufWeights::open_parts(paths)?;
     if weights.names().any(|name| name.starts_with("blk.")) {
@@ -67,8 +65,7 @@ pub fn encode_prompt(
         check_stored_type(name, ggml_type, *ne0)?;
         types.insert(name.clone(), ggml_type);
     }
-    let ctx = GgmlContext::new(backend)?;
-    let mut graph = Qwen3Encode::build(&ctx, config, &selected, seq, &types)?;
+    let mut graph = Qwen3Encode::build(ctx, config, &selected, seq, &types)?;
     for (name, ne0, ne1) in &layout {
         let raw = weights.raw_exact(name, &[*ne0, *ne1])?;
         graph.load_bytes(name, &raw)?;
@@ -101,35 +98,22 @@ impl Qwen3Encode {
             return Err(RuntimeError::Message("text sequence is empty".into()));
         }
         let last = *selected.iter().max().unwrap_or(&0);
+        let layout = layout_prefix(config, last);
         let mut b = ctx.builder(64 * 1024 * 1024)?;
-        let mut weights = HashMap::new();
-        for (name, ne0, ne1) in layout_prefix(config, last) {
-            let ggml_type = types.get(&name).copied().unwrap_or(ggml_type_GGML_TYPE_F32);
-            let tensor = b.tensor_2d(&name, ggml_type, ne0, ne1, true);
-            if tensor.is_null() {
-                return Err(RuntimeError::Init);
-            }
-            weights.insert(name, tensor);
-        }
-        let token_ids = nn(b.i32_1d("token_ids", seq, true))?;
-        let pos = nn(b.i32_1d("positions", seq, true))?;
-        let mask = nn(b.f32_2d("attn_mask", seq, seq, true))?;
-        let mut hidden = nn(b.get_rows(wt(&weights, "embed_tokens.weight")?, token_ids))?;
-        let last = *selected.iter().max().unwrap_or(&0);
-        let mut captured: Vec<*mut ggml_tensor> = Vec::new();
-        for layer in 0..last {
-            hidden = encoder_layer(&b, &weights, config, layer, hidden, pos, mask, seq)?;
-            let index = layer + 1;
-            if selected.contains(&index) {
-                captured.push(hidden);
-            }
-        }
-        let mut out = *captured.first().ok_or_else(|| {
-            RuntimeError::Message("text encoder captured no hidden states".into())
-        })?;
-        for extra in captured.iter().skip(1) {
-            out = nn(b.concat(out, *extra, 0))?;
-        }
+        let out = build_qwen3(
+            &mut b,
+            QwenTower {
+                hidden: config.hidden,
+                heads: config.heads,
+                kv_heads: config.kv_heads,
+                head_dim: config.head_dim,
+                rope_theta: config.rope_theta,
+            },
+            selected,
+            seq,
+            &layout,
+            types,
+        )?;
         let graph = b.finish(out)?;
         Ok(Self { graph, seq })
     }
@@ -160,116 +144,6 @@ impl Qwen3Encode {
         self.graph.set_f32("attn_mask", &mask)?;
         self.graph.compute()
     }
-}
-
-fn encoder_layer(
-    b: &GraphBuilder<'_>,
-    weights: &HashMap<String, *mut ggml_tensor>,
-    config: Qwen3Config,
-    layer: i64,
-    hidden: *mut ggml_tensor,
-    pos: *mut ggml_tensor,
-    mask: *mut ggml_tensor,
-    seq: i64,
-) -> Result<*mut ggml_tensor, RuntimeError> {
-    let p = format!("layers.{layer}");
-    let normed = rms(
-        b,
-        hidden,
-        wt(weights, &format!("{p}.input_layernorm.weight"))?,
-    )?;
-    let attn = attention(b, weights, config, &p, normed, pos, mask, seq)?;
-    let hidden = nn(b.add(hidden, attn))?;
-    let normed = rms(
-        b,
-        hidden,
-        wt(weights, &format!("{p}.post_attention_layernorm.weight"))?,
-    )?;
-    let mid = nn(b.mul(
-        nn(b.silu(linear(
-            b,
-            normed,
-            wt(weights, &format!("{p}.mlp.gate_proj.weight"))?,
-        )))?,
-        nn(linear(
-            b,
-            normed,
-            wt(weights, &format!("{p}.mlp.up_proj.weight"))?,
-        ))?,
-    ))?;
-    let mlp = nn(linear(
-        b,
-        mid,
-        wt(weights, &format!("{p}.mlp.down_proj.weight"))?,
-    ))?;
-    nn(b.add(hidden, mlp))
-}
-
-fn attention(
-    b: &GraphBuilder<'_>,
-    weights: &HashMap<String, *mut ggml_tensor>,
-    config: Qwen3Config,
-    prefix: &str,
-    hidden: *mut ggml_tensor,
-    pos: *mut ggml_tensor,
-    mask: *mut ggml_tensor,
-    seq: i64,
-) -> Result<*mut ggml_tensor, RuntimeError> {
-    let head = config.head_dim;
-    let heads = config.heads;
-    let kv = config.kv_heads;
-    let q = rms_heads(
-        b,
-        nn(linear(
-            b,
-            hidden,
-            wt(weights, &format!("{prefix}.self_attn.q_proj.weight"))?,
-        ))?,
-        wt(weights, &format!("{prefix}.self_attn.q_norm.weight"))?,
-        head,
-        heads,
-        seq,
-    )?;
-    let k = rms_heads(
-        b,
-        nn(linear(
-            b,
-            hidden,
-            wt(weights, &format!("{prefix}.self_attn.k_proj.weight"))?,
-        ))?,
-        wt(weights, &format!("{prefix}.self_attn.k_norm.weight"))?,
-        head,
-        kv,
-        seq,
-    )?;
-    let v = split_heads(
-        b,
-        nn(linear(
-            b,
-            hidden,
-            wt(weights, &format!("{prefix}.self_attn.v_proj.weight"))?,
-        ))?,
-        head,
-        kv,
-        seq,
-    )?;
-    let q = nn(b.cont(b.rope_neox(q, pos, head as i32, config.rope_theta)))?;
-    let k = nn(b.cont(b.rope_neox(k, pos, head as i32, config.rope_theta)))?;
-    let k = nn(b.cont(b.repeat(k, q)))?;
-    let v = nn(b.cont(b.repeat(v, q)))?;
-    let q_b = nn(b.cont(b.permute(q, 0, 2, 1, 3)))?;
-    let k_b = nn(b.cont(b.permute(k, 0, 2, 1, 3)))?;
-    let scale = 1.0 / (head as f32).sqrt();
-    let scores = nn(b.soft_max_ext(nn(b.mul_mat(k_b, q_b))?, mask, scale))?;
-    let v_b = nn(b.cont(b.permute(v, 1, 2, 0, 3)))?;
-    let mixed = nn(b.mul_mat(v_b, scores))?;
-    let mixed = nn(b.cont(b.permute(mixed, 0, 2, 1, 3)))?;
-    let mixed = nn(b.reshape_2d(mixed, config.hidden, seq))?;
-    nn(linear(
-        b,
-        mixed,
-        wt(weights, &format!("{prefix}.self_attn.o_proj.weight"))?,
-    ))
 }
 
 fn infer_config(weights: &GgufWeights) -> Result<Qwen3Config, WeightError> {
@@ -453,7 +327,7 @@ fn tokenize_bytes(prompt: &str, vocab_size: i64) -> Result<Vec<i32>, WeightError
 
 fn check_stored_type(name: &str, ggml_type: u32, ne0: i64) -> Result<(), WeightError> {
     if is_rms(name) {
-        if ggml_type != ggml_type_GGML_TYPE_F32 {
+        if ggml_type != TYPE_F32 {
             return Err(WeightError::NotBuilt(format!(
                 "{name} is ggml type {ggml_type}. Norm weights stay F32"
             )));
@@ -479,59 +353,6 @@ fn is_rms(name: &str) -> bool {
     name.ends_with("layernorm.weight")
         || name.ends_with("q_norm.weight")
         || name.ends_with("k_norm.weight")
-}
-
-fn rms(
-    b: &GraphBuilder<'_>,
-    x: *mut ggml_tensor,
-    weight: *mut ggml_tensor,
-) -> Result<*mut ggml_tensor, RuntimeError> {
-    nn(b.mul(nn(b.rms_norm(x, RMS_EPS))?, weight))
-}
-
-fn split_heads(
-    b: &GraphBuilder<'_>,
-    x: *mut ggml_tensor,
-    head: i64,
-    heads: i64,
-    seq: i64,
-) -> Result<*mut ggml_tensor, RuntimeError> {
-    nn(b.cont(b.reshape_3d(x, head, heads, seq)))
-}
-
-fn rms_heads(
-    b: &GraphBuilder<'_>,
-    x: *mut ggml_tensor,
-    weight: *mut ggml_tensor,
-    head: i64,
-    heads: i64,
-    seq: i64,
-) -> Result<*mut ggml_tensor, RuntimeError> {
-    let x = split_heads(b, x, head, heads, seq)?;
-    nn(b.mul(nn(b.rms_norm(x, RMS_EPS))?, weight))
-}
-
-fn linear(b: &GraphBuilder<'_>, x: *mut ggml_tensor, w: *mut ggml_tensor) -> *mut ggml_tensor {
-    b.mul_mat(w, x)
-}
-
-fn wt(
-    weights: &HashMap<String, *mut ggml_tensor>,
-    name: &str,
-) -> Result<*mut ggml_tensor, RuntimeError> {
-    weights
-        .get(name)
-        .copied()
-        .filter(|tensor| !tensor.is_null())
-        .ok_or_else(|| RuntimeError::Message(format!("graph is missing {name}")))
-}
-
-fn nn(tensor: *mut ggml_tensor) -> Result<*mut ggml_tensor, RuntimeError> {
-    if tensor.is_null() {
-        Err(RuntimeError::Init)
-    } else {
-        Ok(tensor)
-    }
 }
 
 pub fn write_qwen3_bundle(dir: &Path, dit: Flux2Config) -> Result<(), WeightError> {
@@ -663,7 +484,7 @@ fn diagonal(ne0: i64, ne1: i64) -> Vec<f32> {
 mod tests {
     use super::{encode_prompt, write_chain_bundle, write_qwen3_bundle};
     use crate::families::Flux2Config;
-    use crate::runtime::BackendKind;
+    use crate::runtime::{BackendKind, GgmlContext};
 
     #[test]
     fn cat_and_dog_prompts_embed_differently() {
@@ -681,13 +502,14 @@ mod tests {
         write_qwen3_bundle(&dir, dit).unwrap();
         let tokenizer = std::fs::read_to_string(dir.join("tokenizer.json")).unwrap();
         let paths = vec![dir.join("text_encoder.gguf")];
-        let (cat, seq) = encode_prompt(&paths, &tokenizer, "a cat", 16, BackendKind::Cpu).unwrap();
-        let (dog, _) = encode_prompt(&paths, &tokenizer, "a dog", 16, BackendKind::Cpu).unwrap();
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let (cat, seq) = encode_prompt(&ctx, &paths, &tokenizer, "a cat", 16).unwrap();
+        let (dog, _) = encode_prompt(&ctx, &paths, &tokenizer, "a dog", 16).unwrap();
         assert_eq!(seq, 2);
         assert_eq!(cat.len(), 32);
         assert!(cat.iter().any(|v| v.abs() > 1e-4), "cat embed {cat:?}");
         assert_ne!(cat, dog);
-        let err = encode_prompt(&paths, &tokenizer, "a missing", 16, BackendKind::Cpu).unwrap_err();
+        let err = encode_prompt(&ctx, &paths, &tokenizer, "a missing", 16).unwrap_err();
         assert!(err.to_string().contains("no id for missing"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -705,8 +527,9 @@ mod tests {
         write_chain_bundle(&dir).unwrap();
         let tokenizer = std::fs::read_to_string(dir.join("tokenizer.json")).unwrap();
         let paths = vec![dir.join("text_encoder.gguf")];
-        let (zh, seq) = encode_prompt(&paths, &tokenizer, "一只猫", 16, BackendKind::Cpu).unwrap();
-        let (en, _) = encode_prompt(&paths, &tokenizer, "a dog", 16, BackendKind::Cpu).unwrap();
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let (zh, seq) = encode_prompt(&ctx, &paths, &tokenizer, "一只猫", 16).unwrap();
+        let (en, _) = encode_prompt(&ctx, &paths, &tokenizer, "a dog", 16).unwrap();
         assert!(seq > 1, "seq {seq}");
         assert_ne!(zh.len(), en.len());
         assert!(zh.iter().any(|v| v.is_finite()));

@@ -1,3 +1,4 @@
+mod graph;
 mod png;
 mod text;
 mod transformer;
@@ -7,22 +8,22 @@ pub use text::{write_chain_bundle, write_qwen3_bundle};
 pub use transformer::Flux2Denoise;
 pub use weights::{weight_layout, Flux2Config};
 
+use crate::runtime::{preview_conv, GgmlContext, TYPE_F32, TYPE_Q8_0};
 use crate::weights::{
     assert_gguf_bundle, matmul_type, quantize_q8_0, type_block, write_f32_tensors,
     write_typed_tensors, F32Tensor, GgufWeights, TypedTensor, WeightError,
 };
-use danmo_ggml_sys::{ggml_type_GGML_TYPE_F32, ggml_type_GGML_TYPE_Q8_0};
 use std::collections::HashMap;
 use std::path::Path;
 
-pub fn run(
+pub fn execute(
+    ctx: &GgmlContext,
     bundle: &Path,
     prompt: &str,
     steps: u32,
     width: u32,
     height: u32,
     guidance: f32,
-    backend: crate::runtime::BackendKind,
     on_progress: impl FnMut(u32, u32),
 ) -> Result<crate::families::DitImageRun, WeightError> {
     let files = assert_gguf_bundle(bundle)?;
@@ -51,13 +52,12 @@ pub fn run(
         }
     })?;
     let (txt, seq_txt) = text_tokens(
+        ctx,
         &files.text_encoder,
         &tokenizer,
         prompt,
         config.joint_attention_dim,
-        backend,
     )?;
-    let ctx = crate::runtime::GgmlContext::new(backend)?;
     let mut types = HashMap::new();
     let mut stored = Vec::new();
     for (name, ne0, ne1) in weight_layout(config) {
@@ -83,6 +83,7 @@ pub fn run(
         on_progress,
     )?;
     let png = decode_preview(
+        ctx,
         &files.vae,
         &latents,
         config.in_channels as usize,
@@ -152,7 +153,7 @@ fn config_from_weights(weights: &GgufWeights) -> Result<Flux2Config, WeightError
 
 fn check_stored_type(name: &str, ggml_type: u32, ne0: i64) -> Result<(), WeightError> {
     if name.contains(".norm_") {
-        if ggml_type != ggml_type_GGML_TYPE_F32 {
+        if ggml_type != TYPE_F32 {
             return Err(WeightError::NotBuilt(format!(
                 "{name} is ggml type {ggml_type}. Norm weights stay F32 inside a quantized GGUF"
             )));
@@ -187,11 +188,11 @@ fn count_blocks(weights: &GgufWeights, prefix: &str, suffix: &str) -> i64 {
 }
 
 fn text_tokens(
+    ctx: &GgmlContext,
     paths: &[std::path::PathBuf],
     tokenizer_json: &str,
     prompt: &str,
     joint: i64,
-    backend: crate::runtime::BackendKind,
 ) -> Result<(Vec<f32>, i64), WeightError> {
     let text = GgufWeights::open_parts(paths)?;
     if text.names().any(|name| name.starts_with("blk.")) {
@@ -200,7 +201,7 @@ fn text_tokens(
         ));
     }
     if text.contains("layers.0.self_attn.q_proj.weight") {
-        return text::encode_prompt(paths, tokenizer_json, prompt, joint, backend);
+        return text::encode_prompt(ctx, paths, tokenizer_json, prompt, joint);
     }
     let shape = text.shape("token_embed.weight")?;
     if shape[0] != joint || shape[1] != 1 {
@@ -227,6 +228,7 @@ fn manifest_max_edge(bundle: &Path) -> Result<Option<u32>, WeightError> {
 }
 
 fn decode_preview(
+    ctx: &GgmlContext,
     paths: &[std::path::PathBuf],
     latent: &[f32],
     in_ch: usize,
@@ -249,18 +251,36 @@ fn decode_preview(
             got: vec![latent.len() as i64],
         });
     }
-    let mut rgb = vec![0u8; seq * 3];
-    for token in 0..seq {
-        for channel in 0..3 {
-            let mut acc = 0f32;
-            for i in 0..in_ch {
-                acc += latent[i + token * in_ch] * weight[i + channel * in_ch];
-            }
-            rgb[token * 3 + channel] = (acc.clamp(0.0, 1.0) * 255.0) as u8;
-        }
-    }
+    let planar = preview_conv(
+        ctx,
+        latent,
+        &weight,
+        in_ch as i64,
+        grid_w as i64,
+        grid_h as i64,
+    )?;
+    let rgb = planar_rgb(&planar, grid_w, grid_h);
     let rgb = nearest_expand(&rgb, grid_w, grid_h, width, height);
     Ok(png::encode_rgb(width, height, &rgb))
+}
+
+fn planar_rgb(planar: &[f32], grid_w: u32, grid_h: u32) -> Vec<u8> {
+    let width = grid_w as usize;
+    let height = grid_h as usize;
+    let plane = width * height;
+    let mut rgb = vec![0u8; plane * 3];
+    for y in 0..height {
+        for x in 0..width {
+            for channel in 0..3 {
+                let v = planar
+                    .get(x + y * width + channel * plane)
+                    .copied()
+                    .unwrap_or(0.0);
+                rgb[(y * width + x) * 3 + channel] = (v.clamp(0.0, 1.0) * 255.0) as u8;
+            }
+        }
+    }
+    rgb
 }
 
 fn nearest_expand(src: &[u8], grid_w: u32, grid_h: u32, width: u32, height: u32) -> Vec<u8> {
@@ -387,10 +407,10 @@ pub fn write_q8_bundle(dir: &Path, config: Flux2Config) -> Result<(), WeightErro
             for value in values {
                 bytes.extend_from_slice(&value.to_le_bytes());
             }
-            owned.push((name.clone(), *ne0, *ne1, ggml_type_GGML_TYPE_F32, bytes));
+            owned.push((name.clone(), *ne0, *ne1, TYPE_F32, bytes));
         } else {
             let bytes = quantize_q8_0(*ne0, *ne1, &values)?;
-            owned.push((name.clone(), *ne0, *ne1, ggml_type_GGML_TYPE_Q8_0, bytes));
+            owned.push((name.clone(), *ne0, *ne1, TYPE_Q8_0, bytes));
         }
     }
     let tensors: Vec<TypedTensor<'_>> = owned

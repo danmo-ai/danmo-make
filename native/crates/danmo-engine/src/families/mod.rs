@@ -167,24 +167,24 @@ pub struct DitImageRun {
 /// Factory row for Shape A image families. The pipeline does not match on family ids.
 pub fn run_dit_image(
     family: &str,
+    ctx: &crate::runtime::GgmlContext,
     bundle: &std::path::Path,
     prompt: &str,
     steps: u32,
     width: u32,
     height: u32,
     guidance: f32,
-    backend: crate::runtime::BackendKind,
     on_progress: impl FnMut(u32, u32),
 ) -> Result<Option<DitImageRun>, crate::weights::WeightError> {
     match family {
-        "flux2" => Ok(Some(flux2::run(
+        "flux2" => Ok(Some(flux2::execute(
+            ctx,
             bundle,
             prompt,
             steps,
             width,
             height,
             guidance,
-            backend,
             on_progress,
         )?)),
         _ => Ok(None),

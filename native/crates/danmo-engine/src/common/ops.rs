@@ -1,13 +1,4 @@
-//! Shared schedule and guidance ops. Family graphs call ggml through `GraphBuilder`.
-
-/// Standard classifier-free guidance: uncond + scale * (cond - uncond).
-pub fn cfg_combine(uncond: &[f32], cond: &[f32], guidance: f32) -> Vec<f32> {
-    uncond
-        .iter()
-        .zip(cond.iter())
-        .map(|(u, c)| u + guidance * (c - u))
-        .collect()
-}
+//! Shared schedule. CFG and Euler run inside the ggml graph (`runtime/extend`).
 
 /// Flow-match linear schedule from `LinearScheduler.set_timesteps`.
 pub fn linear_sigmas(steps: u32, image_width: u32, image_height: u32, shift: bool) -> Vec<f32> {
@@ -38,14 +29,6 @@ pub fn linear_sigmas(steps: u32, image_width: u32, image_height: u32, shift: boo
     }
     sigmas.push(0.0);
     sigmas
-}
-
-/// Euler step on a flow trajectory: x <- x + (sigma_next - sigma) * v.
-pub fn euler_step(latents: &mut [f32], velocity: &[f32], sigma: f32, sigma_next: f32) {
-    let dt = sigma_next - sigma;
-    for (x, v) in latents.iter_mut().zip(velocity.iter()) {
-        *x += dt * v;
-    }
 }
 
 /// Sinusoidal timestep projection used by Flux2TimestepEmbeddings (host side, fed as a graph input).
