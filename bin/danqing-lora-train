@@ -31,6 +31,11 @@ def main():
         choices=["quick", "standard", "quality", "custom"],
     )
     parser.add_argument("--output-name", default="", help="Output LoRA folder name")
+    parser.add_argument(
+        "--no-auto-register",
+        action="store_true",
+        help="Skip registering the final checkpoint (Studio candidate flow)",
+    )
     parser.add_argument("--iterations", type=int, default=None)
     parser.add_argument("--lora-rank", type=int, default=None)
     parser.add_argument("--lora-blocks", type=int, default=None)
@@ -57,6 +62,7 @@ def main():
         "progress_prompt": args.progress_prompt,
         "preset": args.preset,
         "output_name": args.output_name,
+        "auto_register": not bool(args.no_auto_register),
         "iterations": args.iterations,
         "lora_rank": args.lora_rank,
         "lora_blocks": args.lora_blocks,

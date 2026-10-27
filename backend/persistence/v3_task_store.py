@@ -178,6 +178,14 @@ class V3TaskStore(IV3TaskStore):
             return None
         return self._row_dict(row)
 
+    def delete_task(self, task_id: str) -> bool:
+        with self._lock:
+            with self._conn() as conn:
+                conn.execute("DELETE FROM task_logs WHERE task_id = ?", (task_id,))
+                cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+                conn.commit()
+                return cur.rowcount > 0
+
     def list_tasks(
         self,
         limit: int = 200,

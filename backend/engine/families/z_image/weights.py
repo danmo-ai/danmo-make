@@ -17,9 +17,9 @@ def z_image_lora_scope_key(value: str) -> str:
 def z_image_lora_base_compatible(model_id: str, lora_base: str) -> bool:
     model_key = (model_id or "").split(":", 1)[0].strip()
     lora_key = (lora_base or "").split(":", 1)[0].strip()
-    if not lora_key or lora_key == model_key:
-        return True
-    return model_key in Z_IMAGE_LORA_MODEL_IDS and lora_key in Z_IMAGE_LORA_MODEL_IDS
+    if not model_key or not lora_key:
+        return False
+    return lora_key == model_key
 
 
 def remap_zimage_weights(weights: dict, patch_size: int = 2) -> dict:

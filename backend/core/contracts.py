@@ -435,9 +435,11 @@ class LoraTrainingRequest(BaseModel):
     dataset_id: str
     progress_prompt: str
     seed: Optional[int] = Field(None, ge=0, le=2147483647)
-    preset: Literal["scheme4", "quick", "standard", "quality", "custom"] = "standard"
+    preset: Literal["sft", "turbo", "quick", "standard", "quality", "custom"] = "standard"
     output_name: str = ""
-    auto_register: bool = True
+    # REST / Studio default: keep checkpoints unregistered until the user picks one
+    # from the same-condition candidate matrix. CLI may still pass True for batch jobs.
+    auto_register: bool = False
     priority: Literal["normal", "high"] = "normal"
     # Advanced (optional overrides; merged after preset)
     iterations: Optional[int] = None
@@ -495,6 +497,24 @@ class LoraTrainingResult(BaseModel):
     user_lora_id: str = ""
     output_name: str = ""
     loss_history: list[dict[str, Any]] = Field(default_factory=list)
+    needs_candidate_evaluation: bool = False
+    checkpoints: list[str] = Field(default_factory=list)
+
+
+class LoraEvaluationRequest(BaseModel):
+    """Same-condition checkpoint candidate grid for one completed training task."""
+
+    training_task_id: str
+    priority: Literal["normal", "high"] = "normal"
+    # Optional override; empty → regenerate the default identity/style matrix.
+    force: bool = False
+
+
+class LoraSelectCheckpointRequest(BaseModel):
+    """User confirmation that one evaluated checkpoint should be registered."""
+
+    checkpoint: str
+    name: str = ""
 
 
 class DatasetCreateRequest(BaseModel):

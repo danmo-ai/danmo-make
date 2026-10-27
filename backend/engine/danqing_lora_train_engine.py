@@ -1,15 +1,22 @@
 """
-DanQingLoraTrainEngine — LoRA training (Flux.1-dev + Z-Image Base/Turbo + Qwen-Image).
+DanQingLoraTrainEngine — LoRA training (Flux.1-dev + Z-Image Base/Turbo + Qwen-Image)
+and same-condition checkpoint candidate evaluation.
 """
 from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from backend.core.contracts import EngineResult, ExecutionContext, LoraTrainingRequest, parse_model_version
+from backend.core.contracts import (
+    EngineResult,
+    ExecutionContext,
+    LoraEvaluationRequest,
+    LoraTrainingRequest,
+    parse_model_version,
+)
 from backend.core.interfaces import IPathResolver
 from backend.core.lora_train_interface import ILoraTrainEngine
 from backend.engine.training.presets import TRAINABLE_BASE_MODELS
-from backend.engine.memory_policy import prepare_host_for_lora_worker
+from backend.engine.memory_policy import prepare_host_for_lora_worker, unload_model_cache_if_present
 from backend.engine.training.subprocess_runner import run_lora_training_subprocess
 
 
@@ -21,10 +28,12 @@ class DanQingLoraTrainEngine(ILoraTrainEngine):
         path_resolver: IPathResolver,
         registry: Any,
         runtimes: dict[str, Any],
+        model_cache: Any | None = None,
     ):
         self._paths = path_resolver
         self._registry = registry
         self._runtimes = runtimes
+        self._cache = model_cache
 
     def is_available(self) -> bool:
         return "mlx" in self._runtimes
@@ -88,5 +97,35 @@ class DanQingLoraTrainEngine(ILoraTrainEngine):
                 "user_lora_id": result.get("user_lora_id", ""),
                 "adapter_path": result.get("adapter_path", ""),
                 "output_name": result.get("output_name", ""),
+                "needs_candidate_evaluation": bool(result.get("needs_candidate_evaluation")),
+                "checkpoints": list(result.get("checkpoints") or []),
+            },
+        )
+
+    async def evaluate(self, request: LoraEvaluationRequest, ctx: ExecutionContext) -> EngineResult:
+        import asyncio
+
+        from backend.engine.training.lora_checkpoint_evaluation import run_lora_checkpoint_evaluation
+
+        unload_model_cache_if_present()
+        runtime = self._resolve_mlx_runtime()
+        if hasattr(runtime, "clear_cache"):
+            runtime.clear_cache()
+        result = await asyncio.to_thread(
+            run_lora_checkpoint_evaluation,
+            request,
+            ctx,
+            registry=self._registry,
+            project_root=self._paths.get_project_root(),
+            runtime=runtime,
+            path_resolver=self._paths,
+            model_cache=self._cache,
+        )
+        return EngineResult(
+            primary_asset_id="",
+            metadata={
+                "evaluation": result,
+                "training_task_id": request.training_task_id,
+                "status": result.get("status", ""),
             },
         )

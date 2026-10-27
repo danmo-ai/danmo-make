@@ -48,7 +48,7 @@ def lora_video_step_distill(entry: Any) -> bool:
 
 
 def lora_z_image_distill_patch(entry: Any) -> bool:
-    """LoRA restores Z-Image-Turbo 8–9 step acceleration for Base-trained adapters (Scheme 4)."""
+    """LoRA restores Z-Image-Turbo acceleration after ordinary Turbo SFT."""
     params = _entry_params(entry)
     return bool(params.get("z_image_distill_patch"))
 
@@ -134,14 +134,11 @@ def _inference_sampling_applies(inference: dict[str, Any], for_model: str | None
     """True when steps/CFG/scheduler from the recipe belong on ``for_model``.
 
     ``for_model`` empty keeps the full block (callers that are not a composer).
-    Scheme 4 and Turbo recipes target Z-Image-Turbo when ``inference.model`` is omitted.
+    Turbo recipes must declare their target model explicitly.
     """
     if not for_model:
         return True
-    scheme = str(inference.get("scheme") or "").strip().lower()
     target = _model_stem(str(inference.get("model") or ""))
-    if not target and scheme in {"scheme4", "turbo"}:
-        target = "z-image-turbo"
     if not target:
         return True
     return _model_stem(for_model) == target
@@ -170,8 +167,8 @@ def _inference_block_picklist_extras(
         if 0 <= lo <= hi:
             extras["recommended_lora_scale"] = [lo, hi]
     scheme = str(inference.get("scheme") or "").strip().lower()
-    if scheme == "scheme4":
-        extras["tags"] = ["Scheme 4"]
+    if scheme == "sft":
+        extras["tags"] = ["Turbo SFT"]
         extras["hint_key"] = (
             "studio.loraHint.zImageDistillPatch"
             if recipe_on_this_model
@@ -187,14 +184,6 @@ def _inference_block_picklist_extras(
     ):
         extras["hint_key"] = Z_IMAGE_SAMPLER_STAYS_HINT_KEY
     return extras
-
-
-def z_image_turbo_trained_picklist_extras(for_model: str | None = None) -> dict[str, Any]:
-    """Picklist extras for user LoRAs trained on Z-Image-Turbo before ``lora_config.json``
-    carried an ``inference`` block (same values the trainer writes today)."""
-    from backend.engine.training.presets import Z_IMAGE_TURBO_INFERENCE
-
-    return _inference_block_picklist_extras(Z_IMAGE_TURBO_INFERENCE, for_model=for_model)
 
 
 def lora_adapter_picklist_row(
@@ -246,34 +235,33 @@ def adapters_include_z_image_distill_patch(adapters: Sequence[Any], registry: An
     return False
 
 
-def _adapter_trained_on_z_image_base(lora_id: str, registry: Any, *, config_dir: Any = None) -> bool:
-    """True when adapter was trained on Z-Image Base (Scheme 4 subject LoRA)."""
-    from backend.engine.common.bundle.lora_mlx import adapter_id_weight
-
+def _adapter_uses_z_image_turbo_sft(lora_id: str, *, config_dir: Any = None) -> bool:
+    """True only for an explicit, same-base Turbo SFT inference contract."""
     mid, _ = parse_model_version(lora_id)
-    if mid == Z_IMAGE_DISTILLPATCH_LORA_ID:
+    if mid == Z_IMAGE_DISTILLPATCH_LORA_ID or not mid.startswith("user-lora-") or config_dir is None:
         return False
-    if str(lora_id).startswith("user-lora-"):
-        if config_dir is None:
-            return False
-        from backend.engine.training.user_lora_registry import get_user_lora
+    from backend.engine.training.user_lora_registry import get_user_lora
 
-        ul = get_user_lora(config_dir, lora_id)
-        if ul is None:
-            return False
-        base_key = str(ul.get("base_model") or "").split(":", 1)[0].strip()
-        return base_key == "z-image"
-    entry = registry.get(mid) if registry is not None else None
-    if entry is None:
+    ul = get_user_lora(config_dir, lora_id)
+    if ul is None or str(ul.get("base_model") or "").split(":", 1)[0].strip() != "z-image-turbo":
         return False
-    lora_key = lora_base_model_key(entry)
-    return lora_key == "z-image"
+    inference = ul.get("inference")
+    if not isinstance(inference, dict) or str(inference.get("scheme") or "").lower() != "sft":
+        return False
+    model = str(inference.get("model") or "").split(":", 1)[0].strip()
+    if model != "z-image-turbo":
+        raise ValueError("Turbo SFT inference must use z-image-turbo")
+    extra_adapters = inference.get("extra_adapters")
+    if not isinstance(extra_adapters, list) or not any(
+        parse_model_version(str(item).split("@", 1)[0])[0] == Z_IMAGE_DISTILLPATCH_LORA_ID
+        for item in extra_adapters
+    ):
+        raise ValueError("Turbo SFT inference requires an explicit DistillPatch adapter")
+    return True
 
 
 def distillpatch_lora_installed(project_root: Any, registry: Any) -> bool:
     """True when DistillPatch safetensors exist at the registry ``local_path``."""
-    from pathlib import Path
-
     from backend.engine.contracts.pipeline_registry import local_bundle_root
 
     entry = registry.get(Z_IMAGE_DISTILLPATCH_LORA_ID) if registry is not None else None
@@ -286,7 +274,7 @@ def distillpatch_lora_installed(project_root: Any, registry: Any) -> bool:
     return bundle is not None
 
 
-def expand_z_image_scheme4_adapters(
+def expand_z_image_turbo_sft_adapters(
     adapters: Sequence[Any],
     *,
     base_model_id: str,
@@ -294,7 +282,7 @@ def expand_z_image_scheme4_adapters(
     config_dir: Any = None,
     project_root: Any = None,
 ) -> list[Any]:
-    """Auto-append DistillPatch when inferring on Turbo with a Base-trained LoRA (Scheme 4)."""
+    """Append DistillPatch after an explicit Turbo SFT adapter on the same base."""
     model_key = (base_model_id or "").split(":", 1)[0].strip()
     if model_key != "z-image-turbo":
         return list(adapters or ())
@@ -305,22 +293,22 @@ def expand_z_image_scheme4_adapters(
 
     for item in adapters or ():
         lora_id, _ = adapter_id_weight(item)
-        if _adapter_trained_on_z_image_base(lora_id, registry, config_dir=config_dir):
+        if _adapter_uses_z_image_turbo_sft(lora_id, config_dir=config_dir):
             needs_patch = True
             break
     if not needs_patch:
         return list(adapters or ())
     if registry is not None and registry.get(Z_IMAGE_DISTILLPATCH_LORA_ID) is None:
         raise RuntimeError(
-            "Scheme 4 requires Z-Image Turbo DistillPatch LoRA in models_registry.json. "
+            "Turbo SFT requires Z-Image Turbo DistillPatch LoRA in models_registry.json. "
             "Run `make sync-models-registry` (or restore registry defaults), then install "
             f"{Z_IMAGE_DISTILLPATCH_LORA_ID!r} from the Models page."
         )
     if project_root is not None and not distillpatch_lora_installed(project_root, registry):
         raise RuntimeError(
-            "Scheme 4: Z-Image Turbo DistillPatch LoRA is not installed. "
+            "Turbo SFT: Z-Image Turbo DistillPatch LoRA is not installed. "
             f"Install {Z_IMAGE_DISTILLPATCH_LORA_ID!r} (BF16, ~225MB) from Models → LoRA, "
-            "then retry Turbo inference with your Base-trained adapter."
+            "then retry Turbo inference."
         )
     out = list(adapters or ())
     out.append({"id": Z_IMAGE_DISTILLPATCH_ADAPTER_ID, "weight": 1.0})

@@ -10,6 +10,7 @@ from backend.core.contracts import (
     ImageEditRequest,
     ImageGenerationRequest,
     ImageUpscaleRequest,
+    LoraEvaluationRequest,
     LoraTrainingRequest,
     VideoAvatarRequest,
     VideoAvatarScriptRequest,
@@ -40,6 +41,7 @@ TASK_DISPATCH: dict[str, TaskDispatchSpec] = {
     TK.AUDIO_GENERATION: TaskDispatchSpec(AudioGenerationRequest, "get_audio", "generate"),
     TK.AUDIO_EDIT: TaskDispatchSpec(AudioEditRequest, "get_audio", "edit"),
     TK.LORA_TRAINING: TaskDispatchSpec(LoraTrainingRequest, "get_lora_train", "train"),
+    TK.LORA_EVALUATION: TaskDispatchSpec(LoraEvaluationRequest, "get_lora_train", "evaluate"),
     TK.TOOLS_Z_IMAGE_MERGE: TaskDispatchSpec(ZImageMergeRequest, "get_tools", "merge_z_image"),
 }
 

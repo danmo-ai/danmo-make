@@ -151,6 +151,10 @@ class IV3TaskStore(ABC):
         ...
 
     @abstractmethod
+    def delete_task(self, task_id: str) -> bool:
+        ...
+
+    @abstractmethod
     def list_tasks(
         self,
         limit: int = 200,

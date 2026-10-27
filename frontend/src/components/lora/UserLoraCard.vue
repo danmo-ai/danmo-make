@@ -109,7 +109,7 @@ const formattedDate = computed(() => {
 
 const schemeLabel = computed(() => {
   const scheme = String(props.lora.inference?.scheme || '').trim();
-  if (scheme === 'scheme4') return t('loraTrain.preset.scheme4');
+  if (scheme === 'sft') return t('loraTrain.preset.sft');
   return '';
 });
 

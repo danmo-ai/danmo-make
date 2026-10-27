@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -58,12 +59,7 @@ from backend.engine.training.lora_train_runtime_mlx import (
     parse_lora_train_runtime_config,
     split_train_val_indices,
 )
-from backend.engine.training.presets import (
-    Z_IMAGE_SCHEME4_INFERENCE,
-    Z_IMAGE_TURBO_INFERENCE,
-    merge_training_request_config,
-    resolve_preset,
-)
+from backend.engine.training.presets import merge_training_request_config, resolve_preset
 from backend.engine.training.user_lora_registry import register_user_lora
 
 from backend.engine.training.z_image_turbo_adapter_mlx import (
@@ -258,6 +254,39 @@ def _training_loss(
     return combine_instance_prior_loss(inst, prior, prior_loss_weight=prior_loss_weight)
 
 
+@contextmanager
+def _temporary_inference_adapters(
+    model: Any,
+    *,
+    project_root: Path,
+    registry: Any,
+    ctx: Any,
+) -> Any:
+    """Temporarily merge Turbo SFT's DistillPatch, never the trainable user LoRA."""
+    from backend.catalog.lora_meta import Z_IMAGE_DISTILLPATCH_ADAPTER_ID
+    from backend.engine.families.z_image.lora_mlx import merge_z_image_lora_adapters
+
+    inner = getattr(model, "_inner", model)
+    param_map = inner._param_map
+    snapshot = {key: value for key, value in param_map.items() if isinstance(value, mx.array)}
+    # Detached base tensors are safe to mutate while ``value_and_grad`` is off. Restore
+    # the original objects afterward so the optimizer and trainable LoRA stay untouched.
+    for key, value in snapshot.items():
+        param_map[key] = mx.array(value)
+    try:
+        merge_z_image_lora_adapters(
+            model,
+            [{"id": Z_IMAGE_DISTILLPATCH_ADAPTER_ID, "weight": 1.0}],
+            base_model_id="z-image-turbo",
+            project_root=project_root,
+            registry=registry,
+            ctx=ctx,
+        )
+        yield
+    finally:
+        param_map.update(snapshot)
+
+
 def _validate_saved_lora(path: Path) -> None:
     from backend.engine.common.bundle.weights import load_safetensors
     from backend.engine.config.model_configs import ZImageConfig
@@ -318,6 +347,8 @@ def _denoise_latents_for_prompt(
     ctx: Any,
     steps: int = 20,
     turbo: bool = False,
+    guidance: float = 4.0,
+    base_sigma_shift: float = 6.0,
 ) -> mx.array:
     from backend.engine.common.ops.schedulers import FlowMatchEulerScheduler, LinearScheduler
 
@@ -337,16 +368,22 @@ def _denoise_latents_for_prompt(
         sigma_schedule = sched._sigmas
     else:
         image_seq_len = lh * lw
-        sched = FlowMatchEulerScheduler(num_train_timesteps=1000, shift=6.0, ctx=ctx)
+        sched = FlowMatchEulerScheduler(
+            num_train_timesteps=1000, shift=base_sigma_shift, ctx=ctx
+        )
         sched.set_timesteps(
             steps,
             image_seq_len=image_seq_len,
-            scheduler_shift=6.0,
+            scheduler_shift=float(base_sigma_shift),
             use_empirical_mu=False,
         )
         sigma_schedule = sched._sigmas
+    uncond = None if turbo or float(guidance) == 0.0 else text_encoder.encode([""])
     for i, _t in enumerate(sched._timesteps):
         pred = model(latents, timestep=i, txt_embeds=cap, sigmas=sigma_schedule)
+        if uncond is not None:
+            uncond_pred = model(latents, timestep=i, txt_embeds=uncond, sigmas=sigma_schedule)
+            pred = model.combine_cfg_noise(pred, uncond_pred, float(guidance))
         latents = sched.step(pred, i, latents)
         mx.eval(latents)
     return latents
@@ -438,6 +475,8 @@ def _generate_progress_image(
     ctx: Any,
     steps: int = 20,
     turbo: bool = False,
+    guidance: float = 4.0,
+    base_sigma_shift: float = 6.0,
 ) -> np.ndarray:
     latents = _denoise_latents_for_prompt(
         model=model,
@@ -447,6 +486,8 @@ def _generate_progress_image(
         ctx=ctx,
         steps=steps,
         turbo=turbo,
+        guidance=guidance,
+        base_sigma_shift=base_sigma_shift,
     )
     img = vae_dec.forward(latents)
     mx.eval(img)
@@ -622,6 +663,8 @@ def run_z_image_dreambooth_training(
             f"(got {base_model_id!r})"
         )
     is_turbo = _is_zimage_turbo(base_model_id)
+    preset_name = str(request.preset or "standard").strip().lower()
+    is_turbo_sft = is_turbo and preset_name == "sft"
 
     entry = registry.require(mid)
     if str(getattr(entry, "family", "")) != "z_image":
@@ -633,9 +676,8 @@ def run_z_image_dreambooth_training(
     cfg = merge_training_request_config(request, preset)
     train_runtime = parse_lora_train_runtime_config(cfg, defaults=preset)
 
-    # Base training samples σ = shift(u) with a static shift. Presets set ``train_sigma_shift``
-    # (3.0 — keeps supervision in the 0.3–0.7 identity band); without it fall back to the
-    # inference ``scheduler_shift`` from the registry. Turbo samples its own inference band.
+    # Base σ sampling is independent from the Base inference scheduler shift.
+    # The latter still controls Base progress previews; Turbo samples its own inference band.
     if is_turbo:
         base_sigma_shift = 1.0
     elif train_runtime.train_sigma_shift is not None:
@@ -644,6 +686,9 @@ def run_z_image_dreambooth_training(
         base_sigma_shift = float(
             registry_scalar_default(entry, "scheduler_shift", _Z_IMAGE_BASE_SIGMA_SHIFT)
         )
+    base_preview_shift = float(
+        registry_scalar_default(entry, "scheduler_shift", _Z_IMAGE_BASE_SIGMA_SHIFT)
+    )
     if mid == "z-image" and (
         train_runtime.prior_loss_weight > 0 or train_runtime.class_prompt
     ):
@@ -825,7 +870,16 @@ def run_z_image_dreambooth_training(
         train_type=train_runtime.train_type,
     )
 
-    if is_turbo:
+    if is_turbo_sft:
+        from backend.catalog.lora_meta import distillpatch_lora_installed
+
+        if not distillpatch_lora_installed(project_root, registry):
+            raise RuntimeError(
+                "Turbo SFT requires the Z-Image Turbo DistillPatch LoRA for matching progress previews "
+                "and inference. Install 'z-image-turbo-distillpatch-lora:bf16' from Models → LoRA."
+            )
+
+    if is_turbo and not is_turbo_sft:
         from backend.engine.families.z_image.lora_mlx import _repair_indexed_zimage_weights
 
         adapter_path = resolve_zimage_turbo_training_adapter_path(project_root)
@@ -863,6 +917,15 @@ def run_z_image_dreambooth_training(
             f"assistant_off_prob={train_runtime.turbo_assistant_off_prob:g} "
             f"modules={train_runtime.lora_module_keys or 'all'}",
         )
+    elif is_turbo:
+        assert_no_trainable_assistant(train_module)
+        _log(
+            exec_ctx,
+            "info",
+            "Standard SFT on Z-Image-Turbo: no Ostris training assistant. "
+            "Progress previews and exported inference load Z-Image-Turbo-DistillPatch "
+            "after this LoRA (8 steps, linear scheduler, CFG=0).",
+        )
     else:
         assert_no_trainable_assistant(train_module)
         _log(
@@ -881,25 +944,6 @@ def run_z_image_dreambooth_training(
                 "steps land at σ>0.9 and the 0.3–0.7 band that fixes facial structure is starved; "
                 "identity LoRAs converge poorly. Prefer sigma_bias=sigmoid with train_sigma_shift=1.",
             )
-        if train_runtime.scheme4_turbo_band_mix > 0:
-            _log(
-                exec_ctx,
-                "info",
-                f"Scheme 4 hybrid: {train_runtime.scheme4_turbo_band_mix * 100:.0f}% of steps sample "
-                f"Turbo σ band [{train_runtime.timestep_low}-{train_runtime.timestep_high}] "
-                f"(steps={train_runtime.turbo_infer_steps}, bias={train_runtime.timestep_bias}) "
-                f"on Base DiT so identity survives Turbo inference; remainder uses Base shift sampling.",
-            )
-        if (request.preset or "").strip().lower() == "scheme4":
-            _log(
-                exec_ctx,
-                "info",
-                "Scheme 4 verification recipe: z-image-turbo + this LoRA + DistillPatch. "
-                "The exported inference recipe adds DistillPatch explicitly. Acceleration config: "
-                "8 steps, cfg_scale=1 (guidance=0), linear scheduler, "
-                "LoRA weight 0.7–0.85.",
-            )
-
     lora_layer_count = len(getattr(train_module, "_lora_paths", []) or [])
     _log(
         exec_ctx,
@@ -916,7 +960,6 @@ def run_z_image_dreambooth_training(
         f"sigma_shift={base_sigma_shift:g} sigma_bias={train_runtime.sigma_bias} "
         f"turbo_band=[{train_runtime.timestep_low}-{train_runtime.timestep_high}]/"
         f"{train_runtime.turbo_infer_steps} timestep_bias={train_runtime.timestep_bias} "
-        f"scheme4_turbo_mix={train_runtime.scheme4_turbo_band_mix:g} "
         f"turbo_asst_off={train_runtime.turbo_assistant_off_prob:g} "
         f"num_aug={train_runtime.num_augmentations} n_samples={n_samples} "
         f"images={len(pairs)} val_split={train_runtime.val_split:g} "
@@ -930,15 +973,6 @@ def run_z_image_dreambooth_training(
         resolution=resolution,
         train_runtime=train_runtime,
     )
-    if not is_turbo and train_runtime.scheme4_turbo_band_mix > 0:
-        _log_training_sigma_distribution(
-            exec_ctx,
-            ctx,
-            is_turbo=True,
-            sigma_shift=base_sigma_shift,
-            resolution=resolution,
-            train_runtime=train_runtime,
-        )
     _log_zimage_latent_caption_stats(exec_ctx, latent_cache, ctx)
     # Baseline per-σ loss (fresh LoRA ≈ frozen base): reference to compare training progress against.
     if is_turbo and training_assistant is not None:
@@ -948,11 +982,6 @@ def run_z_image_dreambooth_training(
         training_assistant.set_enabled(True)
     else:
         _log_noise_level_loss(exec_ctx, train_module, latent_cache, ctx, label="base-init")
-        if train_runtime.scheme4_turbo_band_mix > 0:
-            _log_noise_level_loss(
-                exec_ctx, train_module, latent_cache, ctx, label="scheme4-turbo-band-init"
-            )
-
     prior_latents: Any | None = None
     if train_runtime.prior_loss_weight > 0 and class_prompt:
         prior_latents = _ensure_zimage_class_prior_latents(
@@ -1007,10 +1036,7 @@ def run_z_image_dreambooth_training(
             if random.random() < float(train_runtime.turbo_assistant_off_prob):
                 training_assistant.set_enabled(False)
                 assistant_was_off = True
-        use_turbo_band = is_turbo or (
-            train_runtime.scheme4_turbo_band_mix > 0.0
-            and random.random() < float(train_runtime.scheme4_turbo_band_mix)
-        )
+        use_turbo_band = is_turbo
         try:
             return _training_loss(
                 train_module,
@@ -1048,11 +1074,6 @@ def run_z_image_dreambooth_training(
             training_assistant.set_enabled(True)
         else:
             _log_noise_level_loss(exec_ctx, train_module, latent_cache, ctx, label="base")
-            if train_runtime.scheme4_turbo_band_mix > 0:
-                _log_noise_level_loss(
-                    exec_ctx, train_module, latent_cache, ctx, label="scheme4-turbo-band"
-                )
-
         vae_dir = bundle_root / "vae"
         vae_cfg, _, _ = read_vae_dir_config(vae_dir)
         vae_weights = load_vae_weight_dict(ctx, vae_dir)
@@ -1069,32 +1090,25 @@ def run_z_image_dreambooth_training(
         if is_turbo and training_assistant is not None:
             training_assistant.set_enabled(False)
         try:
-            preview = _generate_progress_image(
-                model=train_module,
-                vae_dec=dec,
-                text_encoder=te,
-                prompt=progress_prompt,
-                resolution=resolution,
-                ctx=ctx,
-                steps=train_runtime.progress_steps,
-                turbo=is_turbo,
+            preview_scope = (
+                _temporary_inference_adapters(model, project_root=project_root, registry=registry, ctx=ctx)
+                if is_turbo_sft
+                else nullcontext()
             )
-            Image.fromarray(preview).save(work_dir / f"{step:07d}_progress.png")
-            if not is_turbo and train_runtime.scheme4_turbo_band_mix > 0:
-                turbo_steps = int(train_runtime.turbo_infer_steps)
-                preview_turbo = _generate_progress_image(
+            with preview_scope:
+                preview = _generate_progress_image(
                     model=train_module,
                     vae_dec=dec,
                     text_encoder=te,
                     prompt=progress_prompt,
                     resolution=resolution,
                     ctx=ctx,
-                    steps=turbo_steps,
-                    turbo=True,
+                    steps=train_runtime.progress_steps,
+                    turbo=is_turbo,
+                    guidance=0.0 if is_turbo else float(train_runtime.guidance),
+                    base_sigma_shift=base_preview_shift,
                 )
-                Image.fromarray(preview_turbo).save(
-                    work_dir / f"{step:07d}_progress_turbo{turbo_steps}.png"
-                )
+            Image.fromarray(preview).save(work_dir / f"{step:07d}_progress.png")
         finally:
             if is_turbo and training_assistant is not None:
                 training_assistant.set_enabled(True)
@@ -1118,29 +1132,10 @@ def run_z_image_dreambooth_training(
         mlx_ctx=ctx,
     )
 
+    # Keep final / best / periodic checkpoints distinct so the candidate matrix can
+    # compare them. ``best_adapters`` is lowest val loss only — not best likeness.
+    del best_path
     final_path = adapter_dir / "final_adapters.safetensors"
-    if best_path is not None and best_path.is_file():
-        import shutil
-
-        optimizer_sources = [
-            best_path.with_name(f"{best_path.stem}{suffix}")
-            for suffix in ("_optimizer.safetensors", "_optimizer.npz")
-        ]
-        if not any(source.is_file() for source in optimizer_sources):
-            raise RuntimeError(f"Best-checkpoint optimizer state is missing: {best_path.name}")
-        for suffix in ("_optimizer.safetensors", "_optimizer.npz", "_rng.safetensors"):
-            source = best_path.with_name(f"{best_path.stem}{suffix}")
-            if suffix == "_rng.safetensors" and not source.is_file():
-                raise RuntimeError(f"Best-checkpoint MLX random state is missing: {source.name}")
-            if source.is_file():
-                shutil.copy2(source, final_path.with_name(f"{final_path.stem}{suffix}"))
-        final_path.write_bytes(best_path.read_bytes())
-        best_meta = adapter_dir / "best_adapters.json"
-        if best_meta.is_file():
-            final_path.with_suffix(".json").write_text(
-                best_meta.read_text(encoding="utf-8"),
-                encoding="utf-8",
-            )
     if train_runtime.fuse_adapters:
         from backend.engine.training.lora_layers_mlx import write_fused_adapters_from_published
 
@@ -1153,22 +1148,28 @@ def run_z_image_dreambooth_training(
         )
     _validate_saved_lora(final_path)
 
-    from backend.engine.training.lora_train_config import publish_trained_adapter
+    from backend.engine.training.lora_train_config import finalize_training_adapters
 
-    published = publish_trained_adapter(
+    published = finalize_training_adapters(
+        work_dir=work_dir,
+        adapter_dir=adapter_dir,
         final_path=final_path,
-        checkpoint_meta=json.loads(final_path.with_suffix(".json").read_text(encoding="utf-8")),
         output_name=request.output_name or f"{base_model_id}-{request.dataset_id}",
-        dest_dir=path_resolver.get_loras_dir(),
-        config_dir=path_resolver.get_workspace_config_dir(),
         params=request.model_dump(),
         dataset_meta=dataset_meta,
-        auto_register=request.auto_register,
+        loss_history=loss_history,
+        training_caption=training_caption,
+        path_resolver=path_resolver,
         task_id=exec_ctx.task_id,
+        auto_register=bool(request.auto_register),
     )
-    _log(exec_ctx, "success", f"Training complete → {published['adapter_path']}")
-    return {
-        **published,
-        "loss_history": loss_history,
-        "training_caption": training_caption,
-    }
+    _log(
+        exec_ctx,
+        "success",
+        (
+            f"Training complete → awaiting candidate selection ({len(published.get('checkpoints') or [])} checkpoints)"
+            if published.get("needs_candidate_evaluation")
+            else f"Training complete → {published['adapter_path']}"
+        ),
+    )
+    return published

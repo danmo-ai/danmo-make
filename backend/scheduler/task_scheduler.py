@@ -179,8 +179,8 @@ class TaskScheduler:
         if st == "running":
             k = row.get("kind") or ""
             mid = row.get("model_id") or ""
-            if TK.is_lora_training_kind(k) or TK.is_tools_kind(k):
-                pass  # child worker polls DB for cancelled status
+            if TK.is_lora_kind(k) or TK.is_tools_kind(k):
+                pass  # child worker / eval loop polls cancel token / DB
             elif TK.is_image_kind(k):
                 await self._engines.get_image(mid).cancel(task_id)
             elif TK.is_video_kind(k):
@@ -190,6 +190,16 @@ class TaskScheduler:
             self._tasks.mark_cancelled(task_id)
             return "ok"
         return "not_cancellable"
+
+    def delete_task(self, task_id: str) -> bool:
+        if task_id in self._in_flight:
+            raise RuntimeError("task is still running")
+        removed = self._tasks.delete_task(task_id)
+        if removed:
+            self._tokens.pop(task_id, None)
+            self._progress_meta.pop(task_id, None)
+            self._realtime_queues.pop(task_id, None)
+        return removed
 
     def get_task(self, task_id: str) -> Optional[dict[str, Any]]:
         return self._tasks.get_task(task_id)
@@ -454,6 +464,15 @@ class TaskScheduler:
                 },
             )
             self._record_duration(tid, kind)
+            try:
+                await self._maybe_enqueue_lora_evaluation(tid, kind, params, res.metadata or {})
+            except Exception as follow_exc:
+                # Training already succeeded; surface follow-up failure without rewriting status.
+                self._tasks.append_log(
+                    tid,
+                    f"Failed to queue checkpoint evaluation: {_task_error_message(follow_exc)}",
+                    "error",
+                )
         except asyncio.CancelledError:
             trace.mark_cancelled()
             self._tasks.mark_cancelled(tid)
@@ -526,4 +545,40 @@ class TaskScheduler:
             status=status,
             result=result,
             error_message=str(row.get("error_message") or ""),
+        )
+
+    async def _maybe_enqueue_lora_evaluation(
+        self,
+        training_task_id: str,
+        kind: str,
+        params: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> None:
+        """After Studio training, queue the same-condition candidate matrix (no auto-register)."""
+        if not TK.is_lora_training_kind(kind):
+            return
+        if bool(params.get("auto_register")):
+            return
+        if not bool(metadata.get("needs_candidate_evaluation")):
+            return
+        from backend.engine.training.lora_checkpoint_evaluation import mark_evaluation_queued
+
+        eval_row = await self.submit(
+            kind=TK.LORA_EVALUATION,
+            model_id=str(params.get("base_model") or "").split(":", 1)[0] or "lora-eval",
+            params={
+                "training_task_id": training_task_id,
+                "priority": "normal",
+                "force": False,
+            },
+            priority="normal",
+        )
+        eval_id = str(eval_row.get("id") or "")
+        if not eval_id:
+            raise RuntimeError("Failed to enqueue LoRA checkpoint evaluation follow-up")
+        mark_evaluation_queued(self._work_dir(training_task_id), evaluation_task_id=eval_id)
+        self._tasks.append_log(
+            training_task_id,
+            f"Queued checkpoint candidate evaluation {eval_id}",
+            "info",
         )

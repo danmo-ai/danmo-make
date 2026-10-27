@@ -44,11 +44,11 @@ TRAINABLE_BASE_MODELS: frozenset[str] = frozenset(
     {"flux1-dev", "z-image", "z-image-turbo", "qwen-image"}
 )
 
-# Official Scheme 4 (DiffSynth / HF blog): standard SFT on Z-Image Base, infer on Turbo
-# with Z-Image-Turbo-DistillPatch (8 steps, cfg_scale=1 → guidance=0 here).
+# DiffSynth Turbo SFT: train and infer on Z-Image-Turbo; DistillPatch restores
+# acceleration after the user adapter. Training and inference never cross bases.
 # https://huggingface.co/blog/kelseye/training-strategies-of-z-image-turbo
-Z_IMAGE_SCHEME4_INFERENCE: dict[str, Any] = {
-    "scheme": "scheme4",
+Z_IMAGE_TURBO_SFT_INFERENCE: dict[str, Any] = {
+    "scheme": "sft",
     "model": "z-image-turbo",
     "extra_adapters": ["z-image-turbo-distillpatch-lora:bf16"],
     "steps": 8,
@@ -58,7 +58,7 @@ Z_IMAGE_SCHEME4_INFERENCE: dict[str, Any] = {
 }
 
 # LoRAs trained directly on Z-Image-Turbo (Ostris assistant on, σ over the 9-step band). They
-# are exported without the assistant, so a slightly higher weight than the 0.8 Scheme 4 default
+# are exported without the assistant, so a slightly higher weight than the 0.8 Turbo SFT default
 # is needed for the subject to read; below 0.8 identity fades, above 1.0 textures over-bake.
 Z_IMAGE_TURBO_INFERENCE: dict[str, Any] = {
     "scheme": "turbo",
@@ -116,32 +116,7 @@ _Z_IMAGE_BASE_COMMON: dict[str, Any] = {
     "val_every": 100,
 }
 
-# Portrait/concept tuning on top of official SFT defaults (rank 32, all blocks, ~3k steps).
-# scheme4_turbo_band_mix: fraction of steps that sample Turbo's 8-step σ band on Base DiT so
-# identity survives Base→Turbo inference (DistillPatch alone only restores acceleration).
-Z_IMAGE_SCHEME4_CORE: dict[str, Any] = {
-    **_Z_IMAGE_BASE_COMMON,
-    "iterations": 2500,
-    "lora_rank": 32,
-    "lora_blocks": -1,
-    # MLX attribute is ``to_out`` (sanitize drops diffusers' ``to_out.0``); the matcher also
-    # accepts the ``.0`` spelling, but keep the canonical name so all 7 linears get LoRA.
-    "lora_module_keys": list(Z_IMAGE_LORA_MODULE_KEYS),
-    "grad_accumulate": 1,
-    "progress_every": 500,
-    "checkpoint_every": 500,
-    "scheme4_turbo_band_mix": 0.45,
-    "turbo_infer_steps": 8,
-    "timestep_low": 1,
-    "timestep_high": 8,
-    "timestep_bias": "sigmoid",
-    "grad_checkpoint": True,
-}
-
 Z_IMAGE_PRESETS: dict[str, dict[str, Any]] = {
-    "scheme4": {
-        **Z_IMAGE_SCHEME4_CORE,
-    },
     "quick": {
         **_Z_IMAGE_BASE_COMMON,
         "iterations": 1000,
@@ -254,35 +229,33 @@ Z_IMAGE_TURBO_MFLUX_CORE: dict[str, Any] = {
 }
 
 Z_IMAGE_TURBO_PRESETS: dict[str, dict[str, Any]] = {
-    "quick": {
+    # Ordinary Turbo SFT. No Ostris de-distillation assistant during training;
+    # inference adds DistillPatch after this user adapter on the same Turbo base.
+    "sft": {
         **Z_IMAGE_TURBO_MFLUX_CORE,
-        "iterations": 1000,
-        "grad_accumulate": 1,
-        "progress_every": 250,
-        "checkpoint_every": 250,
-    },
-    "standard": {
-        **Z_IMAGE_TURBO_MFLUX_CORE,
-        "iterations": 2000,
+        "iterations": 2500,
         "lora_rank": 32,
         "lora_blocks": -1,
+        "lora_module_keys": list(Z_IMAGE_LORA_MODULE_KEYS),
+        "turbo_infer_steps": 8,
+        "progress_steps": 8,
+        "timestep_high": 8,
         "grad_accumulate": 1,
         "progress_every": 500,
         "checkpoint_every": 500,
     },
-    "quality": {
+    # Ostris differential LoRA (Scheme 2): assistant stays frozen and enabled in training,
+    # then is removed for inference. This is a distinct recipe from Turbo SFT.
+    "turbo": {
         **Z_IMAGE_TURBO_MFLUX_CORE,
-        "iterations": 3000,
+        "iterations": 2500,
         "lora_rank": 32,
         "lora_blocks": -1,
+        "lora_module_keys": list(Z_IMAGE_LORA_MODULE_KEYS),
         "grad_accumulate": 1,
         "progress_every": 500,
         "checkpoint_every": 500,
     },
-}
-
-Z_IMAGE_TURBO_PRESET_ALIASES: dict[str, str] = {
-    "mflux": "standard",
 }
 
 
@@ -302,23 +275,15 @@ def resolve_preset(name: str | None, *, base_model: str = "flux1-dev") -> dict[s
     mid = (base_model or "").split(":", 1)[0].strip()
     if mid == "z-image-turbo":
         table = Z_IMAGE_TURBO_PRESETS
-        key = Z_IMAGE_TURBO_PRESET_ALIASES.get(key, key)
     elif mid == "z-image":
         table = Z_IMAGE_PRESETS
     elif mid == "qwen-image":
         table = QWEN_IMAGE_PRESETS
     else:
         table = PRESETS
-    if key == "scheme4" and mid != "z-image":
-        raise ValueError(
-            "Training preset 'scheme4' is only for z-image (Base); "
-            "use quick|standard|quality for z-image-turbo."
-        )
     if key not in table:
-        raise ValueError(
-            f"Unknown training preset {name!r}; choose "
-            f"{'scheme4|' if mid == 'z-image' else ''}quick|standard|quality|custom"
-        )
+        choices = "turbo|sft|custom" if mid == "z-image-turbo" else "quick|standard|quality|custom"
+        raise ValueError(f"Unknown training preset {name!r} for {mid}; choose {choices}")
     return dict(table[key])
 
 

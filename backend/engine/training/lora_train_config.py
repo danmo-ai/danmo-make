@@ -43,22 +43,20 @@ def resolve_training_config(params: dict[str, Any]) -> dict[str, Any]:
             if key not in kwargs.get("exclude", set()) and value is not None
         }
     )
-    return merge_training_request_config(
-        request,
-        resolve_preset(str(params.get("preset") or "standard"), base_model=base_model),
-    )
+    preset = resolve_preset(str(params.get("preset") or "standard"), base_model=base_model)
+    return merge_training_request_config(request, preset)
 
 
 def training_inference_config(params: dict[str, Any]) -> dict[str, Any] | None:
     """Portable, explicit inference recipe stored with every face adapter."""
-    from backend.engine.training.presets import Z_IMAGE_SCHEME4_INFERENCE, Z_IMAGE_TURBO_INFERENCE
+    from backend.engine.training.presets import Z_IMAGE_TURBO_INFERENCE, Z_IMAGE_TURBO_SFT_INFERENCE
 
     cfg = resolve_training_config(params)
     base_model = str(params.get("base_model") or "").split(":", 1)[0]
     preset = str(params.get("preset") or "standard").strip().lower()
     recipe: dict[str, Any] | None = None
-    if base_model == "z-image" and preset == "scheme4":
-        recipe = dict(Z_IMAGE_SCHEME4_INFERENCE)
+    if base_model == "z-image-turbo" and preset == "sft":
+        recipe = dict(Z_IMAGE_TURBO_SFT_INFERENCE)
     elif base_model == "z-image-turbo":
         recipe = {
             **Z_IMAGE_TURBO_INFERENCE,
@@ -93,10 +91,12 @@ def training_inference_config(params: dict[str, Any]) -> dict[str, Any] | None:
         recipe = {**(recipe or {}), **requested}
     if recipe is None:
         return None
-    model = str(recipe.get("model") or base_model)
-    z_scope = {"z-image", "z-image-turbo"}
-    if model != base_model and not ({model, base_model} <= z_scope):
-        raise ValueError(f"Inference model {model!r} is not compatible with training base {base_model!r}")
+    model = str(recipe.get("model") or base_model).split(":", 1)[0]
+    if model != base_model:
+        raise ValueError(
+            f"Inference model {model!r} must equal training base {base_model!r}; "
+            "LoRA training and inference cannot cross base models."
+        )
     recipe["model"] = model
     recipe["steps"] = int(recipe.get("steps") or 30)
     recipe["guidance"] = float(recipe.get("guidance") or 0.0)
@@ -112,7 +112,7 @@ def training_inference_config(params: dict[str, Any]) -> dict[str, Any] | None:
     if not 0 <= recipe["lora_weight"] <= 2:
         raise ValueError("inference.lora_weight must be in [0, 2]")
     scheme = recipe.get("scheme")
-    if scheme is not None and scheme not in {"scheme4", "turbo", "base"}:
+    if scheme is not None and scheme not in {"sft", "turbo", "base"}:
         raise ValueError(f"inference.scheme {scheme!r} is not a known face-LoRA recipe")
     weight_range = recipe.get("lora_weight_range")
     if weight_range is not None and not (
@@ -189,7 +189,7 @@ def adapter_export_config(
                 "lora_alpha", "lora_blocks", "lora_module_keys", "sigma_bias",
                 "train_sigma_shift", "caption_dropout", "caption_mode", "resolution",
                 "face_crop", "train_type", "min_snr_gamma", "guidance", "progress_steps",
-                "scheme4_turbo_band_mix", "turbo_infer_steps", "timestep_low",
+                "turbo_infer_steps", "timestep_low",
                 "timestep_high", "timestep_bias", "num_augmentations", "lora_dropout",
                 "optimizer", "val_split", "val_every", "qlora_bits", "grad_checkpoint",
                 ) if cfg.get(key) is not None
@@ -262,6 +262,57 @@ def publish_trained_adapter(
         "user_lora_id": user_lora_id,
         "output_name": slug,
     }
+
+
+def finalize_training_adapters(
+    *,
+    work_dir: Path,
+    adapter_dir: Path,
+    final_path: Path,
+    output_name: str,
+    params: dict[str, Any],
+    dataset_meta: dict[str, Any],
+    loss_history: list[dict[str, Any]],
+    training_caption: str,
+    path_resolver: Any,
+    task_id: str,
+    auto_register: bool,
+) -> dict[str, Any]:
+    """Publish immediately (CLI) or keep checkpoints for the candidate matrix (Studio)."""
+    if auto_register:
+        published = publish_trained_adapter(
+            final_path=final_path,
+            checkpoint_meta=json.loads(final_path.with_suffix(".json").read_text(encoding="utf-8"))
+            if final_path.with_suffix(".json").is_file()
+            else {},
+            output_name=output_name,
+            dest_dir=path_resolver.get_loras_dir(),
+            config_dir=path_resolver.get_workspace_config_dir(),
+            params=params,
+            dataset_meta=dataset_meta,
+            auto_register=True,
+            task_id=task_id,
+        )
+        return {
+            **published,
+            "loss_history": loss_history,
+            "training_caption": training_caption,
+            "needs_candidate_evaluation": False,
+            "checkpoints": [],
+        }
+    from backend.engine.training.lora_checkpoint_evaluation import finish_training_without_register
+
+    return finish_training_without_register(
+        work_dir=work_dir,
+        adapter_dir=adapter_dir,
+        final_path=final_path,
+        output_name=output_name,
+        params=params,
+        dataset_meta=dataset_meta,
+        loss_history=loss_history,
+        training_caption=training_caption,
+        task_id=task_id,
+    )
 
 
 def merge_config_into_request_dict(base: dict[str, Any], config_path: Path | str) -> dict[str, Any]:

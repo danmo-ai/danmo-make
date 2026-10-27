@@ -238,7 +238,7 @@ def _setup_dependencies():
         path_resolver, model_registry, runtimes, model_cache=shared_cache,
     )
     danqing_lora_train = DanQingLoraTrainEngine(
-        path_resolver, model_registry, runtimes,
+        path_resolver, model_registry, runtimes, model_cache=shared_cache,
     )
     danqing_tools = DanQingToolsEngine(
         path_resolver, model_registry, runtimes,

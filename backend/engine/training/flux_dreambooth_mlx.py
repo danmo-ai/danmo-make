@@ -638,29 +638,9 @@ def run_flux_dreambooth_training(
         mlx_ctx=ctx,
     )
 
+    # Keep final / best / periodic checkpoints distinct for the candidate matrix.
+    del best_path
     final_path = adapter_dir / "final_adapters.safetensors"
-    if best_path is not None and best_path.is_file():
-        import shutil
-
-        optimizer_sources = [
-            best_path.with_name(f"{best_path.stem}{suffix}")
-            for suffix in ("_optimizer.safetensors", "_optimizer.npz")
-        ]
-        if not any(source.is_file() for source in optimizer_sources):
-            raise RuntimeError(f"Best-checkpoint optimizer state is missing: {best_path.name}")
-        for suffix in ("_optimizer.safetensors", "_optimizer.npz", "_rng.safetensors"):
-            source = best_path.with_name(f"{best_path.stem}{suffix}")
-            if suffix == "_rng.safetensors" and not source.is_file():
-                raise RuntimeError(f"Best-checkpoint MLX random state is missing: {source.name}")
-            if source.is_file():
-                shutil.copy2(source, final_path.with_name(f"{final_path.stem}{suffix}"))
-        final_path.write_bytes(best_path.read_bytes())
-        best_meta = adapter_dir / "best_adapters.json"
-        if best_meta.is_file():
-            final_path.with_suffix(".json").write_text(
-                best_meta.read_text(encoding="utf-8"),
-                encoding="utf-8",
-            )
     if train_runtime.fuse_adapters:
         from backend.engine.training.lora_layers_mlx import write_fused_adapters_from_published
 
@@ -673,22 +653,28 @@ def run_flux_dreambooth_training(
         )
     _validate_saved_lora(final_path, lora_blocks=train_runtime.lora_blocks)
 
-    from backend.engine.training.lora_train_config import publish_trained_adapter
+    from backend.engine.training.lora_train_config import finalize_training_adapters
 
-    published = publish_trained_adapter(
+    published = finalize_training_adapters(
+        work_dir=work_dir,
+        adapter_dir=adapter_dir,
         final_path=final_path,
-        checkpoint_meta=json.loads(final_path.with_suffix(".json").read_text(encoding="utf-8")),
         output_name=request.output_name or f"{base_model_id}-{request.dataset_id}",
-        dest_dir=path_resolver.get_loras_dir(),
-        config_dir=path_resolver.get_workspace_config_dir(),
         params=request.model_dump(),
         dataset_meta=dataset_meta,
-        auto_register=request.auto_register,
+        loss_history=loss_history,
+        training_caption=training_caption,
+        path_resolver=path_resolver,
         task_id=exec_ctx.task_id,
+        auto_register=bool(request.auto_register),
     )
-    _log(exec_ctx, "success", f"Training complete → {published['adapter_path']}")
-    return {
-        **published,
-        "loss_history": loss_history,
-        "training_caption": training_caption,
-    }
+    _log(
+        exec_ctx,
+        "success",
+        (
+            f"Training complete → awaiting candidate selection ({len(published.get('checkpoints') or [])} checkpoints)"
+            if published.get("needs_candidate_evaluation")
+            else f"Training complete → {published['adapter_path']}"
+        ),
+    )
+    return published

@@ -1097,7 +1097,7 @@ def apply_image_lora_adapters(pipeline,
                 f"Model {base_model_id!r} does not declare LoRA support; "
                 "remove adapters from the request or use a LoRA-capable base model."
             )
-    from backend.catalog.lora_meta import expand_z_image_scheme4_adapters
+    from backend.catalog.lora_meta import expand_z_image_turbo_sft_adapters
     from backend.engine.runtime.mlx import MLXContext
 
     if not isinstance(pipeline.ctx, MLXContext):
@@ -1106,7 +1106,7 @@ def apply_image_lora_adapters(pipeline,
             f"current runtime is {type(pipeline.ctx).__name__}."
         )
     config_dir = pipeline._project_root / "config"
-    expanded = expand_z_image_scheme4_adapters(
+    expanded = expand_z_image_turbo_sft_adapters(
         adapters,
         base_model_id=base_model_id,
         registry=pipeline._registry,
@@ -1116,7 +1116,7 @@ def apply_image_lora_adapters(pipeline,
     if len(expanded) > len(adapters) and on_log is not None:
         on_log(
             "info",
-            "Scheme 4: appended Z-Image-Turbo DistillPatch LoRA for Base-trained adapter "
+            "Turbo SFT: appended Z-Image-Turbo DistillPatch after the user adapter "
             "(official acceleration: 8 steps, cfg_scale=1 / guidance=0, linear scheduler).",
         )
     _merge_image_lora_adapters(

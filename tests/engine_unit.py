@@ -2334,8 +2334,80 @@ class TaskKindMappingTests(unittest.TestCase):
 
         self.assertEqual(task_kind_for_registry_action("video", "upscale"), VIDEO_UPSCALE)
 
+    def test_lora_evaluation_kind_is_registered(self) -> None:
+        import backend.core.task_kinds as TK
+        from backend.scheduler.task_dispatch import TASK_DISPATCH
+
+        self.assertIn(TK.LORA_EVALUATION, TK.ALL_KINDS)
+        self.assertTrue(TK.is_lora_evaluation_kind(TK.LORA_EVALUATION))
+        self.assertTrue(TK.is_lora_kind(TK.LORA_EVALUATION))
+        self.assertIn(TK.LORA_EVALUATION, TASK_DISPATCH)
+        self.assertEqual(TASK_DISPATCH[TK.LORA_EVALUATION].method_name, "evaluate")
+
 
 class TaskSchedulerCancellationTests(unittest.TestCase):
+    def test_delete_training_result_removes_task_exports_and_logs_only(self) -> None:
+        import asyncio
+        import tempfile
+        from unittest.mock import patch
+
+        from fastapi import HTTPException
+        from backend.api.routes.loras import delete_training_result
+        from backend.engine.training.user_lora_registry import list_user_loras, register_user_lora
+        from backend.persistence.v3_task_store import V3TaskStore
+
+        async def _run() -> None:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "db").mkdir()
+                store = V3TaskStore(root / "db" / "studio.db")
+                work = root / "outputs" / "work" / "tsk_train"
+                work.mkdir(parents=True)
+                (work / "lora_worker_job.json").write_text("{}", encoding="utf-8")
+                dataset = root / "datasets" / "ds_original.jpg"
+                dataset.parent.mkdir(parents=True)
+                dataset.write_bytes(b"original")
+                lora_dir = root / "models" / "Lora" / "trained"
+                lora_dir.mkdir(parents=True)
+                (lora_dir / "adapter.safetensors").write_bytes(b"adapter")
+                store.insert_task("tsk_train", "lora.training", "z-image", {})
+                store.mark_completed("tsk_train", {})
+                store.append_log("tsk_train", "finished")
+                store.insert_task("tsk_image", "image.generation", "z-image", {})
+                entry = register_user_lora(
+                    root / "config", name="trained", base_model="z-image",
+                    local_path="models/Lora/trained", task_id="tsk_train",
+                )
+                paths = SimpleNamespace(
+                    get_project_root=lambda: root,
+                    get_workspace_config_dir=lambda: root / "config",
+                    get_outputs_dir=lambda: root / "outputs",
+                    get_loras_dir=lambda: root / "models" / "Lora",
+                )
+                sched = SimpleNamespace(
+                    get_task=store.get_task,
+                    list_tasks=store.list_tasks,
+                    delete_task=store.delete_task,
+                )
+                with patch("backend.api.routes.loras._paths", return_value=paths):
+                    result = await delete_training_result("tsk_train", sched=sched)
+                self.assertEqual(result["removed_loras"], [entry["id"]])
+                self.assertFalse(work.exists())
+                self.assertFalse(lora_dir.exists())
+                self.assertEqual(list_user_loras(root / "config"), [])
+                self.assertIsNone(store.get_task("tsk_train"))
+                self.assertEqual(store.get_logs("tsk_train"), [])
+                self.assertIsNotNone(store.get_task("tsk_image"))
+                self.assertEqual(dataset.read_bytes(), b"original")
+
+                store.insert_task("tsk_running", "lora.training", "z-image", {})
+                store.mark_running("tsk_running")
+                with self.assertRaises(HTTPException) as ctx:
+                    await delete_training_result("tsk_running", sched=sched)
+                self.assertEqual(ctx.exception.status_code, 409)
+
+        asyncio.run(_run())
+
     def test_queued_cancel_removes_from_execution_queue(self) -> None:
         import asyncio
         import tempfile
@@ -5280,7 +5352,7 @@ class BenchmarkMetadataTests(unittest.TestCase):
         turbo = _load_default_registry_expanded()["models"]["z-image-turbo"]
         self.assertTrue(turbo["parameters"].get("lora_support", False))
 
-    def test_z_image_lora_scope_base_turbo_compatible(self) -> None:
+    def test_z_image_lora_requires_exact_base_model(self) -> None:
         from backend.engine.families.z_image.weights import (
             z_image_lora_base_compatible,
             z_image_lora_scope_key,
@@ -5288,8 +5360,9 @@ class BenchmarkMetadataTests(unittest.TestCase):
 
         self.assertEqual(z_image_lora_scope_key("z-image"), "z_image")
         self.assertEqual(z_image_lora_scope_key("z-image-turbo"), "z_image")
-        self.assertTrue(z_image_lora_base_compatible("z-image-turbo", "z-image"))
-        self.assertTrue(z_image_lora_base_compatible("z-image", "z-image-turbo"))
+        self.assertFalse(z_image_lora_base_compatible("z-image-turbo", "z-image"))
+        self.assertFalse(z_image_lora_base_compatible("z-image", "z-image-turbo"))
+        self.assertTrue(z_image_lora_base_compatible("z-image-turbo:bf16", "z-image-turbo:8bit"))
         self.assertFalse(z_image_lora_base_compatible("z-image-turbo", "flux1-dev"))
 
 
@@ -8659,39 +8732,38 @@ class LoraTrainRuntimeTests(unittest.TestCase):
     def test_z_image_presets_disable_prior_loss(self) -> None:
         from backend.engine.training.presets import resolve_preset
 
-        for name in ("quick", "standard", "quality", "scheme4"):
+        for name in ("quick", "standard", "quality"):
             preset = resolve_preset(name, base_model="z-image")
             self.assertEqual(preset.get("prior_loss_weight"), 0.0, msg=name)
 
-    def test_z_image_scheme4_preset(self) -> None:
-        from backend.engine.training.presets import Z_IMAGE_SCHEME4_CORE, resolve_preset
+    def test_z_image_turbo_sft_and_legacy_rejection(self) -> None:
+        from backend.engine.training.presets import resolve_preset
 
-        preset = resolve_preset("scheme4", base_model="z-image")
-        self.assertEqual(preset["iterations"], Z_IMAGE_SCHEME4_CORE["iterations"])
+        preset = resolve_preset("sft", base_model="z-image-turbo")
+        self.assertEqual(preset["iterations"], 2500)
         self.assertEqual(preset["lora_rank"], 32)
         self.assertEqual(preset["lora_blocks"], -1)
-        self.assertEqual(preset["sigma_bias"], "sigmoid")
-        self.assertEqual(preset["train_sigma_shift"], 1.0)
-        self.assertEqual(preset["caption_dropout"], 0.05)
         self.assertEqual(preset["timestep_bias"], "sigmoid")
         self.assertEqual(
             preset["lora_module_keys"],
             ["to_q", "to_k", "to_v", "to_out", "w1", "w2", "w3"],
         )
-        self.assertEqual(preset["scheme4_turbo_band_mix"], 0.45)
         self.assertEqual(preset["turbo_infer_steps"], 8)
+        self.assertEqual(preset["progress_steps"], 8)
         self.assertEqual(preset["timestep_low"], 1)
         self.assertEqual(preset["timestep_high"], 8)
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "Unknown training preset"):
             resolve_preset("scheme4", base_model="z-image-turbo")
+        with self.assertRaisesRegex(ValueError, "Unknown training preset"):
+            resolve_preset("experimental_base_turbo_mix", base_model="z-image")
 
-    def test_expand_z_image_scheme4_adapters(self) -> None:
+    def test_expand_z_image_turbo_sft_adapters(self) -> None:
         from types import SimpleNamespace
 
         from backend.catalog.lora_meta import (
             Z_IMAGE_DISTILLPATCH_ADAPTER_ID,
             Z_IMAGE_DISTILLPATCH_LORA_ID,
-            expand_z_image_scheme4_adapters,
+            expand_z_image_turbo_sft_adapters,
             lora_config_picklist_extras,
         )
 
@@ -8699,6 +8771,20 @@ class LoraTrainRuntimeTests(unittest.TestCase):
             raw={"base_model": "z-image"},
             base_model="z-image",
         )
+        sft_entry = {
+            "id": "user-lora-turbo-sft",
+            "base_model": "z-image-turbo",
+            "inference": {
+                "scheme": "sft",
+                "model": "z-image-turbo",
+                "extra_adapters": ["z-image-turbo-distillpatch-lora:bf16"],
+            },
+        }
+        ordinary_turbo_entry = {
+            "id": "ordinary-turbo",
+            "base_model": "z-image-turbo",
+            "inference": {"scheme": "turbo"},
+        }
         patch_entry = SimpleNamespace(
             raw={"base_model": "z-image-turbo", "category": "loras", "versions": {}},
             base_model="z-image-turbo",
@@ -8712,28 +8798,51 @@ class LoraTrainRuntimeTests(unittest.TestCase):
             return None
 
         registry = SimpleNamespace(get=_get)
+        from unittest.mock import patch
+        with patch(
+            "backend.engine.training.user_lora_registry.get_user_lora",
+            side_effect=lambda _config, lora_id: {
+                "user-lora-turbo-sft": sft_entry,
+                "user-lora-ordinary-turbo": ordinary_turbo_entry,
+            }.get(lora_id),
+        ):
+            expanded = expand_z_image_turbo_sft_adapters(
+                [{"id": "user-lora-turbo-sft", "weight": 0.8}],
+                base_model_id="z-image-turbo",
+                registry=registry,
+                config_dir=Path("."),
+            )
+            self.assertEqual(len(expanded), 2)
+            self.assertEqual(expanded[1]["id"], Z_IMAGE_DISTILLPATCH_ADAPTER_ID)
+            ordinary = expand_z_image_turbo_sft_adapters(
+                [{"id": "user-lora-ordinary-turbo", "weight": 0.8}],
+                base_model_id="z-image-turbo",
+                registry=registry,
+                config_dir=Path("."),
+            )
+            self.assertEqual(len(ordinary), 1)
 
-        expanded = expand_z_image_scheme4_adapters(
+        # Registry and ordinary Turbo adapters do not implicitly add DistillPatch.
+        unchanged = expand_z_image_turbo_sft_adapters(
             [{"id": "my-lora", "weight": 0.8}],
             base_model_id="z-image-turbo",
             registry=registry,
         )
-        self.assertEqual(len(expanded), 2)
-        self.assertEqual(expanded[1]["id"], Z_IMAGE_DISTILLPATCH_ADAPTER_ID)
+        self.assertEqual(len(unchanged), 1)
 
         turbo_lora = SimpleNamespace(
             raw={"base_model": "z-image-turbo"},
             base_model="z-image-turbo",
         )
         registry_turbo = SimpleNamespace(get=lambda mid: turbo_lora if mid == "t-lora" else None)
-        unchanged = expand_z_image_scheme4_adapters(
+        unchanged = expand_z_image_turbo_sft_adapters(
             [{"id": "t-lora", "weight": 0.8}],
             base_model_id="z-image-turbo",
             registry=registry_turbo,
         )
         self.assertEqual(len(unchanged), 1)
 
-        on_base = expand_z_image_scheme4_adapters(
+        on_base = expand_z_image_turbo_sft_adapters(
             [{"id": "my-lora", "weight": 0.8}],
             base_model_id="z-image",
             registry=registry,
@@ -8742,16 +8851,15 @@ class LoraTrainRuntimeTests(unittest.TestCase):
 
         import json
         import tempfile
-        from pathlib import Path
 
         with tempfile.TemporaryDirectory() as tmp:
             bundle = Path(tmp)
             (bundle / "lora_config.json").write_text(
                 json.dumps(
                     {
-                        "base_model": "z-image",
+                        "base_model": "z-image-turbo",
                         "inference": {
-                            "scheme": "scheme4",
+                            "scheme": "sft",
                             "model": "z-image-turbo",
                             "steps": 8,
                             "guidance": 0,
@@ -8922,7 +9030,7 @@ class LoraTrainingPresetsTests(unittest.TestCase):
 
         flux = resolve_preset("standard", base_model="flux1-dev")
         zimg = resolve_preset("standard", base_model="z-image")
-        zturbo = resolve_preset("standard", base_model="z-image-turbo")
+        zturbo = resolve_preset("turbo", base_model="z-image-turbo")
         qwen = resolve_preset("standard", base_model="qwen-image")
         self.assertEqual(flux["lora_rank"], 16)
         self.assertEqual(zimg["lora_rank"], 32)
@@ -8945,13 +9053,16 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         self.assertEqual(zturbo["caption_dropout"], 0.05)
         self.assertEqual(zturbo["turbo_infer_steps"], 9)
         self.assertEqual(zturbo["progress_steps"], 9)
-        self.assertNotIn("lora_module_keys", zturbo)
         self.assertEqual(zturbo["val_split"], 0.0)
         self.assertEqual(zturbo["val_every"], 100)
         self.assertEqual(zturbo["prior_loss_weight"], 0.0)
         # Optimizer updates (iterations // grad_accumulate) stay in the reference 1k–3k range.
-        for name in ("z-image", "z-image-turbo", "qwen-image"):
-            for preset_name in ("quick", "standard", "quality"):
+        for name, preset_names in (
+            ("z-image", ("quick", "standard", "quality")),
+            ("z-image-turbo", ("turbo", "sft")),
+            ("qwen-image", ("quick", "standard", "quality")),
+        ):
+            for preset_name in preset_names:
                 p = resolve_preset(preset_name, base_model=name)
                 updates = p["iterations"] // p["grad_accumulate"]
                 self.assertGreaterEqual(updates, 1000, msg=f"{name}/{preset_name}")
@@ -8967,7 +9078,7 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         self.assertIn("to_out", qwen["lora_module_keys"])
         self.assertIn("add_q_proj", qwen["lora_module_keys"])
         self.assertEqual(
-            resolve_training_resolution("z-image-turbo", zturbo, preset="standard"),
+            resolve_training_resolution("z-image-turbo", zturbo, preset="turbo"),
             (1024, 1024),
         )
         self.assertEqual(
@@ -8983,17 +9094,17 @@ class LoraTrainingPresetsTests(unittest.TestCase):
             (512, 512),
         )
 
-    def test_z_image_turbo_standard_preset_mflux_aligned(self) -> None:
+    def test_z_image_turbo_preset_rejects_generic_names(self) -> None:
         from backend.engine.training.presets import resolve_preset
 
-        turbo = resolve_preset("standard", base_model="z-image-turbo")
+        for name in ("standard", "mflux", "scheme4"):
+            with self.assertRaisesRegex(ValueError, "Unknown training preset"):
+                resolve_preset(name, base_model="z-image-turbo")
+        turbo = resolve_preset("turbo", base_model="z-image-turbo")
         self.assertEqual(turbo["lora_rank"], 32)
         self.assertEqual(turbo["lora_blocks"], -1)
-        self.assertNotIn("lora_module_keys", turbo)
         self.assertEqual(turbo["timestep_low"], 1)
         self.assertEqual(turbo["learning_rate"], 1e-4)
-        self.assertEqual(resolve_preset("mflux", base_model="z-image-turbo"), turbo)
-
     def test_merge_training_request_config_keeps_preset(self) -> None:
         from backend.core.contracts import LoraTrainingRequest
         from backend.engine.training.crop import resolve_training_resolution
@@ -9024,24 +9135,26 @@ class LoraTrainingPresetsTests(unittest.TestCase):
         self.assertEqual(again["scheme"], "base")
         self.assertEqual(again["model"], first["model"])
 
-        scheme4 = {"base_model": "z-image", "preset": "scheme4"}
-        stored = training_inference_config(scheme4)
-        self.assertEqual(stored["scheme"], "scheme4")
-        replayed = training_inference_config({**scheme4, "metadata": {"inference": stored}})
+        sft = {"base_model": "z-image-turbo", "preset": "sft"}
+        stored = training_inference_config(sft)
+        self.assertEqual(stored["scheme"], "sft")
+        replayed = training_inference_config({**sft, "metadata": {"inference": stored}})
         self.assertEqual(replayed["model"], "z-image-turbo")
         self.assertEqual(replayed["extra_adapters"], ["z-image-turbo-distillpatch-lora:bf16"])
         self.assertEqual(replayed["steps"], 8)
 
-    def test_lora_training_request_accepts_scheme4_preset(self) -> None:
+    def test_lora_training_request_accepts_sft_rejects_scheme4(self) -> None:
         from backend.core.contracts import LoraTrainingRequest
 
         req = LoraTrainingRequest(
-            base_model="z-image",
+            base_model="z-image-turbo",
             dataset_id="ds_test",
             progress_prompt="cyq",
-            preset="scheme4",
+            preset="sft",
         )
-        self.assertEqual(req.preset, "scheme4")
+        self.assertEqual(req.preset, "sft")
+        with self.assertRaises(ValueError):
+            LoraTrainingRequest(base_model="z-image", dataset_id="ds_test", progress_prompt="test", preset="scheme4")
     def test_turbo_training_sigmas_band(self) -> None:
         from backend.engine.runtime.mlx import MLXContext
         from backend.engine.training.dit_training_loss_mlx import sample_noisy_latent_turbo, turbo_training_sigmas
@@ -9599,17 +9712,19 @@ class LoraTrainingCropTests(unittest.TestCase):
         self.assertNotEqual(_fingerprint(**base), _fingerprint(**base, crop_policy="face:abc"))
 
     def test_turbo_trained_lora_picklist_extras(self) -> None:
+        def lora_config_picklist_extras_for_test() -> dict[str, object]:
+            from backend.catalog.lora_meta import _inference_block_picklist_extras
+            from backend.engine.training.presets import Z_IMAGE_TURBO_INFERENCE
+
+            return _inference_block_picklist_extras(Z_IMAGE_TURBO_INFERENCE)
+
         import json
         import tempfile
 
-        from backend.catalog.lora_meta import (
-            Z_IMAGE_TURBO_TRAINED_HINT_KEY,
-            lora_config_picklist_extras,
-            z_image_turbo_trained_picklist_extras,
-        )
+        from backend.catalog.lora_meta import Z_IMAGE_TURBO_TRAINED_HINT_KEY, lora_config_picklist_extras
         from backend.engine.training.presets import Z_IMAGE_TURBO_INFERENCE
 
-        extras = z_image_turbo_trained_picklist_extras()
+        extras = lora_config_picklist_extras_for_test()
         self.assertEqual(extras["hint_key"], Z_IMAGE_TURBO_TRAINED_HINT_KEY)
         self.assertEqual(extras["recommended_lora_scale"], [0.8, 1.0])
         self.assertEqual(extras["compose_overrides"], {"lora_scale": 0.9})
@@ -9621,9 +9736,8 @@ class LoraTrainingCropTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(lora_config_picklist_extras(Path(tmp)), extras)
-            # Scheme 4 block now also carries its lora_weight as a compose override.
             (Path(tmp) / "lora_config.json").write_text(
-                json.dumps({"inference": {"scheme": "scheme4", "steps": 8, "guidance": 0, "lora_weight": 0.8}}),
+                json.dumps({"inference": {"scheme": "sft", "model": "z-image-turbo", "steps": 8, "guidance": 0, "lora_weight": 0.8}}),
                 encoding="utf-8",
             )
             s4 = lora_config_picklist_extras(Path(tmp))
@@ -9635,9 +9749,13 @@ class LoraTrainingCropTests(unittest.TestCase):
             self.assertEqual(on_base["hint_key"], "studio.loraHint.zImageSamplerStays")
 
     def test_grad_checkpoint_wraps_plain_python_forward_blocks(self) -> None:
+        import mlx.core as mx
         import mlx.nn as nn
 
-        from backend.engine.training.lora_layers_mlx import enable_grad_checkpointing_on_blocks
+        from backend.engine.training.lora_layers_mlx import (
+            assert_lora_adapter_received_gradients,
+            enable_grad_checkpointing_on_blocks,
+        )
 
         class PlainBlock:
             def forward(self, x):
@@ -9646,7 +9764,64 @@ class LoraTrainingCropTests(unittest.TestCase):
         # Z-Image refiners/layers are plain classes with .forward — must checkpoint.
         self.assertEqual(enable_grad_checkpointing_on_blocks([PlainBlock(), PlainBlock()]), 2)
         self.assertTrue(getattr(PlainBlock, "_dq_grad_checkpoint", False))
-        self.assertEqual(enable_grad_checkpointing_on_blocks([nn.Linear(4, 4)]), 1)
+        y = PlainBlock().forward(mx.ones((2, 4)))
+        mx.eval(y)
+        self.assertEqual(tuple(y.shape), (2, 4))
+
+        class Adapter(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.lora_a = mx.ones((4, 4))
+                self.lora_b = mx.zeros((4, 4))
+
+            def __call__(self, x):
+                return (x @ self.lora_a) @ self.lora_b
+
+        class ZImageLikeBlock:
+            def __init__(self) -> None:
+                self.attention = Adapter()
+
+            def forward(self, x):
+                return mx.sum(self.attention(x))
+
+        class Train(nn.Module):
+            def __init__(self, block: ZImageLikeBlock) -> None:
+                super().__init__()
+                self.lora_0 = block.attention
+                self.block = block
+
+            def __call__(self, x):
+                return self.block.forward(x)
+
+        block = ZImageLikeBlock()
+        self.assertEqual(enable_grad_checkpointing_on_blocks([block]), 1)
+        train = Train(block)
+        loss_and_grad = nn.value_and_grad(train, lambda model, inputs: model(inputs))
+        loss, grads = loss_and_grad(train, mx.ones((2, 4)))
+        grad_b = grads["lora_0"]["lora_b"]
+        mx.eval(loss, grad_b)
+        self.assertGreater(float(mx.max(mx.abs(grad_b)).item()), 0.0)
+        with self.assertRaises(RuntimeError):
+            assert_lora_adapter_received_gradients(train, step=500)
+        train.lora_0.lora_b = mx.ones((4, 4))
+        assert_lora_adapter_received_gradients(train, step=500)
+
+        class ModuleBlock(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.lora_a = mx.ones((4, 4))
+                self.lora_b = mx.zeros((4, 4))
+
+            def __call__(self, x):
+                return mx.sum((x @ self.lora_a) @ self.lora_b)
+
+        module_block = ModuleBlock()
+        self.assertEqual(enable_grad_checkpointing_on_blocks([module_block]), 1)
+        module_loss_and_grad = nn.value_and_grad(module_block, lambda model, inputs: model(inputs))
+        module_loss, module_grads = module_loss_and_grad(module_block, mx.ones((2, 4)))
+        module_grad_b = module_grads["lora_b"]
+        mx.eval(module_loss, module_grad_b)
+        self.assertGreater(float(mx.max(mx.abs(module_grad_b)).item()), 0.0)
 
     def test_resolve_dreambooth_caption_prefers_progress_prompt(self) -> None:
         from backend.engine.training.dataset_store import resolve_dreambooth_caption
@@ -9718,6 +9893,161 @@ class LoraTrainingCropTests(unittest.TestCase):
             _validate_saved_lora(path, lora_blocks=1)
 
 
+class ZImageTrainingPreviewTests(unittest.TestCase):
+    def test_base_progress_uses_base_cfg_and_static_shift(self) -> None:
+        import numpy as np
+
+        from backend.engine.training.z_image_dreambooth_mlx import _generate_progress_image
+
+        calls = {"uncond": 0, "scheduler": None, "guidance": None}
+
+        class TextEncoder:
+            def encode(self, prompts):
+                import mlx.core as mx
+
+                if prompts == [""]:
+                    calls["uncond"] += 1
+                return mx.zeros((1, 2, 4))
+
+        class Model:
+            def __call__(self, latents, timestep, *, txt_embeds, sigmas):
+                import mlx.core as mx
+
+                return mx.zeros_like(latents)
+
+            def combine_cfg_noise(self, cond, uncond, guidance):
+                calls["guidance"] = guidance
+                return cond
+
+        class Scheduler:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def set_timesteps(self, steps, **kwargs):
+                import mlx.core as mx
+
+                calls["scheduler"] = kwargs
+                self._timesteps = list(range(steps))
+                self._sigmas = mx.linspace(1.0, 0.0, steps + 1)
+
+            def step(self, pred, timestep, latents):
+                return latents
+
+        class Decoder:
+            def forward(self, latents):
+                import mlx.core as mx
+
+                return mx.zeros((1, 3, 2, 2))
+
+        import backend.engine.common.ops.schedulers as schedulers
+        from backend.engine.runtime.mlx import MLXContext
+        from unittest.mock import patch
+
+        with patch.object(schedulers, "FlowMatchEulerScheduler", Scheduler), patch.object(
+            schedulers, "LinearScheduler", Scheduler
+        ):
+            image = _generate_progress_image(
+                model=Model(),
+                vae_dec=Decoder(),
+                text_encoder=TextEncoder(),
+                prompt="portrait",
+                resolution=(16, 16),
+                ctx=MLXContext(),
+                steps=2,
+                turbo=False,
+                guidance=4.0,
+                base_sigma_shift=6.0,
+            )
+        self.assertEqual(image.shape, (2, 2, 3))
+        self.assertEqual(calls["uncond"], 1)
+        self.assertEqual(calls["guidance"], 4.0)
+        self.assertEqual(calls["scheduler"]["scheduler_shift"], 6.0)
+        self.assertFalse(calls["scheduler"]["use_empirical_mu"])
+
+    def test_turbo_progress_does_not_encode_unconditional_caption(self) -> None:
+        from backend.engine.training.z_image_dreambooth_mlx import _generate_progress_image
+
+        encoded = []
+
+        class TextEncoder:
+            def encode(self, prompts):
+                import mlx.core as mx
+
+                encoded.extend(prompts)
+                return mx.zeros((1, 2, 4))
+
+        class Model:
+            def __call__(self, latents, timestep, *, txt_embeds, sigmas):
+                import mlx.core as mx
+
+                return mx.zeros_like(latents)
+
+        class Scheduler:
+            def __init__(self, **kwargs):
+                pass
+
+            def set_timesteps(self, steps, **kwargs):
+                import mlx.core as mx
+
+                self._timesteps = list(range(steps))
+                self._sigmas = mx.linspace(1.0, 0.0, steps + 1)
+
+            def step(self, pred, timestep, latents):
+                return latents
+
+        class Decoder:
+            def forward(self, latents):
+                import mlx.core as mx
+
+                return mx.zeros((1, 3, 2, 2))
+
+        import backend.engine.common.ops.schedulers as schedulers
+        from backend.engine.runtime.mlx import MLXContext
+        from unittest.mock import patch
+
+        with patch.object(schedulers, "FlowMatchEulerScheduler", Scheduler), patch.object(
+            schedulers, "LinearScheduler", Scheduler
+        ):
+            _generate_progress_image(
+                model=Model(),
+                vae_dec=Decoder(),
+                text_encoder=TextEncoder(),
+                prompt="portrait",
+                resolution=(16, 16),
+                ctx=MLXContext(),
+                steps=2,
+                turbo=True,
+                guidance=0.0,
+            )
+        self.assertEqual(encoded, ["portrait"])
+
+    def test_turbo_sft_preview_patch_restores_base_parameters(self) -> None:
+        import mlx.core as mx
+        from unittest.mock import patch
+
+        from backend.engine.training.z_image_dreambooth_mlx import _temporary_inference_adapters
+
+        weight = mx.ones((2, 2))
+        model = SimpleNamespace(_inner=SimpleNamespace(_param_map={"to_q.weight": weight}))
+        calls = []
+
+        def merge(model_arg, adapters, **kwargs):
+            calls.append(adapters)
+            model_arg._inner._param_map["to_q.weight"][:] = 5.0
+
+        with patch(
+            "backend.engine.families.z_image.lora_mlx.merge_z_image_lora_adapters",
+            side_effect=merge,
+        ):
+            with _temporary_inference_adapters(
+                model, project_root=Path("."), registry=object(), ctx=object()
+            ):
+                self.assertEqual(float(model._inner._param_map["to_q.weight"][0, 0].item()), 5.0)
+        self.assertIs(model._inner._param_map["to_q.weight"], weight)
+        self.assertEqual(float(weight[0, 0].item()), 1.0)
+        self.assertEqual(len(calls), 1)
+
+
 class ZImageLoraExportTests(unittest.TestCase):
     def test_collect_lora_safetensors_remaps_for_z_image(self) -> None:
         from backend.engine.runtime.mlx import MLXContext
@@ -9760,6 +10090,32 @@ class ZImageLoraExportTests(unittest.TestCase):
             path = Path(tmp) / "adapter.safetensors"
             mx.save_safetensors(str(path), weights)
             _validate_saved_lora(path)
+
+    def test_exported_z_image_lora_merge_matches_training_forward(self) -> None:
+        import mlx.core as mx
+
+        from backend.engine.families.z_image.weights import remap_zimage_lora_keys
+        from backend.engine.training.lora_layers_mlx import (
+            LoRALinear,
+            collect_lora_safetensors,
+            DiTLoRATrainModule,
+        )
+
+        layer = LoRALinear(8, 8, r=4, scale=1.0)
+        x = mx.random.normal((1, 3, 8))
+        layer.lora_b[:] = mx.random.normal(layer.lora_b.shape) * 0.1
+        expected = layer(x)
+        model = DiTLoRATrainModule(None, [(layer, "layers.0.attention.to_q")])
+        exported = collect_lora_safetensors(model, rank=4)
+        exported.pop("lora_rank")
+        down, up, alpha = remap_zimage_lora_keys(exported)["layers.0.attention.to_q"]
+        base = layer.linear.weight
+        merged = base + float(alpha) / 4.0 * (up @ down).astype(base.dtype)
+        actual = x @ merged.T
+        relative_error = float(
+            (mx.max(mx.abs(actual - expected)) / mx.max(mx.abs(expected))).item()
+        )
+        self.assertLess(relative_error, 1e-3)
 
 
 class LoraTrainingContractTests(unittest.TestCase):
@@ -9847,12 +10203,13 @@ class LoraTrainingContractTests(unittest.TestCase):
 
         params = {
             "base_model": "z-image",
-            "preset": "scheme4",
+            "preset": "sft",
+            "base_model": "z-image-turbo",
             "progress_prompt": "ohwx_person, portrait",
             "lora_alpha": 128,
         }
         checkpoint_meta = {
-            "base_model": "z-image",
+            "base_model": "z-image-turbo",
             "train_type": "lora",
             "lora_rank": 32,
             "lora_alpha": 128,
@@ -9908,6 +10265,176 @@ class LoraTrainingContractTests(unittest.TestCase):
                 params={"base_model": "qwen-image", "preset": "standard"},
                 checkpoint_meta={"base_model": "qwen-image"},
             )
+
+    def test_lora_candidate_checkpoints_dedupe_and_prompts(self) -> None:
+        import json
+        from backend.core.contracts import LoraTrainingRequest
+        from backend.engine.training.lora_checkpoint_evaluation import (
+            build_eval_prompts,
+            finish_training_without_register,
+            list_candidate_checkpoints,
+            mark_selection,
+            parse_training_checkpoint_adapter_id,
+            resolve_training_checkpoint_path,
+            training_checkpoint_adapter_id,
+        )
+
+        self.assertFalse(LoraTrainingRequest.model_fields["auto_register"].default)
+
+        prompts = build_eval_prompts(dataset_kind="concept", trigger_word="ohwx_person")
+        self.assertEqual(len(prompts), 4)
+        self.assertTrue(all("ohwx_person" in row["prompt"] for row in prompts))
+        style = build_eval_prompts(dataset_kind="style", trigger_word="ink_wash")
+        self.assertTrue(all("ink_wash" in row["prompt"] for row in style))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work = root / "outputs" / "work" / "tsk_cand"
+            adapters = work / "adapters"
+            adapters.mkdir(parents=True)
+            for name, meta in (
+                ("0000500_adapters.safetensors", {"iteration": 500, "base_model": "z-image-turbo", "lora_rank": 32, "lora_alpha": 32, "lora_blocks": -1, "train_type": "lora"}),
+                ("0001000_adapters.safetensors", {"iteration": 1000, "base_model": "z-image-turbo", "lora_rank": 32, "lora_alpha": 32, "lora_blocks": -1, "train_type": "lora"}),
+                ("best_adapters.safetensors", {"iteration": 800, "val_loss": 0.1, "base_model": "z-image-turbo", "lora_rank": 32, "lora_alpha": 32, "lora_blocks": -1, "train_type": "lora"}),
+                ("final_adapters.safetensors", {"iteration": 1000, "base_model": "z-image-turbo", "lora_rank": 32, "lora_alpha": 32, "lora_blocks": -1, "train_type": "lora"}),
+            ):
+                path = adapters / name
+                path.write_bytes(b"ckpt")
+                path.with_suffix(".json").write_text(json.dumps(meta), encoding="utf-8")
+
+            rows = list_candidate_checkpoints(adapters)
+            names = [row["checkpoint"] for row in rows]
+            # best carries iteration=800 from its sidecar, so it sorts by that step.
+            # At step 1000, periodic comes before final.
+            self.assertEqual(
+                names,
+                [
+                    "0000500_adapters.safetensors",
+                    "best_adapters.safetensors",
+                    "0001000_adapters.safetensors",
+                    "final_adapters.safetensors",
+                ],
+            )
+
+            finished = finish_training_without_register(
+                work_dir=work,
+                adapter_dir=adapters,
+                final_path=adapters / "final_adapters.safetensors",
+                output_name="FacePick",
+                params={"base_model": "z-image-turbo", "preset": "turbo", "progress_prompt": "ohwx_person"},
+                dataset_meta={"trigger_word": "ohwx_person", "kind": "concept"},
+                loss_history=[{"step": 1000, "loss": 0.2}],
+                training_caption="ohwx_person",
+                task_id="tsk_cand",
+            )
+            self.assertTrue(finished["needs_candidate_evaluation"])
+            self.assertEqual(finished["user_lora_id"], "")
+            self.assertTrue((adapters / "lora_config.json").is_file())
+            config = json.loads((adapters / "lora_config.json").read_text(encoding="utf-8"))
+            self.assertEqual(config["inference"]["scheme"], "turbo")
+            self.assertEqual(config["inference"].get("extra_adapters"), [])
+
+            adapter_id = training_checkpoint_adapter_id("tsk_cand", "0000500_adapters.safetensors")
+            parsed = parse_training_checkpoint_adapter_id(adapter_id)
+            self.assertEqual(parsed, ("tsk_cand", "0000500_adapters.safetensors"))
+            resolved = resolve_training_checkpoint_path(
+                root, training_task_id="tsk_cand", checkpoint="0000500_adapters.safetensors"
+            )
+            self.assertEqual(resolved, (adapters / "0000500_adapters.safetensors").resolve())
+            with self.assertRaises(RuntimeError):
+                resolve_training_checkpoint_path(
+                    root, training_task_id="../escape", checkpoint="0000500_adapters.safetensors"
+                )
+            with self.assertRaises(RuntimeError):
+                mark_selection(work, checkpoint="final_adapters.safetensors", user_lora_id="user-lora-x")
+
+            # Ready matrix required before register.
+            from backend.engine.training.lora_checkpoint_evaluation import save_candidate_evaluation
+
+            save_candidate_evaluation(
+                work,
+                {
+                    "status": "ready",
+                    "checkpoints": rows,
+                    "cells": [
+                        {
+                            "checkpoint": "final_adapters.safetensors",
+                            "prompt_id": "closeup",
+                            "seed": 42,
+                            "status": "ok",
+                            "filename": "final_adapters__closeup__s42.png",
+                        }
+                    ],
+                },
+            )
+            marked = mark_selection(
+                work, checkpoint="final_adapters.safetensors", user_lora_id="user-lora-ok"
+            )
+            self.assertEqual(marked["status"], "registered")
+            self.assertEqual(marked["selected_checkpoint"], "final_adapters.safetensors")
+
+    def test_finalize_training_adapters_respects_auto_register(self) -> None:
+        import json
+        from types import SimpleNamespace
+        from backend.engine.training.lora_train_config import finalize_training_adapters
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            work = root / "work"
+            adapters = work / "adapters"
+            adapters.mkdir(parents=True)
+            final_path = adapters / "final_adapters.safetensors"
+            final_path.write_bytes(b"final")
+            final_path.with_suffix(".json").write_text(
+                json.dumps(
+                    {
+                        "iteration": 100,
+                        "base_model": "z-image-turbo",
+                        "lora_rank": 32,
+                        "lora_alpha": 32,
+                        "lora_blocks": -1,
+                        "train_type": "lora",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            paths = SimpleNamespace(
+                get_loras_dir=lambda: root / "models" / "Lora",
+                get_workspace_config_dir=lambda: root / "config",
+            )
+            pending = finalize_training_adapters(
+                work_dir=work,
+                adapter_dir=adapters,
+                final_path=final_path,
+                output_name="PendingFace",
+                params={"base_model": "z-image-turbo", "preset": "sft", "progress_prompt": "ohwx"},
+                dataset_meta={"trigger_word": "ohwx"},
+                loss_history=[],
+                training_caption="ohwx",
+                path_resolver=paths,
+                task_id="tsk_pending",
+                auto_register=False,
+            )
+            self.assertTrue(pending["needs_candidate_evaluation"])
+            self.assertFalse((root / "models" / "Lora" / "PendingFace").exists())
+
+            registered = finalize_training_adapters(
+                work_dir=work,
+                adapter_dir=adapters,
+                final_path=final_path,
+                output_name="AutoFace",
+                params={"base_model": "z-image-turbo", "preset": "sft", "progress_prompt": "ohwx"},
+                dataset_meta={"trigger_word": "ohwx"},
+                loss_history=[],
+                training_caption="ohwx",
+                path_resolver=paths,
+                task_id="tsk_auto",
+                auto_register=True,
+            )
+            self.assertFalse(registered["needs_candidate_evaluation"])
+            self.assertTrue(registered["user_lora_id"])
+            config = json.loads((root / "models" / "Lora" / "AutoFace" / "lora_config.json").read_text())
+            self.assertEqual(config["inference"]["extra_adapters"], ["z-image-turbo-distillpatch-lora:bf16"])
 
     def test_resume_checkpoint_requires_matching_scale_optimizer_and_rng(self) -> None:
         import json

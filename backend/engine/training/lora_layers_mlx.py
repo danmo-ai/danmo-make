@@ -686,34 +686,133 @@ def quantize_frozen_dit_linears(model: Any, *, bits: int, group_size: int = 64) 
     return count
 
 
+def _checkpoint_trainable_modules(obj: Any) -> list[nn.Module]:
+    """Nested ``nn.Module``s whose parameters must be checkpoint inputs.
+
+    ``mx.checkpoint`` only differentiates arrays passed as arguments. Z-Image blocks are
+    plain objects, so LoRA weights read off ``self`` would otherwise get zero gradients
+    and ``lora_B`` would stay at its zero init for the whole run.
+    """
+    modules: list[nn.Module] = []
+    seen: set[int] = set()
+
+    def walk(node: Any) -> None:
+        if node is None or isinstance(node, (str, bytes, bytearray, int, float, bool, complex)):
+            return
+        if isinstance(node, mx.array):
+            return
+        marker = id(node)
+        if marker in seen:
+            return
+        if isinstance(node, nn.Module):
+            seen.add(marker)
+            modules.append(node)
+            return
+        seen.add(marker)
+        if isinstance(node, dict):
+            children = list(node.values())
+        elif isinstance(node, (list, tuple)):
+            children = list(node)
+        elif hasattr(node, "__dict__"):
+            children = list(vars(node).values())
+        else:
+            return
+        for child in children:
+            walk(child)
+
+    walk(obj)
+    return modules
+
+
 def grad_checkpoint(layer: Any) -> None:
     """Checkpoint a block's forward pass without changing its public API.
 
     Flux/Qwen blocks are ``nn.Module`` (``__call__``). Z-Image refiners/layers are
-    plain Python classes that expose ``forward`` — both must recompute activations.
+    plain Python classes that expose ``forward``. Both recompute activations, and both
+    pass trainable parameters into the checkpoint so LoRA up-projections receive gradients.
     """
     layer_cls = type(layer)
     if getattr(layer_cls, "_dq_grad_checkpoint", False):
         return
     if isinstance(layer, nn.Module):
-        method_name = "__call__"
-        fn = layer_cls.__call__
-    elif callable(getattr(layer_cls, "forward", None)):
-        method_name = "forward"
-        fn = layer_cls.forward
-    else:
-        raise RuntimeError(
-            f"Gradient checkpointing requires nn.Module or a .forward method, "
-            f"got {layer_cls.__name__}; refusing to claim memory savings for an inactive implementation."
-        )
-    checkpointed = mx.checkpoint(fn)
+        _install_module_grad_checkpoint(layer_cls)
+        return
+    if callable(getattr(layer_cls, "forward", None)):
+        _install_plain_grad_checkpoint(layer_cls)
+        return
+    raise RuntimeError(
+        f"Gradient checkpointing requires nn.Module or a .forward method, "
+        f"got {layer_cls.__name__}; refusing to claim memory savings for an inactive implementation."
+    )
+
+
+def _install_module_grad_checkpoint(layer_cls: type) -> None:
+    from mlx.nn.utils import checkpoint as nn_checkpoint
+
+    orig = layer_cls.__call__
 
     def checkpointed_fn(model: Any, *args: Any, **kwargs: Any) -> Any:
-        return checkpointed(model, *args, **kwargs)
+        cached = getattr(model, "_dq_ckpt_call", None)
+        if cached is None:
+            def call(*inner_args: Any, **inner_kwargs: Any) -> Any:
+                return orig(model, *inner_args, **inner_kwargs)
+
+            cached = nn_checkpoint(model, call)
+            model._dq_ckpt_call = cached
+        return cached(*args, **kwargs)
 
     checkpointed_fn._dq_grad_checkpoint = True  # type: ignore[attr-defined]
-    setattr(layer_cls, method_name, checkpointed_fn)
+    layer_cls.__call__ = checkpointed_fn
     layer_cls._dq_grad_checkpoint = True
+
+
+def _install_plain_grad_checkpoint(layer_cls: type) -> None:
+    orig = layer_cls.forward
+
+    def inner(param_trees: list[Any], model: Any, *args: Any, **kwargs: Any) -> Any:
+        modules = _checkpoint_trainable_modules(model)
+        if len(modules) != len(param_trees):
+            raise RuntimeError(
+                f"Gradient checkpoint parameter tree changed for {type(model).__name__}: "
+                f"{len(modules)} modules vs {len(param_trees)} trees"
+            )
+        for module, params in zip(modules, param_trees):
+            if params:
+                module.update(params)
+        return orig(model, *args, **kwargs)
+
+    checkpointed = mx.checkpoint(inner)
+
+    def checkpointed_fn(model: Any, *args: Any, **kwargs: Any) -> Any:
+        modules = _checkpoint_trainable_modules(model)
+        trees = [module.trainable_parameters() for module in modules]
+        return checkpointed(trees, model, *args, **kwargs)
+
+    checkpointed_fn._dq_grad_checkpoint = True  # type: ignore[attr-defined]
+    layer_cls.forward = checkpointed_fn
+    layer_cls._dq_grad_checkpoint = True
+
+
+def assert_lora_adapter_received_gradients(train_module: Any, *, step: int) -> None:
+    """Fail when ``lora_B`` is still the zero init, so a no-op adapter cannot train silently."""
+    if step < 1:
+        return
+    from mlx.utils import tree_flatten
+
+    flat = dict(tree_flatten(train_module.trainable_parameters()))
+    b_keys = [key for key in flat if key == "lora_b" or key.endswith(".lora_b")]
+    if not b_keys:
+        return
+    max_abs = mx.zeros((), dtype=mx.float32)
+    for key in b_keys:
+        max_abs = mx.maximum(max_abs, mx.max(mx.abs(flat[key])))
+    mx.eval(max_abs)
+    if float(max_abs.item()) == 0.0:
+        raise RuntimeError(
+            f"LoRA up-projection (lora_B) is still all zeros at step {step}. "
+            "Gradients are not reaching the adapter, so progress previews stay on the base "
+            "model and will not resemble the training subject."
+        )
 
 
 def enable_grad_checkpointing_on_blocks(blocks: list[Any]) -> int:

@@ -80,36 +80,21 @@
     </div>
 
     <div
-      v-if="artifacts?.checkpoints?.length && task?.status === 'completed'"
+      v-if="task?.status === 'completed'"
       class="lora-run-detail__section"
     >
-      <h4 class="lora-run-detail__section-title">{{ $t('loraTrain.checkpoints') }}</h4>
-      <div class="lora-run-checkpoint-row">
-        <DqSelect v-model="selectedCheckpoint" size="sm" class="lora-run-checkpoint-select">
-          <DqOption
-            v-for="ck in artifacts.checkpoints"
-            :key="ck"
-            :label="ck"
-            :value="ck"
-          />
-        </DqSelect>
-        <DqInput v-model="registerName" :placeholder="$t('loraTrain.registerName')" size="sm" />
-        <DqButton size="sm" type="secondary" :loading="registering" @click="registerSelected">
-          {{ $t('loraTrain.registerCheckpoint') }}
-        </DqButton>
-      </div>
-      <p v-if="registeredLoraId" class="lora-run-registered">
-        {{ $t('loraTrain.registeredAs') }}: {{ registeredLoraId }}
-      </p>
+      <LoraCheckpointComparison
+        :task-id="taskId"
+        :evaluation="artifacts?.candidate_evaluation || null"
+        @registered="onCandidateRegistered"
+        @retry="onCandidateRetry"
+      />
     </div>
 
-    <div v-if="task?.status === 'completed'" class="lora-run-detail__verification">
+    <div v-if="task?.status === 'completed' && registeredLoraId" class="lora-run-detail__verification">
       <h4 class="lora-run-detail__section-title">{{ $t('loraTrain.verifyTitle') }}</h4>
       <p class="lora-run-detail__verify-hint">{{ $t('loraTrain.verifyHint') }}</p>
-      <DqAlert v-if="!verifyLoraId()" type="warning" :closable="false" :title="$t('loraTrain.verifyNeedsRegistration')">
-        <p>{{ $t('loraTrain.verifyCheckpointHint', { checkpoint: selectedCheckpoint }) }}</p>
-      </DqAlert>
-      <DqAlert v-else type="success" :closable="false" :title="$t('loraTrain.verifyCheckpointBound', { checkpoint: selectedCheckpoint || 'final_adapters.safetensors' })" />
+      <DqAlert type="success" :closable="false" :title="$t('loraTrain.verifyCheckpointBound', { checkpoint: selectedCheckpoint || 'final_adapters.safetensors' })" />
       <DqAlert
         v-if="verification.extra_adapters?.length"
         type="info"
@@ -129,7 +114,6 @@
           {{ $t('loraTrain.verifyGenerate') }}
         </DqButton>
         <DqButton
-          v-if="registeredLoraId || verifyLoraId()"
           size="sm"
           type="secondary"
           @click="openModelsUserLorasPage()"
@@ -151,6 +135,7 @@ import { openGlobalTaskQueue } from '@/utils/appEvents';
 import { openModelsUserLoras } from '@/utils/loraTrainHandoff';
 import TaskIdBadge from '@/components/studio/TaskIdBadge.vue';
 import LoraQualityHints from '@/components/lora/LoraQualityHints.vue';
+import LoraCheckpointComparison from '@/components/lora/LoraCheckpointComparison.vue';
 import type { LoraTrainingQualityReport } from '@/utils/loraQuality';
 
 const props = defineProps<{ taskId: string }>();
@@ -165,8 +150,6 @@ const task = ref<any>(null);
 const artifacts = ref<any>(null);
 const progressMessage = ref('');
 const selectedCheckpoint = ref('');
-const registerName = ref('');
-const registering = ref(false);
 const registeredLoraId = ref('');
 const verifyPrompt = ref('');
 const registeredRecipe = ref<Record<string, any> | null>(null);
@@ -176,6 +159,7 @@ const visionAvailable = ref(false);
 const trainingVlmLoading = ref(false);
 let taskStream: EventSource | null = null;
 let lastArtifactRefresh = 0;
+let candidatePollTimer: ReturnType<typeof setInterval> | null = null;
 
 const statusTagType = computed(() => {
   const s = task.value?.status;
@@ -284,14 +268,55 @@ async function refreshArtifacts(force = false) {
     if ((next as any)?.vision_available != null) {
       visionAvailable.value = Boolean((next as any).vision_available);
     }
-    if (!selectedCheckpoint.value && (next as any)?.checkpoints?.length) {
-      const finals = (next as any).checkpoints.filter((c: string) => c.includes('final'));
-      selectedCheckpoint.value = finals[finals.length - 1] || (next as any).checkpoints.at(-1);
+    const evalStatus = String((next as any)?.candidate_evaluation?.status || '');
+    if (!selectedCheckpoint.value) {
+      const selected = String((next as any)?.candidate_evaluation?.selected_checkpoint || '');
+      if (selected) selectedCheckpoint.value = selected;
+      else if ((next as any)?.checkpoints?.length) {
+        const finals = (next as any).checkpoints.filter((c: string) => c.includes('final'));
+        selectedCheckpoint.value = finals[finals.length - 1] || (next as any).checkpoints.at(-1);
+      }
+    }
+    const registeredFromEval = String((next as any)?.candidate_evaluation?.user_lora_id || '');
+    if (registeredFromEval && !registeredLoraId.value) {
+      registeredLoraId.value = registeredFromEval;
+      registeredCheckpoint.value = String((next as any)?.candidate_evaluation?.selected_checkpoint || '');
     }
     syncVerification();
+    syncCandidatePolling(evalStatus);
   } catch {
     if (force) artifacts.value = null;
   }
+}
+
+function stopCandidatePolling() {
+  if (candidatePollTimer) {
+    clearInterval(candidatePollTimer);
+    candidatePollTimer = null;
+  }
+}
+
+function syncCandidatePolling(evalStatus: string) {
+  const waiting = evalStatus === 'pending_evaluation' || evalStatus === 'evaluating';
+  if (!waiting) {
+    stopCandidatePolling();
+    return;
+  }
+  if (candidatePollTimer) return;
+  candidatePollTimer = setInterval(() => {
+    void refreshArtifacts(true);
+  }, 4000);
+}
+
+function onCandidateRegistered(payload: { user_lora_id: string; checkpoint: string }) {
+  registeredLoraId.value = payload.user_lora_id;
+  registeredCheckpoint.value = payload.checkpoint;
+  selectedCheckpoint.value = payload.checkpoint;
+  void refreshArtifacts(true);
+}
+
+function onCandidateRetry() {
+  void refreshArtifacts(true);
 }
 
 async function refreshVisionAvailability() {
@@ -456,27 +481,6 @@ function verifyGenerate() {
   });
 }
 
-async function registerSelected() {
-  if (!selectedCheckpoint.value) return;
-  registering.value = true;
-  try {
-    const res = (await api.loras.registerCheckpoint(props.taskId, {
-      checkpoint: selectedCheckpoint.value,
-      name: registerName.value.trim(),
-    })) as { user_lora?: Record<string, any> };
-    registeredLoraId.value = String(res.user_lora?.id || '');
-    registeredCheckpoint.value = selectedCheckpoint.value;
-    registeredRecipe.value = res.user_lora || null;
-    syncVerification();
-    toast.success(t('loraTrain.registerSuccess'));
-  } catch (e: any) {
-    const msg = e?.response?.data?.detail?.message || e?.message || String(e);
-    toast.error(msg);
-  } finally {
-    registering.value = false;
-  }
-}
-
 function openModelsUserLorasPage() {
   openModelsUserLoras(router);
 }
@@ -488,6 +492,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   closeStream();
+  stopCandidatePolling();
 });
 </script>
 

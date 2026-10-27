@@ -21,6 +21,7 @@ _KIND_TO_GRAPH: dict[str, str] = {
     "audio.generation": "audio_create",
     "audio.edit": "audio_create",
     "lora.training": "lora_training",
+    "lora.evaluation": "lora_training",
     "tools.z_image_merge": "tools_z_image_merge",
 }
 

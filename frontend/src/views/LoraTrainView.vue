@@ -92,7 +92,7 @@
                 <span class="lora-train-page__base-tile-body">
                   <span class="lora-train-page__base-tile-name">
                     {{ modelDisplayName(m) }}
-                    <em v-if="m.id === 'z-image'" class="lora-train-page__preset-badge">{{ $t('loraTrain.presetRecommended') }}</em>
+                    <em v-if="m.id === 'z-image-turbo'" class="lora-train-page__preset-badge">{{ $t('loraTrain.presetRecommended') }}</em>
                   </span>
                   <span v-if="modelShortDesc(m)" class="lora-train-page__base-tile-desc">
                     {{ modelShortDesc(m) }}
@@ -195,10 +195,10 @@
               </button>
             </div>
             <p
-              v-if="form.base_model === 'z-image' && form.preset === 'scheme4'"
+              v-if="form.base_model === 'z-image-turbo' && form.preset === 'sft'"
               class="lora-train-page__recipe-note"
             >
-              {{ $t('loraTrain.scheme4InferHint') }}
+              {{ $t('loraTrain.turboSftInferHint') }}
             </p>
 
             <div v-if="form.preset === 'custom'" class="lora-train-page__custom-block">
@@ -459,10 +459,10 @@
               </li>
             </ul>
             <p
-              v-if="form.base_model === 'z-image' && form.preset === 'scheme4'"
+              v-if="form.base_model === 'z-image-turbo' && form.preset === 'sft'"
               class="lora-train-page__recipe-note"
             >
-              {{ $t('loraTrain.scheme4InferHint') }}
+              {{ $t('loraTrain.turboSftInferHint') }}
             </p>
             </div>
             <div v-if="confirmPreviewImages.length" class="lora-train-page__confirm-preview">
@@ -546,7 +546,7 @@ const datasetPanelRef = ref<InstanceType<typeof LoraDatasetPanel> | null>(null);
 const historyRef = ref<InstanceType<typeof LoraTrainHistory> | null>(null);
 const { loading: historyLoading, refresh: refreshHistory } = useLoraTrainLibrary();
 function recommendedPresetFor(model: string) {
-  return model === 'z-image' ? 'scheme4' : 'standard';
+  return model === 'z-image-turbo' ? 'turbo' : 'standard';
 }
 
 const recommendedPreset = computed(() => recommendedPresetFor(form.base_model));
@@ -587,9 +587,9 @@ const stepNavItems = computed(() => [
 ]);
 
 const form = reactive({
-  base_model: 'z-image',
+  base_model: 'z-image-turbo',
   dataset_id: '',
-  preset: 'scheme4' as string,
+  preset: 'turbo' as string,
   progress_prompt: '',
   default_prompt: '',
   output_name: '',
@@ -870,7 +870,6 @@ function goToStep(i: number) {
 }
 
 function openRun(taskId: string) {
-  if (!taskId) return;
   activeRunId.value = taskId;
 }
 
@@ -1114,7 +1113,7 @@ function buildTrainingBody(): Record<string, unknown> {
     progress_prompt: form.progress_prompt,
     preset: form.preset,
     output_name: form.output_name,
-    auto_register: true,
+    auto_register: false,
   };
 
   if (effectiveQloraBits.value) body.qlora_bits = effectiveQloraBits.value;
@@ -1217,7 +1216,9 @@ function restoreDraft() {
     const draft = JSON.parse(raw) as Partial<typeof form> & { step?: number };
     if (draft.base_model) form.base_model = draft.base_model;
     if (draft.dataset_id) form.dataset_id = draft.dataset_id;
-    if (draft.preset) form.preset = draft.preset;
+    if (draft.preset) {
+      form.preset = draft.preset;
+    }
     if (draft.progress_prompt) form.progress_prompt = draft.progress_prompt;
     if (draft.default_prompt) form.default_prompt = draft.default_prompt;
     if (draft.output_name) form.output_name = draft.output_name;
@@ -1461,7 +1462,7 @@ watch(() => form.base_model, (mid) => {
       toast.info(t('loraTrain.resumeClearedOnBaseChange'));
     }
   }
-  if (form.preset === 'scheme4' && mid !== 'z-image') {
+  if (form.preset === 'sft' && mid !== 'z-image-turbo') {
     form.preset = 'standard';
   }
   coerceVisiblePreset();

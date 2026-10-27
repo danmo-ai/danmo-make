@@ -79,7 +79,6 @@ class LoraTrainRuntimeConfig:
     timestep_bias: str
     sigma_bias: str
     turbo_assistant_off_prob: float
-    scheme4_turbo_band_mix: float
     # Static σ shift for uniform/low/high Base-DiT sampling (None → registry
     # ``scheduler_shift``). Standard sigmoid/logit-normal presets set 1.0; see
     # presets.Z_IMAGE_BASE_TRAIN_SIGMA_SHIFT.
@@ -258,7 +257,6 @@ def parse_lora_train_runtime_config(cfg: dict[str, Any], *, defaults: dict[str, 
         timestep_bias=str(merged.get("timestep_bias") or "uniform").strip().lower(),
         sigma_bias=str(merged.get("sigma_bias") or "uniform").strip().lower(),
         turbo_assistant_off_prob=float(merged.get("turbo_assistant_off_prob") or 0.0),
-        scheme4_turbo_band_mix=float(merged.get("scheme4_turbo_band_mix") or 0.0),
         train_sigma_shift=train_sigma_shift,
         face_crop=normalize_face_crop_mode(merged.get("face_crop")),
         caption_dropout=caption_dropout,

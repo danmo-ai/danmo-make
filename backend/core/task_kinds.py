@@ -11,6 +11,7 @@ VIDEO_UPSCALE = "video.upscale"
 AUDIO_GENERATION = "audio.generation"
 AUDIO_EDIT = "audio.edit"
 LORA_TRAINING = "lora.training"
+LORA_EVALUATION = "lora.evaluation"
 TOOLS_Z_IMAGE_MERGE = "tools.z_image_merge"
 
 ALL_KINDS: frozenset[str] = frozenset(
@@ -26,6 +27,7 @@ ALL_KINDS: frozenset[str] = frozenset(
         AUDIO_GENERATION,
         AUDIO_EDIT,
         LORA_TRAINING,
+        LORA_EVALUATION,
         TOOLS_Z_IMAGE_MERGE,
     }
 )
@@ -73,6 +75,14 @@ def is_audio_kind(kind: str) -> bool:
 
 def is_lora_training_kind(kind: str) -> bool:
     return kind == LORA_TRAINING
+
+
+def is_lora_evaluation_kind(kind: str) -> bool:
+    return kind == LORA_EVALUATION
+
+
+def is_lora_kind(kind: str) -> bool:
+    return kind.startswith("lora.")
 
 
 def is_tools_kind(kind: str) -> bool:

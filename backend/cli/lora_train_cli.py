@@ -28,6 +28,9 @@ def train(
             ctx.model_registry,
             ctx.runtimes,
         )
+        # CLI batch jobs register the final checkpoint unless the caller opts out.
+        if "auto_register" not in overrides:
+            overrides = {**overrides, "auto_register": True}
         req = LoraTrainingRequest(
             base_model=base_model,
             dataset_id=dataset_id,

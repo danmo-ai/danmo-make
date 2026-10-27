@@ -71,7 +71,7 @@ def _deterministic_val_loss(
     ``loss_fn`` draws the noise level and noise from the global RNG; with a handful of val
     samples that variance dwarfs the training improvement, so picking ``best_adapters`` on it
     is a lottery (often an early, untrained checkpoint). Seed each sample and save/restore
-    both MLX and Python RNG streams, including Scheme 4 assistant toggles and caption dropout.
+    both MLX and Python RNG streams, including assistant toggles and caption dropout.
     """
     import random
 
@@ -321,6 +321,9 @@ def run_dit_lora_train_loop(
                 training_log(exec_ctx, "warning", f"Progress preview failed: {e}")
 
         if do_update and (i + 1) % runtime.checkpoint_every == 0:
+            from backend.engine.training.lora_layers_mlx import assert_lora_adapter_received_gradients
+
+            assert_lora_adapter_received_gradients(train_module, step=i + 1)
             ckpt = adapter_dir / f"{i + 1:07d}_adapters.safetensors"
             meta = {
                 "iteration": i + 1,

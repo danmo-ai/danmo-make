@@ -11,10 +11,9 @@
     />
 
     <div v-else class="lora-train-history__list">
-      <button
-        v-for="run in runs"
-        :key="runTaskId(run)"
-        type="button"
+      <div v-for="run in runs" :key="runTaskId(run)" class="lora-train-history__row">
+        <button
+          type="button"
         class="lora-train-history__item"
         :class="[
           `is-${String(run.status || 'unknown')}`,
@@ -37,13 +36,13 @@
                 {{ statusLabel(String(run.status || '')) }}
               </DqTag>
               <DqTag
-                v-if="userLoraForRun(run)"
+                v-if="runPhase(run)"
                 size="sm"
-                type="success"
+                :type="runPhase(run) === 'registered' ? 'success' : 'warning'"
                 effect="plain"
                 class="lora-train-history__registered"
               >
-                {{ $t('loraTrain.registeredBadge') }}
+                {{ runPhaseLabel(run) }}
               </DqTag>
             </template>
           </span>
@@ -55,7 +54,7 @@
               class="lora-train-history__state"
               :class="userLoraForRun(run) ? 'is-registered' : `is-${String(run.status || '')}`"
             >
-              {{ userLoraForRun(run) ? $t('loraTrain.registeredBadge') : statusLabel(String(run.status || '')) }}
+              {{ runPhase(run) ? runPhaseLabel(run) : statusLabel(String(run.status || '')) }}
             </span>
             <span v-if="variant === 'sidebar'" class="lora-train-history__sep lora-train-history__sep--break" aria-hidden="true">·</span>
             <span class="lora-train-history__when">{{ formatWhen(run) }}</span>
@@ -66,14 +65,27 @@
           <arrow-right />
         </DqIcon>
       </button>
+        <DqButton
+          v-if="['completed', 'failed', 'cancelled'].includes(String(run.status))"
+          class="lora-train-history__delete"
+          :disabled="deletingId === runTaskId(run)"
+          :title="$t('loraTrain.deleteRun')"
+          :aria-label="$t('loraTrain.deleteRun')"
+          @click="removeRun(run)"
+        >
+          <DqIcon><delete /></DqIcon>
+        </DqButton>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { ArrowRight } from '@danqing/dq-shell';
+import { ArrowRight, Delete } from '@danqing/dq-shell';
+import { api } from '@/utils/api';
+import { confirm, toast } from '@/utils/feedback';
 import {
   runBaseModel,
   runOutputName,
@@ -100,8 +112,17 @@ const emit = defineEmits<{
 
 const { t, locale } = useI18n();
 const { runs, loading, refresh, userLoraForRun } = useLoraTrainLibrary();
+const deletingId = ref('');
 
 const skeletonCount = computed(() => (props.variant === 'page' ? 5 : 3));
+
+function apiErrorMessage(e: unknown): string {
+  const err = e as { response?: { data?: { detail?: { message?: string } | string } }; message?: string };
+  const detail = err?.response?.data?.detail;
+  if (detail && typeof detail === 'object' && detail.message) return detail.message;
+  if (typeof detail === 'string') return detail;
+  return err?.message || String(e);
+}
 
 function statusType(status: string): string {
   if (status === 'completed') return 'success';
@@ -117,6 +138,19 @@ function statusLabel(status: string): string {
   return translated !== key ? translated : status;
 }
 
+function runPhase(run: Record<string, unknown>): '' | 'registered' | 'awaiting_pick' {
+  if (userLoraForRun(run)) return 'registered';
+  if (String(run.status || '') === 'completed') return 'awaiting_pick';
+  return '';
+}
+
+function runPhaseLabel(run: Record<string, unknown>): string {
+  const phase = runPhase(run);
+  if (phase === 'registered') return t('loraTrain.registeredBadge');
+  if (phase === 'awaiting_pick') return t('loraTrain.awaitingPickBadge');
+  return '';
+}
+
 function formatWhen(run: Record<string, unknown>): string {
   const raw = run.created_at || run.started_at || run.updated_at;
   if (!raw) return '';
@@ -129,6 +163,31 @@ function formatWhen(run: Record<string, unknown>): string {
     });
   } catch {
     return String(raw);
+  }
+}
+
+async function removeRun(run: Record<string, unknown>) {
+  const id = runTaskId(run);
+  if (!id || deletingId.value) return;
+  try {
+    await confirm(
+      t('loraTrain.deleteRunConfirm', { name: runOutputName(run) }),
+      t('loraTrain.deleteRun'),
+      { type: 'warning' },
+    );
+  } catch {
+    return;
+  }
+  deletingId.value = id;
+  try {
+    await api.loras.deleteTraining(id);
+    await refresh({ limit: props.limit });
+    if (id === props.activeId) emit('select', runTaskId(runs.value[0] || {}));
+    toast.success(t('loraTrain.deleteRunDone'));
+  } catch (error) {
+    toast.error(apiErrorMessage(error));
+  } finally {
+    deletingId.value = '';
   }
 }
 
@@ -231,6 +290,31 @@ defineExpose({
 
 .lora-train-history--page .lora-train-history__list {
   gap: 8px;
+}
+
+.lora-train-history__row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lora-train-history__row .lora-train-history__item {
+  flex: 1;
+  min-width: 0;
+}
+
+.lora-train-history__delete {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0;
+  flex-shrink: 0;
+  color: var(--dq-label-tertiary);
+}
+
+.lora-train-history__delete:hover {
+  color: var(--dq-danger);
 }
 
 .lora-train-history__item {

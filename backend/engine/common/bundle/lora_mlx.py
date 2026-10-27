@@ -188,7 +188,29 @@ def merge_lora_adapters_common(
         try:
             entry = registry.require(mid)
         except KeyError:
-            if str(lora_id).startswith("user-lora-"):
+            from backend.engine.training.lora_checkpoint_evaluation import (
+                parse_training_checkpoint_adapter_id,
+                resolve_training_checkpoint_path,
+            )
+
+            ck_ref = parse_training_checkpoint_adapter_id(lora_id)
+            if ck_ref is not None:
+                train_task_id, checkpoint_name = ck_ref
+                bundle = resolve_training_checkpoint_path(
+                    project_root,
+                    training_task_id=train_task_id,
+                    checkpoint=checkpoint_name,
+                )
+                # Companion contract written next to adapters/ during training finish / eval.
+                cfg = read_lora_config(bundle)
+                declared_base = str(cfg.get("base_model") or "").strip()
+                if not declared_base:
+                    raise RuntimeError(
+                        f"Training checkpoint {checkpoint_name!r} has no lora_config.json base_model; "
+                        "re-run evaluation or finish training with the current Studio build."
+                    )
+                mid = lora_id
+            elif str(lora_id).startswith("user-lora-"):
                 from backend.engine.training.user_lora_registry import (
                     get_user_lora,
                     resolve_user_lora_bundle,

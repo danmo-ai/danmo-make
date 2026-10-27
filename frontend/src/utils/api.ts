@@ -1010,6 +1010,17 @@ export const api = {
       return response.data;
     },
 
+    async submitCheckpointEvaluation(
+      taskId: string,
+      body: { force?: boolean } = {}
+    ): Promise<unknown> {
+      const response = await client.post(
+        `/api/loras/trainings/${encodeURIComponent(taskId)}/evaluate`,
+        body
+      );
+      return response.data;
+    },
+
     datasetImageUrl(datasetId: string, file: string): string {
       return `${API_BASE}/api/loras/datasets/${encodeURIComponent(datasetId)}/file/${encodeURIComponent(file)}`;
     },
@@ -1036,6 +1047,11 @@ export const api = {
 
     async trainingArtifacts(taskId: string): Promise<unknown> {
       const response = await client.get(`/api/loras/trainings/${encodeURIComponent(taskId)}/artifacts`);
+      return response.data;
+    },
+
+    async deleteTraining(taskId: string): Promise<unknown> {
+      const response = await client.delete(`/api/loras/trainings/${encodeURIComponent(taskId)}`);
       return response.data;
     },
 
