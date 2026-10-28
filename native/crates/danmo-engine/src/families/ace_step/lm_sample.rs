@@ -107,6 +107,33 @@ pub fn sample_top_k_p(
     Ok(scored.last().map(|(id, _)| *id).unwrap_or(0))
 }
 
+/// CFG blend: `uncond + scale * (cond - uncond)` (acestep.cpp phase-2).
+/// Writes into `cond` in place. `scale <= 1` is a no-op.
+pub fn cfg_blend(cond: &mut [f32], uncond: &[f32], scale: f32) -> Result<(), WeightError> {
+    if cond.len() != uncond.len() {
+        return Err(WeightError::NotBuilt(format!(
+            "ACE-Step LM CFG logit lengths {} vs {}",
+            cond.len(),
+            uncond.len()
+        )));
+    }
+    if !scale.is_finite() || scale < 0.0 {
+        return Err(WeightError::NotBuilt(format!(
+            "ACE-Step LM CFG scale {scale} is invalid"
+        )));
+    }
+    if scale <= 1.0 {
+        return Ok(());
+    }
+    for (c, &u) in cond.iter_mut().zip(uncond.iter()) {
+        if !c.is_finite() || !u.is_finite() {
+            continue;
+        }
+        *c = u + scale * (*c - u);
+    }
+    Ok(())
+}
+
 pub fn argmax(logits: &[f32]) -> Result<i32, WeightError> {
     let mut best_i = 0usize;
     let mut best_v = f32::NEG_INFINITY;
@@ -195,5 +222,17 @@ mod tests {
         let logits = vec![1.0f32];
         let mut rng = XorShift64::new(1);
         assert!(sample_top_k_p(&logits, 1.0, 0.0, 0, &mut rng).is_err());
+    }
+
+    #[test]
+    fn cfg_blend_steers_toward_cond() {
+        let mut cond = vec![2.0f32, 0.0];
+        let uncond = vec![0.0f32, 2.0];
+        cfg_blend(&mut cond, &uncond, 2.0).unwrap();
+        // u + 2*(c-u) = 0 + 2*(2-0) = 4 ;  2 + 2*(0-2) = -2
+        assert!((cond[0] - 4.0).abs() < 1e-5);
+        assert!((cond[1] + 2.0).abs() < 1e-5);
+        cfg_blend(&mut cond, &uncond, 1.0).unwrap(); // no-op
+        assert!((cond[0] - 4.0).abs() < 1e-5);
     }
 }

@@ -341,6 +341,8 @@ fn run_task(
                     top_k: request.top_k.unwrap_or(0),
                     seed: request.seed.unwrap_or(0),
                     use_fsm: request.use_fsm,
+                    cfg_scale: request.cfg_scale.unwrap_or(1.0),
+                    negative_prompt: request.negative_prompt.as_str(),
                 },
             )
             .map_err(|e| e.to_string())?;

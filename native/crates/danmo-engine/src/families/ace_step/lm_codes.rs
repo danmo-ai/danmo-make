@@ -69,11 +69,13 @@ pub fn sample_audio_codes(
     top_k: i32,
     seed: u64,
 ) -> Result<Vec<i32>, WeightError> {
-    sample_audio_codes_ex(
+    sample_audio_codes_cfg(
         ctx,
         weights,
         config,
         cot_prompt,
+        None,
+        1.0,
         max_codes,
         AUDIO_CODE_BASE,
         AUDIO_CODE_COUNT,
@@ -96,17 +98,65 @@ pub fn greedy_audio_codes_ex(
     code_count: i32,
     eos: i32,
 ) -> Result<Vec<i32>, WeightError> {
-    sample_audio_codes_ex(
-        ctx, weights, config, cot_prompt, max_codes, code_base, code_count, eos, 0.0, 1.0, 0, 0,
+    sample_audio_codes_cfg(
+        ctx,
+        weights,
+        config,
+        cot_prompt,
+        None,
+        1.0,
+        max_codes,
+        code_base,
+        code_count,
+        eos,
+        0.0,
+        1.0,
+        0,
+        0,
     )
 }
 
-/// Phase-2 with explicit specials + sampling knobs.
+/// Back-compat alias without CFG.
 pub fn sample_audio_codes_ex(
     ctx: &GgmlContext,
     weights: &GgufWeights,
     config: AceLmConfig,
     cot_prompt: &[i32],
+    max_codes: usize,
+    code_base: i32,
+    code_count: i32,
+    eos: i32,
+    temperature: f32,
+    top_p: f32,
+    top_k: i32,
+    seed: u64,
+) -> Result<Vec<i32>, WeightError> {
+    sample_audio_codes_cfg(
+        ctx,
+        weights,
+        config,
+        cot_prompt,
+        None,
+        1.0,
+        max_codes,
+        code_base,
+        code_count,
+        eos,
+        temperature,
+        top_p,
+        top_k,
+        seed,
+    )
+}
+
+/// Phase-2 with optional cond/uncond CFG (`cfg_scale > 1` + `uncond_prompt`).
+pub fn sample_audio_codes_cfg(
+    ctx: &GgmlContext,
+    weights: &GgufWeights,
+    config: AceLmConfig,
+    cot_prompt: &[i32],
+    uncond_prompt: Option<&[i32]>,
+    cfg_scale: f32,
     max_codes: usize,
     code_base: i32,
     code_count: i32,
@@ -126,6 +176,17 @@ pub fn sample_audio_codes_ex(
             "ACE-Step LM phase-2 max_codes must be >= 1".into(),
         ));
     }
+    if !cfg_scale.is_finite() || cfg_scale < 0.0 {
+        return Err(WeightError::NotBuilt(format!(
+            "ACE-Step LM CFG scale {cfg_scale} is invalid"
+        )));
+    }
+    let use_cfg = cfg_scale > 1.0;
+    if use_cfg && uncond_prompt.map(|p| p.is_empty()).unwrap_or(true) {
+        return Err(WeightError::NotBuilt(
+            "ACE-Step LM CFG needs a non-empty uncond prompt when cfg_scale > 1".into(),
+        ));
+    }
     let need = code_base as i64 + code_count as i64;
     if config.vocab < need || (eos as i64) >= config.vocab {
         return Err(WeightError::NotBuilt(format!(
@@ -134,11 +195,23 @@ pub fn sample_audio_codes_ex(
         )));
     }
     let max_seq = (cot_prompt.len() + max_codes).max(1) as i64;
-    let mut session = LmSetRowsSession::open(ctx, weights, config, max_seq)?;
-    let mut logits = session.prefill(cot_prompt)?;
+    let mut cond = LmSetRowsSession::open(ctx, weights, config, max_seq)?;
+    let mut logits = cond.prefill(cot_prompt)?;
+    let (mut uncond, mut uncond_logits) = if use_cfg {
+        let up = uncond_prompt.unwrap();
+        let max_u = (up.len() + max_codes).max(1) as i64;
+        let mut s = LmSetRowsSession::open(ctx, weights, config, max_u)?;
+        let ul = s.prefill(up)?;
+        (Some(s), Some(ul))
+    } else {
+        (None, None)
+    };
     let mut codes = Vec::new();
     let mut rng = super::lm_sample::XorShift64::new(seed);
     for _ in 0..max_codes {
+        if let Some(ul) = uncond_logits.as_ref() {
+            super::lm_sample::cfg_blend(&mut logits, ul, cfg_scale)?;
+        }
         mask_audio_code_logits(&mut logits, code_base, code_count, eos)?;
         let next = super::lm_sample::sample_top_k_p(
             &logits, temperature, top_p, top_k, &mut rng,
@@ -152,7 +225,10 @@ pub fn sample_audio_codes_ex(
             )));
         }
         codes.push(next - code_base);
-        logits = session.decode(next)?;
+        logits = cond.decode(next)?;
+        if let Some(s) = uncond.as_mut() {
+            uncond_logits = Some(s.decode(next)?);
+        }
     }
     Ok(codes)
 }
@@ -181,6 +257,45 @@ mod tests {
         let mut logits = vec![0.0f32; 8];
         let err = mask_audio_code_logits(&mut logits, 10, 5, 1).unwrap_err();
         assert!(err.to_string().contains("vocab"), "{err}");
+    }
+
+    #[test]
+    fn cfg_without_uncond_fails_loud() {
+        let dir = std::env::temp_dir().join(format!(
+            "ace-lm-cfg-fail-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let config = AceLmConfig::smoke();
+        write_smoke_lm(&dir, config).unwrap();
+        let weights = GgufWeights::open(&dir.join("acestep-lm-smoke.gguf")).unwrap();
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let prompt = vec![1i32, 2, 3];
+        let err = sample_audio_codes_cfg(
+            &ctx,
+            &weights,
+            config,
+            &prompt,
+            None,
+            2.0,
+            2,
+            16,
+            8,
+            15,
+            0.0,
+            1.0,
+            0,
+            0,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("uncond"),
+            "expected uncond fail-loud, got {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

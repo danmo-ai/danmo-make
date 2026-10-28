@@ -117,6 +117,10 @@ pub struct LmRequest<'a> {
     pub seed: u64,
     /// Apply MetadataFSM numeric early-block during phase-1 (needs tokenizer).
     pub use_fsm: bool,
+    /// Phase-2 CFG scale (`<= 1` disables). Default 1.0.
+    pub cfg_scale: f32,
+    /// Negative caption for uncond CFG prompt (empty → lyrics-only uncond).
+    pub negative_prompt: &'a str,
 }
 
 #[derive(Debug, Clone)]
@@ -201,17 +205,49 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
             .max(1)
             .min(2048)
             .min(((prompt.duration * 5.0) as usize).saturating_add(100).max(1));
-        let codes = lm_codes::sample_audio_codes(
+        let mut uncond_ids = if request.cfg_scale > 1.0 {
+            let mut enc = |text: &str| -> Result<Vec<i32>, WeightError> {
+                if let Some(json) = tokenizer {
+                    crate::common::qwen3::tokenize_plain(json, text, 200_000)
+                } else {
+                    Ok(text.bytes().map(|b| i32::from(b)).collect())
+                }
+            };
+            let mut ids =
+                lm_prompt::build_lm_prompt_uncond_with_cot(&mut enc, &prompt, request.negative_prompt)?;
+            if tokenizer.is_none() {
+                ids = ids
+                    .into_iter()
+                    .map(|id| {
+                        if (id as i64) < config.vocab {
+                            id
+                        } else {
+                            (id as i64).rem_euclid(config.vocab) as i32
+                        }
+                    })
+                    .collect();
+            }
+            Some(ids)
+        } else {
+            None
+        };
+        let codes = lm_codes::sample_audio_codes_cfg(
             &ctx,
             &weights,
             config,
             &prompt_ids,
+            uncond_ids.as_deref(),
+            request.cfg_scale,
             max_codes,
+            lm_prompt::AUDIO_CODE_BASE,
+            lm_prompt::AUDIO_CODE_COUNT,
+            lm_prompt::TOKEN_IM_END,
             request.temperature,
             request.top_p,
             request.top_k,
             request.seed,
         )?;
+        let _ = uncond_ids.take();
         return Ok(LmOutput {
             mode: request.mode.name().into(),
             prompt_tokens: prompt_ids.len(),
@@ -333,6 +369,8 @@ pub fn run_lm_expand(bundle: &Path) -> Result<LmOutput, WeightError> {
             top_k: 0,
             seed: 0,
             use_fsm: false,
+            cfg_scale: 1.0,
+            negative_prompt: "",
         },
     )
 }
@@ -574,6 +612,8 @@ mod tests {
                 top_k: 0,
                 seed: 0,
                 use_fsm: false,
+                cfg_scale: 1.0,
+                negative_prompt: "",
             },
         )
         .unwrap();
@@ -605,6 +645,8 @@ mod tests {
                 top_k: 0,
                 seed: 0,
                 use_fsm: false,
+                cfg_scale: 1.0,
+                negative_prompt: "",
             },
         )
         .unwrap_err();

@@ -181,6 +181,84 @@ pub fn build_lm_prompt_with_cot(
     Ok(ids)
 }
 
+/// Uncond phase-2 prompt (acestep.cpp `build_lm_prompt_uncond_with_cot`).
+///
+/// Bare user content (no Caption/Lyric wrapper) matches training CFG dropout.
+/// Empty CoT uses two inner newlines (`<think>\n\n</think>`) per Qwen chat template.
+/// `prompt` is accepted for call-site parity with the 3-arg C++ sites; unused.
+pub fn build_lm_prompt_uncond_with_cot(
+    encode: &mut EncodeFn<'_>,
+    _prompt: &AcePrompt,
+    negative_prompt: &str,
+) -> Result<Vec<i32>, WeightError> {
+    let mut ids = Vec::new();
+    ids.push(TOKEN_IM_START);
+    append_text(
+        &mut ids,
+        encode,
+        &format!("system\n# Instruction\n{LM_INSTRUCTION}\n\n"),
+    )?;
+    ids.push(TOKEN_IM_END);
+    append_text(&mut ids, encode, "\n")?;
+    ids.push(TOKEN_IM_START);
+    // Bare `user\n` + negative (may be empty) — not Caption/Lyric wrappers.
+    append_text(
+        &mut ids,
+        encode,
+        &format!("user\n{negative_prompt}"),
+    )?;
+    ids.push(TOKEN_IM_END);
+    append_text(&mut ids, encode, "\n")?;
+    ids.push(TOKEN_IM_START);
+    append_text(&mut ids, encode, "assistant\n")?;
+    ids.push(TOKEN_THINK);
+    // Two newlines inside think (reasoning.strip('\n') template).
+    append_text(&mut ids, encode, "\n\n")?;
+    ids.push(TOKEN_THINK_END);
+    append_text(&mut ids, encode, "\n\n")?;
+    Ok(ids)
+}
+
+/// Non-CoT uncond prompt (acestep.cpp `build_lm_prompt_uncond`) — Caption/Lyric form.
+#[allow(dead_code)]
+pub fn build_lm_prompt_uncond(
+    encode: &mut EncodeFn<'_>,
+    prompt: &AcePrompt,
+    negative_prompt: &str,
+) -> Result<Vec<i32>, WeightError> {
+    let mut ids = Vec::new();
+    ids.push(TOKEN_IM_START);
+    append_text(
+        &mut ids,
+        encode,
+        &format!("system\n# Instruction\n{LM_INSTRUCTION}\n\n"),
+    )?;
+    ids.push(TOKEN_IM_END);
+    append_text(&mut ids, encode, "\n")?;
+    ids.push(TOKEN_IM_START);
+    if !negative_prompt.is_empty() {
+        append_text(
+            &mut ids,
+            encode,
+            &format!(
+                "user\n# Caption\n{negative_prompt}\n\n# Lyric\n{}\n",
+                prompt.lyrics
+            ),
+        )?;
+    } else {
+        append_text(
+            &mut ids,
+            encode,
+            &format!("user\n# Lyric\n{}\n", prompt.lyrics),
+        )?;
+    }
+    ids.push(TOKEN_IM_END);
+    append_text(&mut ids, encode, "\n")?;
+    ids.push(TOKEN_IM_START);
+    append_text(&mut ids, encode, "assistant\n")?;
+    Ok(ids)
+}
+
 /// CoT YAML matching Python `yaml.dump(sort_keys=True)` field order used upstream.
 pub fn build_cot_yaml(prompt: &AcePrompt) -> String {
     let mut yaml = String::new();
@@ -351,5 +429,51 @@ mod tests {
         );
         assert!(audio_code_token_ids(&[-1]).is_err());
         assert!(audio_code_token_ids(&[65536]).is_err());
+    }
+
+    #[test]
+    fn uncond_with_cot_is_bare_negative_and_empty_think() {
+        let prompt = AcePrompt {
+            caption: "ignored for uncond cot".into(),
+            lyrics: "[Verse]\nshould not appear".into(),
+            ..AcePrompt::default()
+        };
+        let mut enc = |t: &str| fake_encode(t);
+        let ids = build_lm_prompt_uncond_with_cot(&mut enc, &prompt, "noisy drums").unwrap();
+        let flat: Vec<u8> = ids
+            .iter()
+            .filter(|&&t| t < 256)
+            .map(|&t| t as u8)
+            .collect();
+        let s = String::from_utf8_lossy(&flat);
+        assert!(s.contains("user\nnoisy drums"));
+        assert!(!s.contains("# Caption"));
+        assert!(!s.contains("# Lyric"));
+        assert!(!s.contains("should not appear"));
+        assert!(ids.contains(&TOKEN_THINK));
+        assert!(ids.contains(&TOKEN_THINK_END));
+        let think_at = ids.iter().position(|&t| t == TOKEN_THINK).unwrap();
+        let end_at = ids.iter().position(|&t| t == TOKEN_THINK_END).unwrap();
+        // Inner content between think markers is "\n\n" (two LF bytes as fake ids).
+        assert_eq!(&ids[think_at + 1..end_at], &[b'\n' as i32, b'\n' as i32]);
+    }
+
+    #[test]
+    fn uncond_without_cot_uses_caption_lyric_wrappers() {
+        let prompt = AcePrompt {
+            lyrics: "la la".into(),
+            ..AcePrompt::default()
+        };
+        let mut enc = |t: &str| fake_encode(t);
+        let ids = build_lm_prompt_uncond(&mut enc, &prompt, "bad mix").unwrap();
+        let flat: Vec<u8> = ids
+            .iter()
+            .filter(|&&t| t < 256)
+            .map(|&t| t as u8)
+            .collect();
+        let s = String::from_utf8_lossy(&flat);
+        assert!(s.contains("# Caption\nbad mix"));
+        assert!(s.contains("# Lyric\nla la"));
+        assert!(!ids.contains(&TOKEN_THINK));
     }
 }

@@ -211,6 +211,11 @@ pub struct AudioLmRequest {
     /// Apply MetadataFSM numeric early-block (needs tokenizer; default false).
     #[serde(default)]
     pub use_fsm: bool,
+    /// Phase-2 CFG scale (`<= 1` disables).
+    pub cfg_scale: Option<f32>,
+    /// Negative caption for uncond CFG.
+    #[serde(default)]
+    pub negative_prompt: String,
     #[serde(default = "default_priority")]
     pub priority: String,
 }
