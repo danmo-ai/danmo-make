@@ -589,6 +589,27 @@ impl GraphBuilder {
         }
     }
 
+    pub fn i64_1d(&mut self, name: &str, ne0: i64, input: bool) -> *mut g::ggml_tensor {
+        unsafe {
+            let t = g::ggml_new_tensor_1d(self.ctx, g::ggml_type_GGML_TYPE_I64, ne0);
+            name_tensor(t, name);
+            if input {
+                g::ggml_set_input(t);
+                self.inputs.push(NamedTensor {
+                    name: name.to_string(),
+                    tensor: t,
+                });
+            }
+            t
+        }
+    }
+
+    /// `ggml_set_rows`: write rows of `src` into `dst` at `row_ids` (I32/I64).
+    /// Returns a view of `dst` so the write stays in the forward expand.
+    pub fn set_rows(&self, dst: Tensor, src: Tensor, row_ids: Tensor) -> Tensor {
+        unsafe { g::ggml_set_rows(self.ctx, dst, src, row_ids) }
+    }
+
     /// Finish the graph. `reserve` + `alloc` happen once; later steps only write inputs.
     pub fn finish(self, output: *mut g::ggml_tensor) -> Result<ReusedGraph, RuntimeError> {
         unsafe {

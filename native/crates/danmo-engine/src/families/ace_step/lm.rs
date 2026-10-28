@@ -1,8 +1,9 @@
-//! ACE-Step 5Hz Qwen3 causal LM prefill (acestep.cpp `qwen3-lm.h` forward).
+//! ACE-Step 5Hz Qwen3 causal LM (acestep.cpp `qwen3-lm.h` forward).
 //!
-//! Prefill runs the full sequence with a causal mask and returns last-token
-//! logits via the tied `embed_tokens` head. Decode reuses prefill (no KV cache
-//! yet) — enough for smoke + short inspire/format; product decode needs KV.
+//! Prefill can run the full sequence with a causal mask. Greedy decode keeps a
+//! host-side KV cache and runs a single-token step (concat past ‖ new) so each
+//! new token is O(layers) rather than a full re-prefill. Fixed-topology
+//! `set_rows` CUDA-graph replay (acestep.cpp) is next.
 
 use crate::common::ops::non_finite;
 use crate::runtime::{
@@ -242,7 +243,8 @@ pub fn prefill_logits(
     Ok(logits)
 }
 
-/// Greedy decode by re-prefill (no KV). Stops on `stop_ids` or `max_new`.
+/// Greedy decode with a host-side KV cache (single-token steps after prompt).
+/// Stops on `stop_ids` or `max_new`.
 pub fn greedy_generate(
     ctx: &GgmlContext,
     weights: &GgufWeights,
@@ -256,14 +258,39 @@ pub fn greedy_generate(
             "ACE-Step LM generate needs a non-empty prompt".into(),
         ));
     }
+    for &id in prompt {
+        if id < 0 || id as i64 >= config.vocab {
+            return Err(WeightError::NotBuilt(format!(
+                "ACE-Step LM token id {id} is outside vocab {}",
+                config.vocab
+            )));
+        }
+    }
+    let mut types = HashMap::new();
+    for (name, _, _) in weight_layout(config) {
+        types.insert(name.clone(), weights.ggml_type_of(&name).unwrap_or(TYPE_F32));
+    }
+    let mut session = LmKvSession {
+        config,
+        types,
+        cache_k: vec![Vec::new(); config.layers as usize],
+        cache_v: vec![Vec::new(); config.layers as usize],
+        seq: 0,
+        graphs: HashMap::new(),
+    };
+    // Prefill: feed prompt tokens one-by-one into the KV cache.
+    let mut logits = Vec::new();
+    for (i, &tok) in prompt.iter().enumerate() {
+        logits = session.step(ctx, weights, tok, i as i32)?;
+    }
     let mut seq = prompt.to_vec();
     for _ in 0..max_new {
-        let logits = prefill_logits(ctx, weights, config, &seq)?;
         let next = argmax(&logits);
         seq.push(next);
         if stop_ids.contains(&next) {
             break;
         }
+        logits = session.step(ctx, weights, next, session.seq as i32)?;
     }
     Ok(seq)
 }
@@ -278,6 +305,224 @@ fn argmax(logits: &[f32]) -> i32 {
         }
     }
     best_i as i32
+}
+
+fn kv_row(config: AceLmConfig) -> usize {
+    (config.head_dim * config.kv_heads) as usize
+}
+
+/// Host KV + per-`past_len` decode graphs (concat past ‖ new; set_rows later).
+struct LmKvSession {
+    config: AceLmConfig,
+    types: HashMap<String, u32>,
+    cache_k: Vec<Vec<f32>>,
+    cache_v: Vec<Vec<f32>>,
+    seq: i64,
+    graphs: HashMap<i64, ReusedGraph>,
+}
+
+impl LmKvSession {
+    fn step(
+        &mut self,
+        ctx: &GgmlContext,
+        weights: &GgufWeights,
+        token: i32,
+        position: i32,
+    ) -> Result<Vec<f32>, WeightError> {
+        let past = self.seq;
+        if !self.graphs.contains_key(&past) {
+            let graph = LmDecode::build(ctx, self.config, past, &self.types)
+                .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+            for (name, ne0, ne1) in weight_layout(self.config) {
+                let data = weights.f32_widened(&name, &[ne0, ne1])?;
+                graph
+                    .set_f32(&name, &data)
+                    .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+            }
+            self.graphs.insert(past, graph);
+        }
+        let graph = self
+            .graphs
+            .get_mut(&past)
+            .ok_or_else(|| WeightError::NotBuilt("ACE-Step LM decode graph missing".into()))?;
+        graph
+            .set_i32("token_ids", &[token])
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        graph
+            .set_i32("positions", &[position])
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        if past > 0 {
+            for layer in 0..self.config.layers {
+                let k_name = format!("past_k.{layer}");
+                let v_name = format!("past_v.{layer}");
+                graph
+                    .set_f32(&k_name, &self.cache_k[layer as usize])
+                    .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+                graph
+                    .set_f32(&v_name, &self.cache_v[layer as usize])
+                    .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+            }
+        }
+        let packed = graph
+            .compute()
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        let vocab = self.config.vocab as usize;
+        let row = kv_row(self.config);
+        let need = vocab + (self.config.layers as usize) * 2 * row;
+        if packed.len() != need {
+            return Err(WeightError::NotBuilt(format!(
+                "ACE-Step LM decode packed length {} is not {need}",
+                packed.len()
+            )));
+        }
+        if let Some(detail) = non_finite("ACE-Step LM logits", &packed[..vocab]) {
+            return Err(WeightError::NotBuilt(detail));
+        }
+        let mut offset = vocab;
+        for layer in 0..self.config.layers as usize {
+            self.cache_k[layer].extend_from_slice(&packed[offset..offset + row]);
+            offset += row;
+            self.cache_v[layer].extend_from_slice(&packed[offset..offset + row]);
+            offset += row;
+        }
+        self.seq += 1;
+        Ok(packed[..vocab].to_vec())
+    }
+}
+
+struct LmDecode;
+
+impl LmDecode {
+    fn build(
+        ctx: &GgmlContext,
+        config: AceLmConfig,
+        past: i64,
+        types: &HashMap<String, u32>,
+    ) -> Result<ReusedGraph, RuntimeError> {
+        let kv_len = past + 1;
+        let mem = 64 * 1024 * 1024
+            + ((kv_len * kv_len * 8) as usize).max(0)
+            + (past.max(0) as usize) * (config.layers as usize) * kv_row(config) * 8;
+        let mut b = ctx.builder(mem)?;
+        let mut weights = HashMap::new();
+        for (name, ne0, ne1) in weight_layout(config) {
+            let ggml_type = types.get(&name).copied().unwrap_or(TYPE_F32);
+            let tensor = b.tensor_2d(&name, ggml_type, ne0, ne1, true);
+            if tensor.is_null() {
+                return Err(RuntimeError::Init);
+            }
+            weights.insert(name, tensor);
+        }
+        let token_ids = nn(b.i32_1d("token_ids", 1, true))?;
+        let pos = nn(b.i32_1d("positions", 1, true))?;
+        let mut hidden = nn(b.get_rows(
+            wt(&weights, "model.embed_tokens.weight")?,
+            token_ids,
+        ))?;
+        let mut new_ks = Vec::new();
+        let mut new_vs = Vec::new();
+        for layer in 0..config.layers {
+            let past_k = if past > 0 {
+                Some(nn(b.tensor_3d(
+                    &format!("past_k.{layer}"),
+                    TYPE_F32,
+                    config.head_dim,
+                    config.kv_heads,
+                    past,
+                    true,
+                ))?)
+            } else {
+                None
+            };
+            let past_v = if past > 0 {
+                Some(nn(b.tensor_3d(
+                    &format!("past_v.{layer}"),
+                    TYPE_F32,
+                    config.head_dim,
+                    config.kv_heads,
+                    past,
+                    true,
+                ))?)
+            } else {
+                None
+            };
+            let (h, nk, nv) =
+                lm_decode_layer(&b, &weights, config, layer, hidden, pos, past_k, past_v)?;
+            hidden = h;
+            new_ks.push(nk);
+            new_vs.push(nv);
+        }
+        hidden = rms(&b, hidden, wt(&weights, "model.norm.weight")?)?;
+        let logits = nn(b.project(wt(&weights, "model.embed_tokens.weight")?, hidden))?;
+        // Pack logits ‖ new_k ‖ new_v per layer for host cache append.
+        let mut packed = nn(b.cont(b.reshape_2d(logits, config.vocab, 1)))?;
+        let row = config.head_dim * config.kv_heads;
+        for (nk, nv) in new_ks.into_iter().zip(new_vs) {
+            let nk = nn(b.cont(b.reshape_2d(nk, row, 1)))?;
+            let nv = nn(b.cont(b.reshape_2d(nv, row, 1)))?;
+            packed = nn(b.cont(b.concat(packed, nk, 0)))?;
+            packed = nn(b.cont(b.concat(packed, nv, 0)))?;
+        }
+        b.finish(packed)
+    }
+}
+
+fn lm_decode_layer(
+    b: &GraphBuilder,
+    weights: &HashMap<String, Tensor>,
+    config: AceLmConfig,
+    layer: i64,
+    hidden: Tensor,
+    pos: Tensor,
+    past_k: Option<Tensor>,
+    past_v: Option<Tensor>,
+) -> Result<(Tensor, Tensor, Tensor), RuntimeError> {
+    let p = format!("model.layers.{layer}");
+    let head = config.head_dim;
+    let normed = rms(b, hidden, wt(weights, &format!("{p}.input_layernorm.weight"))?)?;
+    let q = nn(b.project(wt(weights, &format!("{p}.self_attn.q_proj.weight"))?, normed))?;
+    let k = nn(b.project(wt(weights, &format!("{p}.self_attn.k_proj.weight"))?, normed))?;
+    let v = nn(b.project(wt(weights, &format!("{p}.self_attn.v_proj.weight"))?, normed))?;
+    let q = nn(b.reshape_3d(q, head, config.heads, 1))?;
+    let k = nn(b.reshape_3d(k, head, config.kv_heads, 1))?;
+    let v = nn(b.reshape_3d(v, head, config.kv_heads, 1))?;
+    let q = nn(b.mul(
+        nn(b.rms_norm(q, RMS_EPS))?,
+        wt(weights, &format!("{p}.self_attn.q_norm.weight"))?,
+    ))?;
+    let k = nn(b.mul(
+        nn(b.rms_norm(k, RMS_EPS))?,
+        wt(weights, &format!("{p}.self_attn.k_norm.weight"))?,
+    ))?;
+    let q = nn(b.cont(b.rope_neox(q, pos, head as i32, config.rope_theta)))?;
+    let k = nn(b.cont(b.rope_neox(k, pos, head as i32, config.rope_theta)))?;
+    let new_k = k;
+    let new_v = v;
+    let (k_full, v_full) = match (past_k, past_v) {
+        (Some(past_k), Some(past_v)) => (
+            nn(b.cont(b.concat(past_k, new_k, 2)))?,
+            nn(b.cont(b.concat(past_v, new_v, 2)))?,
+        ),
+        _ => (new_k, new_v),
+    };
+    let attn = flash_attend(b, q, k_full, v_full, std::ptr::null_mut())?;
+    let attn = nn(b.reshape_2d(attn, config.heads * head, 1))?;
+    let attn = nn(b.project(wt(weights, &format!("{p}.self_attn.o_proj.weight"))?, attn))?;
+    let hidden = nn(b.add(hidden, attn))?;
+    let normed = rms(
+        b,
+        hidden,
+        wt(weights, &format!("{p}.post_attention_layernorm.weight"))?,
+    )?;
+    let gate = nn(b.silu(nn(b.project(
+        wt(weights, &format!("{p}.mlp.gate_proj.weight"))?,
+        normed,
+    ))?))?;
+    let up = nn(b.project(wt(weights, &format!("{p}.mlp.up_proj.weight"))?, normed))?;
+    let ff = nn(b.mul(gate, up))?;
+    let ff = nn(b.project(wt(weights, &format!("{p}.mlp.down_proj.weight"))?, ff))?;
+    let hidden = nn(b.add(hidden, ff))?;
+    Ok((hidden, new_k, new_v))
 }
 
 struct LmPrefill {
