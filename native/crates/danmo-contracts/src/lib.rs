@@ -126,6 +126,39 @@ pub struct AudioGenerationRequest {
     pub steps: Option<u32>,
 }
 
+/// ACE-Step cover / cover-nofsq edit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioEditRequest {
+    pub model: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub lyrics: String,
+    pub seed: Option<i64>,
+    #[serde(default = "default_priority")]
+    pub priority: String,
+    #[serde(default)]
+    pub vocal_language: String,
+    pub guidance: Option<f32>,
+    pub steps: Option<u32>,
+    /// `cover-nofsq` (default) or `cover` (needs FSQ — fails loud until ported).
+    #[serde(default = "default_cover_nofsq")]
+    pub task: String,
+    /// Absolute or workspace-relative path to a PCM16 WAV source.
+    pub source_audio: Option<String>,
+    /// Optional base64-encoded PCM16 WAV (used when `source_audio` is absent).
+    pub source_audio_base64: Option<String>,
+    /// Optional pre-encoded time-major latents `[T*64]` (skips VAE encode).
+    pub source_latents: Option<Vec<f32>>,
+    /// Fraction of DiT steps that keep cover context (default 1.0).
+    pub audio_cover_strength: Option<f32>,
+    /// 0 = pure noise; 1 = start near source (default 0.0).
+    pub cover_noise_strength: Option<f32>,
+}
+
+fn default_cover_nofsq() -> String {
+    "cover-nofsq".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskAccepted {
     pub id: String,

@@ -152,6 +152,21 @@ pub struct AudioCreateRequest<'a> {
     pub vocal_language: &'a str,
 }
 
+pub struct AudioEditRequest<'a> {
+    pub prompt: &'a str,
+    pub lyrics: &'a str,
+    pub seed: Option<i64>,
+    pub guidance: f32,
+    pub steps: Option<u32>,
+    pub vocal_language: &'a str,
+    /// `cover-nofsq` (default) or `cover` (FSQ — not built).
+    pub task: &'a str,
+    pub source_audio: Option<&'a [f32]>,
+    pub source_latents: Option<&'a [f32]>,
+    pub audio_cover_strength: f32,
+    pub cover_noise_strength: f32,
+}
+
 #[derive(Debug)]
 pub struct AudioRunOutput {
     pub family: String,
@@ -164,6 +179,28 @@ pub struct AudioRunOutput {
     pub lyrics_alignment_json: String,
     pub lyrics_txt: Option<String>,
     pub lyrics_lrc: Option<String>,
+}
+
+fn audio_out_from_create(
+    family: &str,
+    out: families::ace_step::CreateOutput,
+) -> AudioRunOutput {
+    let lyrics_alignment_json =
+        serde_json::to_string(&out.lyrics_alignment.as_metadata()).unwrap_or_else(|_| {
+            "{\"lyrics_alignment\":\"unknown\"}".into()
+        });
+    AudioRunOutput {
+        family: family.into(),
+        wav: out.wav,
+        sample_rate: out.sample_rate,
+        frames: out.frames,
+        steps: out.steps,
+        graph_computes: out.graph_computes,
+        lyrics_effective: out.lyrics_effective,
+        lyrics_alignment_json,
+        lyrics_txt: out.lyrics_txt,
+        lyrics_lrc: out.lyrics_lrc,
+    }
 }
 
 pub fn audio_create(
@@ -190,22 +227,50 @@ pub fn audio_create(
         timesignature: "",
     };
     if let Some(out) = families::run_audio_facade(family, bundle, &create)? {
-        let lyrics_alignment_json =
-            serde_json::to_string(&out.lyrics_alignment.as_metadata()).unwrap_or_else(|_| {
-                "{\"lyrics_alignment\":\"unknown\"}".into()
-            });
-        return Ok(AudioRunOutput {
-            family: family.into(),
-            wav: out.wav,
-            sample_rate: out.sample_rate,
-            frames: out.frames,
-            steps: out.steps,
-            graph_computes: out.graph_computes,
-            lyrics_effective: out.lyrics_effective,
-            lyrics_alignment_json,
-            lyrics_txt: out.lyrics_txt,
-            lyrics_lrc: out.lyrics_lrc,
-        });
+        return Ok(audio_out_from_create(family, out));
+    }
+    weights::assert_gguf_bundle(bundle)?;
+    Err(EngineError::GraphNotBuilt {
+        family: family.into(),
+        shape: shape_name(spec.shape).into(),
+    })
+}
+
+/// Decode a PCM16 WAV to interleaved stereo f32 (ACE-Step cover source).
+pub fn read_audio_wav_pcm16(bytes: &[u8]) -> Result<(Vec<f32>, u32), EngineError> {
+    families::ace_step_read_wav(bytes).map_err(EngineError::from)
+}
+
+pub fn audio_edit(
+    family: &str,
+    bundle: &Path,
+    request: &AudioEditRequest<'_>,
+) -> Result<AudioRunOutput, EngineError> {
+    let spec = families::spec(family).ok_or_else(|| EngineError::UnknownFamily(family.into()))?;
+    if spec.media != Media::Audio {
+        return Err(EngineError::BadRequest(format!(
+            "{family} does not match the requested media"
+        )));
+    }
+    let mode = families::ace_step::CoverMode::parse(request.task)?;
+    let cover = families::ace_step::CoverRequest {
+        prompt: request.prompt,
+        lyrics: request.lyrics,
+        seed: request.seed,
+        guidance: request.guidance,
+        steps: request.steps,
+        vocal_language: request.vocal_language,
+        bpm: None,
+        keyscale: "",
+        timesignature: "",
+        mode,
+        source_audio: request.source_audio,
+        source_latents: request.source_latents,
+        audio_cover_strength: request.audio_cover_strength,
+        cover_noise_strength: request.cover_noise_strength,
+    };
+    if let Some(out) = families::run_audio_edit_facade(family, bundle, &cover)? {
+        return Ok(audio_out_from_create(family, out));
     }
     weights::assert_gguf_bundle(bundle)?;
     Err(EngineError::GraphNotBuilt {

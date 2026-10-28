@@ -307,3 +307,21 @@ pub fn run_audio_facade(
         _ => Ok(None),
     }
 }
+
+/// Shape C audio edit (cover-nofsq). `Ok(None)` for families without an edit path.
+pub fn run_audio_edit_facade(
+    family: &str,
+    bundle: &std::path::Path,
+    request: &ace_step::CoverRequest<'_>,
+) -> Result<Option<ace_step::CreateOutput>, crate::weights::WeightError> {
+    match family {
+        "ace_step" => Ok(Some(ace_step::run_cover_nofsq(bundle, request)?)),
+        _ => Ok(None),
+    }
+}
+
+pub(crate) fn ace_step_read_wav(
+    bytes: &[u8],
+) -> Result<(Vec<f32>, u32), crate::weights::WeightError> {
+    ace_step::wav::read_pcm16_interleaved(bytes)
+}

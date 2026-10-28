@@ -7,9 +7,13 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use danmo_catalog::Catalog;
 use danmo_contracts::{
-    AudioGenerationRequest, ImageGenerationRequest, TaskAccepted, TaskKind, VideoGenerationRequest,
+    AudioEditRequest, AudioGenerationRequest, ImageGenerationRequest, TaskAccepted, TaskKind,
+    VideoGenerationRequest,
 };
-use danmo_engine::{audio_create, image_create, spec, upscale, video_create, BackendKind};
+use danmo_engine::{
+    audio_create, audio_edit, image_create, read_audio_wav_pcm16, spec, upscale, video_create,
+    BackendKind,
+};
 use danmo_schedule::Scheduler;
 use danmo_store::AssetRow;
 use serde_json::{json, Value};
@@ -246,13 +250,58 @@ fn run_task(
         "audio.edit" => {
             let bundle = bundle.ok_or_else(|| "missing GGUF bundle".to_string())?;
             danmo_engine::assert_gguf_bundle(&bundle).map_err(|e| e.to_string())?;
-            if family == "ace_step" {
-                return Err(
-                    "ACE-Step cover needs VAE encode + FSQ roundtrip (acestep.cpp ops_encode_src)"
-                        .into(),
-                );
-            }
-            Err(format!("{family} graph is not built"))
+            let request: AudioEditRequest =
+                serde_json::from_value(params.get("request").cloned().unwrap_or(json!({})))
+                    .map_err(|e| e.to_string())?;
+            let lyrics = if request.lyrics.trim().is_empty() {
+                "[inst]"
+            } else {
+                request.lyrics.as_str()
+            };
+            let vocal = if request.vocal_language.trim().is_empty() {
+                "en"
+            } else {
+                request.vocal_language.as_str()
+            };
+            let (pcm, _sr) = resolve_edit_source_audio(state, &request)?;
+            let out = audio_edit(
+                family,
+                &bundle,
+                &danmo_engine::AudioEditRequest {
+                    prompt: &request.prompt,
+                    lyrics,
+                    seed: request.seed,
+                    guidance: request.guidance.unwrap_or(1.0),
+                    steps: request.steps,
+                    vocal_language: vocal,
+                    task: &request.task,
+                    source_audio: pcm.as_deref(),
+                    source_latents: request.source_latents.as_deref(),
+                    audio_cover_strength: request.audio_cover_strength.unwrap_or(1.0),
+                    cover_noise_strength: request.cover_noise_strength.unwrap_or(0.0),
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            let task_id = params
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let asset_ids = persist_audio_wav(state, task_id, model, params, &out)?;
+            let alignment: Value = serde_json::from_str(&out.lyrics_alignment_json)
+                .unwrap_or_else(|_| json!({"lyrics_alignment": "unknown"}));
+            Ok(json!({
+                "family": out.family,
+                "steps": out.steps,
+                "graph_computes": out.graph_computes,
+                "frames": out.frames,
+                "sample_rate": out.sample_rate,
+                "lyrics_effective": out.lyrics_effective,
+                "lyrics_alignment": alignment.get("lyrics_alignment").cloned().unwrap_or(json!("unknown")),
+                "lyrics_segments": alignment.get("lyrics_segments").cloned().unwrap_or(json!([])),
+                "asset_ids": asset_ids,
+                "primary_asset_id": asset_ids.first(),
+                "task": request.task,
+            }))
         }
         "video.edit" | "video.upscale" | "video.avatar" => {
             let bundle = bundle.ok_or_else(|| "missing GGUF bundle".to_string())?;
@@ -261,6 +310,48 @@ fn run_task(
         }
         other => Err(format!("unsupported task kind {other}")),
     }
+}
+
+fn resolve_edit_source_audio(
+    state: &AppState,
+    request: &AudioEditRequest,
+) -> Result<(Option<Vec<f32>>, u32), String> {
+    if request.source_latents.as_ref().is_some_and(|v| !v.is_empty()) {
+        return Ok((None, 48_000));
+    }
+    let bytes = if let Some(path) = request.source_audio.as_ref().filter(|p| !p.is_empty()) {
+        let p = FsPath::new(path);
+        let resolved = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            state.workspace.join(p)
+        };
+        std::fs::read(&resolved).map_err(|err| {
+            format!(
+                "ACE-Step cover source_audio {}: {err}",
+                resolved.display()
+            )
+        })?
+    } else if let Some(b64) = request
+        .source_audio_base64
+        .as_ref()
+        .filter(|p| !p.is_empty())
+    {
+        product::base64_decode(b64)
+            .map_err(|err| format!("ACE-Step source_audio_base64 is invalid: {err}"))?
+    } else {
+        return Err(
+            "ACE-Step cover-nofsq needs source_audio, source_audio_base64, or source_latents"
+                .into(),
+        );
+    };
+    let (pcm, sr) = read_audio_wav_pcm16(&bytes).map_err(|e| e.to_string())?;
+    if sr != 48_000 {
+        return Err(format!(
+            "ACE-Step cover source sample rate {sr} Hz must be 48000 (resampling is not built)"
+        ));
+    }
+    Ok((Some(pcm), sr))
 }
 
 fn persist_audio_wav(

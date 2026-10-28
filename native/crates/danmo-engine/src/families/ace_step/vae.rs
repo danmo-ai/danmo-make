@@ -189,16 +189,16 @@ pub fn graph_weight_layout(_config: AceVaeConfig) -> Vec<VaeWeightSpec> {
     out
 }
 
-struct ResUnitW {
-    s1a: Tensor,
-    s1b: Tensor,
-    c1w: Tensor,
-    c1b: Tensor,
-    s2a: Tensor,
-    s2b: Tensor,
-    c2w: Tensor,
-    c2b: Tensor,
-    dilation: i32,
+pub(crate) struct ResUnitW {
+    pub(crate) s1a: Tensor,
+    pub(crate) s1b: Tensor,
+    pub(crate) c1w: Tensor,
+    pub(crate) c1b: Tensor,
+    pub(crate) s2a: Tensor,
+    pub(crate) s2b: Tensor,
+    pub(crate) c2w: Tensor,
+    pub(crate) c2b: Tensor,
+    pub(crate) dilation: i32,
 }
 
 struct BlockW {
@@ -409,7 +409,7 @@ fn declare_weights(b: &mut GraphBuilder, config: AceVaeConfig) -> Result<VaeWeig
     })
 }
 
-fn declare_res_unit(
+pub(crate) fn declare_res_unit(
     b: &mut GraphBuilder,
     prefix: &str,
     ch: i64,
@@ -445,7 +445,7 @@ fn block_placeholder() -> BlockW {
     }
 }
 
-fn res_unit_placeholder() -> ResUnitW {
+pub(crate) fn res_unit_placeholder() -> ResUnitW {
     ResUnitW {
         s1a: std::ptr::null_mut(),
         s1b: std::ptr::null_mut(),
@@ -479,7 +479,7 @@ fn build_decode_graph(
     conv1d_bias(b, w.c2w, None, x, 1, 3, 1)
 }
 
-fn snake(b: &GraphBuilder, x: Tensor, exp_a: Tensor, inv_b: Tensor) -> Tensor {
+pub(crate) fn snake(b: &GraphBuilder, x: Tensor, exp_a: Tensor, inv_b: Tensor) -> Tensor {
     let ax = b.mul(x, exp_a);
     let s = b.sin(ax);
     let s2 = b.sqr(s);
@@ -487,7 +487,7 @@ fn snake(b: &GraphBuilder, x: Tensor, exp_a: Tensor, inv_b: Tensor) -> Tensor {
     b.add(x, d)
 }
 
-fn conv1d_bias(
+pub(crate) fn conv1d_bias(
     b: &GraphBuilder,
     weight: Tensor,
     bias: Option<Tensor>,
@@ -525,7 +525,7 @@ fn conv_t1d(
     y
 }
 
-fn res_unit(b: &GraphBuilder, ru: &ResUnitW, x: Tensor) -> Tensor {
+pub(crate) fn res_unit(b: &GraphBuilder, ru: &ResUnitW, x: Tensor) -> Tensor {
     let skip = x;
     let pad = 3 * ru.dilation;
     let mut y = snake(b, x, ru.s1a, ru.s1b);
@@ -652,7 +652,11 @@ fn ggml_dim0_and_count(ne: [i64; 4]) -> (i64, i64) {
 }
 
 /// Fuse `weight_g` × normalized `weight_v`, or read pre-fused `{prefix}.weight`.
-fn fuse_weight_norm(weights: &GgufWeights, prefix: &str, transpose_ct: bool) -> Result<Vec<f32>, WeightError> {
+pub(crate) fn fuse_weight_norm(
+    weights: &GgufWeights,
+    prefix: &str,
+    transpose_ct: bool,
+) -> Result<Vec<f32>, WeightError> {
     let weight_name = format!("{prefix}.weight");
     if weights.contains(&weight_name) {
         let ne = weights.shape(&weight_name)?;
@@ -700,7 +704,7 @@ fn fuse_weight_norm(weights: &GgufWeights, prefix: &str, transpose_ct: bool) -> 
     Ok(out)
 }
 
-fn f32_row_to_f16(src: &[f32], dst_bytes: &mut [u8]) {
+pub(crate) fn f32_row_to_f16(src: &[f32], dst_bytes: &mut [u8]) {
     debug_assert_eq!(src.len() * 2, dst_bytes.len());
     let mut f16 = vec![0u16; src.len()];
     unsafe {

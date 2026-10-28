@@ -1805,7 +1805,7 @@ fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
     fn val(byte: u8) -> Result<u8, String> {
         match byte {
             b'A'..=b'Z' => Ok(byte - b'A'),

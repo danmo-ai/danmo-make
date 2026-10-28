@@ -20,6 +20,15 @@ use std::path::Path;
 const GRAPH_MEM_SMOKE: usize = 64 * 1024 * 1024;
 const GRAPH_MEM_XL: usize = 2 * 1024 * 1024 * 1024;
 
+/// Optional mid-denoise context swap for cover `audio_cover_strength` < 1.
+#[derive(Debug, Clone, Copy)]
+pub struct DenoiseContextSwitch<'a> {
+    pub context_silence: &'a [f32],
+    pub enc_hidden_text2music: &'a [f32],
+    /// Switch when `step_index >= cover_steps` (0-based).
+    pub cover_steps: u32,
+}
+
 pub struct AceStepDit {
     graph: ReusedGraph,
     config: AceStepConfig,
@@ -110,6 +119,9 @@ impl AceStepDit {
     ///
     /// `null_enc` is the broadcast `null_condition_emb` (`condition_dim × enc_seq`).
     /// Required when `guidance > 1`; ignored at guidance 1.
+    ///
+    /// `switch` (cover `audio_cover_strength` < 1): after `cover_steps`, swap to
+    /// silence context + text2music enc (acestep.cpp `dit-sampler.h`).
     pub fn denoise(
         &mut self,
         xt: &[f32],
@@ -118,6 +130,7 @@ impl AceStepDit {
         schedule: &[f32],
         guidance: f32,
         null_enc: Option<&[f32]>,
+        switch: Option<DenoiseContextSwitch<'_>>,
         mut on_step: impl FnMut(u32, u32),
     ) -> Result<Vec<f32>, RuntimeError> {
         if !guidance.is_finite() || guidance < 1.0 {
@@ -159,9 +172,25 @@ impl AceStepDit {
                 self.enc_len()
             )));
         }
+        if let Some(sw) = switch {
+            if sw.context_silence.len() != self.context_len()
+                || sw.enc_hidden_text2music.len() != self.enc_len()
+            {
+                return Err(RuntimeError::Message(format!(
+                    "ACE-Step cover switch lengths silence {} enc {}, graph expects {} {}",
+                    sw.context_silence.len(),
+                    sw.enc_hidden_text2music.len(),
+                    self.context_len(),
+                    self.enc_len()
+                )));
+            }
+        }
         let mut xt = xt.to_vec();
         let mut apg = ApgMomentum::new();
         let total = schedule.len() as u32;
+        let mut switched = false;
+        let mut active_ctx = context;
+        let mut active_enc = enc_hidden;
         for (index, &t_curr) in schedule.iter().enumerate() {
             if !t_curr.is_finite() {
                 return Err(RuntimeError::Message(format!(
@@ -169,12 +198,19 @@ impl AceStepDit {
                     index + 1
                 )));
             }
+            if let Some(sw) = switch {
+                if !switched && (index as u32) >= sw.cover_steps {
+                    switched = true;
+                    active_ctx = sw.context_silence;
+                    active_enc = sw.enc_hidden_text2music;
+                }
+            }
             let t_next = if index + 1 < schedule.len() {
                 schedule[index + 1]
             } else {
                 0.0
             };
-            let vt_cond = self.forward(&xt, context, enc_hidden, t_curr, t_curr)?;
+            let vt_cond = self.forward(&xt, active_ctx, active_enc, t_curr, t_curr)?;
             if let Some(detail) = non_finite(
                 &format!("ACE-Step velocity at step {}", index + 1),
                 &vt_cond,
@@ -183,7 +219,7 @@ impl AceStepDit {
             }
             let velocity = if do_cfg {
                 let null_enc = null_enc.expect("checked above");
-                let vt_uncond = self.forward(&xt, context, null_enc, t_curr, t_curr)?;
+                let vt_uncond = self.forward(&xt, active_ctx, null_enc, t_curr, t_curr)?;
                 if let Some(detail) = non_finite(
                     &format!("ACE-Step uncond velocity at step {}", index + 1),
                     &vt_uncond,
@@ -389,7 +425,7 @@ pub fn prove_smoke_denoise(
     let context = vec![0f32; dit.context_len()];
     let enc = vec![0f32; dit.enc_len()];
     let latents = dit
-        .denoise(&xt, &context, &enc, &schedule, 1.0, None, |_, _| ())
+        .denoise(&xt, &context, &enc, &schedule, 1.0, None, None, |_, _| ())
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     if let Some(detail) = non_finite("ACE-Step smoke latent", &latents) {
         return Err(WeightError::NotBuilt(detail));
@@ -486,7 +522,7 @@ mod tests {
         assert!(velocity.iter().all(|v| v.is_finite()));
         let schedule = turbo_schedule();
         let latents = dit
-            .denoise(&xt, &context, &enc, &schedule, 1.0, None, |_, _| ())
+            .denoise(&xt, &context, &enc, &schedule, 1.0, None, None, |_, _| ())
             .unwrap();
         assert_eq!(latents.len(), dit.xt_len());
         assert!(latents.iter().all(|v| v.is_finite()));
@@ -495,7 +531,16 @@ mod tests {
 
         let null_enc = vec![0.05f32; dit.enc_len()];
         let guided = dit
-            .denoise(&xt, &context, &enc, &schedule[..2], 2.0, Some(&null_enc), |_, _| ())
+            .denoise(
+                &xt,
+                &context,
+                &enc,
+                &schedule[..2],
+                2.0,
+                Some(&null_enc),
+                None,
+                |_, _| (),
+            )
             .unwrap();
         assert_eq!(guided.len(), dit.xt_len());
         assert!(guided.iter().all(|v| v.is_finite()));
@@ -518,6 +563,7 @@ mod tests {
                 &vec![0.0; dit.enc_len()],
                 &[1.0, 0.5],
                 2.0,
+                None,
                 None,
                 |_, _| (),
             )

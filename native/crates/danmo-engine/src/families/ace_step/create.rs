@@ -167,6 +167,7 @@ pub fn run_full_create(
             &schedule,
             request.guidance,
             null_enc.as_deref(),
+            None,
             |_, _| (),
         )
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
@@ -193,7 +194,10 @@ pub fn run_full_create(
     })
 }
 
-fn load_null_condition(dit: &GgufWeights, condition_dim: i64) -> Result<Vec<f32>, WeightError> {
+pub(crate) fn load_null_condition(
+    dit: &GgufWeights,
+    condition_dim: i64,
+) -> Result<Vec<f32>, WeightError> {
     if !dit.contains("null_condition_emb") {
         return Err(WeightError::MissingTensor {
             path: "transformer".into(),
@@ -217,7 +221,7 @@ fn load_null_condition(dit: &GgufWeights, condition_dim: i64) -> Result<Vec<f32>
     )))
 }
 
-fn silence_context(
+pub(crate) fn silence_context(
     dit: &GgufWeights,
     frames: i64,
     out_channels: i64,
@@ -243,7 +247,10 @@ fn silence_context(
     Ok(context)
 }
 
-fn load_silence_latent(dit: &GgufWeights, out_channels: i64) -> Result<Vec<f32>, WeightError> {
+pub(crate) fn load_silence_latent(
+    dit: &GgufWeights,
+    out_channels: i64,
+) -> Result<Vec<f32>, WeightError> {
     if !dit.contains("silence_latent") {
         return Err(WeightError::MissingTensor {
             path: "transformer".into(),

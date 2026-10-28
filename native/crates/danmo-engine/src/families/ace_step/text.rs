@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 pub const DIT_INSTR_TEXT2MUSIC: &str =
     "Fill the audio semantic mask based on the given conditions:";
 
+/// acestep.cpp `DIT_INSTR_COVER`.
+pub const DIT_INSTR_COVER: &str =
+    "Generate audio semantic tokens based on the given conditions:";
+
 pub const EMBED_HIDDEN: i64 = 1024;
 
 #[derive(Debug, Clone)]

@@ -1,11 +1,12 @@
 //! ACE-Step 1.5 music DiT (GenerationFacade).
 //!
 //! Full text2music create (acestep.cpp `pipeline-synth`): text encode → cond →
-//! silence context → DiT Euler (APG CFG) → VAE → WAV. Cover / 5Hz LM / FSQ
-//! fail loud.
+//! silence context → DiT Euler (APG CFG) → VAE → WAV. Cover-nofsq encodes
+//! source audio into context. Full cover (FSQ) / 5Hz LM fail loud.
 
 mod apg;
 mod cond;
+mod cover;
 mod create;
 mod graph;
 mod lyrics;
@@ -13,12 +14,15 @@ mod schedule;
 mod text;
 mod transformer;
 mod vae;
-mod wav;
+mod vae_enc;
+pub(crate) mod wav;
 mod weights;
 
 use crate::runtime::{BackendKind, GgmlContext};
 use crate::weights::{GgufWeights, WeightError};
 use std::path::{Path, PathBuf};
+#[allow(unused_imports)]
+pub use cover::{CoverMode, CoverRequest};
 #[allow(unused_imports)]
 pub use create::{duration_to_latent_frames, snap_latent_frames, CreateOutput, CreateRequest};
 #[allow(unused_imports)]
@@ -41,10 +45,24 @@ pub fn probe_layout(bundle: &Path) -> Result<AceStepConfig, WeightError> {
     Ok(config)
 }
 
-/// Cover / FSQ roundtrip is not built (acestep.cpp `ops_encode_src` + FSQ).
+/// Cover with FSQ roundtrip is not built; use [`run_cover_nofsq`].
 pub fn run_cover(_bundle: &Path) -> Result<(), WeightError> {
     Err(WeightError::NotBuilt(
-        "ACE-Step cover needs VAE encode + FSQ roundtrip (acestep.cpp ops_encode_src)".into(),
+        "ACE-Step cover needs FSQ roundtrip (acestep.cpp ops_fsq_roundtrip); use cover-nofsq"
+            .into(),
+    ))
+}
+
+/// Cover-nofsq: VAE encode → cover context → DiT → VAE decode (no FSQ).
+pub fn run_cover_nofsq(
+    bundle: &Path,
+    request: &CoverRequest<'_>,
+) -> Result<CreateOutput, WeightError> {
+    if crate::weights::assert_gguf_bundle(bundle).is_ok() {
+        return cover::run_full_cover(bundle, request);
+    }
+    Err(WeightError::NotBuilt(
+        "ACE-Step cover-nofsq needs a GGUF bundle with text encoder + VAE".into(),
     ))
 }
 
@@ -115,8 +133,8 @@ pub(crate) fn dit_gguf(bundle: &Path) -> Result<PathBuf, WeightError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        config_from_weights, dit_gguf, layout_matches, probe_layout, run_create, weight_layout,
-        AceStepConfig, CreateRequest, TIME_FREQ_DIM,
+        config_from_weights, dit_gguf, layout_matches, probe_layout, run_cover, run_create,
+        weight_layout, AceStepConfig, CreateRequest, TIME_FREQ_DIM,
     };
     use crate::weights::{write_f32_nd, F32Nd, GgufWeights};
     use std::path::Path;
@@ -256,8 +274,11 @@ mod tests {
 
     #[test]
     fn cover_and_lm_fail_loud_with_acestep_pointers() {
-        let err = super::run_cover(Path::new("/tmp")).unwrap_err();
-        assert!(err.to_string().contains("FSQ"), "{err}");
+        let err = run_cover(Path::new("/tmp")).unwrap_err();
+        assert!(
+            err.to_string().contains("FSQ") || err.to_string().contains("cover-nofsq"),
+            "{err}"
+        );
         let err = super::run_lm_expand(Path::new("/tmp")).unwrap_err();
         assert!(err.to_string().contains("pipeline-lm"), "{err}");
     }
