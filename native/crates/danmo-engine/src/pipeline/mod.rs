@@ -163,7 +163,7 @@ pub struct AudioEditRequest<'a> {
     pub guidance: f32,
     pub steps: Option<u32>,
     pub vocal_language: &'a str,
-    /// `cover-nofsq` | `cover` | `repaint`.
+    /// `cover-nofsq` | `cover` | `repaint` | `lego` | `extract` | `complete`.
     pub task: &'a str,
     pub source_audio: Option<&'a [f32]>,
     pub source_latents: Option<&'a [f32]>,
@@ -175,6 +175,8 @@ pub struct AudioEditRequest<'a> {
     pub repaint_crossfade_frames: i64,
     /// Sample 750-frame timbre reference from source latents.
     pub timbre_from_source: bool,
+    /// Track name(s) for lego / extract / complete.
+    pub track: &'a str,
 }
 
 #[derive(Debug)]
@@ -285,6 +287,7 @@ pub fn audio_edit(
         repaint_injection_ratio: request.repaint_injection_ratio,
         repaint_crossfade_frames: request.repaint_crossfade_frames,
         timbre_from_source: request.timbre_from_source,
+        track: request.track,
     };
     if let Some(out) = families::run_audio_edit_facade(family, bundle, &cover)? {
         return Ok(audio_out_from_create(family, out));

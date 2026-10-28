@@ -14,8 +14,8 @@ use super::lyrics;
 use super::repaint;
 use super::schedule::{shift_schedule, TURBO_SHIFT, TURBO_TIMESTEPS};
 use super::text::{
-    build_prompt_strings, embed_lyrics, encode_caption, load_tokenizer_json, DIT_INSTR_COVER,
-    DIT_INSTR_REPAINT, DIT_INSTR_TEXT2MUSIC,
+    build_prompt_strings, dit_instr_complete, dit_instr_extract, dit_instr_lego, embed_lyrics,
+    encode_caption, load_tokenizer_json, DIT_INSTR_COVER, DIT_INSTR_REPAINT, DIT_INSTR_TEXT2MUSIC,
 };
 use super::transformer::{load_weights, AceStepDit, DenoiseContextSwitch, DenoiseRepaint};
 use super::vae::{AUDIO_UPSAMPLE, LATENT_CHANNELS};
@@ -32,8 +32,14 @@ pub enum CoverMode {
     CoverNofsq,
     /// FSQ tokenize/detokenize before DiT.
     Cover,
-    /// Region regenerate; clean latents + mask/splice (no FSQ).
+    /// Region regenerate; silence in zone + mask/splice (no FSQ).
     Repaint,
+    /// Add a stem over source; cover everywhere + region mask/splice (no FSQ; base only).
+    Lego,
+    /// Isolate a stem from source (no FSQ; base only).
+    Extract,
+    /// Complete partial source with named stems (no FSQ; base only).
+    Complete,
 }
 
 impl CoverMode {
@@ -42,16 +48,41 @@ impl CoverMode {
             "" | "cover-nofsq" | "nofsq" => Ok(Self::CoverNofsq),
             "cover" => Ok(Self::Cover),
             "repaint" => Ok(Self::Repaint),
+            "lego" => Ok(Self::Lego),
+            "extract" => Ok(Self::Extract),
+            "complete" => Ok(Self::Complete),
             other => Err(WeightError::NotBuilt(format!(
-                "ACE-Step audio.edit task '{other}' is unknown (use cover-nofsq, cover, or repaint)"
+                "ACE-Step audio.edit task '{other}' is unknown (use cover-nofsq, cover, repaint, lego, extract, or complete)"
             ))),
         }
     }
 
-    fn dit_instruction(self) -> &'static str {
+    fn dit_instruction(self, track: &str) -> Result<String, WeightError> {
         match self {
-            Self::Cover | Self::CoverNofsq => DIT_INSTR_COVER,
-            Self::Repaint => DIT_INSTR_REPAINT,
+            Self::Cover | Self::CoverNofsq => Ok(DIT_INSTR_COVER.into()),
+            Self::Repaint => Ok(DIT_INSTR_REPAINT.into()),
+            Self::Lego => dit_instr_lego(track),
+            Self::Extract => dit_instr_extract(track),
+            Self::Complete => dit_instr_complete(track),
+        }
+    }
+
+    fn is_region_task(self) -> bool {
+        matches!(self, Self::Repaint | Self::Lego)
+    }
+
+    fn is_base_only(self) -> bool {
+        matches!(self, Self::Lego | Self::Extract | Self::Complete)
+    }
+
+    fn task_name(self) -> &'static str {
+        match self {
+            Self::CoverNofsq => "cover-nofsq",
+            Self::Cover => "cover",
+            Self::Repaint => "repaint",
+            Self::Lego => "lego",
+            Self::Extract => "extract",
+            Self::Complete => "complete",
         }
     }
 }
@@ -87,6 +118,8 @@ pub struct CoverRequest<'a> {
     /// (MLX `cover_timbre_from_source` / `sample_timbre_reference_latents`).
     /// Default false → single silence frame (acestep.cpp).
     pub timbre_from_source: bool,
+    /// Track name(s) for lego / extract / complete (`"drums | bass"` for complete).
+    pub track: &'a str,
 }
 
 pub fn run_full_cover(
@@ -165,6 +198,12 @@ pub fn run_full_cover(
             .and_then(|n| n.to_str())
             .map(|n| n.to_ascii_lowercase().contains("turbo"))
             .unwrap_or(false);
+    if is_turbo && request.mode.is_base_only() {
+        return Err(WeightError::NotBuilt(format!(
+            "ACE-Step task '{}' requires the base/SFT DiT (turbo cards omit lego/extract/complete)",
+            request.mode.task_name()
+        )));
+    }
 
     let mut steps = request.steps.unwrap_or(if is_turbo { 8 } else { 50 });
     let mut schedule = if is_turbo && steps == 8 {
@@ -179,18 +218,14 @@ pub fn run_full_cover(
         lyrics::prepare_create_lyrics(request.lyrics, duration_sec).map_err(WeightError::NotBuilt)?;
 
     let is_repaint = request.mode == CoverMode::Repaint;
-    let (repaint_t0, repaint_t1) = if is_repaint {
-        let start = request.region_start_sec.ok_or_else(|| {
-            WeightError::NotBuilt("ACE-Step repaint needs region_start_sec".into())
-        })?;
-        let end = request.region_end_sec.ok_or_else(|| {
-            WeightError::NotBuilt("ACE-Step repaint needs region_end_sec".into())
-        })?;
-        repaint::region_to_frames(start, end, frames)?
+    let is_lego = request.mode == CoverMode::Lego;
+    let is_region = request.mode.is_region_task();
+    let (repaint_t0, repaint_t1) = if is_region {
+        resolve_region_frames(request, duration_sec, frames, is_repaint)?
     } else {
         (0, 0)
     };
-    if is_repaint {
+    if is_region {
         if !(0.0..=1.0).contains(&request.repaint_injection_ratio)
             || !request.repaint_injection_ratio.is_finite()
         {
@@ -206,11 +241,12 @@ pub fn run_full_cover(
         }
     }
 
+    let instruction = request.mode.dit_instruction(request.track)?;
     let tokenizer = load_tokenizer_json(&gguf.root)?;
     let pair_cover = build_prompt_strings(
         request.prompt,
         lyrics_effective.as_ref(),
-        request.mode.dit_instruction(),
+        &instruction,
         duration_sec,
         request.bpm,
         request.keyscale,
@@ -245,7 +281,7 @@ pub fn run_full_cover(
 
     // Repaint/lego never switch to silence context mid-run (mask handles the zone).
     let need_switch =
-        !is_repaint && request.audio_cover_strength < 1.0 - f32::EPSILON;
+        !is_region && request.audio_cover_strength < 1.0 - f32::EPSILON;
     let (enc_text2music, enc_seq_t2m) = if need_switch {
         let pair_t2m = build_prompt_strings(
             request.prompt,
@@ -269,6 +305,15 @@ pub fn run_full_cover(
         repaint_context(
             &cover_latents,
             &silence_full,
+            frames,
+            config.out_channels,
+            config.in_channels,
+            repaint_t0,
+            repaint_t1,
+        )?
+    } else if is_lego {
+        lego_context(
+            &cover_latents,
             frames,
             config.out_channels,
             config.in_channels,
@@ -340,7 +385,7 @@ pub fn run_full_cover(
         }),
         _ => None,
     };
-    let repaint_hook = if is_repaint {
+    let repaint_hook = if is_region {
         Some(DenoiseRepaint {
             noise: noise.as_slice(),
             src: cover_latents.as_slice(),
@@ -366,7 +411,7 @@ pub fn run_full_cover(
         )
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
 
-    if is_repaint {
+    if is_region {
         repaint::blend_boundaries(
             &mut latents,
             &cover_latents,
@@ -422,7 +467,7 @@ fn resolve_cover_latents(
     }
     let Some(audio) = request.source_audio else {
         return Err(WeightError::NotBuilt(
-            "ACE-Step cover/repaint needs source_audio or source_latents".into(),
+            "ACE-Step audio.edit needs source_audio or source_latents".into(),
         ));
     };
     if audio.len() < 2 || audio.len() % 2 != 0 {
@@ -447,6 +492,34 @@ fn resolve_cover_latents(
     }
 }
 
+fn resolve_region_frames(
+    request: &CoverRequest<'_>,
+    duration_sec: f32,
+    frames: i64,
+    require_explicit: bool,
+) -> Result<(i64, i64), WeightError> {
+    let start = match request.region_start_sec {
+        Some(v) => v,
+        None if require_explicit => {
+            return Err(WeightError::NotBuilt(
+                "ACE-Step repaint needs region_start_sec".into(),
+            ));
+        }
+        None => 0.0,
+    };
+    let end = match request.region_end_sec {
+        Some(v) if v < 0.0 => duration_sec, // acestep.cpp / docs: -1 = end of audio
+        Some(v) => v,
+        None if require_explicit => {
+            return Err(WeightError::NotBuilt(
+                "ACE-Step repaint needs region_end_sec".into(),
+            ));
+        }
+        None => duration_sec,
+    };
+    repaint::region_to_frames(start, end, frames)
+}
+
 /// Cover context: src_latents[64] + chunk_mask[64] (mask = 1.0 training distribution).
 pub(crate) fn cover_context(
     cover_latents: &[f32],
@@ -454,7 +527,15 @@ pub(crate) fn cover_context(
     out_channels: i64,
     in_channels: i64,
 ) -> Result<Vec<f32>, WeightError> {
-    build_source_context(cover_latents, None, frames, out_channels, in_channels, None)
+    build_source_context(
+        cover_latents,
+        None,
+        frames,
+        out_channels,
+        in_channels,
+        None,
+        false,
+    )
 }
 
 /// Repaint context: silence + mask 1 inside zone; source + mask 0 outside.
@@ -474,6 +555,28 @@ pub(crate) fn repaint_context(
         out_channels,
         in_channels,
         Some((t0, t1)),
+        true,
+    )
+}
+
+/// Lego context: keep cover latents everywhere; mask 1 inside zone, 0 outside
+/// (acestep.cpp `is_lego_region` — DiT hears the full backing track).
+pub(crate) fn lego_context(
+    cover_latents: &[f32],
+    frames: i64,
+    out_channels: i64,
+    in_channels: i64,
+    t0: i64,
+    t1: i64,
+) -> Result<Vec<f32>, WeightError> {
+    build_source_context(
+        cover_latents,
+        None,
+        frames,
+        out_channels,
+        in_channels,
+        Some((t0, t1)),
+        false,
     )
 }
 
@@ -484,6 +587,7 @@ fn build_source_context(
     out_channels: i64,
     in_channels: i64,
     region: Option<(i64, i64)>,
+    silence_in_region: bool,
 ) -> Result<Vec<f32>, WeightError> {
     let ctx_channels = in_channels - out_channels;
     let mask_ch = ctx_channels - out_channels;
@@ -505,11 +609,12 @@ fn build_source_context(
         let in_region = region
             .map(|(t0, t1)| t >= t0 as usize && t < t1 as usize)
             .unwrap_or(false);
-        let src = if in_region {
+        let src = if in_region && silence_in_region {
             let silence = silence.ok_or_else(|| {
                 WeightError::NotBuilt("ACE-Step repaint context needs silence_latent".into())
             })?;
-            let off = (t * out_channels as usize).min(silence.len().saturating_sub(out_channels as usize));
+            let off = (t * out_channels as usize)
+                .min(silence.len().saturating_sub(out_channels as usize));
             &silence[off..off + out_channels as usize]
         } else {
             let t_src = t.min(t_cover.saturating_sub(1));
@@ -629,13 +734,14 @@ pub fn encode_source_audio(
             repaint_injection_ratio: 1.0,
             repaint_crossfade_frames: 8,
             timbre_from_source: false,
+            track: "",
         },
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{cover_context, repaint_context, CoverMode};
+    use super::{cover_context, lego_context, repaint_context, CoverMode};
     use crate::families::ace_step::vae::LATENT_CHANNELS;
 
     #[test]
@@ -647,7 +753,13 @@ mod tests {
         );
         assert_eq!(CoverMode::parse("cover").unwrap(), CoverMode::Cover);
         assert_eq!(CoverMode::parse("repaint").unwrap(), CoverMode::Repaint);
-        assert!(CoverMode::parse("lego").unwrap_err().to_string().contains("unknown"));
+        assert_eq!(CoverMode::parse("lego").unwrap(), CoverMode::Lego);
+        assert_eq!(CoverMode::parse("extract").unwrap(), CoverMode::Extract);
+        assert_eq!(CoverMode::parse("complete").unwrap(), CoverMode::Complete);
+        assert!(CoverMode::parse("flow-edit")
+            .unwrap_err()
+            .to_string()
+            .contains("unknown"));
     }
 
     #[test]
@@ -662,6 +774,20 @@ mod tests {
         assert_eq!(ctx[oc as usize], 0.0);
         // t=1 inside: silence + mask 1
         assert_eq!(ctx[(oc * 2) as usize], 0.0);
+        assert_eq!(ctx[(oc * 3) as usize], 1.0);
+    }
+
+    #[test]
+    fn lego_context_keeps_cover_inside_zone() {
+        let frames = 4i64;
+        let oc = LATENT_CHANNELS;
+        let lat = vec![0.5f32; (frames * oc) as usize];
+        let ctx = lego_context(&lat, frames, oc, oc * 3, 1, 3).unwrap();
+        // t=0 outside: source + mask 0
+        assert_eq!(ctx[0], 0.5);
+        assert_eq!(ctx[oc as usize], 0.0);
+        // t=1 inside: still source (not silence) + mask 1
+        assert_eq!(ctx[(oc * 2) as usize], 0.5);
         assert_eq!(ctx[(oc * 3) as usize], 1.0);
     }
 

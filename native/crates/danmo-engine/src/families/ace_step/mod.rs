@@ -2,8 +2,9 @@
 //!
 //! Full text2music create (acestep.cpp `pipeline-synth`): text encode → cond
 //! (lyric ‖ timbre[0] ‖ text) → silence/codes context → DiT Euler (APG CFG) →
-//! VAE → WAV. Cover-nofsq encodes source into context; full cover runs FSQ;
-//! `timbre_from_source` samples a 750-frame reference. 5Hz LM sampling fails loud.
+//! VAE → WAV. Cover / cover-nofsq / repaint / lego / extract / complete on
+//! audio.edit; `timbre_from_source` samples a 750-frame reference. 5Hz LM
+//! sampling fails loud.
 
 mod apg;
 mod ca_capture;

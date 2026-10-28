@@ -146,7 +146,7 @@ pub struct AudioEditRequest {
     pub vocal_language: String,
     pub guidance: Option<f32>,
     pub steps: Option<u32>,
-    /// `cover-nofsq` (default), `cover` (FSQ), or `repaint` (region regenerate).
+    /// `cover-nofsq` (default), `cover`, `repaint`, `lego`, `extract`, or `complete`.
     #[serde(default = "default_cover_nofsq")]
     pub task: String,
     /// Absolute or workspace-relative path to a PCM16 WAV source.
@@ -170,6 +170,9 @@ pub struct AudioEditRequest {
     /// Sample 750-frame timbre reference from source (default false → silence).
     #[serde(default)]
     pub timbre_from_source: Option<bool>,
+    /// Track name(s) for lego / extract / complete (`"drums | bass"` for complete).
+    #[serde(default)]
+    pub track: Option<String>,
 }
 
 fn default_cover_nofsq() -> String {

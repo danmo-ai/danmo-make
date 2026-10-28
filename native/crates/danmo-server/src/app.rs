@@ -286,6 +286,7 @@ fn run_task(
                     repaint_injection_ratio: request.repaint_injection_ratio.unwrap_or(1.0),
                     repaint_crossfade_frames: request.repaint_crossfade_frames.unwrap_or(8),
                     timbre_from_source: request.timbre_from_source.unwrap_or(false),
+                    track: request.track.as_deref().unwrap_or(""),
                 },
             )
             .map_err(|e| e.to_string())?;
