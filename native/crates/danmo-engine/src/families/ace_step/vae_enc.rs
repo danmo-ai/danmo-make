@@ -38,7 +38,8 @@ pub fn weight_layout(_config: AceVaeConfig) -> Vec<EncWeightSpec> {
             ggml_type: TYPE_F32,
         });
     };
-    push(&mut out, "encoder.conv1.weight_g", [128, 1, 1, 1]);
+    // weight_g is stored as [1,1,C,1] in published VAE GGUF (channel on ne[2]).
+    push(&mut out, "encoder.conv1.weight_g", [1, 1, 128, 1]);
     push(&mut out, "encoder.conv1.weight_v", [7, 2, 128, 1]);
     push(&mut out, "encoder.conv1.bias", [128, 1, 1, 1]);
     for i in 0..5 {
@@ -50,24 +51,24 @@ pub fn weight_layout(_config: AceVaeConfig) -> Vec<EncWeightSpec> {
             let ru = format!("{p}.res_unit{r}");
             push(&mut out, &format!("{ru}.snake1.alpha"), [1, ic, 1, 1]);
             push(&mut out, &format!("{ru}.snake1.beta"), [1, ic, 1, 1]);
-            push(&mut out, &format!("{ru}.conv1.weight_g"), [ic, 1, 1, 1]);
+            push(&mut out, &format!("{ru}.conv1.weight_g"), [1, 1, ic, 1]);
             push(&mut out, &format!("{ru}.conv1.weight_v"), [7, ic, ic, 1]);
             push(&mut out, &format!("{ru}.conv1.bias"), [ic, 1, 1, 1]);
             push(&mut out, &format!("{ru}.snake2.alpha"), [1, ic, 1, 1]);
             push(&mut out, &format!("{ru}.snake2.beta"), [1, ic, 1, 1]);
-            push(&mut out, &format!("{ru}.conv2.weight_g"), [ic, 1, 1, 1]);
+            push(&mut out, &format!("{ru}.conv2.weight_g"), [1, 1, ic, 1]);
             push(&mut out, &format!("{ru}.conv2.weight_v"), [1, ic, ic, 1]);
             push(&mut out, &format!("{ru}.conv2.bias"), [ic, 1, 1, 1]);
         }
         push(&mut out, &format!("{p}.snake1.alpha"), [1, ic, 1, 1]);
         push(&mut out, &format!("{p}.snake1.beta"), [1, ic, 1, 1]);
-        push(&mut out, &format!("{p}.conv1.weight_g"), [oc, 1, 1, 1]);
+        push(&mut out, &format!("{p}.conv1.weight_g"), [1, 1, oc, 1]);
         push(&mut out, &format!("{p}.conv1.weight_v"), [k, ic, oc, 1]);
         push(&mut out, &format!("{p}.conv1.bias"), [oc, 1, 1, 1]);
     }
     push(&mut out, "encoder.snake1.alpha", [1, 2048, 1, 1]);
     push(&mut out, "encoder.snake1.beta", [1, 2048, 1, 1]);
-    push(&mut out, "encoder.conv2.weight_g", [128, 1, 1, 1]);
+    push(&mut out, "encoder.conv2.weight_g", [1, 1, 128, 1]);
     push(&mut out, "encoder.conv2.weight_v", [3, 2048, 128, 1]);
     push(&mut out, "encoder.conv2.bias", [128, 1, 1, 1]);
     out

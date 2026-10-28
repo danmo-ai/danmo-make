@@ -76,9 +76,10 @@ pub fn encode(
     let mut graph = CondForward::build(ctx, s_text, s_lyric, s_ref, use_cls, &types)
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     for (name, ne0, ne1) in cond_weight_layout(s_ref > 0) {
-        let data = dit.f32_widened(&name, &[ne0, ne1])?;
+        // Keep packed Q4_K / Q6_K / … rows; graph inputs use ggml_type_of.
+        let raw = dit.raw_exact(&name, &[ne0, ne1])?;
         graph
-            .load_f32(&name, &data)
+            .load_bytes(&name, &raw)
             .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     }
     if use_cls {
@@ -207,16 +208,16 @@ fn cond_weight_layout(with_timbre: bool) -> Vec<(String, i64, i64)> {
     let h = COND_HIDDEN;
     let mut out = Vec::new();
     let mut push = |name: String, ne0: i64, ne1: i64| out.push((name, ne0, ne1));
-    // ggml mul_mat: weight is [out, in].
+    // ggml mul_mat: weight is [in, out] (ne0 = K contiguous), matching published GGUF.
     push(
         "encoder.text_projector.weight".into(),
-        COND_HIDDEN,
         TEXT_HIDDEN,
+        COND_HIDDEN,
     );
     push(
         "encoder.lyric_encoder.embed_tokens.weight".into(),
-        h,
         TEXT_HIDDEN,
+        h,
     );
     push("encoder.lyric_encoder.embed_tokens.bias".into(), h, 1);
     push("encoder.lyric_encoder.norm.weight".into(), h, 1);
@@ -229,38 +230,38 @@ fn cond_weight_layout(with_timbre: bool) -> Vec<(String, i64, i64)> {
     for layer in 0..LYRIC_LAYERS {
         let p = format!("encoder.lyric_encoder.layers.{layer}");
         push(format!("{p}.input_layernorm.weight"), h, 1);
-        push(format!("{p}.self_attn.q_proj.weight"), q, h);
-        push(format!("{p}.self_attn.k_proj.weight"), k, h);
-        push(format!("{p}.self_attn.v_proj.weight"), k, h);
+        push(format!("{p}.self_attn.q_proj.weight"), h, q);
+        push(format!("{p}.self_attn.k_proj.weight"), h, k);
+        push(format!("{p}.self_attn.v_proj.weight"), h, k);
         push(format!("{p}.self_attn.q_norm.weight"), head, 1);
         push(format!("{p}.self_attn.k_norm.weight"), head, 1);
-        push(format!("{p}.self_attn.o_proj.weight"), h, q);
+        push(format!("{p}.self_attn.o_proj.weight"), q, h);
         push(format!("{p}.post_attention_layernorm.weight"), h, 1);
-        push(format!("{p}.mlp.gate_proj.weight"), ff, h);
-        push(format!("{p}.mlp.up_proj.weight"), ff, h);
-        push(format!("{p}.mlp.down_proj.weight"), h, ff);
+        push(format!("{p}.mlp.gate_proj.weight"), h, ff);
+        push(format!("{p}.mlp.up_proj.weight"), h, ff);
+        push(format!("{p}.mlp.down_proj.weight"), ff, h);
     }
     if with_timbre {
         push(
             "encoder.timbre_encoder.embed_tokens.weight".into(),
-            h,
             TIMBRE_IN,
+            h,
         );
         push("encoder.timbre_encoder.embed_tokens.bias".into(), h, 1);
         push("encoder.timbre_encoder.norm.weight".into(), h, 1);
         for layer in 0..TIMBRE_LAYERS {
             let p = format!("encoder.timbre_encoder.layers.{layer}");
             push(format!("{p}.input_layernorm.weight"), h, 1);
-            push(format!("{p}.self_attn.q_proj.weight"), q, h);
-            push(format!("{p}.self_attn.k_proj.weight"), k, h);
-            push(format!("{p}.self_attn.v_proj.weight"), k, h);
+            push(format!("{p}.self_attn.q_proj.weight"), h, q);
+            push(format!("{p}.self_attn.k_proj.weight"), h, k);
+            push(format!("{p}.self_attn.v_proj.weight"), h, k);
             push(format!("{p}.self_attn.q_norm.weight"), head, 1);
             push(format!("{p}.self_attn.k_norm.weight"), head, 1);
-            push(format!("{p}.self_attn.o_proj.weight"), h, q);
+            push(format!("{p}.self_attn.o_proj.weight"), q, h);
             push(format!("{p}.post_attention_layernorm.weight"), h, 1);
-            push(format!("{p}.mlp.gate_proj.weight"), ff, h);
-            push(format!("{p}.mlp.up_proj.weight"), ff, h);
-            push(format!("{p}.mlp.down_proj.weight"), h, ff);
+            push(format!("{p}.mlp.gate_proj.weight"), h, ff);
+            push(format!("{p}.mlp.up_proj.weight"), h, ff);
+            push(format!("{p}.mlp.down_proj.weight"), ff, h);
         }
     }
     out
@@ -420,6 +421,10 @@ impl CondForward {
 
     fn load_f32(&mut self, name: &str, data: &[f32]) -> Result<(), RuntimeError> {
         self.graph.set_f32(name, data)
+    }
+
+    fn load_bytes(&mut self, name: &str, data: &[u8]) -> Result<(), RuntimeError> {
+        self.graph.set_bytes(name, data)
     }
 
     fn compute(

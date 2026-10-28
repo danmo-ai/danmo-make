@@ -87,7 +87,6 @@ impl AceStepDit {
         self.graph.set_f32(name, data)
     }
 
-    #[allow(dead_code)]
     pub fn load_bytes(&mut self, name: &str, data: &[u8]) -> Result<(), RuntimeError> {
         self.graph.set_bytes(name, data)
     }
@@ -360,7 +359,9 @@ pub(crate) fn pack_input(
 }
 
 /// Load DiT weights into a built graph. Conv1d `proj_*` rows are remapped to the
-/// 2D ranks `dit-graph.h` expects after `dit_load_proj_*_w`.
+/// 2D ranks `dit-graph.h` expects after `dit_load_proj_*_w`. Quantized matmul
+/// rows stay packed (`raw_exact` + `set_bytes`); BF16 proj_* / scale_shift widen
+/// to F32 (adaLN views and host remaps need F32 element size).
 pub fn load_weights(
     dit: &mut AceStepDit,
     weights: &GgufWeights,
@@ -368,7 +369,7 @@ pub fn load_weights(
 ) -> Result<(), WeightError> {
     for (name, ne0, ne1) in graph_weight_layout(config) {
         if name == "decoder.proj_in.1.weight" {
-            let raw = weights.f32_exact(
+            let raw = weights.f32_widened(
                 &name,
                 &[config.patch, config.in_channels, config.hidden],
             )?;
@@ -378,7 +379,7 @@ pub fn load_weights(
             continue;
         }
         if name == "decoder.proj_out.1.weight" {
-            let raw = weights.f32_exact(
+            let raw = weights.f32_widened(
                 &name,
                 &[config.patch, config.out_channels, config.hidden],
             )?;
@@ -387,11 +388,39 @@ pub fn load_weights(
                 .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
             continue;
         }
-        let data = weights.f32_exact(&name, &[ne0, ne1])?;
-        dit.load_f32(&name, &data)
+        if name.ends_with("scale_shift_table") {
+            let data = weights.f32_widened(&name, &[ne0, ne1])?;
+            dit.load_f32(&name, &data)
+                .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+            continue;
+        }
+        let raw = weights.raw_exact(&name, &[ne0, ne1])?;
+        dit.load_bytes(&name, &raw)
             .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     }
     Ok(())
+}
+
+/// Graph input types: keep matmul quants; force F32 for remapped / viewed rows.
+pub fn dit_graph_types(
+    weights: &GgufWeights,
+    config: AceStepConfig,
+) -> std::collections::HashMap<String, u32> {
+    use crate::runtime::TYPE_F32;
+    let mut types = std::collections::HashMap::new();
+    for (name, _, _) in graph_weight_layout(config) {
+        if let Ok(t) = weights.ggml_type_of(&name) {
+            types.insert(name.clone(), t);
+        }
+    }
+    types.insert("decoder.proj_in.1.weight".into(), TYPE_F32);
+    types.insert("decoder.proj_out.1.weight".into(), TYPE_F32);
+    for (name, _, _) in graph_weight_layout(config) {
+        if name.ends_with("scale_shift_table") {
+            types.insert(name, TYPE_F32);
+        }
+    }
+    types
 }
 
 pub(crate) fn remap_proj_in(raw: &[f32], patch: i64, in_ch: i64, hidden: i64) -> Vec<f32> {

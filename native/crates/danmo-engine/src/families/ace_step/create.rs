@@ -14,7 +14,7 @@ use super::text::{
     plain_token_ids, DIT_INSTR_TEXT2MUSIC,
 };
 use super::token_decode::{self, Decoder, LYRIC_HEADER_TEMPLATE};
-use super::transformer::{load_weights, AceStepDit};
+use super::transformer::{dit_graph_types, load_weights, AceStepDit};
 use super::wav::{self, SAMPLE_RATE};
 use super::weights::{check_layout, config_from_weights};
 use crate::common::ops::normal_latent;
@@ -183,12 +183,7 @@ pub fn run_full_create(
     } else {
         silence_context(&dit, frames, config.out_channels, config.in_channels)?
     };
-    let mut types = std::collections::HashMap::new();
-    for (name, _, _) in super::graph::graph_weight_layout(config) {
-        if let Ok(t) = dit.ggml_type_of(&name) {
-            types.insert(name, t);
-        }
-    }
+    let types = dit_graph_types(&dit, config);
     let mut model = AceStepDit::build_typed(&ctx, config, frames, enc_seq, &types)
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     load_weights(&mut model, &dit, config)?;

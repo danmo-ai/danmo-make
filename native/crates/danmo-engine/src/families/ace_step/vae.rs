@@ -63,7 +63,8 @@ pub fn weight_layout(_config: AceVaeConfig) -> Vec<VaeWeightSpec> {
             ggml_type: TYPE_F32,
         });
     };
-    push(&mut out, "decoder.conv1.weight_g", [2048, 1, 1, 1]);
+    // weight_g is stored as [1,1,C,1] in published VAE GGUF (channel on ne[2]).
+    push(&mut out, "decoder.conv1.weight_g", [1, 1, 2048, 1]);
     push(&mut out, "decoder.conv1.weight_v", [7, 64, 2048, 1]);
     push(&mut out, "decoder.conv1.bias", [2048, 1, 1, 1]);
     for i in 0..5 {
@@ -73,26 +74,26 @@ pub fn weight_layout(_config: AceVaeConfig) -> Vec<VaeWeightSpec> {
         let p = format!("decoder.block.{i}");
         push(&mut out, &format!("{p}.snake1.alpha"), [1, ic, 1, 1]);
         push(&mut out, &format!("{p}.snake1.beta"), [1, ic, 1, 1]);
-        push(&mut out, &format!("{p}.conv_t1.weight_g"), [ic, 1, 1, 1]);
+        push(&mut out, &format!("{p}.conv_t1.weight_g"), [1, 1, ic, 1]);
         push(&mut out, &format!("{p}.conv_t1.weight_v"), [k, oc, ic, 1]);
         push(&mut out, &format!("{p}.conv_t1.bias"), [oc, 1, 1, 1]);
         for r in 1..=3 {
             let ru = format!("{p}.res_unit{r}");
             push(&mut out, &format!("{ru}.snake1.alpha"), [1, oc, 1, 1]);
             push(&mut out, &format!("{ru}.snake1.beta"), [1, oc, 1, 1]);
-            push(&mut out, &format!("{ru}.conv1.weight_g"), [oc, 1, 1, 1]);
+            push(&mut out, &format!("{ru}.conv1.weight_g"), [1, 1, oc, 1]);
             push(&mut out, &format!("{ru}.conv1.weight_v"), [7, oc, oc, 1]);
             push(&mut out, &format!("{ru}.conv1.bias"), [oc, 1, 1, 1]);
             push(&mut out, &format!("{ru}.snake2.alpha"), [1, oc, 1, 1]);
             push(&mut out, &format!("{ru}.snake2.beta"), [1, oc, 1, 1]);
-            push(&mut out, &format!("{ru}.conv2.weight_g"), [oc, 1, 1, 1]);
+            push(&mut out, &format!("{ru}.conv2.weight_g"), [1, 1, oc, 1]);
             push(&mut out, &format!("{ru}.conv2.weight_v"), [1, oc, oc, 1]);
             push(&mut out, &format!("{ru}.conv2.bias"), [oc, 1, 1, 1]);
         }
     }
     push(&mut out, "decoder.snake1.alpha", [1, 128, 1, 1]);
     push(&mut out, "decoder.snake1.beta", [1, 128, 1, 1]);
-    push(&mut out, "decoder.conv2.weight_g", [2, 1, 1, 1]);
+    push(&mut out, "decoder.conv2.weight_g", [1, 1, 2, 1]);
     push(&mut out, "decoder.conv2.weight_v", [7, 128, 2, 1]);
     out
 }
@@ -652,6 +653,10 @@ fn ggml_dim0_and_count(ne: [i64; 4]) -> (i64, i64) {
 }
 
 /// Fuse `weight_g` × normalized `weight_v`, or read pre-fused `{prefix}.weight`.
+///
+/// Published ACE-Step VAE GGUF stores `weight_g` as `[1, 1, C, 1]` (channel on
+/// ne[2]), not `[C, 1, 1, 1]`. Accept any layout whose element count equals the
+/// weight-norm dim0 derived from `weight_v`.
 pub(crate) fn fuse_weight_norm(
     weights: &GgufWeights,
     prefix: &str,
@@ -673,7 +678,16 @@ pub(crate) fn fuse_weight_norm(
     let v_ne = weights.shape(&v_name)?;
     let (dim0, n_el) = ggml_dim0_and_count(v_ne);
     let fan = n_el / dim0;
-    let g = weights.f32_widened(&g_name, &[dim0])?;
+    let g_ne = weights.shape(&g_name)?;
+    let g_count = g_ne[0] * g_ne[1] * g_ne[2] * g_ne[3].max(1);
+    if g_count != dim0 {
+        return Err(WeightError::Shape {
+            name: g_name.clone(),
+            expected: vec![dim0],
+            got: g_ne.to_vec(),
+        });
+    }
+    let g = weights.f32_widened(&g_name, &[g_ne[0], g_ne[1], g_ne[2], g_ne[3]])?;
     let v = weights.f32_widened(&v_name, &[v_ne[0], v_ne[1], v_ne[2]])?;
     if v.len() as i64 != n_el {
         return Err(WeightError::Shape {
@@ -739,8 +753,8 @@ pub fn load_smoke_zeros(session: &mut AceVaeSession) -> Result<(), WeightError> 
 #[cfg(test)]
 mod tests {
     use super::{
-        decode, graph_weight_layout, load_smoke_zeros, weight_layout, AceVaeConfig,
-        AceVaeSession, AUDIO_UPSAMPLE, LATENT_CHANNELS,
+        decode, fuse_weight_norm, graph_weight_layout, load_smoke_zeros, weight_layout,
+        AceVaeConfig, AceVaeSession, AUDIO_UPSAMPLE, LATENT_CHANNELS,
     };
     use crate::runtime::{BackendKind, GgmlContext};
     use crate::weights::{write_f32_nd, F32Nd, GgufWeights};
@@ -764,7 +778,41 @@ mod tests {
         let rows = weight_layout(AceVaeConfig::published());
         assert!(rows.iter().any(|r| r.name == "decoder.conv1.weight_v"));
         assert!(rows.iter().any(|r| r.name == "decoder.block.4.res_unit3.conv2.weight_v"));
+        assert_eq!(
+            rows.iter()
+                .find(|r| r.name == "decoder.conv1.weight_g")
+                .map(|r| r.ne),
+            Some([1, 1, 2048, 1])
+        );
         assert_eq!(graph_weight_layout(AceVaeConfig::published()).len(), 145);
+    }
+
+    #[test]
+    fn fuse_weight_norm_accepts_channel_on_ne2_g() {
+        let dir = scratch("wn-g-ne2");
+        let g = vec![2.0f32, 3.0];
+        let v = vec![1.0f32, 0.0, 0.0, 1.0]; // [2, 1, 2] → dim0=2, fan=2
+        write_f32_nd(
+            &dir.join("wn.gguf"),
+            &[
+                F32Nd {
+                    name: "c.weight_g",
+                    ne: [1, 1, 2, 1],
+                    data: &g,
+                },
+                F32Nd {
+                    name: "c.weight_v",
+                    ne: [2, 1, 2, 1],
+                    data: &v,
+                },
+            ],
+        )
+        .unwrap();
+        let weights = GgufWeights::open(&dir.join("wn.gguf")).unwrap();
+        let fused = fuse_weight_norm(&weights, "c", false).unwrap();
+        assert_eq!(fused.len(), 4);
+        assert!(fused.iter().all(|x| x.is_finite()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

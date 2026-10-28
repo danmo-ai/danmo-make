@@ -755,3 +755,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+
+
+
+
+
+
+#[cfg(test)]
+mod e2e_real_turbo {
+    use crate::pipeline::{audio_create, AudioCreateRequest};
+    use std::path::Path;
+
+    #[test]
+    fn create_off_short_smoke() {
+        let bundle = Path::new("/workspace/models/ace-step-xl-turbo/q4_k");
+        if !bundle.join("acestep-v15-xl-turbo-Q4_K_M.gguf").is_file() {
+            eprintln!("skip: turbo bundle missing");
+            return;
+        }
+        let out = audio_create(
+            "ace_step",
+            bundle,
+            &AudioCreateRequest {
+                prompt: "lofi chill",
+                lyrics: "[inst]",
+                duration_sec: 10.0,
+                seed: Some(42),
+                guidance: 1.0,
+                steps: Some(1),
+                vocal_language: "en",
+                bpm: Some(90),
+                keyscale: "C major",
+                timesignature: "4",
+                lm_expansion: "off",
+                lm_bundle: None,
+                audio_code_indices: None,
+                timbre_latents: None,
+            },
+        )
+        .expect("create");
+        println!(
+            "ok wav={} steps={} frames={}",
+            out.wav.len(),
+            out.steps,
+            out.frames
+        );
+        assert!(out.wav.len() > 44);
+    }
+}

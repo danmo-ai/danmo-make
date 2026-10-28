@@ -8414,13 +8414,13 @@
               "zh": "BF16",
               "en": "BF16"
             },
-            "size": "6.3GB",
+            "size": "10GB",
             "source": "modelscope",
             "source_type": "full",
             "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
             "local_path": "models/ace-step-xl-sft/bf16",
             "allow_patterns": [
-              "acestep-v15-sft-BF16.gguf"
+              "acestep-v15-xl-sft-BF16.gguf"
             ],
             "default": true,
             "components": [
@@ -8459,13 +8459,13 @@
               "zh": "Q8_0",
               "en": "Q8_0"
             },
-            "size": "3.6GB",
+            "size": "5.3GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
             "local_path": "models/ace-step-xl-sft/q8_0",
             "allow_patterns": [
-              "acestep-v15-sft-Q8_0.gguf"
+              "acestep-v15-xl-sft-Q8_0.gguf"
             ],
             "components": [
               {
@@ -8503,13 +8503,13 @@
               "zh": "Q4_K_M",
               "en": "Q4_K_M"
             },
-            "size": "2.5GB",
+            "size": "3.0GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
             "local_path": "models/ace-step-xl-sft/q4_k",
             "allow_patterns": [
-              "acestep-v15-sft-Q4_K_M.gguf"
+              "acestep-v15-xl-sft-Q4_K_M.gguf"
             ],
             "components": [
               {
@@ -8704,13 +8704,13 @@
               "zh": "BF16",
               "en": "BF16"
             },
-            "size": "6.3GB",
+            "size": "10GB",
             "source": "modelscope",
             "source_type": "full",
             "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
             "local_path": "models/ace-step-xl-turbo/bf16",
             "allow_patterns": [
-              "acestep-v15-turbo-BF16.gguf"
+              "acestep-v15-xl-turbo-BF16.gguf"
             ],
             "default": true,
             "components": [
@@ -8749,13 +8749,13 @@
               "zh": "Q8_0",
               "en": "Q8_0"
             },
-            "size": "3.6GB",
+            "size": "5.3GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
             "local_path": "models/ace-step-xl-turbo/q8_0",
             "allow_patterns": [
-              "acestep-v15-turbo-Q8_0.gguf"
+              "acestep-v15-xl-turbo-Q8_0.gguf"
             ],
             "components": [
               {
@@ -8793,13 +8793,13 @@
               "zh": "Q4_K_M",
               "en": "Q4_K_M"
             },
-            "size": "2.5GB",
+            "size": "3.0GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
             "local_path": "models/ace-step-xl-turbo/q4_k",
             "allow_patterns": [
-              "acestep-v15-turbo-Q4_K_M.gguf"
+              "acestep-v15-xl-turbo-Q4_K_M.gguf"
             ],
             "components": [
               {

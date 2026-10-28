@@ -17,7 +17,9 @@ use super::text::{
     build_prompt_strings, dit_instr_complete, dit_instr_extract, dit_instr_lego, embed_lyrics,
     encode_caption, load_tokenizer_json, DIT_INSTR_COVER, DIT_INSTR_REPAINT, DIT_INSTR_TEXT2MUSIC,
 };
-use super::transformer::{load_weights, AceStepDit, DenoiseContextSwitch, DenoiseRepaint};
+use super::transformer::{
+    dit_graph_types, load_weights, AceStepDit, DenoiseContextSwitch, DenoiseRepaint,
+};
 use super::vae::{AUDIO_UPSAMPLE, LATENT_CHANNELS};
 use super::wav::{self, SAMPLE_RATE};
 use super::weights::{check_layout, config_from_weights};
@@ -334,12 +336,7 @@ pub fn run_full_cover(
         None
     };
 
-    let mut types = std::collections::HashMap::new();
-    for (name, _, _) in super::graph::graph_weight_layout(config) {
-        if let Ok(t) = dit.ggml_type_of(&name) {
-            types.insert(name, t);
-        }
-    }
+    let types = dit_graph_types(&dit, config);
     let mut model = AceStepDit::build_typed(&ctx, config, frames, enc_seq_graph, &types)
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     load_weights(&mut model, &dit, config)?;

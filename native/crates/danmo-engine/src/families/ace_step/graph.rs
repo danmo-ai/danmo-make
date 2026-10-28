@@ -6,6 +6,7 @@
 
 use super::weights::{AceStepConfig, TIME_FREQ_DIM};
 use crate::runtime::{flash_attend, shape, GraphBuilder, RuntimeError, Tensor, TYPE_F32};
+use danmo_ggml_sys as g;
 use std::collections::HashMap;
 
 pub struct BuiltDit {
@@ -475,12 +476,14 @@ fn gate_add(
 fn chunk(b: &GraphBuilder, packed: Tensor, offset: i64, rows: i64) -> Result<Tensor, RuntimeError> {
     let dims = shape(packed);
     let total = dims[0];
+    // Use the tensor's real element size (BF16 scale_shift is 2 bytes, not F32).
+    let elem = unsafe { g::ggml_element_size(packed) };
     let view = b.view_2d(
         packed,
         rows,
         1,
-        (total as usize) * std::mem::size_of::<f32>(),
-        (offset as usize) * std::mem::size_of::<f32>(),
+        (total as usize).saturating_mul(elem),
+        (offset as usize).saturating_mul(elem),
     );
     nn(b.cont(view))
 }
