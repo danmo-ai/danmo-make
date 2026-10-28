@@ -2,8 +2,9 @@
 //! `metadata-fsm.h`).
 //!
 //! Forces CoT field-name phrases (`bpm:`, `duration:`, …) token-by-token,
-//! early-blocks bpm/duration digit continuations, and constrains keyscale /
-//! language values via BPE token-id prefix trees (caption remains free-form).
+//! early-blocks bpm/duration digit continuations, constrains keyscale /
+//! language via BPE token-id prefix trees, and blocks caption backticks /
+//! audio-code ids (max 512 caption tokens).
 
 use crate::weights::WeightError;
 use std::collections::{HashMap, HashSet};
@@ -24,6 +25,7 @@ pub const VALID_LANGUAGES: &[&str] = &[
 pub const KEYSCALE_NOTES: &[&str] = &["A", "B", "C", "D", "E", "F", "G"];
 pub const KEYSCALE_ACCIDENTALS: &[&str] = &["", "#", "b", "♯", "♭"];
 pub const KEYSCALE_MODES: &[&str] = &["major", "minor"];
+pub const CAPTION_MAX_TOKENS: usize = 512;
 
 /// All valid `"G major"` / `"C# minor"` / … strings (upstream `VALID_KEYSCALES`).
 pub fn valid_keyscales() -> Vec<String> {
@@ -265,6 +267,8 @@ pub struct FsmLexicon {
     pub think_end: ForcedPhrase,
     pub digit_ids: [i32; 10],
     pub newline_id: i32,
+    /// Token id for `` ` `` (block code fences in caption).
+    pub backtick_id: i32,
     pub keyscale_tree: TokenPrefixTree,
     pub language_tree: TokenPrefixTree,
 }
@@ -279,6 +283,14 @@ impl FsmLexicon {
             )));
         }
         let (digit_ids, newline_id) = resolve_digit_newline_ids(tokenizer_json, vocab)?;
+        let backtick_ids =
+            crate::common::qwen3::tokenize_plain(tokenizer_json, "`", vocab)?;
+        if backtick_ids.is_empty() {
+            return Err(WeightError::NotBuilt(
+                "ACE-Step LM FSM backtick token encoded empty".into(),
+            ));
+        }
+        let backtick_id = *backtick_ids.last().unwrap();
         let mut encode = |text: &str| -> Result<Vec<i32>, WeightError> {
             crate::common::qwen3::tokenize_plain(tokenizer_json, text, vocab)
         };
@@ -312,6 +324,7 @@ impl FsmLexicon {
             think_end: ForcedPhrase::from_ids(vec![think_end_id])?,
             digit_ids,
             newline_id,
+            backtick_id,
             keyscale_tree,
             language_tree,
         })
@@ -325,6 +338,8 @@ pub struct MetadataFsm {
     pub value_buf: String,
     /// Token ids accumulated inside the current VALUE state (prefix-tree key).
     pub accumulated_token_ids: Vec<i32>,
+    /// Tokens emitted inside CaptionValue (cap at [`CAPTION_MAX_TOKENS`]).
+    pub caption_token_count: usize,
     pub skip_caption: bool,
     pub skip_language: bool,
     pub skip_genres: bool,
@@ -340,6 +355,7 @@ impl Default for MetadataFsm {
             state: FsmState::ThinkTag,
             value_buf: String::new(),
             accumulated_token_ids: Vec::new(),
+            caption_token_count: 0,
             skip_caption: false,
             skip_language: false,
             skip_genres: true,
@@ -365,6 +381,7 @@ impl MetadataFsm {
         self.state = FsmState::ThinkTag;
         self.value_buf.clear();
         self.accumulated_token_ids.clear();
+        self.caption_token_count = 0;
         self.phrase = Some(lex.think.clone());
     }
 
@@ -493,10 +510,53 @@ impl MetadataFsm {
                 )?;
                 Ok(true)
             }
+            FsmState::CaptionValue => {
+                Self::mask_caption_value(
+                    logits,
+                    lex.backtick_id,
+                    lex.newline_id,
+                    self.caption_token_count,
+                )?;
+                Ok(true)
+            }
             FsmState::CodesGeneration | FsmState::Completed => Ok(false),
-            // Caption values stay free-form for now (YAML / code-block rules TBD).
             _ => Ok(false),
         }
+    }
+
+    /// Caption: block backticks + audio-code band; force newline at max tokens.
+    fn mask_caption_value(
+        logits: &mut [f32],
+        backtick_id: i32,
+        newline_id: i32,
+        token_count: usize,
+    ) -> Result<(), WeightError> {
+        if backtick_id < 0 || backtick_id as usize >= logits.len() {
+            return Err(WeightError::NotBuilt(format!(
+                "ACE-Step LM FSM backtick id {backtick_id} is outside vocab {}",
+                logits.len()
+            )));
+        }
+        if newline_id < 0 || newline_id as usize >= logits.len() {
+            return Err(WeightError::NotBuilt(format!(
+                "ACE-Step LM FSM newline id {newline_id} is outside vocab {}",
+                logits.len()
+            )));
+        }
+        if token_count >= CAPTION_MAX_TOKENS {
+            let mut only = HashSet::new();
+            only.insert(newline_id);
+            return TokenPrefixTree::apply_whitelist(logits, &only);
+        }
+        logits[backtick_id as usize] = f32::NEG_INFINITY;
+        let base = super::lm_prompt::AUDIO_CODE_BASE;
+        let count = super::lm_prompt::AUDIO_CODE_COUNT;
+        let start = base.max(0) as usize;
+        let end = ((base as i64) + (count as i64)).clamp(0, logits.len() as i64) as usize;
+        for logit in logits.iter_mut().take(end).skip(start) {
+            *logit = f32::NEG_INFINITY;
+        }
+        Ok(())
     }
 
     fn mask_prefix_tree(
@@ -595,15 +655,17 @@ impl MetadataFsm {
                 }
             }
             FsmState::CaptionValue => {
-                // Free-form until newline ends the field.
+                // Newline ends the field (YAML multi-line ending still open).
                 if id == lex.newline_id || token_text.contains('\n') {
                     self.value_buf.clear();
                     self.accumulated_token_ids.clear();
+                    self.caption_token_count = 0;
                     self.state = self.next_field_after("caption");
                     self.arm_phrase(lex);
                 } else {
                     self.value_buf.push_str(token_text);
                     self.accumulated_token_ids.push(id);
+                    self.caption_token_count = self.caption_token_count.saturating_add(1);
                 }
             }
             FsmState::CodesGeneration => {
@@ -633,6 +695,9 @@ impl MetadataFsm {
         };
         self.value_buf.clear();
         self.accumulated_token_ids.clear();
+        if !matches!(self.state, FsmState::CaptionValue) {
+            self.caption_token_count = 0;
+        }
         self.arm_phrase(lex);
     }
 
@@ -958,9 +1023,40 @@ mod tests {
             think_end: ForcedPhrase::from_ids(vec![80]).unwrap(),
             digit_ids,
             newline_id,
+            backtick_id: 4,
             keyscale_tree,
             language_tree,
         }
+    }
+
+    #[test]
+    fn caption_blocks_backtick_and_caps_length() {
+        let lex = synthetic_lex();
+        let mut fsm = MetadataFsm::new();
+        fsm.state = FsmState::CaptionValue;
+        // Vocab smaller than AUDIO_CODE_BASE: audio-band clamp is a no-op; backtick still blocked.
+        let mut logits = vec![1.0f32; 32];
+        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert!(logits[lex.backtick_id as usize].is_infinite());
+        assert_eq!(logits[0], 1.0);
+        fsm.caption_token_count = CAPTION_MAX_TOKENS;
+        let mut logits = vec![1.0f32; 32];
+        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert_eq!(logits[lex.newline_id as usize], 0.0);
+        assert!(logits[0].is_infinite());
+    }
+
+    #[test]
+    fn caption_blocks_audio_code_band_when_vocab_covers_it() {
+        let lex = synthetic_lex();
+        let mut fsm = MetadataFsm::new();
+        fsm.state = FsmState::CaptionValue;
+        let base = crate::families::ace_step::lm_prompt::AUDIO_CODE_BASE as usize;
+        let mut logits = vec![1.0f32; base + 8];
+        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert!(logits[base].is_infinite());
+        assert!(logits[base + 7].is_infinite());
+        assert_eq!(logits[0], 1.0);
     }
 
     #[test]
