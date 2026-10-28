@@ -276,7 +276,19 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
                     .into(),
             )
         })?;
-        let mut fsm_session = lm_fsm::MetadataFsmSession::open(json, config.vocab)?;
+        let user_metas = lm_fsm::UserMetas {
+            // Structured overrides only — do not force caption (inspire expands it).
+            bpm: (request.bpm > 0).then_some(request.bpm),
+            caption: None,
+            duration: (request.duration > 0.0).then_some(request.duration as i32),
+            keyscale: (!request.keyscale.is_empty()).then(|| request.keyscale.to_string()),
+            language: (!request.vocal_language.is_empty())
+                .then(|| request.vocal_language.to_string()),
+            timesignature: (!request.timesignature.is_empty())
+                .then(|| request.timesignature.to_string()),
+        };
+        let mut fsm_session = lm_fsm::MetadataFsmSession::open(json, config.vocab)?
+            .with_user_metas(user_metas);
         let decode_json = json.to_string();
         let decode_token = |id: i32| -> String {
             token_decode::Decoder::from_tokenizer_json(&decode_json)

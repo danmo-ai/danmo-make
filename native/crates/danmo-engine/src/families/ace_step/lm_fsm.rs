@@ -3,8 +3,8 @@
 //!
 //! Forces CoT field-name phrases (`bpm:`, `duration:`, …) token-by-token,
 //! early-blocks bpm/duration digit continuations, constrains keyscale /
-//! language via BPE token-id prefix trees, and blocks caption backticks /
-//! audio-code ids (max 512 caption tokens).
+//! language via BPE token-id prefix trees, and constrains caption (backticks /
+//! audio-code band / 512-token cap / YAML multi-line ending).
 
 use crate::weights::WeightError;
 use std::collections::{HashMap, HashSet};
@@ -340,6 +340,16 @@ pub struct MetadataFsm {
     pub accumulated_token_ids: Vec<i32>,
     /// Tokens emitted inside CaptionValue (cap at [`CAPTION_MAX_TOKENS`]).
     pub caption_token_count: usize,
+    /// Last caption token contained `\n` — next non-indent token ends caption.
+    pub caption_after_newline: bool,
+    /// LM is emitting the next field name after a YAML multi-line caption.
+    pub caption_ending: bool,
+    /// Accumulated field-name text while `caption_ending`.
+    pub pending_field_name: String,
+    /// Queued token ids for user-provided field injection (`" {value}\n"`).
+    pub user_field_token_queue: Vec<i32>,
+    /// Field name currently being injected from `user`.
+    pub current_user_field: Option<&'static str>,
     pub skip_caption: bool,
     pub skip_language: bool,
     pub skip_genres: bool,
@@ -356,6 +366,11 @@ impl Default for MetadataFsm {
             value_buf: String::new(),
             accumulated_token_ids: Vec::new(),
             caption_token_count: 0,
+            caption_after_newline: false,
+            caption_ending: false,
+            pending_field_name: String::new(),
+            user_field_token_queue: Vec::new(),
+            current_user_field: None,
             skip_caption: false,
             skip_language: false,
             skip_genres: true,
@@ -382,7 +397,59 @@ impl MetadataFsm {
         self.value_buf.clear();
         self.accumulated_token_ids.clear();
         self.caption_token_count = 0;
+        self.caption_after_newline = false;
+        self.caption_ending = false;
+        self.pending_field_name.clear();
+        self.user_field_token_queue.clear();
+        self.current_user_field = None;
         self.phrase = Some(lex.think.clone());
+    }
+
+    fn clear_caption_tracking(&mut self) {
+        self.caption_token_count = 0;
+        self.caption_after_newline = false;
+        self.caption_ending = false;
+        self.pending_field_name.clear();
+    }
+
+    fn value_state_for_field(field: &str) -> Option<FsmState> {
+        match field {
+            "bpm" => Some(FsmState::BpmValue),
+            "caption" => Some(FsmState::CaptionValue),
+            "duration" => Some(FsmState::DurationValue),
+            "keyscale" => Some(FsmState::KeyscaleValue),
+            "language" => Some(FsmState::LanguageValue),
+            "timesignature" => Some(FsmState::TimesigValue),
+            _ => None,
+        }
+    }
+
+    fn user_value_for_state(&self) -> Option<( &'static str, String)> {
+        match self.state {
+            FsmState::BpmValue => self.user.bpm.map(|v| ("bpm", v.to_string())),
+            FsmState::CaptionValue => self
+                .user
+                .caption
+                .as_ref()
+                .map(|v| ("caption", v.clone())),
+            FsmState::DurationValue => self.user.duration.map(|v| ("duration", v.to_string())),
+            FsmState::KeyscaleValue => self
+                .user
+                .keyscale
+                .as_ref()
+                .map(|v| ("keyscale", v.clone())),
+            FsmState::LanguageValue => self
+                .user
+                .language
+                .as_ref()
+                .map(|v| ("language", v.clone())),
+            FsmState::TimesigValue => self
+                .user
+                .timesignature
+                .as_ref()
+                .map(|v| ("timesignature", v.clone())),
+            _ => None,
+        }
     }
 
     pub fn in_codes(&self) -> bool {
@@ -449,12 +516,22 @@ impl MetadataFsm {
     }
 
     /// Mask logits for the current state (forced phrase or numeric value).
+    ///
+    /// `decode_token` is required for caption YAML ending (peek argmax after newline).
     pub fn mask_logits(
-        &self,
+        &mut self,
         logits: &mut [f32],
         lex: &FsmLexicon,
         decoded_value: &str,
+        decode_token: &dyn Fn(i32) -> String,
     ) -> Result<bool, WeightError> {
+        // User-provided field injection: force the next queued token.
+        if let Some(&next) = self.user_field_token_queue.first() {
+            let mut only = HashSet::new();
+            only.insert(next);
+            TokenPrefixTree::apply_whitelist(logits, &only)?;
+            return Ok(true);
+        }
         if let Some(phrase) = &self.phrase {
             if !phrase.done() {
                 phrase.mask_next(logits)?;
@@ -511,12 +588,7 @@ impl MetadataFsm {
                 Ok(true)
             }
             FsmState::CaptionValue => {
-                Self::mask_caption_value(
-                    logits,
-                    lex.backtick_id,
-                    lex.newline_id,
-                    self.caption_token_count,
-                )?;
+                self.mask_caption_value(logits, lex, decode_token)?;
                 Ok(true)
             }
             FsmState::CodesGeneration | FsmState::Completed => Ok(false),
@@ -524,13 +596,15 @@ impl MetadataFsm {
         }
     }
 
-    /// Caption: block backticks + audio-code band; force newline at max tokens.
+    /// Caption: YAML multi-line ending + block backticks / audio-codes / length.
     fn mask_caption_value(
+        &mut self,
         logits: &mut [f32],
-        backtick_id: i32,
-        newline_id: i32,
-        token_count: usize,
+        lex: &FsmLexicon,
+        decode_token: &dyn Fn(i32) -> String,
     ) -> Result<(), WeightError> {
+        let backtick_id = lex.backtick_id;
+        let newline_id = lex.newline_id;
         if backtick_id < 0 || backtick_id as usize >= logits.len() {
             return Err(WeightError::NotBuilt(format!(
                 "ACE-Step LM FSM backtick id {backtick_id} is outside vocab {}",
@@ -543,7 +617,28 @@ impl MetadataFsm {
                 logits.len()
             )));
         }
-        if token_count >= CAPTION_MAX_TOKENS {
+        // After a newline: if argmax is non-indent, enter caption_ending (free gen).
+        if self.caption_after_newline && !self.caption_ending {
+            let top = argmax_id(logits)?;
+            let top_text = decode_token(top);
+            let starts_indent = top_text
+                .chars()
+                .next()
+                .is_some_and(|c| c == ' ' || c == '\t');
+            if !top_text.is_empty() && !starts_indent {
+                self.caption_after_newline = false;
+                self.caption_ending = true;
+                self.pending_field_name.clear();
+                // Free generation while LM emits the next field name.
+                return Ok(());
+            }
+            self.caption_after_newline = false;
+        }
+        if self.caption_ending {
+            // Free generation — no caption constraints (constrained_lm.py).
+            return Ok(());
+        }
+        if self.caption_token_count >= CAPTION_MAX_TOKENS {
             let mut only = HashSet::new();
             only.insert(newline_id);
             return TokenPrefixTree::apply_whitelist(logits, &only);
@@ -610,6 +705,25 @@ impl MetadataFsm {
         lex: &FsmLexicon,
         token_text: &str,
     ) -> Result<(), WeightError> {
+        // Consume user-injected field tokens first.
+        if !self.user_field_token_queue.is_empty() {
+            let expected = self.user_field_token_queue[0];
+            if id != expected {
+                return Err(WeightError::NotBuilt(format!(
+                    "ACE-Step LM FSM user field expected token {expected}, got {id}"
+                )));
+            }
+            self.user_field_token_queue.remove(0);
+            if self.user_field_token_queue.is_empty() {
+                let field = self.current_user_field.take().unwrap_or("");
+                self.value_buf.clear();
+                self.accumulated_token_ids.clear();
+                self.clear_caption_tracking();
+                self.state = self.next_field_after(field);
+                self.arm_phrase(lex);
+            }
+            return Ok(());
+        }
         if let Some(phrase) = self.phrase.as_mut() {
             if !phrase.done() {
                 let done = phrase.observe(id)?;
@@ -655,17 +769,35 @@ impl MetadataFsm {
                 }
             }
             FsmState::CaptionValue => {
-                // Newline ends the field (YAML multi-line ending still open).
-                if id == lex.newline_id || token_text.contains('\n') {
-                    self.value_buf.clear();
-                    self.accumulated_token_ids.clear();
-                    self.caption_token_count = 0;
-                    self.state = self.next_field_after("caption");
-                    self.arm_phrase(lex);
-                } else {
-                    self.value_buf.push_str(token_text);
-                    self.accumulated_token_ids.push(id);
-                    self.caption_token_count = self.caption_token_count.saturating_add(1);
+                self.caption_token_count = self.caption_token_count.saturating_add(1);
+                self.value_buf.push_str(token_text);
+                self.accumulated_token_ids.push(id);
+                if token_text.contains('\n') {
+                    self.caption_after_newline = true;
+                } else if !self.caption_ending {
+                    self.caption_after_newline = false;
+                }
+                if self.caption_ending {
+                    self.pending_field_name.push_str(token_text);
+                    if token_text.contains(':') {
+                        let field = self
+                            .pending_field_name
+                            .trim()
+                            .trim_end_matches(':')
+                            .trim()
+                            .to_ascii_lowercase();
+                        self.clear_caption_tracking();
+                        self.value_buf.clear();
+                        self.accumulated_token_ids.clear();
+                        if let Some(st) = Self::value_state_for_field(&field) {
+                            self.state = st;
+                            self.arm_phrase(lex);
+                        } else {
+                            // Unknown field name → fall through to next after caption.
+                            self.state = self.next_field_after("caption");
+                            self.arm_phrase(lex);
+                        }
+                    }
                 }
             }
             FsmState::CodesGeneration => {
@@ -696,7 +828,7 @@ impl MetadataFsm {
         self.value_buf.clear();
         self.accumulated_token_ids.clear();
         if !matches!(self.state, FsmState::CaptionValue) {
-            self.caption_token_count = 0;
+            self.clear_caption_tracking();
         }
         self.arm_phrase(lex);
     }
@@ -775,6 +907,8 @@ impl MetadataFsm {
 pub struct MetadataFsmSession {
     pub lex: FsmLexicon,
     pub fsm: MetadataFsm,
+    tokenizer_json: String,
+    vocab: i64,
 }
 
 impl MetadataFsmSession {
@@ -782,17 +916,78 @@ impl MetadataFsmSession {
         let lex = FsmLexicon::from_tokenizer(tokenizer_json, vocab)?;
         let mut fsm = MetadataFsm::new();
         fsm.reset(&lex);
-        Ok(Self { lex, fsm })
+        Ok(Self {
+            lex,
+            fsm,
+            tokenizer_json: tokenizer_json.to_string(),
+            vocab,
+        })
     }
 
-    pub fn mask(&self, logits: &mut [f32]) -> Result<bool, WeightError> {
+    pub fn with_user_metas(mut self, user: UserMetas) -> Self {
+        self.fsm.user = user;
+        self
+    }
+
+    pub fn mask(
+        &mut self,
+        logits: &mut [f32],
+        decode_token: &dyn Fn(i32) -> String,
+    ) -> Result<bool, WeightError> {
+        self.maybe_arm_user_injection()?;
+        let value_buf = self.fsm.value_buf.clone();
         self.fsm
-            .mask_logits(logits, &self.lex, &self.fsm.value_buf)
+            .mask_logits(logits, &self.lex, &value_buf, decode_token)
     }
 
     pub fn observe(&mut self, id: i32, token_text: &str) -> Result<(), WeightError> {
-        self.fsm.observe(id, &self.lex, token_text)
+        self.fsm.observe(id, &self.lex, token_text)?;
+        self.maybe_arm_user_injection()
     }
+
+    /// When landing on a VALUE state with user metadata, queue `" {value}\n"` tokens.
+    fn maybe_arm_user_injection(&mut self) -> Result<(), WeightError> {
+        if !self.fsm.user_field_token_queue.is_empty() || self.fsm.phrase.is_some() {
+            return Ok(());
+        }
+        let Some((field, value)) = self.fsm.user_value_for_state() else {
+            return Ok(());
+        };
+        // Only arm once at the start of the value (empty accumulators).
+        if !self.fsm.accumulated_token_ids.is_empty() || !self.fsm.value_buf.is_empty() {
+            return Ok(());
+        }
+        if self.fsm.caption_token_count > 0 || self.fsm.caption_ending {
+            return Ok(());
+        }
+        let text = format!(" {value}\n");
+        let ids = crate::common::qwen3::tokenize_plain(&self.tokenizer_json, &text, self.vocab)?;
+        if ids.is_empty() {
+            return Err(WeightError::NotBuilt(format!(
+                "ACE-Step LM FSM user field '{field}' encoded empty"
+            )));
+        }
+        self.fsm.user_field_token_queue = ids;
+        self.fsm.current_user_field = Some(field);
+        Ok(())
+    }
+}
+
+fn argmax_id(logits: &[f32]) -> Result<i32, WeightError> {
+    let mut best_i = 0usize;
+    let mut best_v = f32::NEG_INFINITY;
+    for (i, &v) in logits.iter().enumerate() {
+        if v.is_finite() && v > best_v {
+            best_v = v;
+            best_i = i;
+        }
+    }
+    if !best_v.is_finite() {
+        return Err(WeightError::NotBuilt(
+            "ACE-Step LM FSM caption peek found no finite logits".into(),
+        ));
+    }
+    Ok(best_i as i32)
 }
 
 /// True if `prefix` is a decimal prefix of some integer in `[min_v, max_v]`.
@@ -1036,12 +1231,12 @@ mod tests {
         fsm.state = FsmState::CaptionValue;
         // Vocab smaller than AUDIO_CODE_BASE: audio-band clamp is a no-op; backtick still blocked.
         let mut logits = vec![1.0f32; 32];
-        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
         assert!(logits[lex.backtick_id as usize].is_infinite());
         assert_eq!(logits[0], 1.0);
         fsm.caption_token_count = CAPTION_MAX_TOKENS;
         let mut logits = vec![1.0f32; 32];
-        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
         assert_eq!(logits[lex.newline_id as usize], 0.0);
         assert!(logits[0].is_infinite());
     }
@@ -1053,7 +1248,7 @@ mod tests {
         fsm.state = FsmState::CaptionValue;
         let base = crate::families::ace_step::lm_prompt::AUDIO_CODE_BASE as usize;
         let mut logits = vec![1.0f32; base + 8];
-        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
         assert!(logits[base].is_infinite());
         assert!(logits[base + 7].is_infinite());
         assert_eq!(logits[0], 1.0);
@@ -1068,13 +1263,13 @@ mod tests {
         fsm.skip_language = true;
         fsm.reset(&lex);
         let mut logits = vec![1.0f32; 128];
-        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
         assert_eq!(logits[100], 0.0);
         fsm.observe(100, &lex, "").unwrap();
         assert_eq!(fsm.state, FsmState::NewlineAfterThink);
         fsm.observe(newline_id, &lex, "\n").unwrap();
         assert_eq!(fsm.state, FsmState::BpmName);
-        fsm.mask_logits(&mut logits, &lex, "").unwrap();
+        fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap();
         assert_eq!(logits[20], 0.0);
         fsm.observe(20, &lex, "bp").unwrap();
         fsm.observe(21, &lex, "m:").unwrap();
@@ -1090,13 +1285,13 @@ mod tests {
         let mut logits = vec![0.0f32; 16];
         logits[1] = 0.5;
         logits[3] = 2.0; // top-1 among first tokens
-        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
         assert_eq!(logits[3], 0.0);
         assert!(logits[1].is_infinite());
         fsm.observe(3, &lex, "zh").unwrap();
         // Complete after one token → newline only.
         let mut logits = vec![1.0f32; 16];
-        assert!(fsm.mask_logits(&mut logits, &lex, "zh").unwrap());
+        assert!(fsm.mask_logits(&mut logits, &lex, "zh", &|_| String::new()).unwrap());
         assert_eq!(logits[lex.newline_id as usize], 0.0);
         assert!(logits[1].is_infinite());
     }
@@ -1107,16 +1302,16 @@ mod tests {
         let mut fsm = MetadataFsm::new();
         fsm.state = FsmState::KeyscaleValue;
         let mut logits = vec![1.0f32; 128];
-        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
         assert_eq!(logits[90], 0.0);
         assert!(logits[91].is_infinite());
         fsm.observe(90, &lex, " G").unwrap();
         let mut logits = vec![1.0f32; 128];
-        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
         assert_eq!(logits[91], 0.0);
         fsm.observe(91, &lex, " major").unwrap();
         let mut logits = vec![1.0f32; 128];
-        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
         assert_eq!(logits[lex.newline_id as usize], 0.0);
     }
 
@@ -1134,6 +1329,77 @@ mod tests {
         assert!(first.contains(&(b' ' as i32)));
         let after_space = tree.allowed(&[b' ' as i32]).unwrap();
         assert!(after_space.contains(&(b'e' as i32)) || after_space.contains(&(b'z' as i32)));
+    }
+
+    #[test]
+    fn user_field_queue_forces_tokens_then_advances() {
+        let lex = synthetic_lex();
+        let mut fsm = MetadataFsm::new();
+        fsm.skip_caption = true;
+        fsm.skip_language = true;
+        fsm.state = FsmState::BpmValue;
+        fsm.user_field_token_queue = vec![11, 12, lex.newline_id]; // "12\n"
+        fsm.current_user_field = Some("bpm");
+        let mut logits = vec![1.0f32; 32];
+        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
+        assert_eq!(logits[11], 0.0);
+        assert!(logits[0].is_infinite());
+        fsm.observe(11, &lex, "1").unwrap();
+        fsm.observe(12, &lex, "2").unwrap();
+        fsm.observe(lex.newline_id, &lex, "\n").unwrap();
+        // After bpm (+ skip caption) → duration name.
+        assert_eq!(fsm.state, FsmState::DurationName);
+        assert!(fsm.user_field_token_queue.is_empty());
+    }
+
+    #[test]
+    fn caption_yaml_ending_jumps_to_duration_value() {
+        let lex = synthetic_lex();
+        let mut fsm = MetadataFsm::new();
+        fsm.state = FsmState::CaptionValue;
+        // Emit a newline → after_newline.
+        fsm.observe(lex.newline_id, &lex, "\n").unwrap();
+        assert!(fsm.caption_after_newline);
+        // Mask peeks argmax "duration" (non-indent) → caption_ending.
+        let mut logits = vec![0.0f32; 32];
+        logits[7] = 5.0; // top token id 7
+        let decode = |id: i32| -> String {
+            if id == 7 {
+                "duration".into()
+            } else {
+                " ".into()
+            }
+        };
+        assert!(fsm.mask_logits(&mut logits, &lex, "", &decode).unwrap());
+        assert!(fsm.caption_ending);
+        // Free gen while ending: backtick not forced off beyond natural scores.
+        // Observe field name tokens then colon → DurationValue.
+        fsm.observe(7, &lex, "duration").unwrap();
+        fsm.observe(8, &lex, ":").unwrap();
+        assert_eq!(fsm.state, FsmState::DurationValue);
+        assert!(!fsm.caption_ending);
+    }
+
+    #[test]
+    fn caption_yaml_indent_continues_caption() {
+        let lex = synthetic_lex();
+        let mut fsm = MetadataFsm::new();
+        fsm.state = FsmState::CaptionValue;
+        fsm.observe(lex.newline_id, &lex, "\n").unwrap();
+        let mut logits = vec![0.0f32; 32];
+        logits[9] = 3.0;
+        let decode = |id: i32| -> String {
+            if id == 9 {
+                " soft".into()
+            } else {
+                "x".into()
+            }
+        };
+        assert!(fsm.mask_logits(&mut logits, &lex, "", &decode).unwrap());
+        assert!(!fsm.caption_ending);
+        assert!(!fsm.caption_after_newline);
+        // Still in caption; backtick blocked.
+        assert!(logits[lex.backtick_id as usize].is_infinite());
     }
 
     #[test]

@@ -302,7 +302,8 @@ pub fn sample_generate_fsm(
     let mut rng = super::lm_sample::XorShift64::new(seed);
     for _ in 0..max_new {
         if let Some(mask) = fsm.as_mut() {
-            let _ = mask.session.mask(&mut logits)?;
+            let decode = mask.decode_token;
+            let _ = mask.session.mask(&mut logits, decode)?;
             if mask.session.fsm.in_codes() {
                 break;
             }
