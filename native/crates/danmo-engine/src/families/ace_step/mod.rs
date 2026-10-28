@@ -446,6 +446,21 @@ pub(crate) fn dit_gguf(bundle: &Path) -> Result<PathBuf, WeightError> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn open_real_0_6b_q8_lm_gguf() {
+        let p = std::path::Path::new("/workspace/models/ace-step-5hz-lm-0.6b/q8_0");
+        if !p.join("acestep-5Hz-lm-0.6B-Q8_0.gguf").is_file() {
+            eprintln!("skip: real LM GGUF missing");
+            return;
+        }
+        let (_w, c) = super::lm::open_lm_gguf(p).expect("open lm");
+        assert!(c.vocab > 150_000, "vocab {}", c.vocab);
+        assert!(c.layers >= 8, "layers {}", c.layers);
+        eprintln!("lm config vocab={} hidden={} layers={}", c.vocab, c.hidden, c.layers);
+    }
+
+
     use super::{
         config_from_weights, dit_gguf, layout_matches, probe_layout, run_cover, run_create,
         weight_layout, AceStepConfig, CreateRequest, TIME_FREQ_DIM,

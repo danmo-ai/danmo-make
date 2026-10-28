@@ -8545,6 +8545,56 @@
         }
       }
     },
+    "ace-step-5hz-lm": {
+      "catalog": {
+        "media": "audio",
+        "description": {
+          "zh": "ACE-Step 5Hz LM 0.6B（歌词/元数据规划；GGUF Q8_0）。",
+          "en": "ACE-Step 5Hz LM 0.6B (caption/metadata planner; GGUF Q8_0)."
+        },
+        "category": "music_models",
+        "commercial_use_allowed": true,
+        "source": "huggingface",
+        "name": {
+          "zh": "ACE-Step 5Hz LM (0.6B)",
+          "en": "ACE-Step 5Hz LM (0.6B)"
+        },
+        "recommended": false,
+        "engine": "danqing-audio"
+      },
+      "runtime": {
+        "family": "ace_step",
+        "backends": ["ggml"]
+      },
+      "actions": {
+        "create": {}
+      },
+      "ui": {
+        "parameters": {}
+      },
+      "distribution": {
+        "versions": {
+          "q8_0": {
+            "name": {"zh": "Q8_0", "en": "Q8_0"},
+            "size": "710MB",
+            "source": "huggingface",
+            "source_type": "full",
+            "repo_id": "Serveurperso/ACE-Step-1.5-GGUF",
+            "local_path": "models/ace-step-5hz-lm-0.6b/q8_0",
+            "allow_patterns": ["acestep-5Hz-lm-0.6B-Q8_0.gguf"],
+            "default": true,
+            "components": [
+              {
+                "role": "tokenizer",
+                "required": true,
+                "repo_id": "ACE-Step/acestep-5Hz-lm-0.6B",
+                "allow_patterns": ["tokenizer.json", "tokenizer_config.json"]
+              }
+            ]
+          }
+        }
+      }
+    },
     "ace-step-xl-turbo": {
       "catalog": {
         "media": "audio",

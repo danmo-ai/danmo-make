@@ -221,10 +221,7 @@ pub fn prefill_logits(
     let mut graph = LmPrefill::build(ctx, config, token_ids.len() as i64, &types)
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     for (name, ne0, ne1) in weight_layout(config) {
-        let data = weights.f32_widened(&name, &[ne0, ne1])?;
-        graph
-            .load_f32(&name, &data)
-            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        load_lm_weight(&mut graph.graph, weights, &name, ne0, ne1)?;
     }
     let logits = graph
         .compute(token_ids)
@@ -384,10 +381,7 @@ impl LmSetRowsSession {
         let graph = LmSetRows::build(ctx, config, max_seq, &types)
             .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
         for (name, ne0, ne1) in weight_layout(config) {
-            let data = weights.f32_widened(&name, &[ne0, ne1])?;
-            graph
-                .set_f32(&name, &data)
-                .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+            load_lm_weight(&graph, weights, &name, ne0, ne1)?;
         }
         let cache_elems = (config.head_dim * max_seq * config.kv_heads) as usize;
         let zeros = vec![0f32; cache_elems];
@@ -670,6 +664,21 @@ pub fn greedy_generate_host_kv(
     Ok(seq)
 }
 
+/// Load one LM weight as stored (F32 / F16 / BF16 / Q8_0 / Q4_K / …).
+/// Graph inputs are allocated with `ggml_type_of`; host copy stays packed.
+fn load_lm_weight(
+    graph: &ReusedGraph,
+    weights: &GgufWeights,
+    name: &str,
+    ne0: i64,
+    ne1: i64,
+) -> Result<(), WeightError> {
+    let raw = weights.raw_exact(name, &[ne0, ne1])?;
+    graph
+        .set_bytes(name, &raw)
+        .map_err(|err| WeightError::NotBuilt(err.to_string()))
+}
+
 fn argmax(logits: &[f32]) -> i32 {
     let mut best_i = 0usize;
     let mut best_v = f32::NEG_INFINITY;
@@ -709,10 +718,7 @@ impl LmKvSession {
             let graph = LmDecode::build(ctx, self.config, past, &self.types)
                 .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
             for (name, ne0, ne1) in weight_layout(self.config) {
-                let data = weights.f32_widened(&name, &[ne0, ne1])?;
-                graph
-                    .set_f32(&name, &data)
-                    .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+                load_lm_weight(&graph, weights, &name, ne0, ne1)?;
             }
             self.graphs.insert(past, graph);
         }
