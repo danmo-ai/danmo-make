@@ -32,123 +32,182 @@ pub struct FamilySpec {
     pub id: &'static str,
     pub media: Media,
     pub shape: Shape,
+    /// True when create can attach an in-graph LoRA residual.
+    pub lora_inference: bool,
+    /// Scheduler names this family's create path accepts. Empty means none.
+    pub schedulers: &'static [&'static str],
 }
+
+impl FamilySpec {
+    pub fn accepts_scheduler(self, name: &str) -> bool {
+        self.schedulers.iter().any(|s| *s == name)
+    }
+}
+
+const FLOW_MATCH: &[&str] = &["flow_match_euler", "flow_match_euler_discrete"];
+const FLOW_MATCH_LINEAR: &[&str] = &["linear", "flow_match_euler", "flow_match_euler_discrete"];
 
 const FAMILIES: &[FamilySpec] = &[
     FamilySpec {
         id: "flux1",
         media: Media::Image,
         shape: Shape::DitPipeline,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "flux2",
         media: Media::Image,
         shape: Shape::DitPipeline,
+        lora_inference: true,
+        schedulers: FLOW_MATCH,
     },
     FamilySpec {
         id: "qwen_image",
         media: Media::Image,
         shape: Shape::DitPipeline,
+        lora_inference: false,
+        schedulers: FLOW_MATCH_LINEAR,
     },
     FamilySpec {
         id: "fibo",
         media: Media::Image,
         shape: Shape::DitPipeline,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "z_image",
         media: Media::Image,
         shape: Shape::DitPipeline,
+        lora_inference: true,
+        schedulers: FLOW_MATCH_LINEAR,
     },
     FamilySpec {
         id: "ernie_image",
         media: Media::Image,
         shape: Shape::DitPipeline,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "cogview4",
         media: Media::Image,
         shape: Shape::DitPipeline,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "hidream_o1",
         media: Media::Image,
         shape: Shape::DitPipeline,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "step1x_edit",
         media: Media::Image,
         shape: Shape::DitPipeline,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "boogu_image",
         media: Media::Image,
         shape: Shape::DitPipeline,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "longcat",
         media: Media::Image,
         shape: Shape::DitPipeline,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "seedvr2",
         media: Media::Image,
         shape: Shape::JobPipeline,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "esrgan",
         media: Media::Image,
         shape: Shape::JobPipeline,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "wan",
         media: Media::Video,
         shape: Shape::DitPipeline,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "ltx",
         media: Media::Video,
         shape: Shape::DitPipeline,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "ltx25",
         media: Media::Video,
         shape: Shape::DitPipeline,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "hunyuan",
         media: Media::Video,
         shape: Shape::DitPipeline,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "minimax_h3",
         media: Media::Video,
         shape: Shape::GenerationFacade,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "longcat_avatar",
         media: Media::Video,
         shape: Shape::GenerationFacade,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "ace_step",
         media: Media::Audio,
         shape: Shape::GenerationFacade,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "diffrhythm",
         media: Media::Audio,
         shape: Shape::GenerationFacade,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "qwen3",
         media: Media::Assistant,
         shape: Shape::GenerationFacade,
+        lora_inference: false,
+        schedulers: &[],
     },
     FamilySpec {
         id: "qwen3_vl",
         media: Media::Assistant,
         shape: Shape::GenerationFacade,
+        lora_inference: false,
+        schedulers: &[],
     },
 ];
 

@@ -63,7 +63,7 @@ Shared modules take parameters. They do not branch on `flux2` or `z_image`.
 | Qwen3 tokenizer and tower | `common/qwen3` | 1-based layer indices, `thinking: bool`, output width |
 | AutoencoderKL decode | `common/vae` | `VaeSpec` (channels, block widths, groups, scaling, shift, mid attention) |
 | PNG | `common/png` | width, height, RGB bytes |
-| Linear, static-shift, and empirical-mu sigmas; Flux2 timestep; N(0, 1) noise | `common/ops` | steps, shift, image sequence length, sigma, seed, length |
+| Linear, static-shift, and empirical-mu sigmas; sinusoidal timestep; N(0, 1) noise | `common/ops` | steps, shift, image sequence length, `t`, seed, length |
 | ggml operators | `runtime` | tensor shapes |
 
 The caller owns the policy:

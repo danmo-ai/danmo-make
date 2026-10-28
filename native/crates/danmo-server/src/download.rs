@@ -449,7 +449,11 @@ impl Downloads {
         if !user.is_file() {
             return Ok(None);
         }
-        Ok(lora_item_file(&read_lora_items(&user)?, id, &self.workspace))
+        Ok(lora_item_file(
+            &read_lora_items(&user)?,
+            id,
+            &self.workspace,
+        ))
     }
 
     /// True only for a user-trained Turbo adapter whose inference scheme is `sft`.

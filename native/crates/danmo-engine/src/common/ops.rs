@@ -174,20 +174,27 @@ pub fn non_finite(label: &str, data: &[f32]) -> Option<String> {
     ))
 }
 
+/// Cosine then sine of `t * 10000^(-i/(dim/2))`. Shared by Flux2, Z-Image, and
+/// Qwen-Image. Callers scale `t` (sigma, sigma*1000, or `(1-sigma)*t_scale`).
+pub fn sinusoidal_timestep(t: f32, dim: usize) -> Vec<f32> {
+    let mut out = vec![0f32; dim];
+    let half = dim / 2;
+    if half == 0 {
+        return out;
+    }
+    for i in 0..half {
+        let freq = (-10000f32.ln() * (i as f32) / (half as f32)).exp();
+        let arg = t * freq;
+        out[i] = arg.cos();
+        out[half + i] = arg.sin();
+    }
+    out
+}
+
 /// Flux2 timestep embedding. `dim` is `time_in.in_layer`'s input
 /// width. Sigmas at or below 1 are scaled by 1000, then cosine occupies the
 /// first half and sine the second (`flip_sin_to_cos`).
 pub fn flux_timestep_embed(sigma: f32, dim: usize) -> Vec<f32> {
     let t = if sigma <= 1.0 { sigma * 1000.0 } else { sigma };
-    let mut out = vec![0f32; dim];
-    let half = dim / 2;
-    for i in 0..half {
-        let freq = (10000f32).powf(-(i as f32) / (half.max(1) as f32));
-        let arg = t * freq;
-        out[i] = arg.cos();
-        if i + half < dim {
-            out[i + half] = arg.sin();
-        }
-    }
-    out
+    sinusoidal_timestep(t, dim)
 }

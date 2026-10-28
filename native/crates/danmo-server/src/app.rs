@@ -9,7 +9,7 @@ use danmo_catalog::Catalog;
 use danmo_contracts::{
     AudioGenerationRequest, ImageGenerationRequest, TaskAccepted, TaskKind, VideoGenerationRequest,
 };
-use danmo_engine::{audio_create, image_create, upscale, video_create, BackendKind};
+use danmo_engine::{audio_create, image_create, spec, upscale, video_create, BackendKind};
 use danmo_schedule::Scheduler;
 use danmo_store::AssetRow;
 use serde_json::{json, Value};
@@ -1193,7 +1193,10 @@ fn prepare_image_request(
 
 fn reject_unbuilt_inference(family: &str, body: &Value) -> Result<(), ApiError> {
     let adapters = body.get("adapters").and_then(|v| v.as_array());
-    if adapters.is_some_and(|rows| !rows.is_empty()) && !matches!(family, "flux2" | "z_image") {
+    let family_spec = spec(family);
+    if adapters.is_some_and(|rows| !rows.is_empty())
+        && !family_spec.is_some_and(|row| row.lora_inference)
+    {
         return Err(fail(
             StatusCode::NOT_IMPLEMENTED,
             "lora inference graph is not built",
@@ -1232,7 +1235,8 @@ fn reject_unbuilt_inference(family: &str, body: &Value) -> Result<(), ApiError> 
         ));
     }
     if let Some(scheduler) = text_field(body, "scheduler") {
-        if !scheduler_built(family, scheduler) {
+        let accepted = family_spec.is_some_and(|row| row.accepts_scheduler(scheduler));
+        if !accepted {
             return Err(fail(
                 StatusCode::NOT_IMPLEMENTED,
                 format!("scheduler {scheduler} is not built"),
@@ -1294,23 +1298,6 @@ fn bind_installed_loras(state: &AppState, model: &str, body: &mut Value) -> Resu
         );
     }
     Ok(())
-}
-
-fn scheduler_built(family: &str, scheduler: &str) -> bool {
-    match family {
-        "z_image" => {
-            matches!(
-                scheduler,
-                "linear" | "flow_match_euler" | "flow_match_euler_discrete"
-            )
-        }
-        "flux2" => matches!(scheduler, "flow_match_euler" | "flow_match_euler_discrete"),
-        "qwen_image" => matches!(
-            scheduler,
-            "linear" | "flow_match_euler" | "flow_match_euler_discrete"
-        ),
-        _ => scheduler.is_empty(),
-    }
 }
 
 fn fill_registry_defaults(catalog: &Catalog, id: &str, body: &mut Value) {

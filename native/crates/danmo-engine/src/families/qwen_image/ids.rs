@@ -72,19 +72,7 @@ pub fn spatial_axis(n: i64) -> Vec<i32> {
 /// `sinusoidal_timestep_proj(..., sin_first=True, flip_sin_to_cos=True, scale=1000)`.
 /// `sin_first` writes sine then cosine; the flip swaps the halves.
 pub fn timestep_features(t: f32, dim: usize) -> Vec<f32> {
-    let mut embedding = vec![0f32; dim];
-    let half = dim / 2;
-    if half == 0 {
-        return embedding;
-    }
-    let scaled = t * 1000.0;
-    for i in 0..half {
-        let freq = (-10000f32.ln() * (i as f32) / (half as f32)).exp();
-        let arg = scaled * freq;
-        embedding[i] = arg.cos();
-        embedding[half + i] = arg.sin();
-    }
-    embedding
+    crate::common::ops::sinusoidal_timestep(t * 1000.0, dim)
 }
 
 #[cfg(test)]

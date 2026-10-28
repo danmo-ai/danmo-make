@@ -87,7 +87,7 @@ pub fn image_create(
     }
     let (width, height) = parse_size(&request.size).map_err(EngineError::BadRequest)?;
     let loras = request_loras(request)?;
-    if !loras.is_empty() && !matches!(family, "flux2" | "z_image") {
+    if !loras.is_empty() && !spec.lora_inference {
         return Err(EngineError::BadRequest(
             "lora inference graph is not built".into(),
         ));

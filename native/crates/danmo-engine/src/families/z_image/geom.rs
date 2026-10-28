@@ -173,18 +173,7 @@ pub fn patch_index(grid: TokenGrid, channels: i64) -> Vec<i32> {
 /// Tongyi `TimestepEmbedder.timestep_embedding`: cos then sin, period 10000.
 /// The caller passes `t = (1 - sigma) * t_scale`.
 pub fn timestep_features(t: f32, dim: usize) -> Vec<f32> {
-    let mut embedding = vec![0f32; dim];
-    let half = dim / 2;
-    if half == 0 {
-        return embedding;
-    }
-    for i in 0..half {
-        let freq = (-10000f32.ln() * (i as f32) / (half as f32)).exp();
-        let arg = t * freq;
-        embedding[i] = arg.cos();
-        embedding[half + i] = arg.sin();
-    }
-    embedding
+    crate::common::ops::sinusoidal_timestep(t, dim)
 }
 
 #[cfg(test)]
