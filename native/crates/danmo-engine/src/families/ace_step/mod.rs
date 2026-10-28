@@ -240,18 +240,16 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
                     .into(),
             )
         })?;
-        let (digit_ids, newline_id) = lm_fsm::resolve_digit_newline_ids(json, config.vocab)?;
+        let mut fsm_session = lm_fsm::MetadataFsmSession::open(json, config.vocab)?;
         let decode_json = json.to_string();
-        let decode_fn = |ids: &[i32]| -> String {
+        let decode_token = |id: i32| -> String {
             token_decode::Decoder::from_tokenizer_json(&decode_json)
-                .map(|d| d.decode(ids))
+                .map(|d| d.decode(&[id]))
                 .unwrap_or_default()
         };
         let fsm = lm::Phase1FsmMask {
-            digit_ids: &digit_ids,
-            newline_id,
-            max_duration: lm_fsm::DURATION_MAX,
-            decode: &decode_fn,
+            session: &mut fsm_session,
+            decode_token: &decode_token,
         };
         lm::sample_generate_fsm(
             &ctx,

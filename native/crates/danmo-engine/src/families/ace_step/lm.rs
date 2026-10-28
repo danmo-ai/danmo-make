@@ -275,13 +275,11 @@ pub fn sample_generate(
     )
 }
 
-/// Optional MetadataFSM numeric masks when `fsm` carries digit/newline ids + decoder.
+/// Optional MetadataFSM session (field-name force + numeric early-block).
 pub struct Phase1FsmMask<'a> {
-    pub digit_ids: &'a [i32; 10],
-    pub newline_id: i32,
-    pub max_duration: i32,
-    /// Decode newly sampled ids → text for field detection.
-    pub decode: &'a dyn Fn(&[i32]) -> String,
+    pub session: &'a mut super::lm_fsm::MetadataFsmSession,
+    /// Decode one new token id → text (for free-form / numeric buffers).
+    pub decode_token: &'a dyn Fn(i32) -> String,
 }
 
 pub fn sample_generate_fsm(
@@ -295,30 +293,31 @@ pub fn sample_generate_fsm(
     top_p: f32,
     top_k: i32,
     seed: u64,
-    fsm: Option<Phase1FsmMask<'_>>,
+    mut fsm: Option<Phase1FsmMask<'_>>,
 ) -> Result<Vec<i32>, WeightError> {
     let max_seq = (prompt.len() + max_new).max(1) as i64;
     let mut session = LmSetRowsSession::open(ctx, weights, config, max_seq)?;
     let mut logits = session.prefill(prompt)?;
     let mut seq = prompt.to_vec();
-    let mut new_ids: Vec<i32> = Vec::new();
     let mut rng = super::lm_sample::XorShift64::new(seed);
     for _ in 0..max_new {
-        if let Some(mask) = &fsm {
-            let decoded = (mask.decode)(&new_ids);
-            let _ = super::lm_fsm::maybe_mask_numeric_field(
-                &mut logits,
-                &decoded,
-                mask.digit_ids,
-                mask.newline_id,
-                mask.max_duration,
-            )?;
+        if let Some(mask) = fsm.as_mut() {
+            let _ = mask.session.mask(&mut logits)?;
+            if mask.session.fsm.in_codes() {
+                break;
+            }
         }
         let next = super::lm_sample::sample_top_k_p(
             &logits, temperature, top_p, top_k, &mut rng,
         )?;
         seq.push(next);
-        new_ids.push(next);
+        if let Some(mask) = fsm.as_mut() {
+            let text = (mask.decode_token)(next);
+            mask.session.observe(next, &text)?;
+            if mask.session.fsm.in_codes() {
+                break;
+            }
+        }
         if stop_ids.contains(&next) {
             break;
         }

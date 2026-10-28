@@ -1,11 +1,12 @@
-//! ACE-Step LM MetadataFSM scaffold (main `constrained_lm.py` / acestep.cpp
+//! ACE-Step LM MetadataFSM (main `constrained_lm.py` / acestep.cpp
 //! `metadata-fsm.h`).
 //!
-//! Full BPE token-set masking needs a tokenizer vocab map. This module ships
-//! the state machine, metadata constants, and numeric early-block helpers so
-//! phase-1 can constrain bpm/duration once digit token ids are known.
+//! Forces CoT field-name phrases (`bpm:`, `duration:`, …) token-by-token and
+//! early-blocks bpm/duration digit continuations. Caption / keyscale /
+//! language value trees are still free-form.
 
 use crate::weights::WeightError;
+use std::collections::HashMap;
 
 pub const BPM_MIN: i32 = 30;
 pub const BPM_MAX: i32 = 300;
@@ -55,6 +56,122 @@ pub struct UserMetas {
     pub timesignature: Option<String>,
 }
 
+/// One forced BPE/special token sequence (field name, think tag, newline).
+#[derive(Debug, Clone)]
+pub struct ForcedPhrase {
+    pub tokens: Vec<i32>,
+    pub pos: usize,
+}
+
+impl ForcedPhrase {
+    pub fn from_ids(tokens: Vec<i32>) -> Result<Self, WeightError> {
+        if tokens.is_empty() {
+            return Err(WeightError::NotBuilt(
+                "ACE-Step LM FSM forced phrase is empty".into(),
+            ));
+        }
+        Ok(Self { tokens, pos: 0 })
+    }
+
+    pub fn from_text(
+        tokenizer_json: &str,
+        text: &str,
+        vocab: i64,
+    ) -> Result<Self, WeightError> {
+        let tokens = crate::common::qwen3::tokenize_plain(tokenizer_json, text, vocab)?;
+        Self::from_ids(tokens)
+    }
+
+    pub fn done(&self) -> bool {
+        self.pos >= self.tokens.len()
+    }
+
+    pub fn next_id(&self) -> Option<i32> {
+        self.tokens.get(self.pos).copied()
+    }
+
+    pub fn mask_next(&self, logits: &mut [f32]) -> Result<(), WeightError> {
+        let Some(id) = self.next_id() else {
+            return Err(WeightError::NotBuilt(
+                "ACE-Step LM FSM forced phrase is already complete".into(),
+            ));
+        };
+        if id < 0 || id as usize >= logits.len() {
+            return Err(WeightError::NotBuilt(format!(
+                "ACE-Step LM FSM forced token {id} is outside vocab {}",
+                logits.len()
+            )));
+        }
+        for logit in logits.iter_mut() {
+            *logit = f32::NEG_INFINITY;
+        }
+        logits[id as usize] = 0.0;
+        Ok(())
+    }
+
+    /// Advance after sampling `id`. Returns true when the phrase completes.
+    pub fn observe(&mut self, id: i32) -> Result<bool, WeightError> {
+        let Some(expected) = self.next_id() else {
+            return Err(WeightError::NotBuilt(
+                "ACE-Step LM FSM forced phrase observe after complete".into(),
+            ));
+        };
+        if id != expected {
+            return Err(WeightError::NotBuilt(format!(
+                "ACE-Step LM FSM expected token {expected}, got {id}"
+            )));
+        }
+        self.pos += 1;
+        Ok(self.done())
+    }
+
+    pub fn reset(&mut self) {
+        self.pos = 0;
+    }
+}
+
+/// Pre-tokenized fixed strings for NAME / think states.
+#[derive(Debug, Clone)]
+pub struct FsmLexicon {
+    pub think: ForcedPhrase,
+    pub newline: ForcedPhrase,
+    pub bpm_name: ForcedPhrase,
+    pub caption_name: ForcedPhrase,
+    pub duration_name: ForcedPhrase,
+    pub keyscale_name: ForcedPhrase,
+    pub language_name: ForcedPhrase,
+    pub timesig_name: ForcedPhrase,
+    pub think_end: ForcedPhrase,
+    pub digit_ids: [i32; 10],
+    pub newline_id: i32,
+}
+
+impl FsmLexicon {
+    pub fn from_tokenizer(tokenizer_json: &str, vocab: i64) -> Result<Self, WeightError> {
+        let think_id = super::lm_prompt::TOKEN_THINK;
+        let think_end_id = super::lm_prompt::TOKEN_THINK_END;
+        if think_id as i64 >= vocab || think_end_id as i64 >= vocab {
+            return Err(WeightError::NotBuilt(format!(
+                "ACE-Step LM FSM think specials need vocab > {think_end_id}, got {vocab}"
+            )));
+        }
+        let (digit_ids, newline_id) = resolve_digit_newline_ids(tokenizer_json, vocab)?;
+        Ok(Self {
+            think: ForcedPhrase::from_ids(vec![think_id])?,
+            newline: ForcedPhrase::from_ids(vec![newline_id])?,
+            bpm_name: ForcedPhrase::from_text(tokenizer_json, "bpm:", vocab)?,
+            caption_name: ForcedPhrase::from_text(tokenizer_json, "caption:", vocab)?,
+            duration_name: ForcedPhrase::from_text(tokenizer_json, "duration:", vocab)?,
+            keyscale_name: ForcedPhrase::from_text(tokenizer_json, "keyscale:", vocab)?,
+            language_name: ForcedPhrase::from_text(tokenizer_json, "language:", vocab)?,
+            timesig_name: ForcedPhrase::from_text(tokenizer_json, "timesignature:", vocab)?,
+            think_end: ForcedPhrase::from_ids(vec![think_end_id])?,
+            digit_ids,
+            newline_id,
+        })
+    }
+}
+
 /// Phase-1 metadata FSM (field order matches upstream CoT YAML).
 #[derive(Debug, Clone)]
 pub struct MetadataFsm {
@@ -62,8 +179,11 @@ pub struct MetadataFsm {
     pub value_buf: String,
     pub skip_caption: bool,
     pub skip_language: bool,
+    pub skip_genres: bool,
     pub user: UserMetas,
     pub max_duration: i32,
+    /// Active forced phrase for NAME / think states.
+    pub phrase: Option<ForcedPhrase>,
 }
 
 impl Default for MetadataFsm {
@@ -73,8 +193,10 @@ impl Default for MetadataFsm {
             value_buf: String::new(),
             skip_caption: false,
             skip_language: false,
+            skip_genres: true,
             user: UserMetas::default(),
             max_duration: DURATION_MAX,
+            phrase: None,
         }
     }
 }
@@ -89,14 +211,219 @@ impl MetadataFsm {
         self
     }
 
-    /// Reset to the start of a CoT block.
-    pub fn reset(&mut self) {
+    /// Reset to the start of a CoT block and arm `<think>`.
+    pub fn reset(&mut self, lex: &FsmLexicon) {
         self.state = FsmState::ThinkTag;
         self.value_buf.clear();
+        self.phrase = Some(lex.think.clone());
     }
 
     pub fn in_codes(&self) -> bool {
         matches!(self.state, FsmState::CodesGeneration | FsmState::Completed)
+    }
+
+    fn next_field_after(&self, current: &str) -> FsmState {
+        let order = [
+            "bpm",
+            "caption",
+            "duration",
+            "genres",
+            "keyscale",
+            "language",
+            "timesignature",
+        ];
+        let map: HashMap<&str, FsmState> = HashMap::from([
+            ("bpm", FsmState::BpmName),
+            ("caption", FsmState::CaptionName),
+            ("duration", FsmState::DurationName),
+            ("keyscale", FsmState::KeyscaleName),
+            ("language", FsmState::LanguageName),
+            ("timesignature", FsmState::TimesigName),
+        ]);
+        let start = order.iter().position(|f| *f == current).map(|i| i + 1).unwrap_or(0);
+        for field in &order[start..] {
+            if *field == "genres" && self.skip_genres {
+                continue;
+            }
+            if *field == "caption" && self.skip_caption {
+                continue;
+            }
+            if *field == "language" && self.skip_language {
+                continue;
+            }
+            if let Some(st) = map.get(field) {
+                return *st;
+            }
+        }
+        FsmState::ThinkEndTag
+    }
+
+    fn arm_phrase(&mut self, lex: &FsmLexicon) {
+        let mut phrase = match self.state {
+            FsmState::ThinkTag => Some(lex.think.clone()),
+            FsmState::NewlineAfterThink
+            | FsmState::NewlineAfterBpm
+            | FsmState::NewlineAfterDuration
+            | FsmState::NewlineAfterKeyscale
+            | FsmState::NewlineAfterTimesig => Some(lex.newline.clone()),
+            FsmState::BpmName => Some(lex.bpm_name.clone()),
+            FsmState::CaptionName => Some(lex.caption_name.clone()),
+            FsmState::DurationName => Some(lex.duration_name.clone()),
+            FsmState::KeyscaleName => Some(lex.keyscale_name.clone()),
+            FsmState::LanguageName => Some(lex.language_name.clone()),
+            FsmState::TimesigName => Some(lex.timesig_name.clone()),
+            FsmState::ThinkEndTag => Some(lex.think_end.clone()),
+            _ => None,
+        };
+        if let Some(p) = phrase.as_mut() {
+            p.reset();
+        }
+        self.phrase = phrase;
+    }
+
+    /// Mask logits for the current state (forced phrase or numeric value).
+    pub fn mask_logits(
+        &self,
+        logits: &mut [f32],
+        lex: &FsmLexicon,
+        decoded_value: &str,
+    ) -> Result<bool, WeightError> {
+        if let Some(phrase) = &self.phrase {
+            if !phrase.done() {
+                phrase.mask_next(logits)?;
+                return Ok(true);
+            }
+        }
+        match self.state {
+            FsmState::BpmValue => {
+                Self::mask_numeric_value(
+                    logits,
+                    decoded_value,
+                    BPM_MIN,
+                    BPM_MAX,
+                    &lex.digit_ids,
+                    lex.newline_id,
+                )?;
+                Ok(true)
+            }
+            FsmState::DurationValue => {
+                let max_v = self.max_duration.min(DURATION_MAX);
+                Self::mask_numeric_value(
+                    logits,
+                    decoded_value,
+                    DURATION_MIN,
+                    max_v,
+                    &lex.digit_ids,
+                    lex.newline_id,
+                )?;
+                Ok(true)
+            }
+            FsmState::TimesigValue => {
+                Self::mask_timesig_value(logits, decoded_value, &lex.digit_ids, lex.newline_id)?;
+                Ok(true)
+            }
+            FsmState::CodesGeneration | FsmState::Completed => Ok(false),
+            // Caption / keyscale / language values stay free-form for now.
+            _ => Ok(false),
+        }
+    }
+
+    /// Observe a sampled token and advance state / phrase progress.
+    pub fn observe(
+        &mut self,
+        id: i32,
+        lex: &FsmLexicon,
+        token_text: &str,
+    ) -> Result<(), WeightError> {
+        if let Some(phrase) = self.phrase.as_mut() {
+            if !phrase.done() {
+                let done = phrase.observe(id)?;
+                if done {
+                    self.phrase = None;
+                    self.advance_after_phrase(lex);
+                }
+                return Ok(());
+            }
+        }
+        match self.state {
+            FsmState::BpmValue | FsmState::DurationValue | FsmState::TimesigValue => {
+                if id == lex.newline_id {
+                    self.value_buf.clear();
+                    let next = match self.state {
+                        FsmState::BpmValue => self.next_field_after("bpm"),
+                        FsmState::DurationValue => self.next_field_after("duration"),
+                        FsmState::TimesigValue => FsmState::ThinkEndTag,
+                        _ => unreachable!(),
+                    };
+                    self.state = next;
+                    self.arm_phrase(lex);
+                } else {
+                    self.value_buf.push_str(token_text);
+                }
+            }
+            FsmState::CaptionValue | FsmState::KeyscaleValue | FsmState::LanguageValue => {
+                // Free-form until newline ends the field.
+                if id == lex.newline_id || token_text.contains('\n') {
+                    self.value_buf.clear();
+                    let next = match self.state {
+                        FsmState::CaptionValue => self.next_field_after("caption"),
+                        FsmState::KeyscaleValue => self.next_field_after("keyscale"),
+                        FsmState::LanguageValue => self.next_field_after("language"),
+                        _ => unreachable!(),
+                    };
+                    self.state = next;
+                    self.arm_phrase(lex);
+                } else {
+                    self.value_buf.push_str(token_text);
+                }
+            }
+            FsmState::CodesGeneration => {
+                self.state = FsmState::Completed;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn advance_after_phrase(&mut self, lex: &FsmLexicon) {
+        self.state = match self.state {
+            FsmState::ThinkTag => FsmState::NewlineAfterThink,
+            FsmState::NewlineAfterThink => FsmState::BpmName,
+            FsmState::BpmName => FsmState::BpmValue,
+            FsmState::CaptionName => FsmState::CaptionValue,
+            FsmState::DurationName => FsmState::DurationValue,
+            FsmState::KeyscaleName => FsmState::KeyscaleValue,
+            FsmState::LanguageName => FsmState::LanguageValue,
+            FsmState::TimesigName => FsmState::TimesigValue,
+            FsmState::ThinkEndTag => FsmState::CodesGeneration,
+            FsmState::NewlineAfterBpm => self.next_field_after("bpm"),
+            FsmState::NewlineAfterDuration => self.next_field_after("duration"),
+            FsmState::NewlineAfterKeyscale => self.next_field_after("keyscale"),
+            FsmState::NewlineAfterTimesig => FsmState::ThinkEndTag,
+            other => other,
+        };
+        self.value_buf.clear();
+        self.arm_phrase(lex);
+    }
+
+    fn mask_timesig_value(
+        logits: &mut [f32],
+        so_far: &str,
+        digit_ids: &[i32; 10],
+        newline_id: i32,
+    ) -> Result<(), WeightError> {
+        for logit in logits.iter_mut() {
+            *logit = f32::NEG_INFINITY;
+        }
+        if so_far.is_empty() {
+            for &d in &VALID_TIME_SIGNATURES {
+                let id = digit_ids[d as usize] as usize;
+                logits[id] = 0.0;
+            }
+        } else if is_valid_timesignature(so_far) {
+            logits[newline_id as usize] = 0.0;
+        }
+        Ok(())
     }
 
     /// Early-block digit continuations that cannot lead to a value in
@@ -146,6 +473,30 @@ impl MetadataFsm {
             }
         }
         Ok(any_digit)
+    }
+}
+
+/// Owns lexicon + FSM for one phase-1 generate call.
+pub struct MetadataFsmSession {
+    pub lex: FsmLexicon,
+    pub fsm: MetadataFsm,
+}
+
+impl MetadataFsmSession {
+    pub fn open(tokenizer_json: &str, vocab: i64) -> Result<Self, WeightError> {
+        let lex = FsmLexicon::from_tokenizer(tokenizer_json, vocab)?;
+        let mut fsm = MetadataFsm::new();
+        fsm.reset(&lex);
+        Ok(Self { lex, fsm })
+    }
+
+    pub fn mask(&self, logits: &mut [f32]) -> Result<bool, WeightError> {
+        self.fsm
+            .mask_logits(logits, &self.lex, &self.fsm.value_buf)
+    }
+
+    pub fn observe(&mut self, id: i32, token_text: &str) -> Result<(), WeightError> {
+        self.fsm.observe(id, &self.lex, token_text)
     }
 }
 
@@ -321,5 +672,55 @@ mod tests {
         assert!(applied);
         assert!(logits[5].is_infinite()); // 12 < BPM_MIN → no newline
         assert_eq!(logits[10], 0.0); // digit 0 → 120
+    }
+
+    #[test]
+    fn forced_phrase_masks_and_advances() {
+        let mut phrase = ForcedPhrase::from_ids(vec![7, 8, 9]).unwrap();
+        let mut logits = vec![1.0f32; 16];
+        phrase.mask_next(&mut logits).unwrap();
+        assert_eq!(logits[7], 0.0);
+        assert!(logits[0].is_infinite());
+        assert!(!phrase.observe(7).unwrap());
+        phrase.mask_next(&mut logits).unwrap();
+        assert_eq!(logits[8], 0.0);
+        assert!(!phrase.observe(8).unwrap());
+        assert!(phrase.observe(9).unwrap());
+        assert!(phrase.done());
+    }
+
+    #[test]
+    fn fsm_forces_think_then_bpm_name() {
+        let newline_id = 5;
+        let digit_ids = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
+        let lex = FsmLexicon {
+            think: ForcedPhrase::from_ids(vec![100]).unwrap(),
+            newline: ForcedPhrase::from_ids(vec![newline_id]).unwrap(),
+            bpm_name: ForcedPhrase::from_ids(vec![20, 21]).unwrap(),
+            caption_name: ForcedPhrase::from_ids(vec![30]).unwrap(),
+            duration_name: ForcedPhrase::from_ids(vec![40]).unwrap(),
+            keyscale_name: ForcedPhrase::from_ids(vec![50]).unwrap(),
+            language_name: ForcedPhrase::from_ids(vec![60]).unwrap(),
+            timesig_name: ForcedPhrase::from_ids(vec![70]).unwrap(),
+            think_end: ForcedPhrase::from_ids(vec![80]).unwrap(),
+            digit_ids,
+            newline_id,
+        };
+        let mut fsm = MetadataFsm::new();
+        fsm.skip_caption = true;
+        fsm.skip_language = true;
+        fsm.reset(&lex);
+        let mut logits = vec![1.0f32; 128];
+        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert_eq!(logits[100], 0.0);
+        fsm.observe(100, &lex, "").unwrap();
+        assert_eq!(fsm.state, FsmState::NewlineAfterThink);
+        fsm.observe(newline_id, &lex, "\n").unwrap();
+        assert_eq!(fsm.state, FsmState::BpmName);
+        fsm.mask_logits(&mut logits, &lex, "").unwrap();
+        assert_eq!(logits[20], 0.0);
+        fsm.observe(20, &lex, "bp").unwrap();
+        fsm.observe(21, &lex, "m:").unwrap();
+        assert_eq!(fsm.state, FsmState::BpmValue);
     }
 }
