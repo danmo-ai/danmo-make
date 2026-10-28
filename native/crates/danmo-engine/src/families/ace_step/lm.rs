@@ -252,8 +252,40 @@ pub fn greedy_generate(
     max_new: usize,
     stop_ids: &[i32],
 ) -> Result<Vec<i32>, WeightError> {
+    sample_generate(
+        ctx, weights, config, prompt, max_new, stop_ids, 0.0, 1.0, 0, 0,
+    )
+}
+
+/// Sample decode with temperature / top-k / top-p on the set_rows KV session.
+pub fn sample_generate(
+    ctx: &GgmlContext,
+    weights: &GgufWeights,
+    config: AceLmConfig,
+    prompt: &[i32],
+    max_new: usize,
+    stop_ids: &[i32],
+    temperature: f32,
+    top_p: f32,
+    top_k: i32,
+    seed: u64,
+) -> Result<Vec<i32>, WeightError> {
     let max_seq = (prompt.len() + max_new).max(1) as i64;
-    greedy_generate_set_rows(ctx, weights, config, prompt, max_new, stop_ids, max_seq)
+    let mut session = LmSetRowsSession::open(ctx, weights, config, max_seq)?;
+    let mut logits = session.prefill(prompt)?;
+    let mut seq = prompt.to_vec();
+    let mut rng = super::lm_sample::XorShift64::new(seed);
+    for _ in 0..max_new {
+        let next = super::lm_sample::sample_top_k_p(
+            &logits, temperature, top_p, top_k, &mut rng,
+        )?;
+        seq.push(next);
+        if stop_ids.contains(&next) {
+            break;
+        }
+        logits = session.decode(next)?;
+    }
+    Ok(seq)
 }
 
 /// Fixed-topology decode: one graph, padded KV via `ggml_set_rows`.

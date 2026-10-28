@@ -52,7 +52,24 @@ pub fn greedy_audio_codes(
     cot_prompt: &[i32],
     max_codes: usize,
 ) -> Result<Vec<i32>, WeightError> {
-    greedy_audio_codes_ex(
+    sample_audio_codes(
+        ctx, weights, config, cot_prompt, max_codes, 0.0, 1.0, 0, 0,
+    )
+}
+
+/// Phase-2 with temperature / top-k / top-p (acestep.cpp `run_phase2_*`).
+pub fn sample_audio_codes(
+    ctx: &GgmlContext,
+    weights: &GgufWeights,
+    config: AceLmConfig,
+    cot_prompt: &[i32],
+    max_codes: usize,
+    temperature: f32,
+    top_p: f32,
+    top_k: i32,
+    seed: u64,
+) -> Result<Vec<i32>, WeightError> {
+    sample_audio_codes_ex(
         ctx,
         weights,
         config,
@@ -61,6 +78,10 @@ pub fn greedy_audio_codes(
         AUDIO_CODE_BASE,
         AUDIO_CODE_COUNT,
         TOKEN_IM_END,
+        temperature,
+        top_p,
+        top_k,
+        seed,
     )
 }
 
@@ -74,6 +95,26 @@ pub fn greedy_audio_codes_ex(
     code_base: i32,
     code_count: i32,
     eos: i32,
+) -> Result<Vec<i32>, WeightError> {
+    sample_audio_codes_ex(
+        ctx, weights, config, cot_prompt, max_codes, code_base, code_count, eos, 0.0, 1.0, 0, 0,
+    )
+}
+
+/// Phase-2 with explicit specials + sampling knobs.
+pub fn sample_audio_codes_ex(
+    ctx: &GgmlContext,
+    weights: &GgufWeights,
+    config: AceLmConfig,
+    cot_prompt: &[i32],
+    max_codes: usize,
+    code_base: i32,
+    code_count: i32,
+    eos: i32,
+    temperature: f32,
+    top_p: f32,
+    top_k: i32,
+    seed: u64,
 ) -> Result<Vec<i32>, WeightError> {
     if cot_prompt.is_empty() {
         return Err(WeightError::NotBuilt(
@@ -96,9 +137,12 @@ pub fn greedy_audio_codes_ex(
     let mut session = LmSetRowsSession::open(ctx, weights, config, max_seq)?;
     let mut logits = session.prefill(cot_prompt)?;
     let mut codes = Vec::new();
+    let mut rng = super::lm_sample::XorShift64::new(seed);
     for _ in 0..max_codes {
         mask_audio_code_logits(&mut logits, code_base, code_count, eos)?;
-        let next = argmax(&logits);
+        let next = super::lm_sample::sample_top_k_p(
+            &logits, temperature, top_p, top_k, &mut rng,
+        )?;
         if next == eos {
             break;
         }
@@ -111,18 +155,6 @@ pub fn greedy_audio_codes_ex(
         logits = session.decode(next)?;
     }
     Ok(codes)
-}
-
-fn argmax(logits: &[f32]) -> i32 {
-    let mut best_i = 0usize;
-    let mut best_v = f32::NEG_INFINITY;
-    for (i, &v) in logits.iter().enumerate() {
-        if v > best_v {
-            best_v = v;
-            best_i = i;
-        }
-    }
-    best_i as i32
 }
 
 #[cfg(test)]

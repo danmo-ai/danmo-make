@@ -336,6 +336,10 @@ fn run_task(
                     timesignature: &request.timesignature,
                     vocal_language: vocal,
                     max_new_tokens: request.max_new_tokens.unwrap_or(256) as usize,
+                    temperature: request.temperature.unwrap_or(0.0),
+                    top_p: request.top_p.unwrap_or(1.0),
+                    top_k: request.top_k.unwrap_or(0),
+                    seed: request.seed.unwrap_or(0),
                 },
             )
             .map_err(|e| e.to_string())?;

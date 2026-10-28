@@ -190,6 +190,10 @@ pub struct AudioLmRequest<'a> {
     pub timesignature: &'a str,
     pub vocal_language: &'a str,
     pub max_new_tokens: usize,
+    pub temperature: f32,
+    pub top_p: f32,
+    pub top_k: i32,
+    pub seed: u64,
 }
 
 #[derive(Debug)]
@@ -353,6 +357,10 @@ pub fn audio_lm(
         vocal_language: request.vocal_language,
         max_new_tokens: request.max_new_tokens.max(1),
         tokenizer_json: None,
+        temperature: request.temperature,
+        top_p: request.top_p,
+        top_k: request.top_k,
+        seed: request.seed,
     };
     if let Some(out) = families::run_audio_lm_facade(family, bundle, &lm)? {
         return Ok(AudioLmOutput {

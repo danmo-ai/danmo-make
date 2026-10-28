@@ -20,6 +20,7 @@ mod lm;
 mod lm_codes;
 mod lm_format;
 mod lm_prompt;
+mod lm_sample;
 mod repaint;
 mod schedule;
 mod text;
@@ -105,6 +106,14 @@ pub struct LmRequest<'a> {
     pub max_new_tokens: usize,
     /// Optional tokenizer.json contents; when set, prompts are BPE-encoded.
     pub tokenizer_json: Option<&'a str>,
+    /// Sampling temperature (`0` = greedy). Default 0.
+    pub temperature: f32,
+    /// Nucleus top-p in (0, 1]. Default 1.0.
+    pub top_p: f32,
+    /// Top-k (`0` = disabled, `1` = greedy). Default 0.
+    pub top_k: i32,
+    /// RNG seed for non-greedy sampling.
+    pub seed: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -189,12 +198,16 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
             .max(1)
             .min(2048)
             .min(((prompt.duration * 5.0) as usize).saturating_add(100).max(1));
-        let codes = lm_codes::greedy_audio_codes(
+        let codes = lm_codes::sample_audio_codes(
             &ctx,
             &weights,
             config,
             &prompt_ids,
             max_codes,
+            request.temperature,
+            request.top_p,
+            request.top_k,
+            request.seed,
         )?;
         return Ok(LmOutput {
             mode: request.mode.name().into(),
@@ -217,13 +230,17 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
         .filter(|&id| (id as i64) < config.vocab)
         .collect();
     let max_new = request.max_new_tokens.max(1).min(2048);
-    let generated = lm::greedy_generate(
+    let generated = lm::sample_generate(
         &ctx,
         &weights,
         config,
         &prompt_ids,
         max_new,
         &stop,
+        request.temperature,
+        request.top_p,
+        request.top_k,
+        request.seed,
     )?;
     let new_ids = generated[prompt_ids.len()..].to_vec();
     let text = if let Some(json) = tokenizer {
@@ -275,6 +292,10 @@ pub fn run_lm_expand(bundle: &Path) -> Result<LmOutput, WeightError> {
             vocal_language: "",
             max_new_tokens: 8,
             tokenizer_json: None,
+            temperature: 0.0,
+            top_p: 1.0,
+            top_k: 0,
+            seed: 0,
         },
     )
 }
@@ -511,6 +532,10 @@ mod tests {
                 vocal_language: "en",
                 max_new_tokens: 3,
                 tokenizer_json: None,
+                temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
+                seed: 0,
             },
         )
         .unwrap();
@@ -537,6 +562,10 @@ mod tests {
                 vocal_language: "en",
                 max_new_tokens: 8,
                 tokenizer_json: None,
+                temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
+                seed: 0,
             },
         )
         .unwrap_err();

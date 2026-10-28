@@ -200,6 +200,14 @@ pub struct AudioLmRequest {
     pub vocal_language: String,
     /// Max newly sampled tokens (phase-1).
     pub max_new_tokens: Option<u32>,
+    /// Sampling temperature (`0` = greedy).
+    pub temperature: Option<f32>,
+    /// Nucleus top-p in (0, 1].
+    pub top_p: Option<f32>,
+    /// Top-k (`0` = disabled).
+    pub top_k: Option<i32>,
+    /// RNG seed for non-greedy sampling.
+    pub seed: Option<u64>,
     #[serde(default = "default_priority")]
     pub priority: String,
 }
