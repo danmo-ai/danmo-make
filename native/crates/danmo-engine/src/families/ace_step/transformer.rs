@@ -13,7 +13,9 @@ use crate::weights::{GgufWeights, WeightError};
 use std::collections::HashMap;
 use std::path::Path;
 
-const GRAPH_MEM: usize = 64 * 1024 * 1024;
+/// Smoke fits in tens of MB; XL needs a much larger graph arena.
+const GRAPH_MEM_SMOKE: usize = 64 * 1024 * 1024;
+const GRAPH_MEM_XL: usize = 2 * 1024 * 1024 * 1024;
 
 pub struct AceStepDit {
     graph: ReusedGraph,
@@ -41,7 +43,12 @@ impl AceStepDit {
         enc_seq: i64,
         types: &HashMap<String, u32>,
     ) -> Result<Self, RuntimeError> {
-        let mut builder = ctx.builder(GRAPH_MEM)?;
+        let mem = if config == AceStepConfig::smoke() {
+            GRAPH_MEM_SMOKE
+        } else {
+            GRAPH_MEM_XL
+        };
+        let mut builder = ctx.builder(mem)?;
         let built = build_dit(&mut builder, config, frames, enc_seq, types)?;
         let graph = builder.finish(built.output)?;
         Ok(Self {
@@ -304,32 +311,35 @@ pub fn schedule_for(config: AceStepConfig, steps: Option<u32>) -> Result<Vec<f32
 }
 
 /// Build the DiT, load weights, run guidance-1 Euler on zero context / noise.
-/// Product create still needs the text tower and VAE after this returns.
+/// Smoke cards prove the graph; XL cards use the same path with a larger arena.
 pub fn prove_smoke_denoise(
     ctx: &GgmlContext,
     bundle: &Path,
     config: AceStepConfig,
 ) -> Result<Vec<f32>, WeightError> {
-    if config != AceStepConfig::smoke() {
-        return Err(WeightError::NotBuilt(
-            "ACE-Step XL DiT forward is not wired into audio create (smoke path only)".into(),
-        ));
-    }
     let path = super::dit_gguf(bundle)?;
     let loaded = GgufWeights::open(&path)?;
     super::check_layout(&loaded, config)?;
-    let frames = config.patch * 2;
+    let frames = if config == AceStepConfig::smoke() {
+        config.patch * 2
+    } else {
+        // Short XL probe only — full create uses duration_to_latent_frames.
+        8
+    };
     let enc_seq = 2;
     let mut dit = AceStepDit::build(ctx, config, frames, enc_seq)
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     load_weights(&mut dit, &loaded, config)?;
-    // Turbo table on the smoke card: eight short forwards.
     let schedule = schedule_for(
         AceStepConfig {
             is_turbo: true,
             ..config
         },
-        None,
+        Some(if config == AceStepConfig::smoke() {
+            8
+        } else {
+            2
+        }),
     )?;
     let xt = vec![0.1f32; dit.xt_len()];
     let context = vec![0f32; dit.context_len()];

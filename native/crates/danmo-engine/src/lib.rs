@@ -8,7 +8,10 @@ pub use families::{
     all_specs, spec, weight_layout, write_chain_bundle, write_config_bundle, write_q8_bundle,
     write_qwen3_bundle, write_smoke_bundle, FamilySpec, Flux2Config, Flux2Denoise, Media, Shape,
 };
-pub use pipeline::{audio_create, image_create, upscale, video_create, EngineError, RunOutput};
+pub use pipeline::{
+    audio_create, image_create, upscale, video_create, AudioCreateRequest, AudioRunOutput,
+    EngineError, RunOutput,
+};
 pub use runtime::{identity_probe, BackendKind, GgmlContext};
 pub use weights::{assert_gguf_bundle, lora_base_name, write_f32_gguf, GgufWeights, WeightError};
 
@@ -427,7 +430,20 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("no ggml graph"));
-        let ace = audio_create("ace_step", &dir).unwrap_err();
+        let ace = audio_create(
+            "ace_step",
+            &dir,
+            &AudioCreateRequest {
+                prompt: "test",
+                lyrics: "[inst]",
+                duration_sec: 5.0,
+                seed: Some(0),
+                guidance: 1.0,
+                steps: None,
+                vocal_language: "en",
+            },
+        )
+        .unwrap_err();
         assert!(ace.to_string().contains("ACE-Step"), "{ace}");
         assert!(upscale("esrgan", &dir).is_err());
         let missing = dir.join("missing");

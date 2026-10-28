@@ -61,7 +61,7 @@ pub(crate) fn tokenize(
         return tokenize_bytes(prompt, vocab_size);
     }
     if value.get("model").is_some() {
-        return tokenize_bpe(&value, prompt, vocab_size, thinking);
+        return tokenize_bpe(&value, prompt, vocab_size, thinking, true, MAX_TEXT_TOKENS);
     }
     let Some(vocab) = value.get("vocab").and_then(|item| item.as_object()) else {
         return Err(WeightError::NotBuilt("tokenizer has no vocab".into()));
@@ -127,11 +127,33 @@ fn merge_chat_template(
     Ok(tokenizer.to_string())
 }
 
+/// Encode `prompt` as raw BPE text (no ChatML wrap). Used by ACE-Step
+/// Embedding prompts that already contain `<|endoftext|>`.
+pub(crate) fn tokenize_plain(
+    json: &str,
+    prompt: &str,
+    vocab_size: i64,
+) -> Result<Vec<i32>, WeightError> {
+    let value: Value = serde_json::from_str(json)
+        .map_err(|err| WeightError::NotBuilt(format!("tokenizer.json is not json: {err}")))?;
+    if value.get("encoding").and_then(|item| item.as_str()) == Some("bytes") {
+        return tokenize_bytes(prompt, vocab_size);
+    }
+    if value.get("model").is_some() {
+        return tokenize_bpe(&value, prompt, vocab_size, false, false, 2048);
+    }
+    Err(WeightError::NotBuilt(
+        "plain tokenize needs a BPE tokenizer.json".into(),
+    ))
+}
+
 fn tokenize_bpe(
     value: &Value,
     prompt: &str,
     vocab_size: i64,
     thinking: bool,
+    wrap_chat: bool,
+    max_tokens: usize,
 ) -> Result<Vec<i32>, WeightError> {
     if prompt.is_empty() {
         return Err(WeightError::NotBuilt("prompt has no tokens".into()));
@@ -163,16 +185,20 @@ fn tokenize_bpe(
     let vocab = vocab_map(model)?;
     let ranks = merge_ranks(model)?;
     let specials = special_tokens(&vocab, value.get("added_tokens"))?;
-    let template = chat_template(value)?;
-    let text = match template {
-        Some(template) => chat_text(prompt, thinking, template.contains("enable_thinking")),
-        None => prompt.to_string(),
+    let text = if wrap_chat {
+        let template = chat_template(value)?;
+        match template {
+            Some(template) => chat_text(prompt, thinking, template.contains("enable_thinking")),
+            None => prompt.to_string(),
+        }
+    } else {
+        prompt.to_string()
     };
     let text = normalize_text(&text, normalizer)?;
     let ids = crate::common::bpe::encode(&text, &vocab, &ranks, &specials, vocab_size)?;
-    if ids.len() > MAX_TEXT_TOKENS {
+    if ids.len() > max_tokens {
         return Err(WeightError::NotBuilt(format!(
-            "prompt tokenized to {} tokens, the text encoder accepts {MAX_TEXT_TOKENS}",
+            "prompt tokenized to {} tokens, the text encoder accepts {max_tokens}",
             ids.len()
         )));
     }

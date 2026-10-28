@@ -114,10 +114,16 @@ pub struct VideoGenerationRequest {
 pub struct AudioGenerationRequest {
     pub model: String,
     pub prompt: String,
+    #[serde(default)]
+    pub lyrics: String,
     pub duration: Option<f32>,
     pub seed: Option<i64>,
     #[serde(default = "default_priority")]
     pub priority: String,
+    #[serde(default)]
+    pub vocal_language: String,
+    pub guidance: Option<f32>,
+    pub steps: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

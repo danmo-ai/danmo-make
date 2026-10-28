@@ -78,8 +78,41 @@ impl GraphBuilder {
     }
 
     pub fn f32_1d(&mut self, name: &str, ne0: i64, input: bool) -> *mut g::ggml_tensor {
+        self.tensor_1d(name, g::ggml_type_GGML_TYPE_F32, ne0, input)
+    }
+
+    pub fn tensor_1d(
+        &mut self,
+        name: &str,
+        ggml_type: u32,
+        ne0: i64,
+        input: bool,
+    ) -> *mut g::ggml_tensor {
         unsafe {
-            let t = g::ggml_new_tensor_1d(self.ctx, g::ggml_type_GGML_TYPE_F32, ne0);
+            let t = g::ggml_new_tensor_1d(self.ctx, ggml_type, ne0);
+            name_tensor(t, name);
+            if input {
+                g::ggml_set_input(t);
+                self.inputs.push(NamedTensor {
+                    name: name.to_string(),
+                    tensor: t,
+                });
+            }
+            t
+        }
+    }
+
+    pub fn tensor_3d(
+        &mut self,
+        name: &str,
+        ggml_type: u32,
+        ne0: i64,
+        ne1: i64,
+        ne2: i64,
+        input: bool,
+    ) -> *mut g::ggml_tensor {
+        unsafe {
+            let t = g::ggml_new_tensor_3d(self.ctx, ggml_type, ne0, ne1, ne2);
             name_tensor(t, name);
             if input {
                 g::ggml_set_input(t);
@@ -420,6 +453,27 @@ impl GraphBuilder {
     /// Nearest ×2 on width and height. Channels stay on `ne[2]`.
     pub fn upscale_nearest(&self, a: Tensor) -> Tensor {
         unsafe { g::ggml_upscale(self.ctx, a, 2, g::ggml_scale_mode_GGML_SCALE_MODE_NEAREST) }
+    }
+
+    pub fn sin(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_sin(self.ctx, a) }
+    }
+
+    /// 1D convolution. Kernel `a` is `[K, IC, OC]`, data `b` is `[T, IC]` (ggml).
+    pub fn conv_1d(
+        &self,
+        kernel: Tensor,
+        data: Tensor,
+        stride: i32,
+        padding: i32,
+        dilation: i32,
+    ) -> Tensor {
+        unsafe { g::ggml_conv_1d(self.ctx, kernel, data, stride, padding, dilation) }
+    }
+
+    /// Scatter-add GEMM columns to a 1D signal. `a` is `[K*OC, T_in]`.
+    pub fn col2im_1d(&self, columns: Tensor, stride: i32, out_channels: i32, padding: i32) -> Tensor {
+        unsafe { g::ggml_col2im_1d(self.ctx, columns, stride, out_channels, padding) }
     }
 
     pub fn sqr(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {

@@ -1,6 +1,6 @@
 //! One factory row per registry family. Shape A/B/C matches `docs/engine_architecture.md`.
 
-mod ace_step;
+pub(crate) mod ace_step;
 mod flux2;
 mod qwen_image;
 mod z_image;
@@ -300,12 +300,10 @@ pub fn run_dit_image(
 pub fn run_audio_facade(
     family: &str,
     bundle: &std::path::Path,
-) -> Result<Option<()>, crate::weights::WeightError> {
+    request: &ace_step::CreateRequest<'_>,
+) -> Result<Option<ace_step::CreateOutput>, crate::weights::WeightError> {
     match family {
-        "ace_step" => {
-            ace_step::run_create(bundle)?;
-            Ok(None)
-        }
+        "ace_step" => Ok(Some(ace_step::run_create(bundle, request)?)),
         _ => Ok(None),
     }
 }

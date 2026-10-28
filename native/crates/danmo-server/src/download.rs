@@ -1299,16 +1299,44 @@ fn plan_component(
         revision: revision.clone(),
     })?;
     let selected = select_component_files(&entries, &patterns)?;
+    let role = component
+        .get("role")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let mut files = Vec::new();
     for entry in selected {
         let url = resolve_file_url(source, repo_id, &revision, &entry.path)?;
+        let dest = component_dest(&root, role, &entry.path)?;
         files.push(PlannedFile {
             url,
-            dest: root.join(&entry.path).display().to_string(),
+            dest: dest.display().to_string(),
             size: entry.size,
         });
     }
     Ok(files)
+}
+
+/// Optional `role` remaps a flat GGUF companion into `text_encoder/`, `vae/`,
+/// or `tokenizer/` so `bundle.manifest.json` can classify it. Empty role keeps
+/// the remote relative path (Flux2 / Z-Image HF trees).
+fn component_dest(root: &Path, role: &str, remote_path: &str) -> Result<PathBuf, String> {
+    if remote_path.is_empty() || remote_path.contains("..") {
+        return Err("component path escapes the bundle".into());
+    }
+    let file_name = Path::new(remote_path)
+        .file_name()
+        .ok_or_else(|| format!("component path has no file name: {remote_path}"))?;
+    Ok(match role {
+        "" => root.join(remote_path),
+        "text_encoder" => root.join("text_encoder").join(file_name),
+        "vae" => root.join("vae").join(file_name),
+        "tokenizer" => root.join("tokenizer").join(file_name),
+        other => {
+            return Err(format!(
+                "component role {other} is not text_encoder, vae, or tokenizer"
+            ))
+        }
+    })
 }
 
 fn plan_repo(
@@ -1975,6 +2003,45 @@ fn version_lists_components(spec: &Value) -> bool {
     spec.get("components")
         .and_then(|v| v.as_array())
         .is_some_and(|rows| !rows.is_empty())
+}
+
+#[cfg(test)]
+mod component_role_tests {
+    use super::component_dest;
+    use std::path::PathBuf;
+
+    #[test]
+    fn role_remaps_flat_gguf_into_bundle_subdirs() {
+        let root = PathBuf::from("/models/ace-step-xl-turbo/q8_0");
+        assert_eq!(
+            component_dest(&root, "text_encoder", "Qwen3-Embedding-0.6B-Q8_0.gguf")
+                .unwrap()
+                .display()
+                .to_string(),
+            "/models/ace-step-xl-turbo/q8_0/text_encoder/Qwen3-Embedding-0.6B-Q8_0.gguf"
+        );
+        assert_eq!(
+            component_dest(&root, "vae", "vae-BF16.gguf")
+                .unwrap()
+                .display()
+                .to_string(),
+            "/models/ace-step-xl-turbo/q8_0/vae/vae-BF16.gguf"
+        );
+        assert_eq!(
+            component_dest(&root, "tokenizer", "tokenizer.json")
+                .unwrap()
+                .display()
+                .to_string(),
+            "/models/ace-step-xl-turbo/q8_0/tokenizer/tokenizer.json"
+        );
+        assert_eq!(
+            component_dest(&root, "", "nested/file.gguf")
+                .unwrap()
+                .display()
+                .to_string(),
+            "/models/ace-step-xl-turbo/q8_0/nested/file.gguf"
+        );
+    }
 }
 
 fn write_bundle_manifest(root: &Path, quant: &str, files: &[PlannedFile]) -> Result<(), String> {

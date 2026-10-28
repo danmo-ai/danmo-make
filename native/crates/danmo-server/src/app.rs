@@ -196,9 +196,47 @@ fn run_task(
         }
         "audio.generation" => {
             let bundle = bundle.ok_or_else(|| "missing GGUF bundle".to_string())?;
-            audio_create(family, &bundle)
-                .map(|_| json!({"ok": true}))
-                .map_err(|e| e.to_string())
+            let request: AudioGenerationRequest =
+                serde_json::from_value(params.get("request").cloned().unwrap_or(json!({})))
+                    .map_err(|e| e.to_string())?;
+            let lyrics = if request.lyrics.trim().is_empty() {
+                "[inst]"
+            } else {
+                request.lyrics.as_str()
+            };
+            let vocal = if request.vocal_language.trim().is_empty() {
+                "en"
+            } else {
+                request.vocal_language.as_str()
+            };
+            let out = audio_create(
+                family,
+                &bundle,
+                &danmo_engine::AudioCreateRequest {
+                    prompt: &request.prompt,
+                    lyrics,
+                    duration_sec: request.duration.unwrap_or(30.0),
+                    seed: request.seed,
+                    guidance: request.guidance.unwrap_or(1.0),
+                    steps: request.steps,
+                    vocal_language: vocal,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            let task_id = params
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let asset_ids = persist_audio_wav(state, task_id, model, params, &out)?;
+            Ok(json!({
+                "family": out.family,
+                "steps": out.steps,
+                "graph_computes": out.graph_computes,
+                "frames": out.frames,
+                "sample_rate": out.sample_rate,
+                "asset_ids": asset_ids,
+                "primary_asset_id": asset_ids.first(),
+            }))
         }
         "video.edit" | "video.upscale" | "video.avatar" | "audio.edit" => {
             let bundle = bundle.ok_or_else(|| "missing GGUF bundle".to_string())?;
@@ -207,6 +245,54 @@ fn run_task(
         }
         other => Err(format!("unsupported task kind {other}")),
     }
+}
+
+fn persist_audio_wav(
+    state: &AppState,
+    task_id: &str,
+    model: &str,
+    params: &Value,
+    out: &danmo_engine::AudioRunOutput,
+) -> Result<Vec<String>, String> {
+    if out.wav.is_empty() {
+        return Ok(Vec::new());
+    }
+    let id = product::new_id("ast_");
+    let asset_dir = state.outputs.join("assets");
+    std::fs::create_dir_all(&asset_dir).map_err(|err| err.to_string())?;
+    let path = asset_dir.join(format!("{id}.wav"));
+    std::fs::write(&path, &out.wav).map_err(|err| err.to_string())?;
+    let request = params.get("request").cloned().unwrap_or(json!({}));
+    let duration_seconds = out.frames as f64 / 25.0;
+    let metadata = json!({
+        "prompt": request.get("prompt").and_then(|v| v.as_str()).unwrap_or(""),
+        "lyrics": request.get("lyrics").and_then(|v| v.as_str()).unwrap_or(""),
+        "model": model,
+        "sample_rate": out.sample_rate,
+        "frames": out.frames,
+        "steps": out.steps,
+    });
+    state
+        .scheduler
+        .insert_asset(&AssetRow {
+            id: id.clone(),
+            kind: "audio".into(),
+            mime_type: "audio/wav".into(),
+            file_path: path.display().to_string(),
+            thumbnail_path: None,
+            width: None,
+            height: None,
+            duration_seconds: Some(duration_seconds),
+            source_task_id: Some(task_id.to_string()),
+            source_action: Some("create".into()),
+            metadata: metadata.to_string(),
+            created_at: String::new(),
+            parent_asset_id: None,
+            relation_type: None,
+            group_id: None,
+        })
+        .map_err(|err| err.to_string())?;
+    Ok(vec![id])
 }
 
 fn persist_preview(

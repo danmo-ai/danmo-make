@@ -1,17 +1,23 @@
 //! ACE-Step 1.5 music DiT (GenerationFacade).
 //!
-//! This slice locks the XL weight table, builds the smoke DiT forward graph,
-//! and runs guidance-1 turbo Euler on CPU. Product create still fails loud
-//! after a successful smoke denoise: the text tower and VAE are not built.
+//! Full text2music create (acestep.cpp `pipeline-synth`): text encode → cond →
+//! silence context → DiT Euler → VAE → WAV. Cover / 5Hz LM / CFG>1 fail loud.
 
+mod cond;
+mod create;
 mod graph;
 mod schedule;
+mod text;
 mod transformer;
+mod vae;
+mod wav;
 mod weights;
 
 use crate::runtime::{BackendKind, GgmlContext};
 use crate::weights::{GgufWeights, WeightError};
 use std::path::{Path, PathBuf};
+#[allow(unused_imports)]
+pub use create::{duration_to_latent_frames, snap_latent_frames, CreateOutput, CreateRequest};
 #[allow(unused_imports)]
 pub use schedule::{
     sft_schedule, shift_schedule, turbo_schedule, SFT_DEFAULT_SHIFT, SFT_DEFAULT_STEPS,
@@ -32,20 +38,24 @@ pub fn probe_layout(bundle: &Path) -> Result<AceStepConfig, WeightError> {
     Ok(config)
 }
 
-/// Probe the DiT, prove smoke forward+Euler when the card is smoke, then
-/// refuse product create until the text tower and VAE land.
-pub fn run_create(bundle: &Path) -> Result<(), WeightError> {
+/// Product create. A full `bundle.manifest.json` (DiT + text + VAE + tokenizer)
+/// runs the acestep.cpp text2music path. A DiT-only smoke card proves Euler
+/// then refuses until companions are installed.
+pub fn run_create(bundle: &Path, request: &CreateRequest<'_>) -> Result<CreateOutput, WeightError> {
+    if crate::weights::assert_gguf_bundle(bundle).is_ok() {
+        return create::run_full_create(bundle, request);
+    }
     let config = probe_layout(bundle)?;
     if config == AceStepConfig::smoke() {
         let ctx = GgmlContext::new(BackendKind::Cpu)
             .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
         let _ = prove_smoke_denoise(&ctx, bundle, config)?;
         return Err(WeightError::NotBuilt(
-            "ACE-Step text tower and VAE are not built".into(),
+            "ACE-Step needs text_encoder/, vae/, and tokenizer/ companions (install the registry components)".into(),
         ));
     }
     Err(WeightError::NotBuilt(
-        "ACE-Step XL DiT forward is not wired into audio create (smoke path only)".into(),
+        "ACE-Step XL create needs a GGUF bundle with text encoder + VAE (see registry components)".into(),
     ))
 }
 
@@ -89,7 +99,7 @@ pub(crate) fn dit_gguf(bundle: &Path) -> Result<PathBuf, WeightError> {
 mod tests {
     use super::{
         config_from_weights, dit_gguf, layout_matches, probe_layout, run_create, weight_layout,
-        AceStepConfig, TIME_FREQ_DIM,
+        AceStepConfig, CreateRequest, TIME_FREQ_DIM,
     };
     use crate::weights::{write_f32_nd, F32Nd, GgufWeights};
     use std::path::Path;
@@ -203,12 +213,25 @@ mod tests {
     }
 
     #[test]
-    fn audio_create_runs_smoke_denoise_then_refuses_vae() {
+    fn audio_create_runs_smoke_denoise_then_refuses_companions() {
         let dir = scratch("create");
         write_dit(&dir, AceStepConfig::smoke());
-        let err = crate::pipeline::audio_create("ace_step", &dir).unwrap_err();
+        let err = crate::pipeline::audio_create(
+            "ace_step",
+            &dir,
+            &crate::pipeline::AudioCreateRequest {
+                prompt: "test",
+                lyrics: "[inst]",
+                duration_sec: 5.0,
+                seed: Some(0),
+                guidance: 1.0,
+                steps: None,
+                vocal_language: "en",
+            },
+        )
+        .unwrap_err();
         assert!(
-            err.to_string().contains("text tower and VAE"),
+            err.to_string().contains("companions") || err.to_string().contains("text_encoder"),
             "{err}"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -218,8 +241,26 @@ mod tests {
     fn run_create_on_smoke_proves_denoise_then_refuses() {
         let dir = scratch("prove");
         write_dit(&dir, AceStepConfig::smoke());
-        let err = run_create(&dir).unwrap_err();
-        assert!(err.to_string().contains("text tower and VAE"), "{err}");
+        let err = run_create(
+            &dir,
+            &CreateRequest {
+                prompt: "test",
+                lyrics: "[inst]",
+                duration_sec: 5.0,
+                seed: Some(0),
+                guidance: 1.0,
+                steps: None,
+                vocal_language: "en",
+                bpm: None,
+                keyscale: "",
+                timesignature: "",
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("companions") || err.to_string().contains("text_encoder"),
+            "{err}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,7 +1,7 @@
 //! Run the Qwen3 tower. Layer choice and the `thinking` flag come from the caller.
 
 use super::graph::{build_qwen3, QwenTower};
-use super::tokenizer::tokenize;
+use super::tokenizer::{tokenize, tokenize_plain};
 use crate::runtime::{GgmlContext, ReusedGraph, RuntimeError, TYPE_F32};
 use crate::weights::{matmul_type, type_block, GgufWeights, WeightError};
 use std::collections::HashMap;
@@ -72,6 +72,30 @@ impl Loaded {
         thinking: bool,
         width: i64,
     ) -> Result<(Vec<f32>, i64), WeightError> {
+        let ids = tokenize(tokenizer_json, prompt, self.config.vocab, thinking)?;
+        self.encode_ids(ctx, &ids, layers, width)
+    }
+
+    /// Raw BPE encode (no ChatML). Used by ACE-Step Embedding prompts.
+    pub fn encode_plain(
+        &self,
+        ctx: &GgmlContext,
+        tokenizer_json: &str,
+        prompt: &str,
+        layers: &[i64],
+        width: i64,
+    ) -> Result<(Vec<f32>, i64), WeightError> {
+        let ids = tokenize_plain(tokenizer_json, prompt, self.config.vocab)?;
+        self.encode_ids(ctx, &ids, layers, width)
+    }
+
+    pub fn encode_ids(
+        &self,
+        ctx: &GgmlContext,
+        ids: &[i32],
+        layers: &[i64],
+        width: i64,
+    ) -> Result<(Vec<f32>, i64), WeightError> {
         if layers.is_empty() {
             return Err(WeightError::NotBuilt(
                 "text encoder captured no hidden states".into(),
@@ -85,8 +109,10 @@ impl Loaded {
                 )));
             }
         }
-        let ids = tokenize(tokenizer_json, prompt, self.config.vocab, thinking)?;
-        let embed = run_tower(ctx, &self.weights, self.config, &self.prefix, layers, &ids)?;
+        if ids.is_empty() {
+            return Err(WeightError::NotBuilt("prompt has no tokens".into()));
+        }
+        let embed = run_tower(ctx, &self.weights, self.config, &self.prefix, layers, ids)?;
         if let Some(detail) = crate::common::ops::non_finite("text embedding", &embed) {
             return Err(WeightError::NotBuilt(detail));
         }
@@ -99,6 +125,21 @@ impl Loaded {
             });
         }
         Ok((embed, seq))
+    }
+
+    /// Vocab rows for lyric embed-lookup (`qwen3_embed_lookup`).
+    pub fn embed_table(&self) -> Result<Vec<f32>, WeightError> {
+        let name = format!("{}embed_tokens.weight", self.prefix);
+        self.weights
+            .f32_widened(&name, &[self.config.hidden, self.config.vocab])
+    }
+
+    pub fn plain_ids(
+        &self,
+        tokenizer_json: &str,
+        prompt: &str,
+    ) -> Result<Vec<i32>, WeightError> {
+        tokenize_plain(tokenizer_json, prompt, self.config.vocab)
     }
 }
 

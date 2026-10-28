@@ -8325,7 +8325,7 @@
       "runtime": {
         "family": "ace_step",
         "backends": [
-          "mlx"
+          "ggml"
         ]
       },
       "actions": {
@@ -8414,7 +8414,7 @@
               "zh": "BF16",
               "en": "BF16"
             },
-            "size": "4.8GB",
+            "size": "6.3GB",
             "source": "modelscope",
             "source_type": "full",
             "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
@@ -8422,20 +8422,80 @@
             "allow_patterns": [
               "acestep-v15-sft-BF16.gguf"
             ],
-            "default": true
+            "default": true,
+            "components": [
+              {
+                "role": "text_encoder",
+                "source": "modelscope",
+                "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
+                "allow_patterns": [
+                  "Qwen3-Embedding-0.6B-BF16.gguf"
+                ]
+              },
+              {
+                "role": "vae",
+                "source": "modelscope",
+                "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
+                "allow_patterns": [
+                  "vae-BF16.gguf"
+                ]
+              },
+              {
+                "role": "tokenizer",
+                "source": "modelscope",
+                "repo_id": "Qwen/Qwen3-Embedding-0.6B",
+                "allow_patterns": [
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "vocab.json",
+                  "merges.txt",
+                  "special_tokens_map.json"
+                ]
+              }
+            ]
           },
           "q8_0": {
             "name": {
               "zh": "Q8_0",
               "en": "Q8_0"
             },
-            "size": "2.5GB",
+            "size": "3.6GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
             "local_path": "models/ace-step-xl-sft/q8_0",
             "allow_patterns": [
               "acestep-v15-sft-Q8_0.gguf"
+            ],
+            "components": [
+              {
+                "role": "text_encoder",
+                "source": "modelscope",
+                "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
+                "allow_patterns": [
+                  "Qwen3-Embedding-0.6B-Q8_0.gguf"
+                ]
+              },
+              {
+                "role": "vae",
+                "source": "modelscope",
+                "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
+                "allow_patterns": [
+                  "vae-BF16.gguf"
+                ]
+              },
+              {
+                "role": "tokenizer",
+                "source": "modelscope",
+                "repo_id": "Qwen/Qwen3-Embedding-0.6B",
+                "allow_patterns": [
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "vocab.json",
+                  "merges.txt",
+                  "special_tokens_map.json"
+                ]
+              }
             ]
           },
           "q4_k": {
@@ -8443,13 +8503,43 @@
               "zh": "Q4_K_M",
               "en": "Q4_K_M"
             },
-            "size": "1.4GB",
+            "size": "2.5GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
             "local_path": "models/ace-step-xl-sft/q4_k",
             "allow_patterns": [
               "acestep-v15-sft-Q4_K_M.gguf"
+            ],
+            "components": [
+              {
+                "role": "text_encoder",
+                "source": "modelscope",
+                "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
+                "allow_patterns": [
+                  "Qwen3-Embedding-0.6B-Q8_0.gguf"
+                ]
+              },
+              {
+                "role": "vae",
+                "source": "modelscope",
+                "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
+                "allow_patterns": [
+                  "vae-BF16.gguf"
+                ]
+              },
+              {
+                "role": "tokenizer",
+                "source": "modelscope",
+                "repo_id": "Qwen/Qwen3-Embedding-0.6B",
+                "allow_patterns": [
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "vocab.json",
+                  "merges.txt",
+                  "special_tokens_map.json"
+                ]
+              }
             ]
           }
         }
@@ -8475,7 +8565,7 @@
       "runtime": {
         "family": "ace_step",
         "backends": [
-          "mlx"
+          "ggml"
         ]
       },
       "actions": {
@@ -8564,7 +8654,7 @@
               "zh": "BF16",
               "en": "BF16"
             },
-            "size": "4.8GB",
+            "size": "6.3GB",
             "source": "modelscope",
             "source_type": "full",
             "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
@@ -8572,20 +8662,80 @@
             "allow_patterns": [
               "acestep-v15-turbo-BF16.gguf"
             ],
-            "default": true
+            "default": true,
+            "components": [
+              {
+                "role": "text_encoder",
+                "source": "modelscope",
+                "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
+                "allow_patterns": [
+                  "Qwen3-Embedding-0.6B-BF16.gguf"
+                ]
+              },
+              {
+                "role": "vae",
+                "source": "modelscope",
+                "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
+                "allow_patterns": [
+                  "vae-BF16.gguf"
+                ]
+              },
+              {
+                "role": "tokenizer",
+                "source": "modelscope",
+                "repo_id": "Qwen/Qwen3-Embedding-0.6B",
+                "allow_patterns": [
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "vocab.json",
+                  "merges.txt",
+                  "special_tokens_map.json"
+                ]
+              }
+            ]
           },
           "q8_0": {
             "name": {
               "zh": "Q8_0",
               "en": "Q8_0"
             },
-            "size": "2.5GB",
+            "size": "3.6GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
             "local_path": "models/ace-step-xl-turbo/q8_0",
             "allow_patterns": [
               "acestep-v15-turbo-Q8_0.gguf"
+            ],
+            "components": [
+              {
+                "role": "text_encoder",
+                "source": "modelscope",
+                "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
+                "allow_patterns": [
+                  "Qwen3-Embedding-0.6B-Q8_0.gguf"
+                ]
+              },
+              {
+                "role": "vae",
+                "source": "modelscope",
+                "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
+                "allow_patterns": [
+                  "vae-BF16.gguf"
+                ]
+              },
+              {
+                "role": "tokenizer",
+                "source": "modelscope",
+                "repo_id": "Qwen/Qwen3-Embedding-0.6B",
+                "allow_patterns": [
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "vocab.json",
+                  "merges.txt",
+                  "special_tokens_map.json"
+                ]
+              }
             ]
           },
           "q4_k": {
@@ -8593,13 +8743,43 @@
               "zh": "Q4_K_M",
               "en": "Q4_K_M"
             },
-            "size": "1.4GB",
+            "size": "2.5GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
             "local_path": "models/ace-step-xl-turbo/q4_k",
             "allow_patterns": [
               "acestep-v15-turbo-Q4_K_M.gguf"
+            ],
+            "components": [
+              {
+                "role": "text_encoder",
+                "source": "modelscope",
+                "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
+                "allow_patterns": [
+                  "Qwen3-Embedding-0.6B-Q8_0.gguf"
+                ]
+              },
+              {
+                "role": "vae",
+                "source": "modelscope",
+                "repo_id": "ICodingFE/ACE-Step-1.5-GGUF",
+                "allow_patterns": [
+                  "vae-BF16.gguf"
+                ]
+              },
+              {
+                "role": "tokenizer",
+                "source": "modelscope",
+                "repo_id": "Qwen/Qwen3-Embedding-0.6B",
+                "allow_patterns": [
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "vocab.json",
+                  "merges.txt",
+                  "special_tokens_map.json"
+                ]
+              }
             ]
           }
         }

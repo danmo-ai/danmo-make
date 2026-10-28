@@ -142,17 +142,57 @@ pub fn video_create(family: &str, bundle: &Path) -> Result<(), EngineError> {
     route_media(family, bundle, Media::Video)
 }
 
-pub fn audio_create(family: &str, bundle: &Path) -> Result<(), EngineError> {
+pub struct AudioCreateRequest<'a> {
+    pub prompt: &'a str,
+    pub lyrics: &'a str,
+    pub duration_sec: f32,
+    pub seed: Option<i64>,
+    pub guidance: f32,
+    pub steps: Option<u32>,
+    pub vocal_language: &'a str,
+}
+
+#[derive(Debug)]
+pub struct AudioRunOutput {
+    pub family: String,
+    pub wav: Vec<u8>,
+    pub sample_rate: u32,
+    pub frames: i64,
+    pub steps: u32,
+    pub graph_computes: u32,
+}
+
+pub fn audio_create(
+    family: &str,
+    bundle: &Path,
+    request: &AudioCreateRequest<'_>,
+) -> Result<AudioRunOutput, EngineError> {
     let spec = families::spec(family).ok_or_else(|| EngineError::UnknownFamily(family.into()))?;
     if spec.media != Media::Audio {
         return Err(EngineError::BadRequest(format!(
             "{family} does not match the requested media"
         )));
     }
-    if families::run_audio_facade(family, bundle)?.is_some() {
-        return Err(EngineError::GraphNotBuilt {
+    let create = families::ace_step::CreateRequest {
+        prompt: request.prompt,
+        lyrics: request.lyrics,
+        duration_sec: request.duration_sec,
+        seed: request.seed,
+        guidance: request.guidance,
+        steps: request.steps,
+        vocal_language: request.vocal_language,
+        bpm: None,
+        keyscale: "",
+        timesignature: "",
+    };
+    if let Some(out) = families::run_audio_facade(family, bundle, &create)? {
+        return Ok(AudioRunOutput {
             family: family.into(),
-            shape: shape_name(spec.shape).into(),
+            wav: out.wav,
+            sample_rate: out.sample_rate,
+            frames: out.frames,
+            steps: out.steps,
+            graph_computes: out.graph_computes,
         });
     }
     weights::assert_gguf_bundle(bundle)?;
