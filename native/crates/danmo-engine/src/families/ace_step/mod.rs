@@ -3,8 +3,8 @@
 //! Full text2music create (acestep.cpp `pipeline-synth`): text encode → cond
 //! (lyric ‖ timbre[0] ‖ text) → silence/codes context → DiT Euler (APG CFG) →
 //! VAE → WAV. Cover / cover-nofsq / repaint / lego / extract / complete on
-//! audio.edit. 5Hz LM: ChatML prompts + causal prefill greedy for
-//! inspire/format; generate phase-2 codes still fail loud.
+//! audio.edit. 5Hz LM: ChatML prompts + set_rows KV greedy for inspire/format;
+//! generate phase-2 constrained audio codes when metas are complete.
 
 mod apg;
 mod ca_capture;
@@ -17,6 +17,7 @@ mod graph;
 mod lyrics;
 mod lyrics_dtw;
 mod lm;
+mod lm_codes;
 mod lm_format;
 mod lm_prompt;
 mod repaint;
@@ -122,9 +123,7 @@ pub struct LmOutput {
     pub audio_code_indices: Vec<i32>,
 }
 
-/// Run inspire / format (phase-1 greedy). Generate still refuses phase-2 codes
-/// until constrained audio-code sampling lands; pass `audio_code_indices` on
-/// create for DiT conditioning today.
+/// Run inspire / format (phase-1 greedy) or generate (CoT + phase-2 codes).
 pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, WeightError> {
     let prompt = AcePrompt {
         caption: request.caption.to_string(),
@@ -152,20 +151,19 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
             Ok(text.bytes().map(|b| i32::from(b)).collect())
         }
     };
-    let mut prompt_ids = lm_prompt::build_phase1_prompt(&mut encode, request.mode, &prompt)?;
-    if request.mode == LmMode::Generate {
-        // Phase-2 audio-code FSM sampling is not built yet.
-        let need_lyrics = prompt.lyrics.trim().is_empty();
-        let has_metas = prompt.bpm > 0
-            && prompt.duration > 0.0
-            && !prompt.keyscale.is_empty()
-            && !prompt.timesignature.is_empty();
-        if !need_lyrics && has_metas {
-            return Err(WeightError::NotBuilt(
-                "ACE-Step LM generate phase-2 audio codes are not built (acestep.cpp pipeline-lm FSM); use inspire/format or pass audio_code_indices on create".into(),
-            ));
-        }
-    }
+    let need_lyrics = prompt.lyrics.trim().is_empty();
+    let has_metas = prompt.bpm > 0
+        && prompt.duration > 0.0
+        && !prompt.keyscale.is_empty()
+        && !prompt.timesignature.is_empty();
+    // Generate with full metas → phase-2 CoT prompt + constrained codes.
+    let phase2 = request.mode == LmMode::Generate && !need_lyrics && has_metas;
+    let mut prompt_ids = if phase2 {
+        let cot = lm_prompt::build_cot_yaml(&prompt);
+        lm_prompt::build_lm_prompt_with_cot(&mut encode, &prompt, &cot)?
+    } else {
+        lm_prompt::build_phase1_prompt(&mut encode, request.mode, &prompt)?
+    };
 
     let (weights, config) = lm::open_lm_gguf(bundle)?;
     // Synthetic byte-encode (no tokenizer) can emit ChatML specials above a
@@ -184,6 +182,36 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
     }
     let ctx = GgmlContext::new(BackendKind::Cpu)
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+
+    if phase2 {
+        let max_codes = request
+            .max_new_tokens
+            .max(1)
+            .min(2048)
+            .min(((prompt.duration * 5.0) as usize).saturating_add(100).max(1));
+        let codes = lm_codes::greedy_audio_codes(
+            &ctx,
+            &weights,
+            config,
+            &prompt_ids,
+            max_codes,
+        )?;
+        return Ok(LmOutput {
+            mode: request.mode.name().into(),
+            prompt_tokens: prompt_ids.len(),
+            generated_ids: lm_prompt::audio_code_token_ids(&codes)?,
+            text: String::new(),
+            caption: prompt.caption,
+            lyrics: prompt.lyrics,
+            bpm: (prompt.bpm > 0).then_some(prompt.bpm),
+            duration: (prompt.duration > 0.0).then_some(prompt.duration as i32),
+            keyscale: prompt.keyscale,
+            timesignature: prompt.timesignature,
+            language: prompt.vocal_language,
+            audio_code_indices: codes,
+        });
+    }
+
     let stop: Vec<i32> = [lm_prompt::TOKEN_IM_END, lm_prompt::TOKEN_THINK_END]
         .into_iter()
         .filter(|&id| (id as i64) < config.vocab)
@@ -489,6 +517,33 @@ mod tests {
         assert_eq!(out.mode, "inspire");
         assert!(out.prompt_tokens > 0);
         assert!(!out.generated_ids.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lm_generate_phase2_fails_loud_on_smoke_vocab() {
+        let dir = scratch("lm-phase2");
+        super::write_smoke_lm(&dir, super::AceLmConfig::smoke()).unwrap();
+        let err = super::run_lm(
+            &dir,
+            &super::LmRequest {
+                mode: super::LmMode::Generate,
+                caption: "lofi beat",
+                lyrics: "la la",
+                duration: 10.0,
+                bpm: 90,
+                keyscale: "C major",
+                timesignature: "4/4",
+                vocal_language: "en",
+                max_new_tokens: 8,
+                tokenizer_json: None,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("vocab") || err.to_string().contains("audio code"),
+            "{err}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
