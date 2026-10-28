@@ -442,6 +442,7 @@ mod tests {
                 steps: None,
                 vocal_language: "en",
                 audio_code_indices: None,
+                timbre_latents: None,
             },
         )
         .unwrap_err();

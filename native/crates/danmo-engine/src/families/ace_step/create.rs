@@ -40,6 +40,9 @@ pub struct CreateRequest<'a> {
     /// Optional 5Hz LM / planner audio codes (FSQ indices). When set, DiT
     /// context uses FSQ-detokenized latents instead of pure silence.
     pub audio_code_indices: Option<&'a [i32]>,
+    /// Optional time-major `[T, 64]` latents for the timbre encoder. When
+    /// absent, a single silence frame is used (acestep.cpp `ops_encode_timbre`).
+    pub timbre_latents: Option<&'a [f32]>,
 }
 
 #[derive(Debug)]
@@ -142,8 +145,31 @@ pub fn run_full_create(
     let (lyric_embed, lyric_ids) =
         embed_lyrics_with_ids(&gguf.text_encoder, &tokenizer, &pair.lyric)?;
     let s_lyric = lyric_ids.len() as i64;
-    let (enc_hidden, enc_seq) =
-        cond::encode(&ctx, &dit, &text_hidden, s_text, &lyric_embed, s_lyric)?;
+    let silence_full = load_silence_latent(&dit, config.out_channels)?;
+    let timbre_owned;
+    let timbre_feats: &[f32] = if let Some(lat) = request.timbre_latents.filter(|v| !v.is_empty()) {
+        if lat.len() as i64 % cond::TIMBRE_IN != 0 {
+            return Err(WeightError::NotBuilt(format!(
+                "ACE-Step timbre_latents length {} is not a multiple of {}",
+                lat.len(),
+                cond::TIMBRE_IN
+            )));
+        }
+        lat
+    } else {
+        // acestep.cpp: single silence frame disables distinctive timbre conditioning.
+        timbre_owned = silence_full[..cond::TIMBRE_IN as usize].to_vec();
+        &timbre_owned
+    };
+    let (enc_hidden, enc_seq) = cond::encode(
+        &ctx,
+        &dit,
+        &text_hidden,
+        s_text,
+        &lyric_embed,
+        s_lyric,
+        Some(timbre_feats),
+    )?;
 
     let context = if let Some(codes) = request.audio_code_indices.filter(|c| !c.is_empty()) {
         codes_context(

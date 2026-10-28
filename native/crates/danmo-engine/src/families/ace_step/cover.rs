@@ -83,6 +83,10 @@ pub struct CoverRequest<'a> {
     pub repaint_injection_ratio: f32,
     /// Latent frames of cosine crossfade at zone edges (default 8).
     pub repaint_crossfade_frames: i64,
+    /// When true, sample a 750-frame timbre reference from source latents
+    /// (MLX `cover_timbre_from_source` / `sample_timbre_reference_latents`).
+    /// Default false → single silence frame (acestep.cpp).
+    pub timbre_from_source: bool,
 }
 
 pub fn run_full_cover(
@@ -132,6 +136,13 @@ pub fn run_full_cover(
             "ACE-Step cover frames {frames_pre} exceed silence_latent max {SILENCE_MAX_FRAMES}"
         )));
     }
+
+    // Timbre samples clean VAE latents (before FSQ), matching MLX cover path.
+    let timbre_source = if request.timbre_from_source {
+        Some(cover_latents.clone())
+    } else {
+        None
+    };
 
     // Full cover: FSQ tokenize/detokenize degrades micro-timing (acestep.cpp ops_fsq_roundtrip).
     // cover-nofsq skips this and feeds clean 25Hz VAE latents.
@@ -209,11 +220,28 @@ pub fn run_full_cover(
 
     let ctx = GgmlContext::new(BackendKind::Cpu)
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    let silence_full = load_silence_latent(&dit, config.out_channels)?;
+    let seed = request.seed.unwrap_or(0);
+    let timbre_owned = if let Some(src) = timbre_source.as_ref() {
+        let src_frames = src.len() as i64 / LATENT_CHANNELS;
+        cond::sample_timbre_reference_latents(src, src_frames, LATENT_CHANNELS, seed)?
+    } else {
+        silence_full[..cond::TIMBRE_IN as usize].to_vec()
+    };
+    let timbre_feats: &[f32] = &timbre_owned;
+
     let (text_hidden, s_text) =
         encode_caption(&ctx, &gguf.text_encoder, &tokenizer, &pair_cover.text)?;
     let (lyric_embed, s_lyric) = embed_lyrics(&gguf.text_encoder, &tokenizer, &pair_cover.lyric)?;
-    let (enc_hidden, enc_seq) =
-        cond::encode(&ctx, &dit, &text_hidden, s_text, &lyric_embed, s_lyric)?;
+    let (enc_hidden, enc_seq) = cond::encode(
+        &ctx,
+        &dit,
+        &text_hidden,
+        s_text,
+        &lyric_embed,
+        s_lyric,
+        Some(timbre_feats),
+    )?;
 
     // Repaint/lego never switch to silence context mid-run (mask handles the zone).
     let need_switch =
@@ -231,14 +259,12 @@ pub fn run_full_cover(
         );
         let (th, st) = encode_caption(&ctx, &gguf.text_encoder, &tokenizer, &pair_t2m.text)?;
         let (le, sl) = embed_lyrics(&gguf.text_encoder, &tokenizer, &pair_t2m.lyric)?;
-        let (enc, seq) = cond::encode(&ctx, &dit, &th, st, &le, sl)?;
+        let (enc, seq) = cond::encode(&ctx, &dit, &th, st, &le, sl, Some(timbre_feats))?;
         (Some(enc), seq)
     } else {
         (None, enc_seq)
     };
     let enc_seq_graph = enc_seq.max(enc_seq_t2m);
-
-    let silence_full = load_silence_latent(&dit, config.out_channels)?;
     let context = if is_repaint {
         repaint_context(
             &cover_latents,
@@ -287,7 +313,6 @@ pub fn run_full_cover(
         None
     };
 
-    let seed = request.seed.unwrap_or(0);
     let mut xt = normal_latent(seed, model.xt_len());
     let noise = xt.clone();
     if request.cover_noise_strength > 0.0 {
@@ -603,6 +628,7 @@ pub fn encode_source_audio(
             region_end_sec: None,
             repaint_injection_ratio: 1.0,
             repaint_crossfade_frames: 8,
+            timbre_from_source: false,
         },
     )
 }

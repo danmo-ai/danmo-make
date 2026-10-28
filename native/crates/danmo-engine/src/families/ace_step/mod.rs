@@ -1,8 +1,9 @@
 //! ACE-Step 1.5 music DiT (GenerationFacade).
 //!
-//! Full text2music create (acestep.cpp `pipeline-synth`): text encode → cond →
-//! silence context → DiT Euler (APG CFG) → VAE → WAV. Cover-nofsq encodes
-//! source audio into context; full cover runs FSQ roundtrip. 5Hz LM fails loud.
+//! Full text2music create (acestep.cpp `pipeline-synth`): text encode → cond
+//! (lyric ‖ timbre[0] ‖ text) → silence/codes context → DiT Euler (APG CFG) →
+//! VAE → WAV. Cover-nofsq encodes source into context; full cover runs FSQ;
+//! `timbre_from_source` samples a 750-frame reference. 5Hz LM sampling fails loud.
 
 mod apg;
 mod ca_capture;
@@ -281,6 +282,7 @@ mod tests {
                 steps: None,
                 vocal_language: "en",
                 audio_code_indices: None,
+                timbre_latents: None,
             },
         )
         .unwrap_err();
@@ -320,6 +322,7 @@ mod tests {
                 keyscale: "",
                 timesignature: "",
                 audio_code_indices: None,
+                timbre_latents: None,
             },
         )
         .unwrap_err();

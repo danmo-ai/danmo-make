@@ -225,6 +225,7 @@ fn run_task(
                     steps: request.steps,
                     vocal_language: vocal,
                     audio_code_indices: request.audio_code_indices.as_deref(),
+                    timbre_latents: request.timbre_latents.as_deref(),
                 },
             )
             .map_err(|e| e.to_string())?;
@@ -284,6 +285,7 @@ fn run_task(
                     region_end_sec: request.region_end_sec,
                     repaint_injection_ratio: request.repaint_injection_ratio.unwrap_or(1.0),
                     repaint_crossfade_frames: request.repaint_crossfade_frames.unwrap_or(8),
+                    timbre_from_source: request.timbre_from_source.unwrap_or(false),
                 },
             )
             .map_err(|e| e.to_string())?;

@@ -127,6 +127,9 @@ pub struct AudioGenerationRequest {
     /// Optional 5Hz LM / planner FSQ codebook indices for DiT context hints.
     #[serde(default)]
     pub audio_code_indices: Option<Vec<i32>>,
+    /// Optional time-major `[T*64]` latents for the timbre encoder.
+    #[serde(default)]
+    pub timbre_latents: Option<Vec<f32>>,
 }
 
 /// ACE-Step cover / cover-nofsq / repaint edit.
@@ -164,6 +167,9 @@ pub struct AudioEditRequest {
     pub repaint_injection_ratio: Option<f32>,
     /// Latent frames of boundary crossfade (default 8).
     pub repaint_crossfade_frames: Option<i64>,
+    /// Sample 750-frame timbre reference from source (default false → silence).
+    #[serde(default)]
+    pub timbre_from_source: Option<bool>,
 }
 
 fn default_cover_nofsq() -> String {

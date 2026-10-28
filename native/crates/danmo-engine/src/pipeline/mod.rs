@@ -152,6 +152,8 @@ pub struct AudioCreateRequest<'a> {
     pub vocal_language: &'a str,
     /// Optional 5Hz LM FSQ codebook indices for DiT context.
     pub audio_code_indices: Option<&'a [i32]>,
+    /// Optional time-major `[T*64]` latents for the timbre encoder.
+    pub timbre_latents: Option<&'a [f32]>,
 }
 
 pub struct AudioEditRequest<'a> {
@@ -171,6 +173,8 @@ pub struct AudioEditRequest<'a> {
     pub region_end_sec: Option<f32>,
     pub repaint_injection_ratio: f32,
     pub repaint_crossfade_frames: i64,
+    /// Sample 750-frame timbre reference from source latents.
+    pub timbre_from_source: bool,
 }
 
 #[derive(Debug)]
@@ -232,6 +236,7 @@ pub fn audio_create(
         keyscale: "",
         timesignature: "",
         audio_code_indices: request.audio_code_indices,
+        timbre_latents: request.timbre_latents,
     };
     if let Some(out) = families::run_audio_facade(family, bundle, &create)? {
         return Ok(audio_out_from_create(family, out));
@@ -279,6 +284,7 @@ pub fn audio_edit(
         region_end_sec: request.region_end_sec,
         repaint_injection_ratio: request.repaint_injection_ratio,
         repaint_crossfade_frames: request.repaint_crossfade_frames,
+        timbre_from_source: request.timbre_from_source,
     };
     if let Some(out) = families::run_audio_edit_facade(family, bundle, &cover)? {
         return Ok(audio_out_from_create(family, out));
