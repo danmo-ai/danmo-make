@@ -52,8 +52,20 @@ impl QwenImageForward {
         self.graph.set_f32(name, data)
     }
 
+    pub fn load_bytes(&mut self, name: &str, data: &[u8]) -> Result<(), RuntimeError> {
+        self.graph.set_bytes(name, data)
+    }
+
     pub fn node_count(&self) -> i32 {
         self.graph.node_count()
+    }
+
+    pub fn graph_computes(&self) -> u32 {
+        self.graph.compute_count()
+    }
+
+    pub fn latent_len(&self) -> usize {
+        (self.in_channels * self.seq_img) as usize
     }
 
     pub fn forward(
@@ -92,7 +104,7 @@ impl QwenImageForward {
     ) -> Result<Vec<f32>, RuntimeError> {
         if !guidance.is_finite() || (guidance - 1.0).abs() >= f32::EPSILON {
             return Err(RuntimeError::Message(
-                "cfg needs the negative embedding and the Qwen2.5-VL tokenizer is not built".into(),
+                "cfg needs the negative embedding path".into(),
             ));
         }
         if sigmas.len() < 2 {

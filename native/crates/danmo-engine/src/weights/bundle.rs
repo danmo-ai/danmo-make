@@ -90,7 +90,7 @@ pub fn assert_gguf_bundle(dir: &Path) -> Result<GgufBundle, WeightError> {
     if !tokenizer_ready(&root) {
         return Err(WeightError::Bundle {
             path: root.display().to_string(),
-            detail: "tokenizer.json is missing".into(),
+            detail: "tokenizer is missing".into(),
         });
     }
     Ok(GgufBundle {
@@ -144,7 +144,15 @@ fn role_file(role: &str, ext: Option<&str>) -> bool {
 }
 
 fn tokenizer_ready(root: &Path) -> bool {
-    root.join("tokenizer.json").is_file() || root.join("tokenizer").join("tokenizer.json").is_file()
+    // Hugging Face `tokenizer.json` (Qwen3 / Flux / Z-Image) or Qwen2.5-VL
+    // `vocab.json` + `merges.txt` under `tokenizer/`.
+    if root.join("tokenizer.json").is_file()
+        || root.join("tokenizer").join("tokenizer.json").is_file()
+    {
+        return true;
+    }
+    let tok = root.join("tokenizer");
+    tok.join("vocab.json").is_file() && tok.join("merges.txt").is_file()
 }
 
 fn is_legacy_dir(name: &str) -> bool {

@@ -2,10 +2,8 @@
 //!
 //! The text encoder is the Qwen2.5-VL trunk in `text.rs`, not the shared Qwen3
 //! tower. The VAE is the 3D causal decoder in `vae.rs`, not AutoencoderKL.
-//! The Euler loop steps a packed latent once text embeddings exist. Create
-//! tokenizes `tokenizer/vocab.json`, then stops until the text-encoder file
-//! has `model.embed_tokens.weight`. The packed latent is unpacked to 16
-//! channels before the frame-0 decoder.
+//! Create tokenizes, encodes, steps a packed latent at guidance 1, unpacks to
+//! 16 channels, scales, and decodes frame 0.
 
 mod graph;
 mod ids;
@@ -15,28 +13,31 @@ mod transformer;
 mod vae;
 mod weights;
 
-use crate::common::ops::{empirical_mu_sigmas, flow_match_shift_sigmas, linear_sigmas};
+use crate::common::ops::{
+    empirical_mu_sigmas, flow_match_shift_sigmas, linear_sigmas, normal_latent,
+};
 use crate::runtime::GgmlContext;
 use crate::weights::{assert_gguf_bundle, GgufWeights, LoraFile, WeightError};
+use std::collections::HashMap;
 use std::path::Path;
 
-use weights::{check_layout, config_from_weights};
+use weights::{check_layout, config_from_weights, weight_layout};
 
 pub fn execute(
-    _ctx: &GgmlContext,
+    ctx: &GgmlContext,
     bundle: &Path,
-    _prompt: &str,
+    prompt: &str,
     steps: u32,
     width: u32,
     height: u32,
     guidance: f32,
-    _seed: Option<i64>,
+    seed: Option<i64>,
     scheduler: Option<&str>,
     scheduler_shift: Option<f32>,
     empirical_mu: bool,
     negative: &str,
     loras: &[LoraFile],
-    _on_progress: impl FnMut(u32, u32),
+    on_progress: impl FnMut(u32, u32),
 ) -> Result<crate::families::DitImageRun, WeightError> {
     if !negative.trim().is_empty() {
         return Err(WeightError::NotBuilt(
@@ -58,8 +59,6 @@ pub fn execute(
         )));
     }
     check_layout(&loaded, config)?;
-    // The constructor stays reachable from this entry. Requests return before it runs.
-    link_dit();
     if loaded
         .names()
         .any(|name| name.contains("__index_timestep_zero__"))
@@ -68,7 +67,18 @@ pub fn execute(
             "zero_cond_t edit path is not built".into(),
         ));
     }
-    let _sigmas = schedule(
+    if config.in_channels != 64 || config.out_channels != 16 || config.patch != 2 {
+        return Err(WeightError::NotBuilt(format!(
+            "qwen packed create needs in_channels 64 out_channels 16 patch 2, got {} {} {}",
+            config.in_channels, config.out_channels, config.patch
+        )));
+    }
+    if !guidance.is_finite() || (guidance - 1.0).abs() >= f32::EPSILON {
+        return Err(WeightError::NotBuilt(
+            "cfg needs the negative embedding path".into(),
+        ));
+    }
+    let sigmas = schedule(
         steps,
         width,
         height,
@@ -77,24 +87,52 @@ pub fn execute(
         scheduler_shift,
         empirical_mu,
     )?;
-    if !guidance.is_finite() || (guidance - 1.0).abs() >= f32::EPSILON {
-        return Err(WeightError::NotBuilt(
-            "cfg needs the negative embedding and the Qwen2.5-VL tokenizer is not built".into(),
-        ));
-    }
-    let _ids = tokenizer::prompt_ids(bundle, _prompt, text::Qwen25VlConfig::published().vocab)?;
     let text_encoder = GgufWeights::open_parts(&files.text_encoder)?;
-    if !text_encoder
-        .names()
-        .any(|name| name == "model.embed_tokens.weight")
-    {
-        return Err(WeightError::NotBuilt(
-            "Qwen2.5-VL text encoder is missing model.embed_tokens.weight".into(),
-        ));
+    let text_config = text::config_from_weights(&text_encoder)?;
+    if text_config.hidden != config.joint_attention_dim {
+        return Err(WeightError::NotBuilt(format!(
+            "text hidden {} is not the DiT joint width {}",
+            text_config.hidden, config.joint_attention_dim
+        )));
     }
-    Err(WeightError::NotBuilt(
-        "Qwen2.5-VL text encoder weights are not loaded into the tower".into(),
-    ))
+    let ids = tokenizer::prompt_ids(bundle, prompt, text_config.vocab)?;
+    let txt = text::encode(ctx, &text_encoder, text_config, &ids)?;
+    let seq_txt = (txt.len() as i64) / text_config.hidden;
+    if seq_txt < 1 || txt.len() as i64 != text_config.hidden * seq_txt {
+        return Err(WeightError::NotBuilt(format!(
+            "text embedding length {} is not a multiple of hidden {}",
+            txt.len(),
+            text_config.hidden
+        )));
+    }
+    let grid_w = (width / scale) as i64;
+    let grid_h = (height / scale) as i64;
+    let layout = weight_layout(config);
+    let mut types = HashMap::new();
+    for (name, _, _) in &layout {
+        let ggml_type = loaded.ggml_type_of(name)?;
+        types.insert(name.clone(), ggml_type);
+    }
+    let mut denoise =
+        transformer::QwenImageForward::build(ctx, config, grid_w, grid_h, seq_txt, &types)?;
+    for (name, ne0, ne1) in &layout {
+        let raw = loaded.raw_exact(name, &[*ne0, *ne1])?;
+        denoise.load_bytes(name, &raw)?;
+    }
+    let latent = match seed {
+        Some(seed) => normal_latent(seed, denoise.latent_len()),
+        None => vec![0.1f32; denoise.latent_len()],
+    };
+    let latents = denoise.denoise(&latent, &txt, &sigmas, guidance, on_progress)?;
+    if let Some(detail) = crate::common::ops::non_finite("qwen-image latent", &latents) {
+        return Err(WeightError::NotBuilt(detail));
+    }
+    let png = vae::decode_packed(ctx, &files.vae, &latents, grid_w, grid_h, width, height)?;
+    Ok(crate::families::DitImageRun {
+        latents,
+        graph_computes: denoise.graph_computes(),
+        preview_png: png,
+    })
 }
 
 /// Published card: `requires_sigma_shift` is true and no `scheduler_shift` is
@@ -138,59 +176,6 @@ fn schedule(
     }
 }
 
-/// Referenced from `execute` so the graphs stay in the non-test crate.
-/// The branch does not run: create still stops on the tokenizer.
-fn link_dit() {
-    if false {
-        let Ok(ctx) = GgmlContext::new(crate::runtime::BackendKind::Cpu) else {
-            return;
-        };
-        let _ = weights::QwenImageConfig::published();
-        let _ = ids::timestep_features(0.0, 2);
-        let _ = ids::spatial_axis(1);
-        if let Ok(ids) = ids::position_ids(1, 1, 1) {
-            let _ = ids.attention_order();
-        }
-        let Ok(mut forward) = transformer::QwenImageForward::build(
-            &ctx,
-            weights::QwenImageConfig::smoke(),
-            1,
-            1,
-            1,
-            &std::collections::HashMap::new(),
-        ) else {
-            return;
-        };
-        let _ = forward.load_f32("img_in.weight", &[]);
-        let _ = forward.node_count();
-        let _ = forward.forward(&[], &[], &[]);
-        let _ = forward.denoise(&[], &[], &[1.0, 0.0], 1.0, |_, _| {});
-        let _ = text::PROMPT_TEMPLATE.len() + text::MAX_LENGTH;
-        let _ = text::ggml_mrope_axis(0, [16, 24, 24]);
-        let _ = text::hf_mrope_cos(
-            [0, 0, 0],
-            128,
-            text::Qwen25VlConfig::published().mrope,
-            1_000_000.0,
-        );
-        let _ = text::trim_system_prefix(&[0.0], 1, 0);
-        let _ = text::text_layout(text::Qwen25VlConfig::published());
-        if let Ok(mut tower) = text::TextForward::build(&ctx, text::Qwen25VlConfig::smoke(), 1) {
-            let _ = tower.load_f32("model.norm.weight", &[]);
-            let _ = tower.compute(&[], &[]);
-        }
-        let _ = tokenizer::prompt_ids(Path::new("."), "", 1);
-        let _ = vae::unpack_latents(&[], 0, 0);
-        let _ = vae::scale_latents(&[], 0, 0, 0);
-        let _ = vae::required_names(vae::DecoderSpec::published());
-        let _ = vae::decoder_dims(96, [1, 2, 4, 4]);
-        if let Ok(mut decode) = vae::VaeDecode::build(&ctx, vae::DecoderSpec::smoke(), 1, 1) {
-            let _ = decode.load_f32("decoder.conv_out.bias", &[]);
-            let _ = decode.decode(&[]);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::execute;
@@ -201,7 +186,9 @@ mod tests {
         check_layout, config_from_weights, stored_f32, weight_layout, QwenImageConfig,
     };
     use crate::runtime::{BackendKind, GgmlContext};
-    use crate::weights::{write_f32_gguf, write_f32_tensors, F32Tensor, GgufWeights, WeightError};
+    use crate::weights::{
+        write_f32_gguf, write_f32_nd, write_f32_tensors, F32Nd, F32Tensor, GgufWeights, WeightError,
+    };
     use std::collections::HashMap;
     use std::path::Path;
 
@@ -232,7 +219,14 @@ mod tests {
     fn fill(name: &str, ne0: i64, ne1: i64) -> Vec<f32> {
         let n = (ne0 as usize) * (ne1 as usize);
         if name == "img_in.weight" || name == "txt_in.weight" || name == "proj_out.weight" {
-            return identity(ne0);
+            if ne0 == ne1 {
+                return identity(ne0);
+            }
+            let mut data = vec![0f32; n];
+            for i in 0..ne0.min(ne1) as usize {
+                data[i + i * ne0 as usize] = 1.0;
+            }
+            return data;
         }
         if stored_f32(name) && !name.ends_with(".bias") {
             return vec![1.0; n];
@@ -438,10 +432,12 @@ mod tests {
         assert_eq!(read.num_layers, 1);
         assert_eq!(read.axes, [2, 2, 4]);
         check_layout(&loaded, read).unwrap();
+        let packed = scratch("packed");
+        write_bundle(&packed, create_smoke_config(), None);
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
         let err = must_err(execute(
             &ctx,
-            &dir,
+            &packed,
             "a red cube",
             4,
             16,
@@ -456,14 +452,11 @@ mod tests {
             |_, _| {},
         ));
         let message = err.to_string();
-        assert!(
-            message.contains("Qwen2.5-VL tokenizer is missing"),
-            "{message}"
-        );
+        assert!(message.contains("Qwen2.5-VL"), "{message}");
         assert!(!message.contains("step loop"), "{message}");
         let cfg = must_err(execute(
             &ctx,
-            &dir,
+            &packed,
             "a red cube",
             4,
             16,
@@ -488,7 +481,7 @@ mod tests {
         let dir = scratch("edit");
         write_bundle(
             &dir,
-            loader_config(),
+            create_smoke_config(),
             Some(("__index_timestep_zero__", 1, 1)),
         );
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
@@ -513,7 +506,7 @@ mod tests {
             "{err}"
         );
         let clean = scratch("linear");
-        write_bundle(&clean, loader_config(), None);
+        write_bundle(&clean, create_smoke_config(), None);
         let err = must_err(execute(
             &ctx,
             &clean,
@@ -530,10 +523,7 @@ mod tests {
             &[],
             |_, _| {},
         ));
-        assert!(
-            err.to_string().contains("Qwen2.5-VL tokenizer is missing"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("Qwen2.5-VL"), "{err}");
         let err = must_err(execute(
             &ctx,
             &clean,
@@ -639,7 +629,184 @@ mod tests {
         let cfg = forward
             .denoise(&latent, &txt, &[sigma, 0.0], 4.0, |_, _| {})
             .unwrap_err();
-        assert!(cfg.to_string().contains("tokenizer"), "{cfg}");
+        assert!(cfg.to_string().contains("negative embedding"), "{cfg}");
+    }
+
+    fn create_smoke_config() -> QwenImageConfig {
+        QwenImageConfig {
+            in_channels: 64,
+            out_channels: 16,
+            inner_dim: 8,
+            num_heads: 1,
+            attn_head_dim: 8,
+            axes: [2, 2, 4],
+            num_layers: 1,
+            joint_attention_dim: 8,
+            freq_dim: 8,
+            patch: 2,
+            rope_theta: 10000.0,
+            vae_scale: 16,
+        }
+    }
+
+    fn write_create_smoke(dir: &Path) {
+        let dit = create_smoke_config();
+        let owned: Vec<(String, i64, i64, Vec<f32>)> = weight_layout(dit)
+            .into_iter()
+            .map(|(name, ne0, ne1)| {
+                let data = fill(&name, ne0, ne1);
+                (name, ne0, ne1, data)
+            })
+            .collect();
+        let tensors: Vec<F32Tensor<'_>> = owned
+            .iter()
+            .map(|(name, ne0, ne1, data)| F32Tensor {
+                name,
+                ne0: *ne0,
+                ne1: *ne1,
+                data,
+            })
+            .collect();
+        write_f32_tensors(&dir.join("transformer.gguf"), &tensors).unwrap();
+
+        let text = super::text::Qwen25VlConfig::create_smoke();
+        let text_owned: Vec<(String, i64, i64, Vec<f32>)> = super::text::text_layout(text)
+            .into_iter()
+            .map(|(name, ne0, ne1)| {
+                let n = (ne0 as usize) * (ne1 as usize);
+                let data = if name == "model.embed_tokens.weight" {
+                    let mut rows = vec![0f32; n];
+                    for token in 0..ne1 as usize {
+                        for h in 0..ne0 as usize {
+                            rows[h + ne0 as usize * token] = ((token + h) % 5) as f32 * 0.01;
+                        }
+                    }
+                    rows
+                } else if name.ends_with(".weight") && !name.contains("proj") {
+                    vec![1.0; n]
+                } else {
+                    vec![0.0; n]
+                };
+                (name, ne0, ne1, data)
+            })
+            .collect();
+        let text_tensors: Vec<F32Tensor<'_>> = text_owned
+            .iter()
+            .map(|(name, ne0, ne1, data)| F32Tensor {
+                name,
+                ne0: *ne0,
+                ne1: *ne1,
+                data,
+            })
+            .collect();
+        write_f32_tensors(&dir.join("text_encoder.gguf"), &text_tensors).unwrap();
+
+        let spec = super::vae::DecoderSpec::create_smoke();
+        let vae_rows = super::vae::frame0_tensors(spec);
+        let vae_owned: Vec<(String, [i64; 4], u8, Vec<f32>)> = vae_rows
+            .into_iter()
+            .map(|row| {
+                let count = if row.rank == 1 {
+                    row.ne[0] as usize
+                } else {
+                    row.ne.iter().product::<i64>() as usize
+                };
+                let data = if row.name.ends_with(".gamma") {
+                    vec![1.0; count]
+                } else {
+                    vec![0.0; count]
+                };
+                (row.name, row.ne, row.rank, data)
+            })
+            .collect();
+        let vae_tensors: Vec<F32Nd<'_>> = vae_owned
+            .iter()
+            .map(|(name, ne, rank, data)| {
+                let shape = if *rank == 1 { [ne[0], 1, 1, 1] } else { *ne };
+                F32Nd {
+                    name,
+                    ne: shape,
+                    data,
+                }
+            })
+            .collect();
+        write_f32_nd(&dir.join("vae.gguf"), &vae_tensors).unwrap();
+
+        let tok = dir.join("tokenizer");
+        std::fs::create_dir_all(&tok).unwrap();
+        let (vocab, _header, config) = {
+            // Keep specials at 256/257 for the byte-level smoke vocab.
+            let mut vocab = String::from("{");
+            for byte in 0u16..256 {
+                if byte > 0 {
+                    vocab.push(',');
+                }
+                let token = crate::common::bpe::byte_token(byte as u8).to_string();
+                vocab.push_str(&serde_json::to_string(&token).unwrap());
+                vocab.push(':');
+                vocab.push_str(&byte.to_string());
+            }
+            vocab.push_str(",\"<|im_start|>\":256,\"<|im_end|>\":257}");
+            let config = r#"{
+  "added_tokens_decoder": {
+    "256": {"content": "<|im_start|>", "special": true},
+    "257": {"content": "<|im_end|>", "special": true}
+  }
+}"#;
+            (vocab, "#version: 0.2\n", config)
+        };
+        std::fs::write(tok.join("vocab.json"), vocab).unwrap();
+        std::fs::write(tok.join("merges.txt"), "#version: 0.2\n").unwrap();
+        std::fs::write(tok.join("tokenizer_config.json"), config).unwrap();
+        std::fs::write(
+            dir.join("bundle.manifest.json"),
+            r#"{
+  "format": "gguf",
+  "quant": "q4_k",
+  "files": {
+    "transformer": "transformer.gguf",
+    "text_encoder": "text_encoder.gguf",
+    "vae": "vae.gguf"
+  }
+}
+"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn smoke_create_encodes_steps_and_decodes_a_png() {
+        let dir = scratch("create");
+        write_create_smoke(&dir);
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let mut steps_seen = 0u32;
+        let out = execute(
+            &ctx,
+            &dir,
+            "hi",
+            2,
+            16,
+            16,
+            1.0,
+            Some(1),
+            Some("flow_match_euler_discrete"),
+            None,
+            false,
+            "",
+            &[],
+            |done, total| {
+                steps_seen = done;
+                assert_eq!(total, 2);
+            },
+        )
+        .expect("qwen smoke create");
+        assert_eq!(steps_seen, 2);
+        assert_eq!(out.latents.len(), 64);
+        assert!(out.latents.iter().all(|value| value.is_finite()));
+        assert!(out.graph_computes >= 2);
+        assert!(out.preview_png.starts_with(b"\x89PNG"));
+        assert!(out.preview_png.len() > 100);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

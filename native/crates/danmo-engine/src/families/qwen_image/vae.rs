@@ -63,6 +63,17 @@ impl DecoderSpec {
             temperal_upsample: [true, true, false],
         }
     }
+
+    /// Packed create path: 16 latent channels, small base for a CPU graph.
+    pub fn create_smoke() -> Self {
+        Self {
+            z_dim: 16,
+            base_dim: 4,
+            dim_mult: [1, 2, 4, 4],
+            num_res_blocks: 2,
+            temperal_upsample: [true, true, false],
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -162,7 +173,7 @@ pub fn required_names(spec: DecoderSpec) -> Vec<String> {
         .collect()
 }
 
-fn frame0_tensors(spec: DecoderSpec) -> Vec<NamedShape> {
+pub(crate) fn frame0_tensors(spec: DecoderSpec) -> Vec<NamedShape> {
     tensors(spec, false)
 }
 
@@ -379,6 +390,107 @@ impl VaeDecode {
         self.graph.set_f32("latent", latent)?;
         self.graph.compute()
     }
+}
+
+/// True when every frame-0 graph tensor is present with the expected shape.
+pub fn layout_matches(weights: &crate::weights::GgufWeights, spec: DecoderSpec) -> bool {
+    for row in frame0_tensors(spec) {
+        let Ok(got) = weights.shape(&row.name) else {
+            return false;
+        };
+        if row.rank == 1 {
+            if got[0] != row.ne[0] {
+                return false;
+            }
+        } else if got[0] != row.ne[0]
+            || got[1] != row.ne[1]
+            || got[2] != row.ne[2]
+            || got[3] != row.ne[3]
+        {
+            return false;
+        }
+    }
+    true
+}
+
+pub fn spec_from_weights(
+    weights: &crate::weights::GgufWeights,
+) -> Result<DecoderSpec, crate::weights::WeightError> {
+    for candidate in [
+        DecoderSpec::published(),
+        DecoderSpec::create_smoke(),
+        DecoderSpec::smoke(),
+    ] {
+        if layout_matches(weights, candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err(crate::weights::WeightError::NotBuilt(
+        "qwen 3d vae layout is not the published or smoke decoder".into(),
+    ))
+}
+
+/// Unpack → scale → first-frame decode → RGB PNG at `pixel_w` × `pixel_h`.
+pub fn decode_packed(
+    ctx: &crate::runtime::GgmlContext,
+    paths: &[std::path::PathBuf],
+    packed: &[f32],
+    grid_w: i64,
+    grid_h: i64,
+    pixel_w: u32,
+    pixel_h: u32,
+) -> Result<Vec<u8>, crate::weights::WeightError> {
+    let weights = crate::weights::GgufWeights::open_parts(paths)?;
+    let spec = spec_from_weights(&weights)?;
+    if spec.z_dim != 16 {
+        return Err(crate::weights::WeightError::NotBuilt(format!(
+            "qwen packed decode needs 16 latent channels, decoder has {}",
+            spec.z_dim
+        )));
+    }
+    let unpacked = unpack_latents(packed, grid_w as usize, grid_h as usize)?;
+    let scaled = scale_latents(&unpacked, (grid_w * 2) as usize, (grid_h * 2) as usize, 1)?;
+    let mut decode = VaeDecode::build(ctx, spec, grid_w * 2, grid_h * 2)?;
+    for row in frame0_tensors(spec) {
+        let data = if row.rank == 1 {
+            weights.f32_widened(&row.name, &[row.ne[0]])?
+        } else {
+            weights.f32_widened(&row.name, &row.ne)?
+        };
+        decode.load_f32(&row.name, &data)?;
+    }
+    let samples = decode.decode(&scaled)?;
+    let expect = (pixel_w as usize) * (pixel_h as usize) * 3;
+    if samples.len() != expect {
+        return Err(crate::weights::WeightError::Shape {
+            name: "qwen vae decode".into(),
+            expected: vec![pixel_w as i64, pixel_h as i64, 3],
+            got: vec![samples.len() as i64],
+        });
+    }
+    if samples.iter().any(|value| !value.is_finite()) {
+        return Err(crate::weights::WeightError::NotBuilt(
+            "qwen vae decode produced a non-finite sample".into(),
+        ));
+    }
+    let rgb = rgb_whc(&samples, pixel_w, pixel_h);
+    Ok(crate::common::png::encode_rgb(pixel_w, pixel_h, &rgb))
+}
+
+fn rgb_whc(samples: &[f32], width: u32, height: u32) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let mut rgb = vec![0u8; w * h * 3];
+    for y in 0..h {
+        for x in 0..w {
+            for channel in 0..3 {
+                let v = samples[x + w * (y + h * channel)];
+                rgb[(y * w + x) * 3 + channel] =
+                    ((v + 1.0) * 0.5 * 255.0).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    rgb
 }
 
 fn validate(spec: DecoderSpec, width: i64, height: i64) -> Result<(), RuntimeError> {

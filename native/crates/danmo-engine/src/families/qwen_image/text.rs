@@ -65,6 +65,21 @@ impl Qwen25VlConfig {
             mrope: [1, 0, 0],
         }
     }
+
+    /// Smoke tower wide enough for the byte-level test tokenizer specials.
+    pub fn create_smoke() -> Self {
+        Self {
+            vocab: 258,
+            hidden: 8,
+            layers: 1,
+            heads: 4,
+            kv_heads: 2,
+            head_dim: 2,
+            intermediate: 8,
+            rope_theta: 1_000_000.0,
+            mrope: [1, 0, 0],
+        }
+    }
 }
 
 /// Diffusers `_apply_multimodal_rotary_pos_emb` cosine row for one token.
@@ -408,6 +423,76 @@ fn nn(tensor: Tensor) -> Result<Tensor, RuntimeError> {
     } else {
         Ok(tensor)
     }
+}
+
+/// True when every name in [`text_layout`] is present with the expected shape.
+pub fn layout_matches(weights: &crate::weights::GgufWeights, config: Qwen25VlConfig) -> bool {
+    for (name, ne0, ne1) in text_layout(config) {
+        let Ok(got) = weights.shape(&name) else {
+            return false;
+        };
+        if got[0] != ne0 || got[1] != ne1 {
+            return false;
+        }
+    }
+    true
+}
+
+pub fn config_from_weights(
+    weights: &crate::weights::GgufWeights,
+) -> Result<Qwen25VlConfig, crate::weights::WeightError> {
+    for candidate in [
+        Qwen25VlConfig::published(),
+        Qwen25VlConfig::create_smoke(),
+        Qwen25VlConfig::smoke(),
+    ] {
+        if layout_matches(weights, candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err(crate::weights::WeightError::NotBuilt(
+        "Qwen2.5-VL text encoder layout is not the published or smoke tower".into(),
+    ))
+}
+
+/// Token ids → final hidden state with the 34-token system prefix removed.
+/// Layout is `[hidden, trimmed_seq]` with hidden on `ne0`.
+pub fn encode(
+    ctx: &crate::runtime::GgmlContext,
+    weights: &crate::weights::GgufWeights,
+    config: Qwen25VlConfig,
+    ids: &[i32],
+) -> Result<Vec<f32>, crate::weights::WeightError> {
+    if ids.is_empty() {
+        return Err(crate::weights::WeightError::NotBuilt(
+            "prompt has no tokens".into(),
+        ));
+    }
+    if !layout_matches(weights, config) {
+        return Err(crate::weights::WeightError::NotBuilt(
+            "Qwen2.5-VL text encoder layout does not match the tower config".into(),
+        ));
+    }
+    let seq = ids.len() as i64;
+    let mut tower = TextForward::build(ctx, config, seq)?;
+    for (name, ne0, ne1) in text_layout(config) {
+        let data = weights.f32_widened(&name, &[ne0, ne1])?;
+        tower.load_f32(&name, &data)?;
+    }
+    let mut mask = vec![0f32; (seq * seq) as usize];
+    for q in 0..seq {
+        for k in 0..seq {
+            if k > q {
+                mask[(k + q * seq) as usize] = f32::NEG_INFINITY;
+            }
+        }
+    }
+    let hidden = tower.compute(ids, &mask)?;
+    Ok(trim_system_prefix(
+        &hidden,
+        config.hidden as usize,
+        ids.len(),
+    )?)
 }
 
 #[cfg(test)]
