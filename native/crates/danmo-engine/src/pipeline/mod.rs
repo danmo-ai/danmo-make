@@ -160,6 +160,10 @@ pub struct AudioRunOutput {
     pub frames: i64,
     pub steps: u32,
     pub graph_computes: u32,
+    pub lyrics_effective: String,
+    pub lyrics_alignment_json: String,
+    pub lyrics_txt: Option<String>,
+    pub lyrics_lrc: Option<String>,
 }
 
 pub fn audio_create(
@@ -186,6 +190,10 @@ pub fn audio_create(
         timesignature: "",
     };
     if let Some(out) = families::run_audio_facade(family, bundle, &create)? {
+        let lyrics_alignment_json =
+            serde_json::to_string(&out.lyrics_alignment.as_metadata()).unwrap_or_else(|_| {
+                "{\"lyrics_alignment\":\"unknown\"}".into()
+            });
         return Ok(AudioRunOutput {
             family: family.into(),
             wav: out.wav,
@@ -193,6 +201,10 @@ pub fn audio_create(
             frames: out.frames,
             steps: out.steps,
             graph_computes: out.graph_computes,
+            lyrics_effective: out.lyrics_effective,
+            lyrics_alignment_json,
+            lyrics_txt: out.lyrics_txt,
+            lyrics_lrc: out.lyrics_lrc,
         });
     }
     weights::assert_gguf_bundle(bundle)?;

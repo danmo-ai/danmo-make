@@ -94,7 +94,7 @@ Shape on `FamilySpec`:
 |-------|--------|----------------|
 | **A — `DitPipeline`** | `pipeline::image_create` → `run_dit_image` | `flux2` (MM-DiT), `z_image` (DiT), `qwen_image` (joint DiT, Qwen2.5-VL trunk, packed unpack, first-frame 3D decoder) |
 | **B — `JobPipeline`** | `pipeline::upscale` | none; fails after the bundle check |
-| **C — `GenerationFacade`** | video / audio routes | `ace_step` text2music create (acestep.cpp): Qwen3-Embedding → cond pack → silence context → DiT Euler (APG CFG via `null_condition_emb`) → VAE → WAV; cover / FSQ / 5Hz LM still fail loud; other facades fail after the bundle check |
+| **C — `GenerationFacade`** | video / audio routes | `ace_step` text2music create (acestep.cpp): Qwen3-Embedding → cond pack → silence context → DiT Euler (APG CFG via `null_condition_emb`) → VAE → WAV + lyrics timeline (`structure_estimate` LRC / `_lyrics.txt` sidecars; DiT cross-attn DTW not wired yet); cover / FSQ / 5Hz LM still fail loud; other facades fail after the bundle check |
 
 Any other registered family passes the bundle check and then fails with `has no ggml graph yet`. LoRA inference is a residual on `flux2` and `z_image`. Qwen-Image LoRA, edit, upscale, ControlNet, and LoRA training are not built.
 

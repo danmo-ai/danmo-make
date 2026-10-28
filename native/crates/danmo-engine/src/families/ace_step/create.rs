@@ -5,6 +5,7 @@
 
 use super::apg::broadcast_null_enc;
 use super::cond;
+use super::lyrics::{self, LyricsAlignment};
 use super::schedule::{shift_schedule, TURBO_SHIFT, TURBO_TIMESTEPS};
 use super::text::{
     build_prompt_strings, embed_lyrics, encode_caption, load_tokenizer_json, DIT_INSTR_TEXT2MUSIC,
@@ -42,6 +43,14 @@ pub struct CreateOutput {
     pub steps: u32,
     pub enc_seq: i64,
     pub graph_computes: u32,
+    /// Effective lyrics fed to DiT (after normalize).
+    pub lyrics_effective: String,
+    /// Main-compatible structure_estimate timeline (LRC when non-empty).
+    pub lyrics_alignment: LyricsAlignment,
+    /// `<stem>_lyrics.txt` body, if any.
+    pub lyrics_txt: Option<String>,
+    /// `<stem>.lrc` body, if any.
+    pub lyrics_lrc: Option<String>,
 }
 
 pub fn duration_to_latent_frames(duration_sec: f32) -> Result<i64, WeightError> {
@@ -102,10 +111,15 @@ pub fn run_full_create(
         shift_schedule(steps, shift)?
     };
 
+    let duration_for_align = request.duration_sec.max(0.0);
+    let (lyrics_effective, lyrics_alignment, lyrics_txt, lyrics_lrc) =
+        lyrics::prepare_create_lyrics(request.lyrics, duration_for_align)
+            .map_err(WeightError::NotBuilt)?;
+
     let tokenizer = load_tokenizer_json(&gguf.root)?;
     let pair = build_prompt_strings(
         request.prompt,
-        request.lyrics,
+        lyrics_effective.as_ref(),
         DIT_INSTR_TEXT2MUSIC,
         request.duration_sec,
         request.bpm,
@@ -172,6 +186,10 @@ pub fn run_full_create(
         steps,
         enc_seq,
         graph_computes: model.graph_computes(),
+        lyrics_effective: lyrics_effective.into_owned(),
+        lyrics_alignment,
+        lyrics_txt,
+        lyrics_lrc,
     })
 }
 

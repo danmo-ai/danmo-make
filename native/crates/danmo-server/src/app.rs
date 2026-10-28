@@ -228,12 +228,17 @@ fn run_task(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let asset_ids = persist_audio_wav(state, task_id, model, params, &out)?;
+            let alignment: Value = serde_json::from_str(&out.lyrics_alignment_json)
+                .unwrap_or_else(|_| json!({"lyrics_alignment": "unknown"}));
             Ok(json!({
                 "family": out.family,
                 "steps": out.steps,
                 "graph_computes": out.graph_computes,
                 "frames": out.frames,
                 "sample_rate": out.sample_rate,
+                "lyrics_effective": out.lyrics_effective,
+                "lyrics_alignment": alignment.get("lyrics_alignment").cloned().unwrap_or(json!("unknown")),
+                "lyrics_segments": alignment.get("lyrics_segments").cloned().unwrap_or(json!([])),
                 "asset_ids": asset_ids,
                 "primary_asset_id": asset_ids.first(),
             }))
@@ -273,15 +278,32 @@ fn persist_audio_wav(
     std::fs::create_dir_all(&asset_dir).map_err(|err| err.to_string())?;
     let path = asset_dir.join(format!("{id}.wav"));
     std::fs::write(&path, &out.wav).map_err(|err| err.to_string())?;
+    // Main-compatible sidecars: `<stem>_lyrics.txt` + `<stem>.lrc`.
+    if let Some(txt) = &out.lyrics_txt {
+        let side = asset_dir.join(format!("{id}_lyrics.txt"));
+        std::fs::write(&side, txt).map_err(|err| err.to_string())?;
+    }
+    if let Some(lrc) = &out.lyrics_lrc {
+        let side = asset_dir.join(format!("{id}.lrc"));
+        std::fs::write(&side, lrc).map_err(|err| err.to_string())?;
+    }
     let request = params.get("request").cloned().unwrap_or(json!({}));
     let duration_seconds = out.frames as f64 / 25.0;
+    let alignment: Value = serde_json::from_str(&out.lyrics_alignment_json)
+        .unwrap_or_else(|_| json!({"lyrics_alignment": "unknown"}));
     let metadata = json!({
         "prompt": request.get("prompt").and_then(|v| v.as_str()).unwrap_or(""),
         "lyrics": request.get("lyrics").and_then(|v| v.as_str()).unwrap_or(""),
+        "lyrics_effective": out.lyrics_effective,
+        "lyrics_input": request.get("lyrics").and_then(|v| v.as_str()).unwrap_or(""),
         "model": model,
         "sample_rate": out.sample_rate,
         "frames": out.frames,
         "steps": out.steps,
+        "lyrics_alignment": alignment.get("lyrics_alignment").cloned().unwrap_or(json!("unknown")),
+        "lyrics_segments": alignment.get("lyrics_segments").cloned().unwrap_or(json!([])),
+        "lyrics_sidecar": out.lyrics_txt.is_some(),
+        "lrc_sidecar": out.lyrics_lrc.is_some(),
     });
     state
         .scheduler

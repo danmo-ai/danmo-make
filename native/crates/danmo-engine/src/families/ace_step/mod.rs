@@ -8,6 +8,7 @@ mod apg;
 mod cond;
 mod create;
 mod graph;
+mod lyrics;
 mod schedule;
 mod text;
 mod transformer;
