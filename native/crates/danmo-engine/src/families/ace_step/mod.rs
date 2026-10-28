@@ -19,6 +19,7 @@ mod lyrics_dtw;
 mod lm;
 mod lm_codes;
 mod lm_format;
+mod lm_fsm;
 mod lm_prompt;
 mod lm_sample;
 mod repaint;
