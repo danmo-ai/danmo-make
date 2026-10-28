@@ -830,6 +830,28 @@ impl ReusedGraph {
         Ok(())
     }
 
+    pub fn set_i64(&self, name: &str, data: &[i64]) -> Result<(), RuntimeError> {
+        let tensor = self
+            .inputs
+            .iter()
+            .find(|t| t.name == name)
+            .map(|t| t.tensor)
+            .ok_or_else(|| RuntimeError::MissingInput(name.to_string()))?;
+        let nbytes = unsafe { g::ggml_nbytes(tensor) };
+        let got = data.len() * std::mem::size_of::<i64>();
+        if nbytes != got {
+            return Err(RuntimeError::SizeMismatch {
+                name: name.to_string(),
+                expected: nbytes,
+                got,
+            });
+        }
+        unsafe {
+            g::ggml_backend_tensor_set(tensor, data.as_ptr().cast(), 0, nbytes);
+        }
+        Ok(())
+    }
+
     /// Recompute the reserved graph and leave the output on the device.
     pub fn compute_device(&mut self) -> Result<(), RuntimeError> {
         let status = unsafe { g::ggml_backend_graph_compute(self.backend, self.graph) };
