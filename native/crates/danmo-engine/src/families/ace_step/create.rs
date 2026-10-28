@@ -1,8 +1,9 @@
 //! ACE-Step text2music create orchestration (acestep.cpp `pipeline-synth`).
 //!
-//! Phases: text encode → cond pack → silence context → DiT denoise → VAE → WAV.
-//! Cover / 5Hz LM / FSQ / CFG>1 are not built yet and fail loud.
+//! Phases: text encode → cond pack → silence context → DiT denoise (APG CFG) →
+//! VAE → WAV. Cover / 5Hz LM / FSQ are not built yet and fail loud.
 
+use super::apg::broadcast_null_enc;
 use super::cond;
 use super::schedule::{shift_schedule, TURBO_SHIFT, TURBO_TIMESTEPS};
 use super::text::{
@@ -72,10 +73,11 @@ pub fn run_full_create(
     bundle: &Path,
     request: &CreateRequest<'_>,
 ) -> Result<CreateOutput, WeightError> {
-    if request.guidance != 1.0 {
-        return Err(WeightError::NotBuilt(
-            "ACE-Step CFG / APG needs the null condition path".into(),
-        ));
+    if !request.guidance.is_finite() || request.guidance < 1.0 {
+        return Err(WeightError::NotBuilt(format!(
+            "ACE-Step guidance {} must be >= 1",
+            request.guidance
+        )));
     }
     let gguf = weights::assert_gguf_bundle(bundle)?;
     let dit_path = gguf.transformer.first().ok_or_else(|| {
@@ -131,10 +133,28 @@ pub fn run_full_create(
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     load_weights(&mut model, &dit, config)?;
 
+    let null_enc = if request.guidance > 1.0 + f32::EPSILON {
+        let emb = load_null_condition(&dit, config.condition_dim)?;
+        Some(
+            broadcast_null_enc(&emb, enc_seq)
+                .map_err(WeightError::NotBuilt)?,
+        )
+    } else {
+        None
+    };
+
     let seed = request.seed.unwrap_or(0);
     let xt = normal_latent(seed, model.xt_len());
     let latents = model
-        .denoise(&xt, &context, &enc_hidden, &schedule, 1.0, |_, _| ())
+        .denoise(
+            &xt,
+            &context,
+            &enc_hidden,
+            &schedule,
+            request.guidance,
+            null_enc.as_deref(),
+            |_, _| (),
+        )
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
 
     let vae_path = gguf
@@ -153,6 +173,30 @@ pub fn run_full_create(
         enc_seq,
         graph_computes: model.graph_computes(),
     })
+}
+
+fn load_null_condition(dit: &GgufWeights, condition_dim: i64) -> Result<Vec<f32>, WeightError> {
+    if !dit.contains("null_condition_emb") {
+        return Err(WeightError::MissingTensor {
+            path: "transformer".into(),
+            name: "null_condition_emb".into(),
+        });
+    }
+    // Packs store [2048], [2048,1], or [2048,1,1].
+    for ne in [
+        vec![condition_dim],
+        vec![condition_dim, 1],
+        vec![condition_dim, 1, 1],
+    ] {
+        if let Ok(values) = dit.f32_widened("null_condition_emb", &ne) {
+            if values.len() as i64 == condition_dim {
+                return Ok(values);
+            }
+        }
+    }
+    Err(WeightError::NotBuilt(format!(
+        "null_condition_emb does not match condition_dim {condition_dim}"
+    )))
 }
 
 fn silence_context(

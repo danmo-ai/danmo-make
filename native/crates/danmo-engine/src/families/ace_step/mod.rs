@@ -1,8 +1,10 @@
 //! ACE-Step 1.5 music DiT (GenerationFacade).
 //!
 //! Full text2music create (acestep.cpp `pipeline-synth`): text encode → cond →
-//! silence context → DiT Euler → VAE → WAV. Cover / 5Hz LM / CFG>1 fail loud.
+//! silence context → DiT Euler (APG CFG) → VAE → WAV. Cover / 5Hz LM / FSQ
+//! fail loud.
 
+mod apg;
 mod cond;
 mod create;
 mod graph;
@@ -36,6 +38,20 @@ pub fn probe_layout(bundle: &Path) -> Result<AceStepConfig, WeightError> {
     let config = config_from_weights(&loaded)?;
     check_layout(&loaded, config)?;
     Ok(config)
+}
+
+/// Cover / FSQ roundtrip is not built (acestep.cpp `ops_encode_src` + FSQ).
+pub fn run_cover(_bundle: &Path) -> Result<(), WeightError> {
+    Err(WeightError::NotBuilt(
+        "ACE-Step cover needs VAE encode + FSQ roundtrip (acestep.cpp ops_encode_src)".into(),
+    ))
+}
+
+/// 5Hz LM lyric/caption expansion is not built (acestep.cpp `pipeline-lm`).
+pub fn run_lm_expand(_bundle: &Path) -> Result<(), WeightError> {
+    Err(WeightError::NotBuilt(
+        "ACE-Step 5Hz LM expansion is not built (acestep.cpp pipeline-lm)".into(),
+    ))
 }
 
 /// Product create. A full `bundle.manifest.json` (DiT + text + VAE + tokenizer)
@@ -235,6 +251,14 @@ mod tests {
             "{err}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cover_and_lm_fail_loud_with_acestep_pointers() {
+        let err = super::run_cover(Path::new("/tmp")).unwrap_err();
+        assert!(err.to_string().contains("FSQ"), "{err}");
+        let err = super::run_lm_expand(Path::new("/tmp")).unwrap_err();
+        assert!(err.to_string().contains("pipeline-lm"), "{err}");
     }
 
     #[test]

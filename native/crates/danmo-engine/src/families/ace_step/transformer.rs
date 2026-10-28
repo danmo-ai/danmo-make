@@ -1,9 +1,12 @@
-//! ACE-Step DiT session: one forward and the guidance-1 Euler loop.
+//! ACE-Step DiT session: Euler loop with optional APG CFG.
 //!
-//! Velocity is `[out_channels, T]`. Context latents stay packed into
+//! Velocity is time-major `[T, out_channels]`. Context latents stay packed into
 //! `input_latents` ahead of `xt` each step. Schedules do not carry a trailing
-//! 0; the last step uses `t_next = 0`.
+//! 0; the last step uses `t_next = 0`. Guidance > 1 runs a second uncond
+//! forward with broadcast `null_condition_emb` and combines via APG
+//! (acestep.cpp `dit-sampler.h`).
 
+use super::apg::{apg_forward, ApgMomentum};
 use super::graph::{build_dit, graph_weight_layout};
 use super::schedule::{sft_schedule, turbo_schedule, SFT_DEFAULT_STEPS};
 use super::weights::{AceStepConfig, TIME_FREQ_DIM};
@@ -103,7 +106,10 @@ impl AceStepDit {
         self.graph.compute()
     }
 
-    /// Guidance-1 Euler. `schedule` is descending and has no trailing 0.
+    /// Euler denoise. `schedule` is descending and has no trailing 0.
+    ///
+    /// `null_enc` is the broadcast `null_condition_emb` (`condition_dim × enc_seq`).
+    /// Required when `guidance > 1`; ignored at guidance 1.
     pub fn denoise(
         &mut self,
         xt: &[f32],
@@ -111,12 +117,28 @@ impl AceStepDit {
         enc_hidden: &[f32],
         schedule: &[f32],
         guidance: f32,
+        null_enc: Option<&[f32]>,
         mut on_step: impl FnMut(u32, u32),
     ) -> Result<Vec<f32>, RuntimeError> {
-        if !guidance.is_finite() || (guidance - 1.0).abs() >= f32::EPSILON {
-            return Err(RuntimeError::Message(
-                "ACE-Step CFG / APG needs the null condition path".into(),
-            ));
+        if !guidance.is_finite() || guidance < 1.0 {
+            return Err(RuntimeError::Message(format!(
+                "ACE-Step guidance {guidance} must be >= 1"
+            )));
+        }
+        let do_cfg = guidance > 1.0 + f32::EPSILON;
+        if do_cfg {
+            let Some(null_enc) = null_enc else {
+                return Err(RuntimeError::Message(
+                    "ACE-Step guidance > 1 needs null_condition_emb".into(),
+                ));
+            };
+            if null_enc.len() != self.enc_len() {
+                return Err(RuntimeError::Message(format!(
+                    "ACE-Step null enc length {} != {}",
+                    null_enc.len(),
+                    self.enc_len()
+                )));
+            }
         }
         if schedule.is_empty() {
             return Err(RuntimeError::Message(
@@ -138,6 +160,7 @@ impl AceStepDit {
             )));
         }
         let mut xt = xt.to_vec();
+        let mut apg = ApgMomentum::new();
         let total = schedule.len() as u32;
         for (index, &t_curr) in schedule.iter().enumerate() {
             if !t_curr.is_finite() {
@@ -151,13 +174,34 @@ impl AceStepDit {
             } else {
                 0.0
             };
-            let velocity = self.forward(&xt, context, enc_hidden, t_curr, t_curr)?;
+            let vt_cond = self.forward(&xt, context, enc_hidden, t_curr, t_curr)?;
             if let Some(detail) = non_finite(
                 &format!("ACE-Step velocity at step {}", index + 1),
-                &velocity,
+                &vt_cond,
             ) {
                 return Err(RuntimeError::Message(detail));
             }
+            let velocity = if do_cfg {
+                let null_enc = null_enc.expect("checked above");
+                let vt_uncond = self.forward(&xt, context, null_enc, t_curr, t_curr)?;
+                if let Some(detail) = non_finite(
+                    &format!("ACE-Step uncond velocity at step {}", index + 1),
+                    &vt_uncond,
+                ) {
+                    return Err(RuntimeError::Message(detail));
+                }
+                apg_forward(
+                    &vt_cond,
+                    &vt_uncond,
+                    guidance,
+                    &mut apg,
+                    self.config.out_channels,
+                    self.frames,
+                )
+                .map_err(RuntimeError::Message)?
+            } else {
+                vt_cond
+            };
             let dt = t_next - t_curr;
             for (sample, vel) in xt.iter_mut().zip(velocity.iter()) {
                 *sample += dt * *vel;
@@ -345,7 +389,7 @@ pub fn prove_smoke_denoise(
     let context = vec![0f32; dit.context_len()];
     let enc = vec![0f32; dit.enc_len()];
     let latents = dit
-        .denoise(&xt, &context, &enc, &schedule, 1.0, |_, _| ())
+        .denoise(&xt, &context, &enc, &schedule, 1.0, None, |_, _| ())
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     if let Some(detail) = non_finite("ACE-Step smoke latent", &latents) {
         return Err(WeightError::NotBuilt(detail));
@@ -442,11 +486,45 @@ mod tests {
         assert!(velocity.iter().all(|v| v.is_finite()));
         let schedule = turbo_schedule();
         let latents = dit
-            .denoise(&xt, &context, &enc, &schedule, 1.0, |_, _| ())
+            .denoise(&xt, &context, &enc, &schedule, 1.0, None, |_, _| ())
             .unwrap();
         assert_eq!(latents.len(), dit.xt_len());
         assert!(latents.iter().all(|v| v.is_finite()));
         assert_eq!(dit.steps_run, 8);
         assert!(dit.graph_computes() >= 9);
+
+        let null_enc = vec![0.05f32; dit.enc_len()];
+        let guided = dit
+            .denoise(&xt, &context, &enc, &schedule[..2], 2.0, Some(&null_enc), |_, _| ())
+            .unwrap();
+        assert_eq!(guided.len(), dit.xt_len());
+        assert!(guided.iter().all(|v| v.is_finite()));
+        assert_ne!(guided, latents[..guided.len()].to_vec());
+    }
+
+    #[test]
+    fn guidance_above_one_without_null_fails_loud() {
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let config = AceStepConfig::smoke();
+        let mut dit = AceStepDit::build(&ctx, config, 4, 2).unwrap();
+        for (name, ne0, ne1) in super::super::graph::graph_weight_layout(config) {
+            dit.load_f32(&name, &vec![0.01f32; (ne0 * ne1) as usize])
+                .unwrap();
+        }
+        let err = dit
+            .denoise(
+                &vec![0.1; dit.xt_len()],
+                &vec![0.0; dit.context_len()],
+                &vec![0.0; dit.enc_len()],
+                &[1.0, 0.5],
+                2.0,
+                None,
+                |_, _| (),
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("null_condition_emb"),
+            "{err}"
+        );
     }
 }

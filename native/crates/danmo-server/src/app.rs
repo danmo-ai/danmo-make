@@ -238,7 +238,18 @@ fn run_task(
                 "primary_asset_id": asset_ids.first(),
             }))
         }
-        "video.edit" | "video.upscale" | "video.avatar" | "audio.edit" => {
+        "audio.edit" => {
+            let bundle = bundle.ok_or_else(|| "missing GGUF bundle".to_string())?;
+            danmo_engine::assert_gguf_bundle(&bundle).map_err(|e| e.to_string())?;
+            if family == "ace_step" {
+                return Err(
+                    "ACE-Step cover needs VAE encode + FSQ roundtrip (acestep.cpp ops_encode_src)"
+                        .into(),
+                );
+            }
+            Err(format!("{family} graph is not built"))
+        }
+        "video.edit" | "video.upscale" | "video.avatar" => {
             let bundle = bundle.ok_or_else(|| "missing GGUF bundle".to_string())?;
             danmo_engine::assert_gguf_bundle(&bundle).map_err(|e| e.to_string())?;
             Err(format!("{family} graph is not built"))
