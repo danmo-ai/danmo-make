@@ -1,13 +1,24 @@
 //! ACE-Step 1.5 music DiT (GenerationFacade).
 //!
-//! This slice locks the XL weight table against acestep.cpp `dit.h` and main
-//! `AceStepConfig`. The denoise graph, text tower, 5Hz LM, VAE, and cover path
-//! are not built. Create still fails loud after a successful layout probe.
+//! This slice locks the XL weight table, builds the smoke DiT forward graph,
+//! and runs guidance-1 turbo Euler on CPU. Product create still fails loud
+//! after a successful smoke denoise: the text tower and VAE are not built.
 
+mod graph;
+mod schedule;
+mod transformer;
 mod weights;
 
+use crate::runtime::{BackendKind, GgmlContext};
 use crate::weights::{GgufWeights, WeightError};
 use std::path::{Path, PathBuf};
+#[allow(unused_imports)]
+pub use schedule::{
+    sft_schedule, shift_schedule, turbo_schedule, SFT_DEFAULT_SHIFT, SFT_DEFAULT_STEPS,
+    TURBO_SHIFT, TURBO_TIMESTEPS,
+};
+#[allow(unused_imports)]
+pub use transformer::{prove_smoke_denoise, AceStepDit};
 pub use weights::{
     check_layout, config_from_weights, layout_matches, weight_layout, AceStepConfig, TIME_FREQ_DIM,
 };
@@ -21,7 +32,24 @@ pub fn probe_layout(bundle: &Path) -> Result<AceStepConfig, WeightError> {
     Ok(config)
 }
 
-fn dit_gguf(bundle: &Path) -> Result<PathBuf, WeightError> {
+/// Probe the DiT, prove smoke forward+Euler when the card is smoke, then
+/// refuse product create until the text tower and VAE land.
+pub fn run_create(bundle: &Path) -> Result<(), WeightError> {
+    let config = probe_layout(bundle)?;
+    if config == AceStepConfig::smoke() {
+        let ctx = GgmlContext::new(BackendKind::Cpu)
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        let _ = prove_smoke_denoise(&ctx, bundle, config)?;
+        return Err(WeightError::NotBuilt(
+            "ACE-Step text tower and VAE are not built".into(),
+        ));
+    }
+    Err(WeightError::NotBuilt(
+        "ACE-Step XL DiT forward is not wired into audio create (smoke path only)".into(),
+    ))
+}
+
+pub(crate) fn dit_gguf(bundle: &Path) -> Result<PathBuf, WeightError> {
     if !bundle.is_dir() {
         return Err(WeightError::Bundle {
             path: bundle.display().to_string(),
@@ -60,8 +88,8 @@ fn dit_gguf(bundle: &Path) -> Result<PathBuf, WeightError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        config_from_weights, dit_gguf, layout_matches, probe_layout, weight_layout, AceStepConfig,
-        TIME_FREQ_DIM,
+        config_from_weights, dit_gguf, layout_matches, probe_layout, run_create, weight_layout,
+        AceStepConfig, TIME_FREQ_DIM,
     };
     use crate::weights::{write_f32_nd, F32Nd, GgufWeights};
     use std::path::Path;
@@ -140,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn smoke_probe_accepts_the_layout_then_refuses_generate() {
+    fn smoke_probe_accepts_the_layout() {
         let dir = scratch("smoke");
         write_dit(&dir, AceStepConfig::smoke());
         let path = dit_gguf(&dir).unwrap();
@@ -175,11 +203,23 @@ mod tests {
     }
 
     #[test]
-    fn audio_create_refuses_after_a_valid_smoke_dit() {
+    fn audio_create_runs_smoke_denoise_then_refuses_vae() {
         let dir = scratch("create");
         write_dit(&dir, AceStepConfig::smoke());
         let err = crate::pipeline::audio_create("ace_step", &dir).unwrap_err();
-        assert!(err.to_string().contains("DiT graph is not built"), "{err}");
+        assert!(
+            err.to_string().contains("text tower and VAE"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_create_on_smoke_proves_denoise_then_refuses() {
+        let dir = scratch("prove");
+        write_dit(&dir, AceStepConfig::smoke());
+        let err = run_create(&dir).unwrap_err();
+        assert!(err.to_string().contains("text tower and VAE"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

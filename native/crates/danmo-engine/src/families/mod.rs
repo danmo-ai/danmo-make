@@ -296,17 +296,15 @@ pub fn run_dit_image(
 }
 
 /// Shape C audio entry. `Ok(None)` leaves the generic bundle check to the
-/// pipeline. ACE-Step validates the DiT GGUF then refuses generate.
+/// pipeline. ACE-Step proves the smoke DiT then refuses product create.
 pub fn run_audio_facade(
     family: &str,
     bundle: &std::path::Path,
 ) -> Result<Option<()>, crate::weights::WeightError> {
     match family {
         "ace_step" => {
-            let _ = ace_step::probe_layout(bundle)?;
-            Err(crate::weights::WeightError::NotBuilt(
-                "ACE-Step DiT graph is not built".into(),
-            ))
+            ace_step::run_create(bundle)?;
+            Ok(None)
         }
         _ => Ok(None),
     }
