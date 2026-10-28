@@ -126,7 +126,7 @@ pub struct AudioGenerationRequest {
     pub steps: Option<u32>,
 }
 
-/// ACE-Step cover / cover-nofsq edit.
+/// ACE-Step cover / cover-nofsq / repaint edit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioEditRequest {
     pub model: String,
@@ -140,7 +140,7 @@ pub struct AudioEditRequest {
     pub vocal_language: String,
     pub guidance: Option<f32>,
     pub steps: Option<u32>,
-    /// `cover-nofsq` (default, clean latents) or `cover` (FSQ roundtrip).
+    /// `cover-nofsq` (default), `cover` (FSQ), or `repaint` (region regenerate).
     #[serde(default = "default_cover_nofsq")]
     pub task: String,
     /// Absolute or workspace-relative path to a PCM16 WAV source.
@@ -153,6 +153,14 @@ pub struct AudioEditRequest {
     pub audio_cover_strength: Option<f32>,
     /// 0 = pure noise; 1 = start near source (default 0.0).
     pub cover_noise_strength: Option<f32>,
+    /// Repaint region start seconds (required for `task=repaint`).
+    pub region_start_sec: Option<f32>,
+    /// Repaint region end seconds (required for `task=repaint`).
+    pub region_end_sec: Option<f32>,
+    /// Fraction of steps that inject preserved regions (default 1.0).
+    pub repaint_injection_ratio: Option<f32>,
+    /// Latent frames of boundary crossfade (default 8).
+    pub repaint_crossfade_frames: Option<i64>,
 }
 
 fn default_cover_nofsq() -> String {

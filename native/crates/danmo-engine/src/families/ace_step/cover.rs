@@ -1,8 +1,8 @@
-//! ACE-Step cover / cover-nofsq (acestep.cpp `ops_encode_src` + optional FSQ).
+//! ACE-Step cover / cover-nofsq / repaint (acestep.cpp synth ops + sampler-repaint).
 //!
-//! Encode source audio (or accept latents) → optional FSQ roundtrip → cover
-//! context (src[64]+mask[64]) → DiT Euler (optional cover_strength switch +
-//! noise blend) → VAE decode → WAV.
+//! Encode source audio (or accept latents) → optional FSQ (cover only) →
+//! context (src[64]+mask[64]) → DiT Euler → optional latent splice/blend →
+//! VAE decode → WAV.
 
 use super::apg::broadcast_null_enc;
 use super::cond;
@@ -11,12 +11,13 @@ use super::create::{
 };
 use super::fsq;
 use super::lyrics;
+use super::repaint;
 use super::schedule::{shift_schedule, TURBO_SHIFT, TURBO_TIMESTEPS};
 use super::text::{
     build_prompt_strings, embed_lyrics, encode_caption, load_tokenizer_json, DIT_INSTR_COVER,
-    DIT_INSTR_TEXT2MUSIC,
+    DIT_INSTR_REPAINT, DIT_INSTR_TEXT2MUSIC,
 };
-use super::transformer::{load_weights, AceStepDit, DenoiseContextSwitch};
+use super::transformer::{load_weights, AceStepDit, DenoiseContextSwitch, DenoiseRepaint};
 use super::vae::{AUDIO_UPSAMPLE, LATENT_CHANNELS};
 use super::wav::{self, SAMPLE_RATE};
 use super::weights::{check_layout, config_from_weights};
@@ -29,8 +30,10 @@ use std::path::Path;
 pub enum CoverMode {
     /// Clean 25Hz VAE latents → DiT (no FSQ).
     CoverNofsq,
-    /// Needs FSQ roundtrip — not built yet.
+    /// FSQ tokenize/detokenize before DiT.
     Cover,
+    /// Region regenerate; clean latents + mask/splice (no FSQ).
+    Repaint,
 }
 
 impl CoverMode {
@@ -38,9 +41,17 @@ impl CoverMode {
         match raw.trim().to_ascii_lowercase().as_str() {
             "" | "cover-nofsq" | "nofsq" => Ok(Self::CoverNofsq),
             "cover" => Ok(Self::Cover),
+            "repaint" => Ok(Self::Repaint),
             other => Err(WeightError::NotBuilt(format!(
-                "ACE-Step audio.edit task '{other}' is unknown (use cover-nofsq or cover)"
+                "ACE-Step audio.edit task '{other}' is unknown (use cover-nofsq, cover, or repaint)"
             ))),
+        }
+    }
+
+    fn dit_instruction(self) -> &'static str {
+        match self {
+            Self::Cover | Self::CoverNofsq => DIT_INSTR_COVER,
+            Self::Repaint => DIT_INSTR_REPAINT,
         }
     }
 }
@@ -60,10 +71,18 @@ pub struct CoverRequest<'a> {
     pub source_audio: Option<&'a [f32]>,
     /// Time-major `[T, 64]` VAE latents (skips encode).
     pub source_latents: Option<&'a [f32]>,
-    /// Fraction of DiT steps that keep cover context (1.0 = always).
+    /// Fraction of DiT steps that keep cover context (1.0 = always). Ignored for repaint.
     pub audio_cover_strength: f32,
     /// 0 = pure noise init; 1 = start from source latents (schedule truncated).
     pub cover_noise_strength: f32,
+    /// Repaint region start (seconds). Required when `mode == Repaint`.
+    pub region_start_sec: Option<f32>,
+    /// Repaint region end (seconds). Required when `mode == Repaint`.
+    pub region_end_sec: Option<f32>,
+    /// Fraction of steps that inject preserved regions (default 1.0).
+    pub repaint_injection_ratio: f32,
+    /// Latent frames of cosine crossfade at zone edges (default 8).
+    pub repaint_crossfade_frames: i64,
 }
 
 pub fn run_full_cover(
@@ -148,11 +167,39 @@ pub fn run_full_cover(
     let (lyrics_effective, lyrics_alignment, lyrics_txt, lyrics_lrc) =
         lyrics::prepare_create_lyrics(request.lyrics, duration_sec).map_err(WeightError::NotBuilt)?;
 
+    let is_repaint = request.mode == CoverMode::Repaint;
+    let (repaint_t0, repaint_t1) = if is_repaint {
+        let start = request.region_start_sec.ok_or_else(|| {
+            WeightError::NotBuilt("ACE-Step repaint needs region_start_sec".into())
+        })?;
+        let end = request.region_end_sec.ok_or_else(|| {
+            WeightError::NotBuilt("ACE-Step repaint needs region_end_sec".into())
+        })?;
+        repaint::region_to_frames(start, end, frames)?
+    } else {
+        (0, 0)
+    };
+    if is_repaint {
+        if !(0.0..=1.0).contains(&request.repaint_injection_ratio)
+            || !request.repaint_injection_ratio.is_finite()
+        {
+            return Err(WeightError::NotBuilt(format!(
+                "ACE-Step repaint_injection_ratio {} must be in [0, 1]",
+                request.repaint_injection_ratio
+            )));
+        }
+        if request.repaint_crossfade_frames < 0 {
+            return Err(WeightError::NotBuilt(
+                "ACE-Step repaint_crossfade_frames must be >= 0".into(),
+            ));
+        }
+    }
+
     let tokenizer = load_tokenizer_json(&gguf.root)?;
     let pair_cover = build_prompt_strings(
         request.prompt,
         lyrics_effective.as_ref(),
-        DIT_INSTR_COVER,
+        request.mode.dit_instruction(),
         duration_sec,
         request.bpm,
         request.keyscale,
@@ -168,7 +215,9 @@ pub fn run_full_cover(
     let (enc_hidden, enc_seq) =
         cond::encode(&ctx, &dit, &text_hidden, s_text, &lyric_embed, s_lyric)?;
 
-    let need_switch = request.audio_cover_strength < 1.0 - f32::EPSILON;
+    // Repaint/lego never switch to silence context mid-run (mask handles the zone).
+    let need_switch =
+        !is_repaint && request.audio_cover_strength < 1.0 - f32::EPSILON;
     let (enc_text2music, enc_seq_t2m) = if need_switch {
         let pair_t2m = build_prompt_strings(
             request.prompt,
@@ -189,7 +238,20 @@ pub fn run_full_cover(
     };
     let enc_seq_graph = enc_seq.max(enc_seq_t2m);
 
-    let context = cover_context(&cover_latents, frames, config.out_channels, config.in_channels)?;
+    let silence_full = load_silence_latent(&dit, config.out_channels)?;
+    let context = if is_repaint {
+        repaint_context(
+            &cover_latents,
+            &silence_full,
+            frames,
+            config.out_channels,
+            config.in_channels,
+            repaint_t0,
+            repaint_t1,
+        )?
+    } else {
+        cover_context(&cover_latents, frames, config.out_channels, config.in_channels)?
+    };
     let context_silence = if need_switch {
         Some(silence_context(
             &dit,
@@ -227,6 +289,7 @@ pub fn run_full_cover(
 
     let seed = request.seed.unwrap_or(0);
     let mut xt = normal_latent(seed, model.xt_len());
+    let noise = xt.clone();
     if request.cover_noise_strength > 0.0 {
         apply_cover_noise_blend(
             &mut xt,
@@ -252,8 +315,19 @@ pub fn run_full_cover(
         }),
         _ => None,
     };
+    let repaint_hook = if is_repaint {
+        Some(DenoiseRepaint {
+            noise: noise.as_slice(),
+            src: cover_latents.as_slice(),
+            t0: repaint_t0,
+            t1: repaint_t1,
+            injection_ratio: request.repaint_injection_ratio,
+        })
+    } else {
+        None
+    };
 
-    let latents = model
+    let mut latents = model
         .denoise(
             &xt,
             &context,
@@ -262,9 +336,30 @@ pub fn run_full_cover(
             request.guidance,
             null_enc.as_deref(),
             switch,
+            repaint_hook,
             |_, _| (),
         )
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+
+    if is_repaint {
+        repaint::blend_boundaries(
+            &mut latents,
+            &cover_latents,
+            frames,
+            config.out_channels,
+            repaint_t0,
+            repaint_t1,
+            request.repaint_crossfade_frames,
+        );
+        repaint::splice_latents(
+            &mut latents,
+            &cover_latents,
+            frames,
+            config.out_channels,
+            repaint_t0,
+            repaint_t1,
+        );
+    }
 
     let vae_path = gguf
         .vae
@@ -302,7 +397,7 @@ fn resolve_cover_latents(
     }
     let Some(audio) = request.source_audio else {
         return Err(WeightError::NotBuilt(
-            "ACE-Step cover-nofsq needs source_audio or source_latents".into(),
+            "ACE-Step cover/repaint needs source_audio or source_latents".into(),
         ));
     };
     if audio.len() < 2 || audio.len() % 2 != 0 {
@@ -334,6 +429,37 @@ pub(crate) fn cover_context(
     out_channels: i64,
     in_channels: i64,
 ) -> Result<Vec<f32>, WeightError> {
+    build_source_context(cover_latents, None, frames, out_channels, in_channels, None)
+}
+
+/// Repaint context: silence + mask 1 inside zone; source + mask 0 outside.
+pub(crate) fn repaint_context(
+    cover_latents: &[f32],
+    silence: &[f32],
+    frames: i64,
+    out_channels: i64,
+    in_channels: i64,
+    t0: i64,
+    t1: i64,
+) -> Result<Vec<f32>, WeightError> {
+    build_source_context(
+        cover_latents,
+        Some(silence),
+        frames,
+        out_channels,
+        in_channels,
+        Some((t0, t1)),
+    )
+}
+
+fn build_source_context(
+    cover_latents: &[f32],
+    silence: Option<&[f32]>,
+    frames: i64,
+    out_channels: i64,
+    in_channels: i64,
+    region: Option<(i64, i64)>,
+) -> Result<Vec<f32>, WeightError> {
     let ctx_channels = in_channels - out_channels;
     let mask_ch = ctx_channels - out_channels;
     if mask_ch != out_channels {
@@ -349,12 +475,34 @@ pub(crate) fn cover_context(
         });
     }
     let mut context = vec![0f32; (frames * ctx_channels) as usize];
+    let t_cover = frames as usize;
     for t in 0..frames as usize {
-        let src = &cover_latents[t * out_channels as usize..(t + 1) * out_channels as usize];
+        let in_region = region
+            .map(|(t0, t1)| t >= t0 as usize && t < t1 as usize)
+            .unwrap_or(false);
+        let src = if in_region {
+            let silence = silence.ok_or_else(|| {
+                WeightError::NotBuilt("ACE-Step repaint context needs silence_latent".into())
+            })?;
+            let off = (t * out_channels as usize).min(silence.len().saturating_sub(out_channels as usize));
+            &silence[off..off + out_channels as usize]
+        } else {
+            let t_src = t.min(t_cover.saturating_sub(1));
+            &cover_latents[t_src * out_channels as usize..(t_src + 1) * out_channels as usize]
+        };
+        let mask_val = if region.is_some() {
+            if in_region {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            1.0
+        };
         let dst = &mut context[t * ctx_channels as usize..(t + 1) * ctx_channels as usize];
         dst[..out_channels as usize].copy_from_slice(src);
         for c in 0..mask_ch as usize {
-            dst[out_channels as usize + c] = 1.0;
+            dst[out_channels as usize + c] = mask_val;
         }
     }
     Ok(context)
@@ -451,13 +599,17 @@ pub fn encode_source_audio(
             source_latents: None,
             audio_cover_strength: 1.0,
             cover_noise_strength: 0.0,
+            region_start_sec: None,
+            region_end_sec: None,
+            repaint_injection_ratio: 1.0,
+            repaint_crossfade_frames: 8,
         },
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{cover_context, CoverMode};
+    use super::{cover_context, repaint_context, CoverMode};
     use crate::families::ace_step::vae::LATENT_CHANNELS;
 
     #[test]
@@ -468,7 +620,23 @@ mod tests {
             CoverMode::CoverNofsq
         );
         assert_eq!(CoverMode::parse("cover").unwrap(), CoverMode::Cover);
+        assert_eq!(CoverMode::parse("repaint").unwrap(), CoverMode::Repaint);
         assert!(CoverMode::parse("lego").unwrap_err().to_string().contains("unknown"));
+    }
+
+    #[test]
+    fn repaint_context_silences_zone_and_masks() {
+        let frames = 4i64;
+        let oc = LATENT_CHANNELS;
+        let lat = vec![0.5f32; (frames * oc) as usize];
+        let silence = vec![0.0f32; (frames * oc) as usize];
+        let ctx = repaint_context(&lat, &silence, frames, oc, oc * 3, 1, 3).unwrap();
+        // t=0 outside: source + mask 0
+        assert_eq!(ctx[0], 0.5);
+        assert_eq!(ctx[oc as usize], 0.0);
+        // t=1 inside: silence + mask 1
+        assert_eq!(ctx[(oc * 2) as usize], 0.0);
+        assert_eq!(ctx[(oc * 3) as usize], 1.0);
     }
 
     #[test]

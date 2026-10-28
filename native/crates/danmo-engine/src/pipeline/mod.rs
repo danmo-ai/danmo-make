@@ -159,12 +159,16 @@ pub struct AudioEditRequest<'a> {
     pub guidance: f32,
     pub steps: Option<u32>,
     pub vocal_language: &'a str,
-    /// `cover-nofsq` (default) or `cover` (FSQ — not built).
+    /// `cover-nofsq` | `cover` | `repaint`.
     pub task: &'a str,
     pub source_audio: Option<&'a [f32]>,
     pub source_latents: Option<&'a [f32]>,
     pub audio_cover_strength: f32,
     pub cover_noise_strength: f32,
+    pub region_start_sec: Option<f32>,
+    pub region_end_sec: Option<f32>,
+    pub repaint_injection_ratio: f32,
+    pub repaint_crossfade_frames: i64,
 }
 
 #[derive(Debug)]
@@ -268,6 +272,10 @@ pub fn audio_edit(
         source_latents: request.source_latents,
         audio_cover_strength: request.audio_cover_strength,
         cover_noise_strength: request.cover_noise_strength,
+        region_start_sec: request.region_start_sec,
+        region_end_sec: request.region_end_sec,
+        repaint_injection_ratio: request.repaint_injection_ratio,
+        repaint_crossfade_frames: request.repaint_crossfade_frames,
     };
     if let Some(out) = families::run_audio_edit_facade(family, bundle, &cover)? {
         return Ok(audio_out_from_create(family, out));

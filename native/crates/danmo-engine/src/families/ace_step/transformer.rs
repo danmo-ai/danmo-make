@@ -29,6 +29,16 @@ pub struct DenoiseContextSwitch<'a> {
     pub cover_steps: u32,
 }
 
+/// Optional per-step repaint inject (acestep.cpp `sampler_repaint_inject`).
+#[derive(Debug, Clone, Copy)]
+pub struct DenoiseRepaint<'a> {
+    pub noise: &'a [f32],
+    pub src: &'a [f32],
+    pub t0: i64,
+    pub t1: i64,
+    pub injection_ratio: f32,
+}
+
 pub struct AceStepDit {
     graph: ReusedGraph,
     config: AceStepConfig,
@@ -131,6 +141,7 @@ impl AceStepDit {
         guidance: f32,
         null_enc: Option<&[f32]>,
         switch: Option<DenoiseContextSwitch<'_>>,
+        repaint: Option<DenoiseRepaint<'_>>,
         mut on_step: impl FnMut(u32, u32),
     ) -> Result<Vec<f32>, RuntimeError> {
         if !guidance.is_finite() || guidance < 1.0 {
@@ -182,6 +193,22 @@ impl AceStepDit {
                     sw.enc_hidden_text2music.len(),
                     self.context_len(),
                     self.enc_len()
+                )));
+            }
+        }
+        if let Some(rp) = repaint {
+            if rp.noise.len() != self.xt_len() || rp.src.len() != self.xt_len() {
+                return Err(RuntimeError::Message(format!(
+                    "ACE-Step repaint noise/src lengths {} {} != {}",
+                    rp.noise.len(),
+                    rp.src.len(),
+                    self.xt_len()
+                )));
+            }
+            if !(0.0..=1.0).contains(&rp.injection_ratio) || !rp.injection_ratio.is_finite() {
+                return Err(RuntimeError::Message(format!(
+                    "ACE-Step repaint_injection_ratio {} must be in [0, 1]",
+                    rp.injection_ratio
                 )));
             }
         }
@@ -241,6 +268,21 @@ impl AceStepDit {
             let dt = t_next - t_curr;
             for (sample, vel) in xt.iter_mut().zip(velocity.iter()) {
                 *sample += dt * *vel;
+            }
+            if let Some(rp) = repaint {
+                super::repaint::inject_preserved(
+                    &mut xt,
+                    rp.noise,
+                    rp.src,
+                    self.frames,
+                    self.config.out_channels,
+                    rp.t0,
+                    rp.t1,
+                    rp.injection_ratio,
+                    index as u32,
+                    total,
+                    t_next,
+                );
             }
             if let Some(detail) =
                 non_finite(&format!("ACE-Step latent after step {}", index + 1), &xt)
@@ -425,7 +467,7 @@ pub fn prove_smoke_denoise(
     let context = vec![0f32; dit.context_len()];
     let enc = vec![0f32; dit.enc_len()];
     let latents = dit
-        .denoise(&xt, &context, &enc, &schedule, 1.0, None, None, |_, _| ())
+        .denoise(&xt, &context, &enc, &schedule, 1.0, None, None, None, |_, _| ())
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     if let Some(detail) = non_finite("ACE-Step smoke latent", &latents) {
         return Err(WeightError::NotBuilt(detail));
@@ -522,7 +564,7 @@ mod tests {
         assert!(velocity.iter().all(|v| v.is_finite()));
         let schedule = turbo_schedule();
         let latents = dit
-            .denoise(&xt, &context, &enc, &schedule, 1.0, None, None, |_, _| ())
+            .denoise(&xt, &context, &enc, &schedule, 1.0, None, None, None, |_, _| ())
             .unwrap();
         assert_eq!(latents.len(), dit.xt_len());
         assert!(latents.iter().all(|v| v.is_finite()));
@@ -538,6 +580,7 @@ mod tests {
                 &schedule[..2],
                 2.0,
                 Some(&null_enc),
+                None,
                 None,
                 |_, _| (),
             )
@@ -563,6 +606,7 @@ mod tests {
                 &vec![0.0; dit.enc_len()],
                 &[1.0, 0.5],
                 2.0,
+                None,
                 None,
                 None,
                 |_, _| (),

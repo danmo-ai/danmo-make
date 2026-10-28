@@ -308,7 +308,7 @@ pub fn run_audio_facade(
     }
 }
 
-/// Shape C audio edit (cover-nofsq). `Ok(None)` for families without an edit path.
+/// Shape C audio edit (cover / cover-nofsq / repaint). `Ok(None)` for families without an edit path.
 pub fn run_audio_edit_facade(
     family: &str,
     bundle: &std::path::Path,

@@ -17,6 +17,9 @@ pub const DIT_INSTR_TEXT2MUSIC: &str =
 pub const DIT_INSTR_COVER: &str =
     "Generate audio semantic tokens based on the given conditions:";
 
+/// acestep.cpp `DIT_INSTR_REPAINT`.
+pub const DIT_INSTR_REPAINT: &str = "Repaint the mask area based on the given conditions:";
+
 pub const EMBED_HIDDEN: i64 = 1024;
 
 #[derive(Debug, Clone)]

@@ -279,6 +279,10 @@ fn run_task(
                     source_latents: request.source_latents.as_deref(),
                     audio_cover_strength: request.audio_cover_strength.unwrap_or(1.0),
                     cover_noise_strength: request.cover_noise_strength.unwrap_or(0.0),
+                    region_start_sec: request.region_start_sec,
+                    region_end_sec: request.region_end_sec,
+                    repaint_injection_ratio: request.repaint_injection_ratio.unwrap_or(1.0),
+                    repaint_crossfade_frames: request.repaint_crossfade_frames.unwrap_or(8),
                 },
             )
             .map_err(|e| e.to_string())?;
@@ -341,7 +345,7 @@ fn resolve_edit_source_audio(
             .map_err(|err| format!("ACE-Step source_audio_base64 is invalid: {err}"))?
     } else {
         return Err(
-            "ACE-Step cover-nofsq needs source_audio, source_audio_base64, or source_latents"
+            "ACE-Step cover/repaint needs source_audio, source_audio_base64, or source_latents"
                 .into(),
         );
     };

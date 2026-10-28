@@ -12,6 +12,7 @@ mod fsq;
 mod fsq_quant;
 mod graph;
 mod lyrics;
+mod repaint;
 mod schedule;
 mod text;
 mod transformer;
@@ -50,11 +51,11 @@ pub fn probe_layout(bundle: &Path) -> Result<AceStepConfig, WeightError> {
 /// Prefer [`run_cover_edit`] with an explicit [`CoverRequest`].
 pub fn run_cover(_bundle: &Path) -> Result<(), WeightError> {
     Err(WeightError::NotBuilt(
-        "ACE-Step cover needs CoverRequest via audio.edit (task=cover or cover-nofsq)".into(),
+        "ACE-Step cover needs CoverRequest via audio.edit (task=cover, cover-nofsq, or repaint)".into(),
     ))
 }
 
-/// Cover / cover-nofsq: encode → optional FSQ → cover context → DiT → VAE.
+/// Cover / cover-nofsq / repaint: encode → optional FSQ → context → DiT → VAE.
 pub fn run_cover_edit(
     bundle: &Path,
     request: &CoverRequest<'_>,

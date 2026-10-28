@@ -168,6 +168,7 @@ pub fn run_full_create(
             request.guidance,
             null_enc.as_deref(),
             None,
+            None,
             |_, _| (),
         )
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
