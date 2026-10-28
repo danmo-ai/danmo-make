@@ -124,6 +124,9 @@ pub struct AudioGenerationRequest {
     pub vocal_language: String,
     pub guidance: Option<f32>,
     pub steps: Option<u32>,
+    /// Optional 5Hz LM / planner FSQ codebook indices for DiT context hints.
+    #[serde(default)]
+    pub audio_code_indices: Option<Vec<i32>>,
 }
 
 /// ACE-Step cover / cover-nofsq / repaint edit.

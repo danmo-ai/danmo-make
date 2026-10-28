@@ -14,6 +14,7 @@ mod fsq_quant;
 mod graph;
 mod lyrics;
 mod lyrics_dtw;
+mod lm_format;
 mod repaint;
 mod schedule;
 mod text;
@@ -80,10 +81,13 @@ pub fn run_cover_nofsq(
     run_cover_edit(bundle, request)
 }
 
-/// 5Hz LM lyric/caption expansion is not built (acestep.cpp `pipeline-lm`).
+/// 5Hz LM Qwen3 sampling is not built (acestep.cpp `pipeline-lm`).
+///
+/// Format helpers + FSQ detok of supplied `audio_code_indices` are available on
+/// create (`lm_format` + codes context). Generating codes still needs the LM GGUF.
 pub fn run_lm_expand(_bundle: &Path) -> Result<(), WeightError> {
     Err(WeightError::NotBuilt(
-        "ACE-Step 5Hz LM expansion is not built (acestep.cpp pipeline-lm)".into(),
+        "ACE-Step 5Hz LM Qwen3 sampling is not built (acestep.cpp pipeline-lm); pass audio_code_indices on create to condition DiT via FSQ detok".into(),
     ))
 }
 
@@ -276,6 +280,7 @@ mod tests {
                 guidance: 1.0,
                 steps: None,
                 vocal_language: "en",
+                audio_code_indices: None,
             },
         )
         .unwrap_err();
@@ -314,6 +319,7 @@ mod tests {
                 bpm: None,
                 keyscale: "",
                 timesignature: "",
+                audio_code_indices: None,
             },
         )
         .unwrap_err();

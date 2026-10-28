@@ -224,6 +224,7 @@ fn run_task(
                     guidance: request.guidance.unwrap_or(1.0),
                     steps: request.steps,
                     vocal_language: vocal,
+                    audio_code_indices: request.audio_code_indices.as_deref(),
                 },
             )
             .map_err(|e| e.to_string())?;

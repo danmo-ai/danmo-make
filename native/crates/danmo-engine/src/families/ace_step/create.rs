@@ -37,6 +37,9 @@ pub struct CreateRequest<'a> {
     pub bpm: Option<i32>,
     pub keyscale: &'a str,
     pub timesignature: &'a str,
+    /// Optional 5Hz LM / planner audio codes (FSQ indices). When set, DiT
+    /// context uses FSQ-detokenized latents instead of pure silence.
+    pub audio_code_indices: Option<&'a [i32]>,
 }
 
 #[derive(Debug)]
@@ -142,7 +145,18 @@ pub fn run_full_create(
     let (enc_hidden, enc_seq) =
         cond::encode(&ctx, &dit, &text_hidden, s_text, &lyric_embed, s_lyric)?;
 
-    let context = silence_context(&dit, frames, config.out_channels, config.in_channels)?;
+    let context = if let Some(codes) = request.audio_code_indices.filter(|c| !c.is_empty()) {
+        codes_context(
+            &ctx,
+            &dit,
+            codes,
+            frames,
+            config.out_channels,
+            config.in_channels,
+        )?
+    } else {
+        silence_context(&dit, frames, config.out_channels, config.in_channels)?
+    };
     let mut types = std::collections::HashMap::new();
     for (name, _, _) in super::graph::graph_weight_layout(config) {
         if let Ok(t) = dit.ggml_type_of(&name) {
@@ -337,6 +351,47 @@ pub(crate) fn load_null_condition(
     )))
 }
 
+/// Build DiT context from LM audio codes: FSQ detok → pad/truncate with silence,
+/// mask = 1.0 (acestep.cpp `ops_build_context` codes path).
+pub(crate) fn codes_context(
+    ctx: &GgmlContext,
+    dit: &GgufWeights,
+    codes: &[i32],
+    frames: i64,
+    out_channels: i64,
+    in_channels: i64,
+) -> Result<Vec<f32>, WeightError> {
+    super::lm_format::validate_audio_code_indices(codes)?;
+    let decoded = super::fsq::detokenize(ctx, dit, codes)?;
+    let silence = load_silence_latent(dit, out_channels)?;
+    let ctx_channels = in_channels - out_channels;
+    let mask_ch = ctx_channels - out_channels;
+    if mask_ch != out_channels {
+        return Err(WeightError::NotBuilt(format!(
+            "ACE-Step context expects mask channels == out_channels ({out_channels}), got {mask_ch}"
+        )));
+    }
+    let decoded_t = (decoded.len() as i64) / out_channels;
+    let mut context = vec![0f32; (frames * ctx_channels) as usize];
+    for t in 0..frames as usize {
+        let src = if (t as i64) < decoded_t {
+            let off = t * out_channels as usize;
+            &decoded[off..off + out_channels as usize]
+        } else {
+            let silence_t = t - decoded_t as usize;
+            let off = (silence_t * out_channels as usize)
+                .min(silence.len().saturating_sub(out_channels as usize));
+            &silence[off..off + out_channels as usize]
+        };
+        let dst = &mut context[t * ctx_channels as usize..(t + 1) * ctx_channels as usize];
+        dst[..out_channels as usize].copy_from_slice(src);
+        for c in 0..mask_ch as usize {
+            dst[out_channels as usize + c] = 1.0;
+        }
+    }
+    Ok(context)
+}
+
 pub(crate) fn silence_context(
     dit: &GgufWeights,
     frames: i64,
@@ -390,11 +445,19 @@ pub(crate) fn load_silence_latent(
 #[cfg(test)]
 mod tests {
     use super::{duration_to_latent_frames, snap_latent_frames};
+    use crate::families::ace_step::lm_format::validate_audio_code_indices;
 
     #[test]
     fn duration_maps_to_25hz_latents() {
         assert_eq!(duration_to_latent_frames(5.0).unwrap(), 128);
         assert_eq!(duration_to_latent_frames(30.0).unwrap(), 750);
         assert_eq!(snap_latent_frames(751), 752);
+    }
+
+    #[test]
+    fn audio_code_indices_reject_out_of_range() {
+        assert!(validate_audio_code_indices(&[0, 100]).is_ok());
+        assert!(validate_audio_code_indices(&[]).is_err());
+        assert!(validate_audio_code_indices(&[64_000]).is_err());
     }
 }

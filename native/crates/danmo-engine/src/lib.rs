@@ -441,6 +441,7 @@ mod tests {
                 guidance: 1.0,
                 steps: None,
                 vocal_language: "en",
+                audio_code_indices: None,
             },
         )
         .unwrap_err();

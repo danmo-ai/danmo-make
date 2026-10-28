@@ -150,6 +150,8 @@ pub struct AudioCreateRequest<'a> {
     pub guidance: f32,
     pub steps: Option<u32>,
     pub vocal_language: &'a str,
+    /// Optional 5Hz LM FSQ codebook indices for DiT context.
+    pub audio_code_indices: Option<&'a [i32]>,
 }
 
 pub struct AudioEditRequest<'a> {
@@ -229,6 +231,7 @@ pub fn audio_create(
         bpm: None,
         keyscale: "",
         timesignature: "",
+        audio_code_indices: request.audio_code_indices,
     };
     if let Some(out) = families::run_audio_facade(family, bundle, &create)? {
         return Ok(audio_out_from_create(family, out));
