@@ -1,14 +1,15 @@
-//! ACE-Step cover-nofsq (acestep.cpp cover without FSQ roundtrip).
+//! ACE-Step cover / cover-nofsq (acestep.cpp `ops_encode_src` + optional FSQ).
 //!
-//! Encode source audio (or accept latents) → cover context (src[64]+mask[64]) →
-//! DiT Euler (optional cover_strength switch + noise blend) → VAE decode → WAV.
-//! Full `cover` (FSQ tokenize/detokenize) fails loud until FSQ is ported.
+//! Encode source audio (or accept latents) → optional FSQ roundtrip → cover
+//! context (src[64]+mask[64]) → DiT Euler (optional cover_strength switch +
+//! noise blend) → VAE decode → WAV.
 
 use super::apg::broadcast_null_enc;
 use super::cond;
 use super::create::{
-    load_null_condition, silence_context, CreateOutput, SILENCE_MAX_FRAMES,
+    load_null_condition, load_silence_latent, silence_context, CreateOutput, SILENCE_MAX_FRAMES,
 };
+use super::fsq;
 use super::lyrics;
 use super::schedule::{shift_schedule, TURBO_SHIFT, TURBO_TIMESTEPS};
 use super::text::{
@@ -69,12 +70,6 @@ pub fn run_full_cover(
     bundle: &Path,
     request: &CoverRequest<'_>,
 ) -> Result<CreateOutput, WeightError> {
-    if request.mode == CoverMode::Cover {
-        return Err(WeightError::NotBuilt(
-            "ACE-Step cover needs FSQ roundtrip (acestep.cpp ops_fsq_roundtrip); use task=cover-nofsq"
-                .into(),
-        ));
-    }
     if !request.guidance.is_finite() || request.guidance < 1.0 {
         return Err(WeightError::NotBuilt(format!(
             "ACE-Step guidance {} must be >= 1",
@@ -98,19 +93,6 @@ pub fn run_full_cover(
         )));
     }
 
-    let cover_latents = resolve_cover_latents(bundle, request)?;
-    let frames = cover_latents.len() as i64 / LATENT_CHANNELS;
-    if frames < 1 || cover_latents.len() as i64 != frames * LATENT_CHANNELS {
-        return Err(WeightError::NotBuilt(
-            "ACE-Step cover latents must be a non-empty multiple of 64".into(),
-        ));
-    }
-    if frames > SILENCE_MAX_FRAMES {
-        return Err(WeightError::NotBuilt(format!(
-            "ACE-Step cover frames {frames} exceed silence_latent max {SILENCE_MAX_FRAMES}"
-        )));
-    }
-
     let gguf = weights::assert_gguf_bundle(bundle)?;
     let dit_path = gguf.transformer.first().ok_or_else(|| {
         WeightError::NotBuilt("ACE-Step DiT GGUF is missing from the bundle".into())
@@ -118,6 +100,35 @@ pub fn run_full_cover(
     let dit = GgufWeights::open(dit_path)?;
     let config = config_from_weights(&dit)?;
     check_layout(&dit, config)?;
+
+    let mut cover_latents = resolve_cover_latents(bundle, request)?;
+    let frames_pre = cover_latents.len() as i64 / LATENT_CHANNELS;
+    if frames_pre < 1 || cover_latents.len() as i64 != frames_pre * LATENT_CHANNELS {
+        return Err(WeightError::NotBuilt(
+            "ACE-Step cover latents must be a non-empty multiple of 64".into(),
+        ));
+    }
+    if frames_pre > SILENCE_MAX_FRAMES {
+        return Err(WeightError::NotBuilt(format!(
+            "ACE-Step cover frames {frames_pre} exceed silence_latent max {SILENCE_MAX_FRAMES}"
+        )));
+    }
+
+    // Full cover: FSQ tokenize/detokenize degrades micro-timing (acestep.cpp ops_fsq_roundtrip).
+    // cover-nofsq skips this and feeds clean 25Hz VAE latents.
+    if request.mode == CoverMode::Cover {
+        let silence = load_silence_latent(&dit, config.out_channels)?;
+        let ctx_fsq = GgmlContext::new(BackendKind::Cpu)
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        cover_latents = fsq::roundtrip(&ctx_fsq, &dit, &cover_latents, &silence)?;
+    }
+
+    let frames = cover_latents.len() as i64 / LATENT_CHANNELS;
+    if frames < 1 || cover_latents.len() as i64 != frames * LATENT_CHANNELS {
+        return Err(WeightError::NotBuilt(
+            "ACE-Step cover latents after FSQ must be a non-empty multiple of 64".into(),
+        ));
+    }
     let is_turbo = config.is_turbo
         || dit_path
             .file_name()

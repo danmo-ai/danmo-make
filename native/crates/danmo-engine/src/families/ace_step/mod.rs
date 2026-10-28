@@ -2,12 +2,14 @@
 //!
 //! Full text2music create (acestep.cpp `pipeline-synth`): text encode → cond →
 //! silence context → DiT Euler (APG CFG) → VAE → WAV. Cover-nofsq encodes
-//! source audio into context. Full cover (FSQ) / 5Hz LM fail loud.
+//! source audio into context; full cover runs FSQ roundtrip. 5Hz LM fails loud.
 
 mod apg;
 mod cond;
 mod cover;
 mod create;
+mod fsq;
+mod fsq_quant;
 mod graph;
 mod lyrics;
 mod schedule;
@@ -45,16 +47,15 @@ pub fn probe_layout(bundle: &Path) -> Result<AceStepConfig, WeightError> {
     Ok(config)
 }
 
-/// Cover with FSQ roundtrip is not built; use [`run_cover_nofsq`].
+/// Prefer [`run_cover_edit`] with an explicit [`CoverRequest`].
 pub fn run_cover(_bundle: &Path) -> Result<(), WeightError> {
     Err(WeightError::NotBuilt(
-        "ACE-Step cover needs FSQ roundtrip (acestep.cpp ops_fsq_roundtrip); use cover-nofsq"
-            .into(),
+        "ACE-Step cover needs CoverRequest via audio.edit (task=cover or cover-nofsq)".into(),
     ))
 }
 
-/// Cover-nofsq: VAE encode → cover context → DiT → VAE decode (no FSQ).
-pub fn run_cover_nofsq(
+/// Cover / cover-nofsq: encode → optional FSQ → cover context → DiT → VAE.
+pub fn run_cover_edit(
     bundle: &Path,
     request: &CoverRequest<'_>,
 ) -> Result<CreateOutput, WeightError> {
@@ -62,8 +63,17 @@ pub fn run_cover_nofsq(
         return cover::run_full_cover(bundle, request);
     }
     Err(WeightError::NotBuilt(
-        "ACE-Step cover-nofsq needs a GGUF bundle with text encoder + VAE".into(),
+        "ACE-Step cover needs a GGUF bundle with text encoder + VAE + FSQ weights".into(),
     ))
+}
+
+/// Alias kept for call sites that only want the no-FSQ path name.
+#[allow(dead_code)]
+pub fn run_cover_nofsq(
+    bundle: &Path,
+    request: &CoverRequest<'_>,
+) -> Result<CreateOutput, WeightError> {
+    run_cover_edit(bundle, request)
 }
 
 /// 5Hz LM lyric/caption expansion is not built (acestep.cpp `pipeline-lm`).
@@ -276,7 +286,7 @@ mod tests {
     fn cover_and_lm_fail_loud_with_acestep_pointers() {
         let err = run_cover(Path::new("/tmp")).unwrap_err();
         assert!(
-            err.to_string().contains("FSQ") || err.to_string().contains("cover-nofsq"),
+            err.to_string().contains("CoverRequest") || err.to_string().contains("audio.edit"),
             "{err}"
         );
         let err = super::run_lm_expand(Path::new("/tmp")).unwrap_err();

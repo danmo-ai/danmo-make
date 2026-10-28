@@ -315,7 +315,7 @@ pub fn run_audio_edit_facade(
     request: &ace_step::CoverRequest<'_>,
 ) -> Result<Option<ace_step::CreateOutput>, crate::weights::WeightError> {
     match family {
-        "ace_step" => Ok(Some(ace_step::run_cover_nofsq(bundle, request)?)),
+        "ace_step" => Ok(Some(ace_step::run_cover_edit(bundle, request)?)),
         _ => Ok(None),
     }
 }
