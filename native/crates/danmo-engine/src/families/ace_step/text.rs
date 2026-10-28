@@ -101,6 +101,16 @@ pub fn embed_lyrics(
     tokenizer_json: &str,
     lyric_prompt: &str,
 ) -> Result<(Vec<f32>, i64), WeightError> {
+    let (out, ids) = embed_lyrics_with_ids(paths, tokenizer_json, lyric_prompt)?;
+    Ok((out, ids.len() as i64))
+}
+
+/// Same as [`embed_lyrics`] but also returns the token ids (for CA+DTW).
+pub fn embed_lyrics_with_ids(
+    paths: &[PathBuf],
+    tokenizer_json: &str,
+    lyric_prompt: &str,
+) -> Result<(Vec<f32>, Vec<i32>), WeightError> {
     let loaded = qwen3::Loaded::open(paths)?;
     let config = loaded.config();
     let ids = loaded.plain_ids(tokenizer_json, lyric_prompt)?;
@@ -123,7 +133,17 @@ pub fn embed_lyrics(
         }
         out.extend_from_slice(&table[start..end]);
     }
-    Ok((out, ids.len() as i64))
+    Ok((out, ids))
+}
+
+/// Tokenize a plain prompt (no ChatML) — used for lyric header length.
+pub fn plain_token_ids(
+    paths: &[PathBuf],
+    tokenizer_json: &str,
+    prompt: &str,
+) -> Result<Vec<i32>, WeightError> {
+    let loaded = qwen3::Loaded::open(paths)?;
+    loaded.plain_ids(tokenizer_json, prompt)
 }
 
 pub fn load_tokenizer_json(bundle: &Path) -> Result<String, WeightError> {

@@ -1,15 +1,19 @@
 //! ACE-Step text2music create orchestration (acestep.cpp `pipeline-synth`).
 //!
 //! Phases: text encode → cond pack → silence context → DiT denoise (APG CFG) →
-//! VAE → WAV. Cover / 5Hz LM / FSQ are not built yet and fail loud.
+//! optional CA+DTW lyric timeline → VAE → WAV.
 
 use super::apg::broadcast_null_enc;
+use super::ca_capture;
 use super::cond;
 use super::lyrics::{self, LyricsAlignment};
+use super::lyrics_dtw;
 use super::schedule::{shift_schedule, TURBO_SHIFT, TURBO_TIMESTEPS};
 use super::text::{
-    build_prompt_strings, embed_lyrics, encode_caption, load_tokenizer_json, DIT_INSTR_TEXT2MUSIC,
+    build_prompt_strings, embed_lyrics_with_ids, encode_caption, load_tokenizer_json,
+    plain_token_ids, DIT_INSTR_TEXT2MUSIC,
 };
+use super::token_decode::{self, Decoder, LYRIC_HEADER_TEMPLATE};
 use super::transformer::{load_weights, AceStepDit};
 use super::wav::{self, SAMPLE_RATE};
 use super::weights::{check_layout, config_from_weights};
@@ -132,7 +136,9 @@ pub fn run_full_create(
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     let (text_hidden, s_text) =
         encode_caption(&ctx, &gguf.text_encoder, &tokenizer, &pair.text)?;
-    let (lyric_embed, s_lyric) = embed_lyrics(&gguf.text_encoder, &tokenizer, &pair.lyric)?;
+    let (lyric_embed, lyric_ids) =
+        embed_lyrics_with_ids(&gguf.text_encoder, &tokenizer, &pair.lyric)?;
+    let s_lyric = lyric_ids.len() as i64;
     let (enc_hidden, enc_seq) =
         cond::encode(&ctx, &dit, &text_hidden, s_text, &lyric_embed, s_lyric)?;
 
@@ -173,6 +179,26 @@ pub fn run_full_create(
         )
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
 
+    let (lyrics_alignment, lyrics_lrc) = maybe_upgrade_dit_alignment(
+        &ctx,
+        &dit,
+        config,
+        &gguf.text_encoder,
+        &tokenizer,
+        request.vocal_language,
+        &lyric_ids,
+        &latents,
+        &context,
+        &enc_hidden,
+        frames,
+        enc_seq,
+        steps,
+        seed,
+        duration_for_align,
+        lyrics_alignment,
+        lyrics_lrc,
+    )?;
+
     let vae_path = gguf
         .vae
         .first()
@@ -193,6 +219,95 @@ pub fn run_full_create(
         lyrics_txt,
         lyrics_lrc,
     })
+}
+
+/// Prefer DiT CA+DTW when layers_config is known; otherwise keep structure_estimate.
+fn maybe_upgrade_dit_alignment(
+    ctx: &GgmlContext,
+    dit: &GgufWeights,
+    config: super::weights::AceStepConfig,
+    text_paths: &[std::path::PathBuf],
+    tokenizer: &str,
+    vocal_language: &str,
+    lyric_ids: &[i32],
+    latents: &[f32],
+    context: &[f32],
+    enc_hidden: &[f32],
+    frames: i64,
+    enc_seq: i64,
+    steps: u32,
+    seed: i64,
+    duration_sec: f32,
+    fallback: LyricsAlignment,
+    fallback_lrc: Option<String>,
+) -> Result<(LyricsAlignment, Option<String>), WeightError> {
+    if fallback.mode == "instrumental"
+        || fallback.mode == "empty"
+        || fallback.mode == "conditioning_only"
+    {
+        return Ok((fallback, fallback_lrc));
+    }
+    let Some(layers_config) = ca_capture::default_layers_config(config) else {
+        return Ok((fallback, fallback_lrc));
+    };
+    let lang = if vocal_language.is_empty() {
+        "unknown"
+    } else {
+        vocal_language
+    };
+    let header = LYRIC_HEADER_TEMPLATE.replace("{language}", lang);
+    let header_ids = plain_token_ids(text_paths, tokenizer, &header)?;
+    let Some((start, end)) = token_decode::pure_lyric_range(lyric_ids, header_ids.len()) else {
+        return Ok((fallback, fallback_lrc));
+    };
+    let pure_ids = &lyric_ids[start..end];
+    // Lyric tokens occupy enc[0..s_lyric); start/end are within that span.
+    if end as i64 > enc_seq {
+        return Err(WeightError::NotBuilt(format!(
+            "ACE-Step lyric token end {end} exceeds enc_seq {enc_seq}"
+        )));
+    }
+    let (attn, n_heads) = ca_capture::capture_selected_attention(
+        ctx,
+        dit,
+        config,
+        latents,
+        context,
+        enc_hidden,
+        frames,
+        enc_seq,
+        steps,
+        seed.wrapping_add(1),
+        &layers_config,
+    )?;
+    let seq = frames / config.patch;
+    // attn is [n_heads, enc_seq, seq] — slice lyric token span.
+    let enc = enc_seq as usize;
+    let seq_u = seq as usize;
+    let mut lyric_attn = Vec::with_capacity(n_heads * pure_ids.len() * seq_u);
+    for h in 0..n_heads {
+        let base = h * enc * seq_u;
+        for t in start..end {
+            let off = base + t * seq_u;
+            lyric_attn.extend_from_slice(&attn[off..off + seq_u]);
+        }
+    }
+    let decoder = Decoder::from_tokenizer_json(tokenizer)?;
+    let decode = |ids: &[i32]| decoder.decode(ids);
+    let aligned = lyrics_dtw::align_lyrics_from_attention(
+        &lyric_attn,
+        n_heads,
+        pure_ids,
+        seq_u,
+        duration_sec,
+        &decode,
+        2.0,
+    )?;
+    if aligned.segments.is_empty() {
+        return Ok((fallback, fallback_lrc));
+    }
+    let lrc = lyrics::format_lrc(&aligned);
+    Ok((aligned, lrc))
 }
 
 pub(crate) fn load_null_condition(

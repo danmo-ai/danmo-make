@@ -339,7 +339,7 @@ impl AceStepDit {
     }
 }
 
-fn pack_input(
+pub(crate) fn pack_input(
     context: &[f32],
     xt: &[f32],
     config: AceStepConfig,
@@ -394,7 +394,7 @@ pub fn load_weights(
     Ok(())
 }
 
-pub fn remap_proj_in(raw: &[f32], patch: i64, in_ch: i64, hidden: i64) -> Vec<f32> {
+pub(crate) fn remap_proj_in(raw: &[f32], patch: i64, in_ch: i64, hidden: i64) -> Vec<f32> {
     let mut data = vec![0f32; (in_ch * patch * hidden) as usize];
     for h in 0..hidden {
         for ic in 0..in_ch {

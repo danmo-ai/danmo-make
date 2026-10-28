@@ -497,7 +497,7 @@ fn linear(b: &GraphBuilder, x: Tensor, w: Tensor) -> Tensor {
     b.project(w, x)
 }
 
-fn wt(weights: &HashMap<String, Tensor>, name: &str) -> Result<Tensor, RuntimeError> {
+pub(crate) fn wt(weights: &HashMap<String, Tensor>, name: &str) -> Result<Tensor, RuntimeError> {
     weights
         .get(name)
         .copied()
@@ -505,7 +505,7 @@ fn wt(weights: &HashMap<String, Tensor>, name: &str) -> Result<Tensor, RuntimeEr
         .ok_or_else(|| RuntimeError::Message(format!("ACE-Step graph is missing {name}")))
 }
 
-fn nn(tensor: Tensor) -> Result<Tensor, RuntimeError> {
+pub(crate) fn nn(tensor: Tensor) -> Result<Tensor, RuntimeError> {
     if tensor.is_null() {
         Err(RuntimeError::Init)
     } else {

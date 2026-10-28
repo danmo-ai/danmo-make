@@ -1,12 +1,13 @@
 //! Lyrics timeline helpers from main `vocals/lyrics_alignment.py` + `lm/lm_format.py`.
 //!
-//! Product create uses **structure_estimate** (even line allocation by section → LRC).
-//! DiT cross-attention + DTW (`dit_cross_attention`) needs CA capture hooks and is
-//! not wired yet; callers keep the same metadata / sidecar surface so that path
-//! can land without API churn.
+//! Product create starts from **structure_estimate** (even line allocation → LRC),
+//! then upgrades to [`DIT_ALIGNMENT_MODE`] when DiT CA capture + DTW succeeds.
 
 use serde_json::{json, Value};
 use std::borrow::Cow;
+
+/// Upstream / gallery marker for CA+DTW timelines.
+pub const DIT_ALIGNMENT_MODE: &str = "dit_cross_attention";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LyricsSegment {

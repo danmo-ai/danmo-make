@@ -5,6 +5,7 @@
 //! source audio into context; full cover runs FSQ roundtrip. 5Hz LM fails loud.
 
 mod apg;
+mod ca_capture;
 mod cond;
 mod cover;
 mod create;
@@ -12,9 +13,11 @@ mod fsq;
 mod fsq_quant;
 mod graph;
 mod lyrics;
+mod lyrics_dtw;
 mod repaint;
 mod schedule;
 mod text;
+mod token_decode;
 mod transformer;
 mod vae;
 mod vae_enc;
