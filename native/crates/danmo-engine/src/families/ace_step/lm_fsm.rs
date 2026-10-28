@@ -157,8 +157,8 @@ pub fn numeric_prefix_viable(prefix: &str, min_v: i32, max_v: i32) -> bool {
     if !prefix.chars().all(|c| c.is_ascii_digit()) {
         return false;
     }
-    // Reject leading zeros unless the value is exactly "0" (not in bpm/duration).
-    if prefix.len() > 1 && prefix.starts_with('0') {
+    // Reject leading zeros. Lone "0" cannot grow into bpm/duration ranges (>0).
+    if prefix.starts_with('0') {
         return false;
     }
     let Ok(val) = prefix.parse::<i32>() else {
