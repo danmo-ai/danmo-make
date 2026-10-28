@@ -1,12 +1,12 @@
 //! ACE-Step LM MetadataFSM (main `constrained_lm.py` / acestep.cpp
 //! `metadata-fsm.h`).
 //!
-//! Forces CoT field-name phrases (`bpm:`, `duration:`, …) token-by-token and
-//! early-blocks bpm/duration digit continuations. Caption / keyscale /
-//! language value trees are still free-form.
+//! Forces CoT field-name phrases (`bpm:`, `duration:`, …) token-by-token,
+//! early-blocks bpm/duration digit continuations, and constrains keyscale /
+//! language values via BPE token-id prefix trees (caption remains free-form).
 
 use crate::weights::WeightError;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub const BPM_MIN: i32 = 30;
 pub const BPM_MAX: i32 = 300;
@@ -20,6 +20,127 @@ pub const VALID_LANGUAGES: &[&str] = &[
     "ms", "ne", "nl", "no", "pa", "pl", "pt", "ro", "ru", "sa", "sk", "sr", "sv",
     "sw", "ta", "te", "th", "tl", "tr", "uk", "ur", "vi", "yue", "zh", "unknown",
 ];
+
+pub const KEYSCALE_NOTES: &[&str] = &["A", "B", "C", "D", "E", "F", "G"];
+pub const KEYSCALE_ACCIDENTALS: &[&str] = &["", "#", "b", "♯", "♭"];
+pub const KEYSCALE_MODES: &[&str] = &["major", "minor"];
+
+/// All valid `"G major"` / `"C# minor"` / … strings (upstream `VALID_KEYSCALES`).
+pub fn valid_keyscales() -> Vec<String> {
+    let mut out = Vec::with_capacity(
+        KEYSCALE_NOTES.len() * KEYSCALE_ACCIDENTALS.len() * KEYSCALE_MODES.len(),
+    );
+    for note in KEYSCALE_NOTES {
+        for acc in KEYSCALE_ACCIDENTALS {
+            for mode in KEYSCALE_MODES {
+                out.push(format!("{note}{acc} {mode}"));
+            }
+        }
+    }
+    out
+}
+
+/// Token-id prefix → allowed next token ids (constrained_lm.py keyscale/language trees).
+#[derive(Debug, Clone, Default)]
+pub struct TokenPrefixTree {
+    pub map: HashMap<Vec<i32>, HashSet<i32>>,
+}
+
+impl TokenPrefixTree {
+    pub fn allowed(&self, prefix: &[i32]) -> Option<&HashSet<i32>> {
+        self.map.get(prefix)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Whitelist `allowed` next ids on `logits` (everything else → -inf).
+    pub fn apply_whitelist(logits: &mut [f32], allowed: &HashSet<i32>) -> Result<(), WeightError> {
+        if allowed.is_empty() {
+            return Err(WeightError::NotBuilt(
+                "ACE-Step LM FSM prefix tree whitelist is empty".into(),
+            ));
+        }
+        for logit in logits.iter_mut() {
+            *logit = f32::NEG_INFINITY;
+        }
+        let mut any = false;
+        for &id in allowed {
+            if id < 0 || id as usize >= logits.len() {
+                return Err(WeightError::NotBuilt(format!(
+                    "ACE-Step LM FSM prefix token {id} is outside vocab {}",
+                    logits.len()
+                )));
+            }
+            logits[id as usize] = 0.0;
+            any = true;
+        }
+        if !any {
+            return Err(WeightError::NotBuilt(
+                "ACE-Step LM FSM prefix whitelist had no in-vocab tokens".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Build a value prefix tree from actual BPE tokenization with field context.
+///
+/// `context_match` is what the FSM emits (`"keyscale:"`); `context_tokenize`
+/// is the spaced form used when encoding full strings (`"keyscale: "`).
+pub fn build_value_prefix_tree(
+    tokenize: &mut dyn FnMut(&str) -> Result<Vec<i32>, WeightError>,
+    context_match: &str,
+    context_tokenize: &str,
+    values: &[String],
+    newline_id: i32,
+    require_note_first: bool,
+) -> Result<TokenPrefixTree, WeightError> {
+    let context_ids = tokenize(context_match)?;
+    if context_ids.is_empty() {
+        return Err(WeightError::NotBuilt(format!(
+            "ACE-Step LM FSM context '{context_match}' encoded empty"
+        )));
+    }
+    let mut tree = TokenPrefixTree::default();
+    let mut inserted = 0usize;
+    for value in values {
+        let full = format!("{context_tokenize}{value}");
+        let full_ids = tokenize(&full)?;
+        if full_ids.len() < context_ids.len() || full_ids[..context_ids.len()] != context_ids[..] {
+            continue;
+        }
+        let value_ids = &full_ids[context_ids.len()..];
+        if value_ids.is_empty() {
+            continue;
+        }
+        if require_note_first {
+            // First value token must decode to a note A–G (optional leading space).
+            // Without a detokenizer here we only filter via ASCII in the source string.
+            let first = value.chars().find(|c| !c.is_whitespace()).unwrap_or('\0');
+            if !matches!(first, 'A'..='G') {
+                continue;
+            }
+        }
+        for i in 0..=value_ids.len() {
+            let prefix = value_ids[..i].to_vec();
+            let entry = tree.map.entry(prefix).or_default();
+            if i < value_ids.len() {
+                entry.insert(value_ids[i]);
+            } else {
+                entry.insert(newline_id);
+            }
+        }
+        inserted += 1;
+    }
+    if inserted == 0 || tree.is_empty() {
+        return Err(WeightError::NotBuilt(format!(
+            "ACE-Step LM FSM prefix tree for '{context_match}' built empty ({inserted} values)"
+        )));
+    }
+    Ok(tree)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FsmState {
@@ -130,7 +251,7 @@ impl ForcedPhrase {
     }
 }
 
-/// Pre-tokenized fixed strings for NAME / think states.
+/// Pre-tokenized fixed strings for NAME / think states + value prefix trees.
 #[derive(Debug, Clone)]
 pub struct FsmLexicon {
     pub think: ForcedPhrase,
@@ -144,6 +265,8 @@ pub struct FsmLexicon {
     pub think_end: ForcedPhrase,
     pub digit_ids: [i32; 10],
     pub newline_id: i32,
+    pub keyscale_tree: TokenPrefixTree,
+    pub language_tree: TokenPrefixTree,
 }
 
 impl FsmLexicon {
@@ -156,6 +279,27 @@ impl FsmLexicon {
             )));
         }
         let (digit_ids, newline_id) = resolve_digit_newline_ids(tokenizer_json, vocab)?;
+        let mut encode = |text: &str| -> Result<Vec<i32>, WeightError> {
+            crate::common::qwen3::tokenize_plain(tokenizer_json, text, vocab)
+        };
+        let keyscales = valid_keyscales();
+        let langs: Vec<String> = VALID_LANGUAGES.iter().map(|s| (*s).to_string()).collect();
+        let keyscale_tree = build_value_prefix_tree(
+            &mut encode,
+            "keyscale:",
+            "keyscale: ",
+            &keyscales,
+            newline_id,
+            true,
+        )?;
+        let language_tree = build_value_prefix_tree(
+            &mut encode,
+            "language:",
+            "language: ",
+            &langs,
+            newline_id,
+            false,
+        )?;
         Ok(Self {
             think: ForcedPhrase::from_ids(vec![think_id])?,
             newline: ForcedPhrase::from_ids(vec![newline_id])?,
@@ -168,6 +312,8 @@ impl FsmLexicon {
             think_end: ForcedPhrase::from_ids(vec![think_end_id])?,
             digit_ids,
             newline_id,
+            keyscale_tree,
+            language_tree,
         })
     }
 }
@@ -177,6 +323,8 @@ impl FsmLexicon {
 pub struct MetadataFsm {
     pub state: FsmState,
     pub value_buf: String,
+    /// Token ids accumulated inside the current VALUE state (prefix-tree key).
+    pub accumulated_token_ids: Vec<i32>,
     pub skip_caption: bool,
     pub skip_language: bool,
     pub skip_genres: bool,
@@ -191,6 +339,7 @@ impl Default for MetadataFsm {
         Self {
             state: FsmState::ThinkTag,
             value_buf: String::new(),
+            accumulated_token_ids: Vec::new(),
             skip_caption: false,
             skip_language: false,
             skip_genres: true,
@@ -215,6 +364,7 @@ impl MetadataFsm {
     pub fn reset(&mut self, lex: &FsmLexicon) {
         self.state = FsmState::ThinkTag;
         self.value_buf.clear();
+        self.accumulated_token_ids.clear();
         self.phrase = Some(lex.think.clone());
     }
 
@@ -322,10 +472,75 @@ impl MetadataFsm {
                 Self::mask_timesig_value(logits, decoded_value, &lex.digit_ids, lex.newline_id)?;
                 Ok(true)
             }
+            FsmState::KeyscaleValue => {
+                Self::mask_prefix_tree(
+                    logits,
+                    &lex.keyscale_tree,
+                    &self.accumulated_token_ids,
+                    lex.newline_id,
+                    /*top1_when_empty=*/ false,
+                )?;
+                Ok(true)
+            }
+            FsmState::LanguageValue => {
+                // Upstream picks top-1 among first-token candidates, then follows the tree.
+                Self::mask_prefix_tree(
+                    logits,
+                    &lex.language_tree,
+                    &self.accumulated_token_ids,
+                    lex.newline_id,
+                    /*top1_when_empty=*/ true,
+                )?;
+                Ok(true)
+            }
             FsmState::CodesGeneration | FsmState::Completed => Ok(false),
-            // Caption / keyscale / language values stay free-form for now.
+            // Caption values stay free-form for now (YAML / code-block rules TBD).
             _ => Ok(false),
         }
+    }
+
+    fn mask_prefix_tree(
+        logits: &mut [f32],
+        tree: &TokenPrefixTree,
+        prefix: &[i32],
+        newline_id: i32,
+        top1_when_empty: bool,
+    ) -> Result<(), WeightError> {
+        let Some(allowed) = tree.allowed(prefix) else {
+            // Unknown prefix → force newline to escape (matches constrained_lm fallback).
+            let mut only = HashSet::new();
+            only.insert(newline_id);
+            return TokenPrefixTree::apply_whitelist(logits, &only);
+        };
+        if top1_when_empty && prefix.is_empty() {
+            let mut best_id = None;
+            let mut best_v = f32::NEG_INFINITY;
+            for &id in allowed {
+                if id < 0 || id as usize >= logits.len() {
+                    continue;
+                }
+                let v = logits[id as usize];
+                if v.is_finite() && v > best_v {
+                    best_v = v;
+                    best_id = Some(id);
+                }
+            }
+            let id = best_id.ok_or_else(|| {
+                WeightError::NotBuilt(
+                    "ACE-Step LM FSM language tree has no finite first-token scores".into(),
+                )
+            })?;
+            let mut only = HashSet::new();
+            only.insert(id);
+            return TokenPrefixTree::apply_whitelist(logits, &only);
+        }
+        // Complete value (newline in allowed set) → force newline only (constrained_lm.py).
+        if allowed.contains(&newline_id) {
+            let mut only = HashSet::new();
+            only.insert(newline_id);
+            return TokenPrefixTree::apply_whitelist(logits, &only);
+        }
+        TokenPrefixTree::apply_whitelist(logits, allowed)
     }
 
     /// Observe a sampled token and advance state / phrase progress.
@@ -349,6 +564,7 @@ impl MetadataFsm {
             FsmState::BpmValue | FsmState::DurationValue | FsmState::TimesigValue => {
                 if id == lex.newline_id {
                     self.value_buf.clear();
+                    self.accumulated_token_ids.clear();
                     let next = match self.state {
                         FsmState::BpmValue => self.next_field_after("bpm"),
                         FsmState::DurationValue => self.next_field_after("duration"),
@@ -359,14 +575,14 @@ impl MetadataFsm {
                     self.arm_phrase(lex);
                 } else {
                     self.value_buf.push_str(token_text);
+                    self.accumulated_token_ids.push(id);
                 }
             }
-            FsmState::CaptionValue | FsmState::KeyscaleValue | FsmState::LanguageValue => {
-                // Free-form until newline ends the field.
-                if id == lex.newline_id || token_text.contains('\n') {
+            FsmState::KeyscaleValue | FsmState::LanguageValue => {
+                if id == lex.newline_id {
                     self.value_buf.clear();
+                    self.accumulated_token_ids.clear();
                     let next = match self.state {
-                        FsmState::CaptionValue => self.next_field_after("caption"),
                         FsmState::KeyscaleValue => self.next_field_after("keyscale"),
                         FsmState::LanguageValue => self.next_field_after("language"),
                         _ => unreachable!(),
@@ -375,6 +591,19 @@ impl MetadataFsm {
                     self.arm_phrase(lex);
                 } else {
                     self.value_buf.push_str(token_text);
+                    self.accumulated_token_ids.push(id);
+                }
+            }
+            FsmState::CaptionValue => {
+                // Free-form until newline ends the field.
+                if id == lex.newline_id || token_text.contains('\n') {
+                    self.value_buf.clear();
+                    self.accumulated_token_ids.clear();
+                    self.state = self.next_field_after("caption");
+                    self.arm_phrase(lex);
+                } else {
+                    self.value_buf.push_str(token_text);
+                    self.accumulated_token_ids.push(id);
                 }
             }
             FsmState::CodesGeneration => {
@@ -403,6 +632,7 @@ impl MetadataFsm {
             other => other,
         };
         self.value_buf.clear();
+        self.accumulated_token_ids.clear();
         self.arm_phrase(lex);
     }
 
@@ -689,11 +919,34 @@ mod tests {
         assert!(phrase.done());
     }
 
-    #[test]
-    fn fsm_forces_think_then_bpm_name() {
+    fn synthetic_lex() -> FsmLexicon {
         let newline_id = 5;
         let digit_ids = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
-        let lex = FsmLexicon {
+        // Fake trees: "en" → [1, 2]; "G major" → [90, 91]
+        let mut language_tree = TokenPrefixTree::default();
+        language_tree
+            .map
+            .insert(vec![], HashSet::from([1, 3]));
+        language_tree
+            .map
+            .insert(vec![1], HashSet::from([2]));
+        language_tree
+            .map
+            .insert(vec![1, 2], HashSet::from([newline_id]));
+        language_tree
+            .map
+            .insert(vec![3], HashSet::from([newline_id]));
+        let mut keyscale_tree = TokenPrefixTree::default();
+        keyscale_tree
+            .map
+            .insert(vec![], HashSet::from([90]));
+        keyscale_tree
+            .map
+            .insert(vec![90], HashSet::from([91]));
+        keyscale_tree
+            .map
+            .insert(vec![90, 91], HashSet::from([newline_id]));
+        FsmLexicon {
             think: ForcedPhrase::from_ids(vec![100]).unwrap(),
             newline: ForcedPhrase::from_ids(vec![newline_id]).unwrap(),
             bpm_name: ForcedPhrase::from_ids(vec![20, 21]).unwrap(),
@@ -705,7 +958,15 @@ mod tests {
             think_end: ForcedPhrase::from_ids(vec![80]).unwrap(),
             digit_ids,
             newline_id,
-        };
+            keyscale_tree,
+            language_tree,
+        }
+    }
+
+    #[test]
+    fn fsm_forces_think_then_bpm_name() {
+        let lex = synthetic_lex();
+        let newline_id = lex.newline_id;
         let mut fsm = MetadataFsm::new();
         fsm.skip_caption = true;
         fsm.skip_language = true;
@@ -722,5 +983,98 @@ mod tests {
         fsm.observe(20, &lex, "bp").unwrap();
         fsm.observe(21, &lex, "m:").unwrap();
         assert_eq!(fsm.state, FsmState::BpmValue);
+    }
+
+    #[test]
+    fn language_value_picks_top1_then_forces_rest() {
+        let lex = synthetic_lex();
+        let mut fsm = MetadataFsm::new();
+        fsm.state = FsmState::LanguageValue;
+        fsm.accumulated_token_ids.clear();
+        let mut logits = vec![0.0f32; 16];
+        logits[1] = 0.5;
+        logits[3] = 2.0; // top-1 among first tokens
+        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert_eq!(logits[3], 0.0);
+        assert!(logits[1].is_infinite());
+        fsm.observe(3, &lex, "zh").unwrap();
+        // Complete after one token → newline only.
+        let mut logits = vec![1.0f32; 16];
+        assert!(fsm.mask_logits(&mut logits, &lex, "zh").unwrap());
+        assert_eq!(logits[lex.newline_id as usize], 0.0);
+        assert!(logits[1].is_infinite());
+    }
+
+    #[test]
+    fn keyscale_value_follows_prefix_tree() {
+        let lex = synthetic_lex();
+        let mut fsm = MetadataFsm::new();
+        fsm.state = FsmState::KeyscaleValue;
+        let mut logits = vec![1.0f32; 128];
+        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert_eq!(logits[90], 0.0);
+        assert!(logits[91].is_infinite());
+        fsm.observe(90, &lex, " G").unwrap();
+        let mut logits = vec![1.0f32; 128];
+        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert_eq!(logits[91], 0.0);
+        fsm.observe(91, &lex, " major").unwrap();
+        let mut logits = vec![1.0f32; 128];
+        assert!(fsm.mask_logits(&mut logits, &lex, "").unwrap());
+        assert_eq!(logits[lex.newline_id as usize], 0.0);
+    }
+
+    #[test]
+    fn build_value_prefix_tree_with_fake_bpe() {
+        // Fake encode: each ASCII char → its codepoint; context "L:" → [76, 58]
+        let mut encode = |text: &str| -> Result<Vec<i32>, WeightError> {
+            Ok(text.chars().map(|c| c as i32).collect())
+        };
+        let values = vec!["en".into(), "zh".into()];
+        let tree =
+            build_value_prefix_tree(&mut encode, "L:", "L: ", &values, 10, false).unwrap();
+        let first = tree.allowed(&[]).unwrap();
+        // "L: en" → after "L:" remains " en" → [' ', 'e', 'n']
+        assert!(first.contains(&(b' ' as i32)));
+        let after_space = tree.allowed(&[b' ' as i32]).unwrap();
+        assert!(after_space.contains(&(b'e' as i32)) || after_space.contains(&(b'z' as i32)));
+    }
+
+    #[test]
+    fn valid_keyscales_cover_notes_and_modes() {
+        let ks = valid_keyscales();
+        assert!(ks.contains(&"C major".into()));
+        assert!(ks.contains(&"F# minor".into()));
+        assert!(ks.contains(&"Bb major".into()));
+        assert!(ks.contains(&"B♭ major".into()));
+        assert_eq!(
+            ks.len(),
+            KEYSCALE_NOTES.len() * KEYSCALE_ACCIDENTALS.len() * KEYSCALE_MODES.len()
+        );
+    }
+
+    /// Slow (~1 min): tokenizes full keyscale × language tables against a real Qwen BPE.
+    /// Run with `cargo test -p danmo-engine lexicon_builds_trees -- --ignored`.
+    #[test]
+    #[ignore]
+    fn lexicon_builds_trees_from_qwen_tokenizer_when_present() {
+        let candidates = [
+            "/workspace/models/z-image/q4_k/tokenizer/tokenizer.json",
+            "/workspace/models/flux2-klein-4b/q4_k/tokenizer/tokenizer.json",
+        ];
+        let Some(path) = candidates.iter().find(|p| std::path::Path::new(p).is_file()) else {
+            eprintln!("skip: no local Qwen tokenizer.json in workspace models/");
+            return;
+        };
+        let json = std::fs::read_to_string(path).unwrap();
+        // Qwen3 vocab is typically 151936; use a generous bound.
+        let lex = FsmLexicon::from_tokenizer(&json, 200_000).unwrap();
+        assert!(!lex.keyscale_tree.is_empty());
+        assert!(!lex.language_tree.is_empty());
+        let first_ks = lex.keyscale_tree.allowed(&[]).unwrap();
+        assert!(!first_ks.is_empty());
+        assert!(!first_ks.contains(&lex.newline_id));
+        let first_lang = lex.language_tree.allowed(&[]).unwrap();
+        assert!(!first_lang.is_empty());
     }
 }
