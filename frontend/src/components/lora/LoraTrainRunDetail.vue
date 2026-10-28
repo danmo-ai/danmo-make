@@ -142,6 +142,7 @@ const props = defineProps<{ taskId: string }>();
 const emit = defineEmits<{
   (e: 'back'): void;
   (e: 'verify', payload: Record<string, unknown>): void;
+  (e: 'resume', payload: { taskId: string; checkpoint: string }): void;
 }>();
 
 const { t } = useI18n();
@@ -213,13 +214,9 @@ function resumeTraining() {
   if (!checkpoints?.length) return;
   const finals = checkpoints.filter((c) => c.includes('final'));
   const ck = selectedCheckpoint.value || finals[finals.length - 1] || checkpoints[checkpoints.length - 1];
-  router.push({
-    name: 'lora_train',
-    query: {
-      resume_task: props.taskId,
-      resume_checkpoint: ck,
-    },
-  });
+  // Parent must apply: same-route navigation alone never re-runs onMounted, and
+  // activeRunId would keep this detail panel open (resume looks like a no-op).
+  emit('resume', { taskId: props.taskId, checkpoint: ck });
 }
 
 function mergeProgressDetail(row: Record<string, unknown> | null): Record<string, unknown> | null {

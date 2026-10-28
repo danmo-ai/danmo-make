@@ -65,6 +65,29 @@ def _assert_resume_same_identity(
         raise ValueError("The dataset changed since the source run; start a fresh training task.")
 
 
+def _load_resume_source_task(
+    root: Path,
+    resume_task_id: str,
+    *,
+    sched: Any | None = None,
+) -> dict[str, Any] | None:
+    """Resolve the source training task for resume identity checks.
+
+    REST passes ``TaskScheduler``; the engine/CLI re-validate without it and must
+    still fail loud on missing/incompatible history via the workspace task DB.
+    """
+    if sched is not None:
+        row = sched.get_task(resume_task_id)
+        if row is not None:
+            return row
+    db_path = Path(root) / "db" / "studio.db"
+    if not db_path.is_file():
+        return None
+    from backend.persistence.v3_task_store import V3TaskStore
+
+    return V3TaskStore(db_path).get_task(resume_task_id)
+
+
 def validate_training_request(root: Path, request: Any, *, sched: Any | None = None) -> None:
     """Reject an unusable identity run before a long GPU task is queued.
 
@@ -142,9 +165,7 @@ def validate_training_request(root: Path, request: Any, *, sched: Any | None = N
     if resume_checkpoint and not resume_task_id and not resume_from:
         raise ValueError("resume_checkpoint requires resume_task_id.")
     if resume_task_id:
-        if sched is None:
-            raise ValueError("resume_task_id requires the task scheduler so identity continuity can be verified.")
-        source = sched.get_task(resume_task_id)
+        source = _load_resume_source_task(root, resume_task_id, sched=sched)
         if source is None:
             raise ValueError(f"Resume source task not found: {resume_task_id}")
         old_params = source.get("params") or {}

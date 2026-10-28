@@ -33,6 +33,7 @@
         :task-id="activeRunId"
         @back="onRunBack"
         @verify="onVerifyGenerate"
+        @resume="onResumeFromRun"
       />
 
       <template v-else>
@@ -1385,35 +1386,68 @@ function openRunFromQuery() {
   router.replace({ query: q });
 }
 
-function resumeFromRouteQuery() {
-  const taskId = String(route.query.resume_task || '').trim();
-  const checkpoint = String(route.query.resume_checkpoint || '').trim();
-  if (!taskId || !checkpoint) return Promise.resolve();
+function applyResumeIntent(taskId: string, checkpoint: string): Promise<void> {
+  const tid = taskId.trim();
+  const ck = checkpoint.trim();
+  if (!tid || !ck) return Promise.resolve();
   applyingResumeSync.value = true;
-  form.resume_task_id = taskId;
-  form.resume_checkpoint = checkpoint;
+  // Leave run detail so the training form (with resume banner) is visible.
+  activeRunId.value = '';
+  form.resume_task_id = tid;
+  form.resume_checkpoint = ck;
   resumeIntent.value = true;
   step.value = Math.max(step.value, 2);
-  const q = { ...route.query };
-  delete q.resume_task;
-  delete q.resume_checkpoint;
-  router.replace({ query: q });
-  return api.gen.getMediaTask(taskId).then((row: any) => {
+  return api.gen.getMediaTask(tid).then((row: any) => {
     const rec = row as Record<string, unknown>;
     const params = (rec.params || {}) as Record<string, unknown>;
     const sourceBase = String(params.base_model || rec.model_id || '').split(':')[0].trim();
     if (sourceBase) form.base_model = sourceBase;
     const sourcePreset = String(params.preset || '').trim();
     if (sourcePreset) form.preset = sourcePreset;
+    const sourceDataset = String(params.dataset_id || '').trim();
+    if (sourceDataset) form.dataset_id = sourceDataset;
+    const sourcePrompt = String(params.progress_prompt || '').trim();
+    if (sourcePrompt) {
+      form.progress_prompt = sourcePrompt;
+      if (!form.default_prompt.trim()) form.default_prompt = sourcePrompt;
+    }
+    const sourceName = String(params.output_name || '').trim();
+    if (sourceName && !form.output_name.trim()) form.output_name = sourceName;
     applyPresetTrainingDefaults();
     void refreshRequirements();
+    if (form.dataset_id) void refreshDatasetHealth(form.dataset_id);
     toast.success(t('loraTrain.resumeTraining'));
   }).catch(() => {
     toast.success(t('loraTrain.resumeTraining'));
   }).finally(() => {
     applyingResumeSync.value = false;
+    persistDraft();
   });
 }
+
+function onResumeFromRun(payload: { taskId: string; checkpoint: string }) {
+  void applyResumeIntent(payload.taskId, payload.checkpoint);
+}
+
+function resumeFromRouteQuery() {
+  const taskId = String(route.query.resume_task || '').trim();
+  const checkpoint = String(route.query.resume_checkpoint || '').trim();
+  if (!taskId || !checkpoint) return Promise.resolve();
+  const q = { ...route.query };
+  delete q.resume_task;
+  delete q.resume_checkpoint;
+  router.replace({ query: q });
+  return applyResumeIntent(taskId, checkpoint);
+}
+
+// Deep-link / same-route query updates (onMounted alone is not enough).
+watch(
+  () => [route.query.resume_task, route.query.resume_checkpoint] as const,
+  ([taskId, checkpoint]) => {
+    if (!String(taskId || '').trim() || !String(checkpoint || '').trim()) return;
+    void resumeFromRouteQuery();
+  }
+);
 
 watch(step, (s) => {
   if (s === 2 && !form.progress_prompt.trim() && form.default_prompt.trim()) {

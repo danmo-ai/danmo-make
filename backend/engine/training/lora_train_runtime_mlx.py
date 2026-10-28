@@ -501,7 +501,8 @@ def load_training_checkpoint(
         raise RuntimeError("Resume optimizer state is missing; start a fresh training task.")
     if has_optimizer and start_iter > 0:
         # Keep the joined warmup/cosine schedule on the original micro-step position.
-        optimizer.step = mx.array(start_iter, dtype=mx.uint64)
+        # MLX AdamW exposes ``step`` as a read-only property over ``optimizer.state``.
+        optimizer.state["step"] = mx.array(start_iter, dtype=mx.uint64)
     if has_optimizer:
         mx.eval(train_module.parameters(), optimizer.state)
     if start_iter <= 0:
