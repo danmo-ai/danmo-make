@@ -21,6 +21,9 @@ pub enum TaskKind {
     AudioGeneration,
     #[serde(rename = "audio.edit")]
     AudioEdit,
+    /// ACE-Step 5Hz LM inspire / format / generate (phase-1 text; codes later).
+    #[serde(rename = "audio.lm")]
+    AudioLm,
 }
 
 impl TaskKind {
@@ -34,6 +37,7 @@ impl TaskKind {
             Self::VideoUpscale => "video.upscale",
             Self::AudioGeneration => "audio.generation",
             Self::AudioEdit => "audio.edit",
+            Self::AudioLm => "audio.lm",
         }
     }
 }
@@ -173,6 +177,35 @@ pub struct AudioEditRequest {
     /// Track name(s) for lego / extract / complete (`"drums | bass"` for complete).
     #[serde(default)]
     pub track: Option<String>,
+}
+
+/// ACE-Step 5Hz LM (inspire / format / generate phase-1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioLmRequest {
+    pub model: String,
+    /// `inspire` | `format` | `generate` (default inspire).
+    #[serde(default = "default_lm_inspire")]
+    pub mode: String,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default)]
+    pub lyrics: String,
+    pub duration: Option<f32>,
+    pub bpm: Option<i32>,
+    #[serde(default)]
+    pub keyscale: String,
+    #[serde(default)]
+    pub timesignature: String,
+    #[serde(default)]
+    pub vocal_language: String,
+    /// Max newly sampled tokens (phase-1).
+    pub max_new_tokens: Option<u32>,
+    #[serde(default = "default_priority")]
+    pub priority: String,
+}
+
+fn default_lm_inspire() -> String {
+    "inspire".into()
 }
 
 fn default_cover_nofsq() -> String {

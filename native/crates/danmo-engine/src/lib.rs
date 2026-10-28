@@ -9,8 +9,9 @@ pub use families::{
     write_qwen3_bundle, write_smoke_bundle, FamilySpec, Flux2Config, Flux2Denoise, Media, Shape,
 };
 pub use pipeline::{
-    audio_create, audio_edit, image_create, read_audio_wav_pcm16, upscale, video_create,
-    AudioCreateRequest, AudioEditRequest, AudioRunOutput, EngineError, RunOutput,
+    audio_create, audio_edit, audio_lm, image_create, read_audio_wav_pcm16, upscale, video_create,
+    AudioCreateRequest, AudioEditRequest, AudioLmOutput, AudioLmRequest, AudioRunOutput,
+    EngineError, RunOutput,
 };
 pub use runtime::{identity_probe, BackendKind, GgmlContext};
 pub use weights::{assert_gguf_bundle, lora_base_name, write_f32_gguf, GgufWeights, WeightError};

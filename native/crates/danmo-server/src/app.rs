@@ -7,12 +7,12 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use danmo_catalog::Catalog;
 use danmo_contracts::{
-    AudioEditRequest, AudioGenerationRequest, ImageGenerationRequest, TaskAccepted, TaskKind,
-    VideoGenerationRequest,
+    AudioEditRequest, AudioGenerationRequest, AudioLmRequest, ImageGenerationRequest, TaskAccepted,
+    TaskKind, VideoGenerationRequest,
 };
 use danmo_engine::{
-    audio_create, audio_edit, image_create, read_audio_wav_pcm16, spec, upscale, video_create,
-    BackendKind,
+    audio_create, audio_edit, audio_lm, image_create, read_audio_wav_pcm16, spec, upscale,
+    video_create, BackendKind,
 };
 use danmo_schedule::Scheduler;
 use danmo_store::AssetRow;
@@ -65,6 +65,7 @@ pub fn router(db: &std::path::Path, registry: &std::path::Path) -> Router {
         .route("/api/videos/avatars/script", post(video_avatar_script))
         .route("/api/audios/generations", post(audio_generations))
         .route("/api/audios/edits", post(audio_edits))
+        .route("/api/audios/lm", post(audio_lm_route))
         .merge(product::routes())
         .fallback(product::spa)
         .with_state(state)
@@ -136,6 +137,7 @@ fn run_task(
             | "video.avatar"
             | "audio.generation"
             | "audio.edit"
+            | "audio.lm"
     );
     let bundle = if needs_bundle {
         Some(gguf_bundle(state, model)?)
@@ -309,6 +311,48 @@ fn run_task(
                 "asset_ids": asset_ids,
                 "primary_asset_id": asset_ids.first(),
                 "task": request.task,
+            }))
+        }
+        "audio.lm" => {
+            let bundle = bundle.ok_or_else(|| "missing GGUF bundle".to_string())?;
+            let request: AudioLmRequest =
+                serde_json::from_value(params.get("request").cloned().unwrap_or(json!({})))
+                    .map_err(|e| e.to_string())?;
+            let vocal = if request.vocal_language.trim().is_empty() {
+                "en"
+            } else {
+                request.vocal_language.as_str()
+            };
+            let out = audio_lm(
+                family,
+                &bundle,
+                &danmo_engine::AudioLmRequest {
+                    mode: &request.mode,
+                    prompt: &request.prompt,
+                    lyrics: &request.lyrics,
+                    duration: request.duration.unwrap_or(0.0),
+                    bpm: request.bpm.unwrap_or(0),
+                    keyscale: &request.keyscale,
+                    timesignature: &request.timesignature,
+                    vocal_language: vocal,
+                    max_new_tokens: request.max_new_tokens.unwrap_or(256) as usize,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(json!({
+                "family": out.family,
+                "mode": out.mode,
+                "prompt_tokens": out.prompt_tokens,
+                "generated_ids": out.generated_ids,
+                "text": out.text,
+                "caption": out.caption,
+                "lyrics": out.lyrics,
+                "bpm": out.bpm,
+                "duration": out.duration,
+                "keyscale": out.keyscale,
+                "timesignature": out.timesignature,
+                "language": out.language,
+                "audio_code_indices": out.audio_code_indices,
             }))
         }
         "video.edit" | "video.upscale" | "video.avatar" => {
@@ -1596,6 +1640,20 @@ async fn audio_edits(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
     accept_value(&state, "audio.edit", &body)
+}
+
+async fn audio_lm_route(
+    State(state): State<AppState>,
+    Json(body): Json<AudioLmRequest>,
+) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
+    let accepted = accept(
+        &state,
+        TaskKind::AudioLm,
+        &body.model,
+        &body,
+        &body.priority,
+    )?;
+    Ok((StatusCode::ACCEPTED, accepted))
 }
 
 fn accept_value(

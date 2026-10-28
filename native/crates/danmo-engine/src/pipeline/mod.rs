@@ -179,6 +179,36 @@ pub struct AudioEditRequest<'a> {
     pub track: &'a str,
 }
 
+/// ACE-Step 5Hz LM inspire / format / generate (phase-1).
+pub struct AudioLmRequest<'a> {
+    pub mode: &'a str,
+    pub prompt: &'a str,
+    pub lyrics: &'a str,
+    pub duration: f32,
+    pub bpm: i32,
+    pub keyscale: &'a str,
+    pub timesignature: &'a str,
+    pub vocal_language: &'a str,
+    pub max_new_tokens: usize,
+}
+
+#[derive(Debug)]
+pub struct AudioLmOutput {
+    pub family: String,
+    pub mode: String,
+    pub prompt_tokens: usize,
+    pub generated_ids: Vec<i32>,
+    pub text: String,
+    pub caption: String,
+    pub lyrics: String,
+    pub bpm: Option<i32>,
+    pub duration: Option<i32>,
+    pub keyscale: String,
+    pub timesignature: String,
+    pub language: String,
+    pub audio_code_indices: Vec<i32>,
+}
+
 #[derive(Debug)]
 pub struct AudioRunOutput {
     pub family: String,
@@ -297,6 +327,53 @@ pub fn audio_edit(
         family: family.into(),
         shape: shape_name(spec.shape).into(),
     })
+}
+
+/// ACE-Step 5Hz LM (inspire / format / generate phase-1).
+pub fn audio_lm(
+    family: &str,
+    bundle: &Path,
+    request: &AudioLmRequest<'_>,
+) -> Result<AudioLmOutput, EngineError> {
+    let spec = families::spec(family).ok_or_else(|| EngineError::UnknownFamily(family.into()))?;
+    if spec.media != Media::Audio {
+        return Err(EngineError::BadRequest(format!(
+            "{family} does not match the requested media"
+        )));
+    }
+    let mode = families::ace_step::LmMode::parse(request.mode)?;
+    let lm = families::ace_step::LmRequest {
+        mode,
+        caption: request.prompt,
+        lyrics: request.lyrics,
+        duration: request.duration,
+        bpm: request.bpm,
+        keyscale: request.keyscale,
+        timesignature: request.timesignature,
+        vocal_language: request.vocal_language,
+        max_new_tokens: request.max_new_tokens.max(1),
+        tokenizer_json: None,
+    };
+    if let Some(out) = families::run_audio_lm_facade(family, bundle, &lm)? {
+        return Ok(AudioLmOutput {
+            family: family.into(),
+            mode: out.mode,
+            prompt_tokens: out.prompt_tokens,
+            generated_ids: out.generated_ids,
+            text: out.text,
+            caption: out.caption,
+            lyrics: out.lyrics,
+            bpm: out.bpm,
+            duration: out.duration,
+            keyscale: out.keyscale,
+            timesignature: out.timesignature,
+            language: out.language,
+            audio_code_indices: out.audio_code_indices,
+        });
+    }
+    Err(EngineError::BadRequest(format!(
+        "{family} has no 5Hz LM path"
+    )))
 }
 
 pub fn upscale(family: &str, bundle: &Path) -> Result<(), EngineError> {

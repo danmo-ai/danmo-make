@@ -320,6 +320,18 @@ pub fn run_audio_edit_facade(
     }
 }
 
+/// Shape C audio 5Hz LM (inspire / format / generate phase-1).
+pub fn run_audio_lm_facade(
+    family: &str,
+    bundle: &std::path::Path,
+    request: &ace_step::LmRequest<'_>,
+) -> Result<Option<ace_step::LmOutput>, crate::weights::WeightError> {
+    match family {
+        "ace_step" => Ok(Some(ace_step::run_lm(bundle, request)?)),
+        _ => Ok(None),
+    }
+}
+
 pub(crate) fn ace_step_read_wav(
     bytes: &[u8],
 ) -> Result<(Vec<f32>, u32), crate::weights::WeightError> {

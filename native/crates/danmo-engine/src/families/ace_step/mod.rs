@@ -3,8 +3,8 @@
 //! Full text2music create (acestep.cpp `pipeline-synth`): text encode → cond
 //! (lyric ‖ timbre[0] ‖ text) → silence/codes context → DiT Euler (APG CFG) →
 //! VAE → WAV. Cover / cover-nofsq / repaint / lego / extract / complete on
-//! audio.edit; `timbre_from_source` samples a 750-frame reference. 5Hz LM
-//! sampling fails loud.
+//! audio.edit. 5Hz LM: ChatML prompts + causal prefill greedy for
+//! inspire/format; generate phase-2 codes still fail loud.
 
 mod apg;
 mod ca_capture;
@@ -16,7 +16,9 @@ mod fsq_quant;
 mod graph;
 mod lyrics;
 mod lyrics_dtw;
+mod lm;
 mod lm_format;
+mod lm_prompt;
 mod repaint;
 mod schedule;
 mod text;
@@ -83,14 +85,170 @@ pub fn run_cover_nofsq(
     run_cover_edit(bundle, request)
 }
 
-/// 5Hz LM Qwen3 sampling is not built (acestep.cpp `pipeline-lm`).
-///
-/// Format helpers + FSQ detok of supplied `audio_code_indices` are available on
-/// create (`lm_format` + codes context). Generating codes still needs the LM GGUF.
-pub fn run_lm_expand(_bundle: &Path) -> Result<(), WeightError> {
-    Err(WeightError::NotBuilt(
-        "ACE-Step 5Hz LM Qwen3 sampling is not built (acestep.cpp pipeline-lm); pass audio_code_indices on create to condition DiT via FSQ detok".into(),
-    ))
+pub use lm::AceLmConfig;
+pub use lm_prompt::{AcePrompt, LmMode};
+#[cfg(test)]
+pub use lm::write_smoke_lm;
+
+/// 5Hz LM request (acestep.cpp `ace_lm_generate`).
+pub struct LmRequest<'a> {
+    pub mode: LmMode,
+    pub caption: &'a str,
+    pub lyrics: &'a str,
+    pub duration: f32,
+    pub bpm: i32,
+    pub keyscale: &'a str,
+    pub timesignature: &'a str,
+    pub vocal_language: &'a str,
+    /// Max newly sampled tokens (inspire/format phase-1).
+    pub max_new_tokens: usize,
+    /// Optional tokenizer.json contents; when set, prompts are BPE-encoded.
+    pub tokenizer_json: Option<&'a str>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LmOutput {
+    pub mode: String,
+    pub prompt_tokens: usize,
+    pub generated_ids: Vec<i32>,
+    pub text: String,
+    pub caption: String,
+    pub lyrics: String,
+    pub bpm: Option<i32>,
+    pub duration: Option<i32>,
+    pub keyscale: String,
+    pub timesignature: String,
+    pub language: String,
+    pub audio_code_indices: Vec<i32>,
+}
+
+/// Run inspire / format (phase-1 greedy). Generate still refuses phase-2 codes
+/// until constrained audio-code sampling lands; pass `audio_code_indices` on
+/// create for DiT conditioning today.
+pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, WeightError> {
+    let prompt = AcePrompt {
+        caption: request.caption.to_string(),
+        lyrics: request.lyrics.to_string(),
+        duration: request.duration,
+        bpm: request.bpm,
+        keyscale: request.keyscale.to_string(),
+        timesignature: request.timesignature.to_string(),
+        vocal_language: request.vocal_language.to_string(),
+    };
+    // Prefer caller tokenizer; else load from bundle/tokenizer (product layout).
+    let owned_tokenizer = if request.tokenizer_json.is_none() {
+        text::load_tokenizer_json(bundle).ok()
+    } else {
+        None
+    };
+    let tokenizer = request
+        .tokenizer_json
+        .or(owned_tokenizer.as_deref());
+    let mut encode = |text: &str| -> Result<Vec<i32>, WeightError> {
+        if let Some(json) = tokenizer {
+            crate::common::qwen3::tokenize_plain(json, text, 200_000)
+        } else {
+            // Synthetic byte ids for prompt-structure tests without a tokenizer.
+            Ok(text.bytes().map(|b| i32::from(b)).collect())
+        }
+    };
+    let mut prompt_ids = lm_prompt::build_phase1_prompt(&mut encode, request.mode, &prompt)?;
+    if request.mode == LmMode::Generate {
+        // Phase-2 audio-code FSM sampling is not built yet.
+        let need_lyrics = prompt.lyrics.trim().is_empty();
+        let has_metas = prompt.bpm > 0
+            && prompt.duration > 0.0
+            && !prompt.keyscale.is_empty()
+            && !prompt.timesignature.is_empty();
+        if !need_lyrics && has_metas {
+            return Err(WeightError::NotBuilt(
+                "ACE-Step LM generate phase-2 audio codes are not built (acestep.cpp pipeline-lm FSM); use inspire/format or pass audio_code_indices on create".into(),
+            ));
+        }
+    }
+
+    let (weights, config) = lm::open_lm_gguf(bundle)?;
+    // Synthetic byte-encode (no tokenizer) can emit ChatML specials above a
+    // smoke vocab — fold them so prefill stays in-range.
+    if tokenizer.is_none() {
+        prompt_ids = prompt_ids
+            .into_iter()
+            .map(|id| {
+                if (id as i64) < config.vocab {
+                    id
+                } else {
+                    (id as i64).rem_euclid(config.vocab) as i32
+                }
+            })
+            .collect();
+    }
+    let ctx = GgmlContext::new(BackendKind::Cpu)
+        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    let stop: Vec<i32> = [lm_prompt::TOKEN_IM_END, lm_prompt::TOKEN_THINK_END]
+        .into_iter()
+        .filter(|&id| (id as i64) < config.vocab)
+        .collect();
+    let max_new = request.max_new_tokens.max(1).min(2048);
+    let generated = lm::greedy_generate(
+        &ctx,
+        &weights,
+        config,
+        &prompt_ids,
+        max_new,
+        &stop,
+    )?;
+    let new_ids = generated[prompt_ids.len()..].to_vec();
+    let text = if let Some(json) = tokenizer {
+        token_decode::Decoder::from_tokenizer_json(json)?.decode(&new_ids)
+    } else {
+        String::new()
+    };
+    let meta = lm_format::parse_lm_output(&text);
+    let formatted = lm_format::build_lm_format_result(
+        &meta,
+        request.caption,
+        request.lyrics,
+        (request.duration > 0.0).then_some(request.duration),
+        (request.bpm > 0).then_some(request.bpm),
+        request.keyscale,
+        request.timesignature,
+        request.vocal_language,
+        !request.lyrics.trim().is_empty() && request.lyrics.trim() != "[Instrumental]",
+        true,
+    );
+    Ok(LmOutput {
+        mode: request.mode.name().into(),
+        prompt_tokens: prompt_ids.len(),
+        generated_ids: new_ids,
+        text,
+        caption: formatted.caption,
+        lyrics: formatted.lyrics,
+        bpm: formatted.bpm,
+        duration: formatted.duration,
+        keyscale: formatted.keyscale,
+        timesignature: formatted.timesignature,
+        language: formatted.language,
+        audio_code_indices: formatted.audio_code_indices,
+    })
+}
+
+/// Back-compat alias: inspire expand on an LM bundle.
+pub fn run_lm_expand(bundle: &Path) -> Result<LmOutput, WeightError> {
+    run_lm(
+        bundle,
+        &LmRequest {
+            mode: LmMode::Inspire,
+            caption: "test",
+            lyrics: "",
+            duration: 0.0,
+            bpm: 0,
+            keyscale: "",
+            timesignature: "",
+            vocal_language: "",
+            max_new_tokens: 8,
+            tokenizer_json: None,
+        },
+    )
 }
 
 /// Product create. A full `bundle.manifest.json` (DiT + text + VAE + tokenizer)
@@ -301,8 +459,37 @@ mod tests {
             err.to_string().contains("CoverRequest") || err.to_string().contains("audio.edit"),
             "{err}"
         );
-        let err = super::run_lm_expand(Path::new("/tmp")).unwrap_err();
-        assert!(err.to_string().contains("pipeline-lm"), "{err}");
+        let err = super::run_lm_expand(Path::new("/tmp/no-such-ace-lm")).unwrap_err();
+        assert!(
+            err.to_string().contains("LM") || err.to_string().contains("missing"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn lm_inspire_smoke_runs_greedy_prefill() {
+        let dir = scratch("lm-inspire");
+        super::write_smoke_lm(&dir, super::AceLmConfig::smoke()).unwrap();
+        let out = super::run_lm(
+            &dir,
+            &super::LmRequest {
+                mode: super::LmMode::Inspire,
+                caption: "lofi",
+                lyrics: "",
+                duration: 0.0,
+                bpm: 0,
+                keyscale: "",
+                timesignature: "",
+                vocal_language: "en",
+                max_new_tokens: 3,
+                tokenizer_json: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(out.mode, "inspire");
+        assert!(out.prompt_tokens > 0);
+        assert!(!out.generated_ids.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
