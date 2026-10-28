@@ -3,11 +3,14 @@
 //! The text encoder is the Qwen2.5-VL trunk in `text.rs`, not the shared Qwen3
 //! tower. The VAE is the 3D causal decoder in `vae.rs`, not AutoencoderKL.
 //! The Euler loop steps a packed latent once text embeddings exist. Create
-//! still stops on the tokenizer, so the loop is not asked to produce a picture.
+//! tokenizes `tokenizer/vocab.json`, then stops until the text-encoder file
+//! has `model.embed_tokens.weight`. The packed latent is unpacked to 16
+//! channels before the frame-0 decoder.
 
 mod graph;
 mod ids;
 mod text;
+mod tokenizer;
 mod transformer;
 mod vae;
 mod weights;
@@ -79,8 +82,18 @@ pub fn execute(
             "cfg needs the negative embedding and the Qwen2.5-VL tokenizer is not built".into(),
         ));
     }
+    let _ids = tokenizer::prompt_ids(bundle, _prompt, text::Qwen25VlConfig::published().vocab)?;
+    let text_encoder = GgufWeights::open_parts(&files.text_encoder)?;
+    if !text_encoder
+        .names()
+        .any(|name| name == "model.embed_tokens.weight")
+    {
+        return Err(WeightError::NotBuilt(
+            "Qwen2.5-VL text encoder is missing model.embed_tokens.weight".into(),
+        ));
+    }
     Err(WeightError::NotBuilt(
-        "Qwen2.5-VL tokenizer is not built".into(),
+        "Qwen2.5-VL text encoder weights are not loaded into the tower".into(),
     ))
 }
 
@@ -166,6 +179,8 @@ fn link_dit() {
             let _ = tower.load_f32("model.norm.weight", &[]);
             let _ = tower.compute(&[], &[]);
         }
+        let _ = tokenizer::prompt_ids(Path::new("."), "", 1);
+        let _ = vae::unpack_latents(&[], 0, 0);
         let _ = vae::scale_latents(&[], 0, 0, 0);
         let _ = vae::required_names(vae::DecoderSpec::published());
         let _ = vae::decoder_dims(96, [1, 2, 4, 4]);
@@ -442,7 +457,7 @@ mod tests {
         ));
         let message = err.to_string();
         assert!(
-            message.contains("Qwen2.5-VL tokenizer is not built"),
+            message.contains("Qwen2.5-VL tokenizer is missing"),
             "{message}"
         );
         assert!(!message.contains("step loop"), "{message}");
@@ -516,8 +531,7 @@ mod tests {
             |_, _| {},
         ));
         assert!(
-            err.to_string()
-                .contains("Qwen2.5-VL tokenizer is not built"),
+            err.to_string().contains("Qwen2.5-VL tokenizer is missing"),
             "{err}"
         );
         let err = must_err(execute(

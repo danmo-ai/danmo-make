@@ -6,25 +6,13 @@
 //! the empty think block is appended.
 
 use crate::weights::WeightError;
-use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::LazyLock;
 use unicode_normalization::UnicodeNormalization;
 
 const MAX_TEXT_TOKENS: usize = 512;
 const QWEN_SPLIT: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
-
-static PIECE_CONTRACTION: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(?i:'s|'t|'re|'ve|'m|'ll|'d)").unwrap());
-static PIECE_LETTERS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[^\r\n\p{L}\p{N}]?\p{L}+").unwrap());
-static PIECE_NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\p{N}").unwrap());
-static PIECE_PUNCT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^ ?[^\s\p{L}\p{N}]+[\r\n]*").unwrap());
-static PIECE_NEWLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*[\r\n]+").unwrap());
-static PIECE_SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s+").unwrap());
 
 pub(crate) fn load_tokenizer(bundle: &Path) -> Result<String, WeightError> {
     let path = if bundle.join("tokenizer.json").is_file() {
@@ -92,7 +80,7 @@ pub(crate) fn tokenize(
                 "tokenizer has no id for {word}"
             )));
         };
-        push_id(&mut ids, id, vocab_size, word)?;
+        crate::common::bpe::push_id(&mut ids, id, vocab_size, word)?;
     }
     Ok(ids)
 }
@@ -181,40 +169,7 @@ fn tokenize_bpe(
         None => prompt.to_string(),
     };
     let text = normalize_text(&text, normalizer)?;
-    let mut ids = Vec::new();
-    for piece in split_specials(&text, &specials) {
-        match piece {
-            Piece::Special(token) => {
-                let id = specials
-                    .iter()
-                    .find(|(name, _)| name == token)
-                    .map(|(_, id)| i64::from(*id))
-                    .ok_or_else(|| {
-                        WeightError::NotBuilt(format!("tokenizer has no id for {token}"))
-                    })?;
-                push_id(&mut ids, id, vocab_size, token)?;
-            }
-            Piece::Plain(plain) => {
-                if plain.is_empty() {
-                    continue;
-                }
-                for word in pretokenize(plain)? {
-                    let symbols = byte_symbols(&word);
-                    for token in bpe(symbols, &ranks) {
-                        let Some(id) = vocab.get(&token).copied() else {
-                            return Err(WeightError::NotBuilt(format!(
-                                "tokenizer has no id for {token}"
-                            )));
-                        };
-                        push_id(&mut ids, i64::from(id), vocab_size, &token)?;
-                    }
-                }
-            }
-        }
-    }
-    if ids.is_empty() {
-        return Err(WeightError::NotBuilt("prompt has no tokens".into()));
-    }
+    let ids = crate::common::bpe::encode(&text, &vocab, &ranks, &specials, vocab_size)?;
     if ids.len() > MAX_TEXT_TOKENS {
         return Err(WeightError::NotBuilt(format!(
             "prompt tokenized to {} tokens, the text encoder accepts {MAX_TEXT_TOKENS}",
@@ -454,165 +409,6 @@ fn special_tokens(
     Ok(out)
 }
 
-enum Piece<'a> {
-    Special(&'a str),
-    Plain(&'a str),
-}
-
-fn split_specials<'a>(text: &'a str, specials: &'a [(String, i32)]) -> Vec<Piece<'a>> {
-    let mut out = Vec::new();
-    let mut plain_start = 0;
-    let mut index = 0;
-    while index < text.len() {
-        let found = specials
-            .iter()
-            .find(|(token, _)| !token.is_empty() && text[index..].starts_with(token.as_str()));
-        if let Some((token, _)) = found {
-            if index > plain_start {
-                out.push(Piece::Plain(&text[plain_start..index]));
-            }
-            out.push(Piece::Special(token.as_str()));
-            index += token.len();
-            plain_start = index;
-        } else {
-            let step = text[index..].chars().next().map_or(1, char::len_utf8);
-            index += step;
-        }
-    }
-    if plain_start < text.len() {
-        out.push(Piece::Plain(&text[plain_start..]));
-    }
-    out
-}
-
-fn pretokenize(text: &str) -> Result<Vec<String>, WeightError> {
-    let mut index = 0;
-    let mut out = Vec::new();
-    while index < text.len() {
-        let Some(len) = next_piece(&text[index..]) else {
-            let shown = text[index..].chars().next().unwrap_or('\0');
-            return Err(WeightError::NotBuilt(format!(
-                "pre-tokenizer stopped at {shown:?}"
-            )));
-        };
-        if len == 0 || index + len > text.len() {
-            return Err(WeightError::NotBuilt("pre-tokenizer stopped".into()));
-        }
-        out.push(text[index..index + len].to_string());
-        index += len;
-    }
-    Ok(out)
-}
-
-fn next_piece(text: &str) -> Option<usize> {
-    if let Some(found) = PIECE_CONTRACTION.find(text) {
-        return Some(found.end());
-    }
-    if let Some(found) = PIECE_LETTERS.find(text) {
-        return Some(found.end());
-    }
-    if let Some(found) = PIECE_NUMBER.find(text) {
-        return Some(found.end());
-    }
-    if let Some(found) = PIECE_PUNCT.find(text) {
-        return Some(found.end());
-    }
-    if let Some(found) = PIECE_NEWLINE.find(text) {
-        return Some(found.end());
-    }
-    if let Some(len) = trailing_space(text) {
-        return Some(len);
-    }
-    PIECE_SPACE.find(text).map(|found| found.end())
-}
-
-/// `\s+(?!\S)`: a whitespace run that ends at the string, or all but the last
-/// whitespace character when a non-whitespace character follows.
-fn trailing_space(text: &str) -> Option<usize> {
-    let found = PIECE_SPACE.find(text)?;
-    let end = found.end();
-    if end == 0 {
-        return None;
-    }
-    if end == text.len() {
-        return Some(end);
-    }
-    let ws = &text[..end];
-    let mut ends = Vec::new();
-    for (index, ch) in ws.char_indices() {
-        ends.push(index + ch.len_utf8());
-    }
-    if ends.len() >= 2 {
-        Some(ends[ends.len() - 2])
-    } else {
-        None
-    }
-}
-
-fn byte_symbols(word: &str) -> Vec<String> {
-    let map = byte_to_unicode();
-    word.as_bytes()
-        .iter()
-        .map(|byte| map[*byte as usize].to_string())
-        .collect()
-}
-
-fn bpe(mut symbols: Vec<String>, ranks: &HashMap<(String, String), usize>) -> Vec<String> {
-    if symbols.len() < 2 {
-        return symbols;
-    }
-    loop {
-        let mut best_rank = usize::MAX;
-        let mut best_index = None;
-        for index in 0..symbols.len() - 1 {
-            if let Some(&rank) = ranks.get(&(symbols[index].clone(), symbols[index + 1].clone())) {
-                if rank < best_rank {
-                    best_rank = rank;
-                    best_index = Some(index);
-                }
-            }
-        }
-        let Some(index) = best_index else {
-            break;
-        };
-        let merged = format!("{}{}", symbols[index], symbols[index + 1]);
-        symbols.splice(index..index + 2, std::iter::once(merged));
-    }
-    symbols
-}
-
-fn byte_to_unicode() -> [char; 256] {
-    let mut visible = Vec::with_capacity(256);
-    visible.extend(u32::from(b'!')..=u32::from(b'~'));
-    visible.extend(0xA1..=0xAC);
-    visible.extend(0xAE..=0xFF);
-    let mut mapped = visible.clone();
-    let mut extra = 0u32;
-    for byte in 0..256u32 {
-        if !visible.contains(&byte) {
-            visible.push(byte);
-            mapped.push(256 + extra);
-            extra += 1;
-        }
-    }
-    let mut out = ['\0'; 256];
-    for (byte, ch) in visible.into_iter().zip(mapped) {
-        out[byte as usize] =
-            char::from_u32(ch).expect("byte map stays inside unicode scalar values");
-    }
-    out
-}
-
-fn push_id(ids: &mut Vec<i32>, id: i64, vocab_size: i64, token: &str) -> Result<(), WeightError> {
-    if id < 0 || id >= vocab_size {
-        return Err(WeightError::NotBuilt(format!(
-            "tokenizer id {id} for {token} is outside vocab {vocab_size}"
-        )));
-    }
-    ids.push(id as i32);
-    Ok(())
-}
-
 /// One token per UTF-8 byte. Any non-empty prompt maps into a 256-id table.
 fn tokenize_bytes(prompt: &str, vocab_size: i64) -> Result<Vec<i32>, WeightError> {
     if vocab_size < 256 {
@@ -636,7 +432,8 @@ fn tokenize_bytes(prompt: &str, vocab_size: i64) -> Result<Vec<i32>, WeightError
 
 #[cfg(test)]
 mod tests {
-    use super::{chat_text, load_tokenizer, pretokenize, tokenize};
+    use super::{chat_text, load_tokenizer, tokenize};
+    use crate::common::bpe::pretokenize;
     use crate::common::qwen3::{encoder_layout, Loaded, Qwen3Config};
     use crate::runtime::{BackendKind, GgmlContext};
     use crate::weights::{write_f32_tensors, write_safetensors, F32Tensor, SafeTensor};
@@ -964,12 +761,11 @@ mod tests {
 
     fn tokenizer_without_template() -> String {
         let mut vocab = String::from("{");
-        let map = super::byte_to_unicode();
         for byte in 0..256 {
             if byte > 0 {
                 vocab.push(',');
             }
-            let token = map[byte].to_string();
+            let token = crate::common::bpe::byte_token(byte as u8).to_string();
             vocab.push_str(&serde_json::to_string(&token).unwrap());
             vocab.push(':');
             vocab.push_str(&byte.to_string());

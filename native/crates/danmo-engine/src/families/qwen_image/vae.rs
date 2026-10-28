@@ -72,6 +72,45 @@ pub struct NamedShape {
     pub rank: u8,
 }
 
+/// Packed DiT latent `[64, grid_w * grid_h]` → VAE `[W, H, 1, 16]`.
+///
+/// `W = grid_w * 2`, `H = grid_h * 2`. Channel `k` inside a token is
+/// `pw + 2 * ph + 4 * c`, the order of diffusers `qwen_pack_latents_nchw`.
+/// Token `col + grid_w * row` matches the DiT position-id loop.
+pub fn unpack_latents(
+    packed: &[f32],
+    grid_w: usize,
+    grid_h: usize,
+) -> Result<Vec<f32>, RuntimeError> {
+    if grid_w == 0 || grid_h == 0 || packed.len() != 64 * grid_w * grid_h {
+        return Err(RuntimeError::Message(format!(
+            "qwen unpack expected 64x{}x{}, got {} values",
+            grid_w,
+            grid_h,
+            packed.len()
+        )));
+    }
+    let width = grid_w * 2;
+    let height = grid_h * 2;
+    let mut out = vec![0f32; width * height * 16];
+    for row in 0..grid_h {
+        for col in 0..grid_w {
+            let token = col + grid_w * row;
+            for k in 0..64 {
+                let channel = k / 4;
+                let rest = k % 4;
+                let ph = rest / 2;
+                let pw = rest % 2;
+                let x = col * 2 + pw;
+                let y = row * 2 + ph;
+                let index = x + width * (y + height * channel);
+                out[index] = packed[k + 64 * token];
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// `latents * std + mean` on `[W, H, T, 16]`.
 pub fn scale_latents(
     latent: &[f32],
@@ -702,7 +741,7 @@ fn nn(tensor: Tensor) -> Result<Tensor, RuntimeError> {
 mod tests {
     use super::{
         causal, channel_norm, decoder_dims, frame0_tensors, required_names, scale_latents,
-        DecoderSpec, VaeDecode, LATENTS_MEAN, LATENTS_STD,
+        unpack_latents, DecoderSpec, VaeDecode, LATENTS_MEAN, LATENTS_STD,
     };
     use crate::runtime::{BackendKind, GgmlContext, RuntimeError};
     use std::collections::HashMap;
@@ -760,6 +799,43 @@ mod tests {
         let scaled = scale_latents(&latent, 1, 1, 1).unwrap();
         assert!((scaled[0] - (LATENTS_STD[0] + LATENTS_MEAN[0])).abs() < 1e-6);
         assert!((scaled[15] - LATENTS_MEAN[15]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unpack_restores_the_16_channel_pairs() {
+        let grid_w = 2usize;
+        let grid_h = 1usize;
+        let width = grid_w * 2;
+        let height = grid_h * 2;
+        let mut vae = vec![0f32; width * height * 16];
+        for channel in 0..16 {
+            for y in 0..height {
+                for x in 0..width {
+                    let index = x + width * (y + height * channel);
+                    vae[index] = (channel * 100 + y * 10 + x) as f32;
+                }
+            }
+        }
+        let mut packed = vec![0f32; 64 * grid_w * grid_h];
+        for row in 0..grid_h {
+            for col in 0..grid_w {
+                let token = col + grid_w * row;
+                for channel in 0..16 {
+                    for ph in 0..2 {
+                        for pw in 0..2 {
+                            let k = pw + 2 * ph + 4 * channel;
+                            let x = col * 2 + pw;
+                            let y = row * 2 + ph;
+                            packed[k + 64 * token] = vae[x + width * (y + height * channel)];
+                        }
+                    }
+                }
+            }
+        }
+        let got = unpack_latents(&packed, grid_w, grid_h).unwrap();
+        assert_eq!(got, vae);
+        let scaled = scale_latents(&got, width, height, 1).unwrap();
+        assert!((scaled[0] - (vae[0] * LATENTS_STD[0] + LATENTS_MEAN[0])).abs() < 1e-5);
     }
 
     #[test]
