@@ -767,13 +767,21 @@ mod e2e_real_turbo {
     use crate::pipeline::{audio_create, AudioCreateRequest};
     use std::path::Path;
 
+    fn turbo_bundle() -> Option<&'static Path> {
+        let bundle = Path::new("/workspace/models/ace-step-xl-turbo/q4_k");
+        if bundle.join("acestep-v15-xl-turbo-Q4_K_M.gguf").is_file() {
+            Some(bundle)
+        } else {
+            None
+        }
+    }
+
     #[test]
     fn create_off_short_smoke() {
-        let bundle = Path::new("/workspace/models/ace-step-xl-turbo/q4_k");
-        if !bundle.join("acestep-v15-xl-turbo-Q4_K_M.gguf").is_file() {
+        let Some(bundle) = turbo_bundle() else {
             eprintln!("skip: turbo bundle missing");
             return;
-        }
+        };
         let out = audio_create(
             "ace_step",
             bundle,
@@ -794,9 +802,50 @@ mod e2e_real_turbo {
                 timbre_latents: None,
             },
         )
-        .expect("create");
+        .expect("create off");
         println!(
-            "ok wav={} steps={} frames={}",
+            "off ok wav={} steps={} frames={}",
+            out.wav.len(),
+            out.steps,
+            out.frames
+        );
+        assert!(out.wav.len() > 44);
+    }
+
+    #[test]
+    fn create_auto_short_smoke() {
+        let Some(bundle) = turbo_bundle() else {
+            eprintln!("skip: turbo bundle missing");
+            return;
+        };
+        let lm = Path::new("/workspace/models/ace-step-5hz-lm-0.6b/q8_0");
+        if !lm.join("acestep-5Hz-lm-0.6B-Q8_0.gguf").is_file() {
+            eprintln!("skip: 5Hz LM bundle missing");
+            return;
+        }
+        let out = audio_create(
+            "ace_step",
+            bundle,
+            &AudioCreateRequest {
+                prompt: "lofi chill beat",
+                lyrics: "[inst]",
+                duration_sec: 10.0,
+                seed: Some(7),
+                guidance: 1.0,
+                steps: Some(1),
+                vocal_language: "en",
+                bpm: Some(90),
+                keyscale: "C major",
+                timesignature: "4",
+                lm_expansion: "auto",
+                lm_bundle: Some(lm),
+                audio_code_indices: None,
+                timbre_latents: None,
+            },
+        )
+        .expect("create auto");
+        println!(
+            "auto ok wav={} steps={} frames={}",
             out.wav.len(),
             out.steps,
             out.frames
