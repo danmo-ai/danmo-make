@@ -263,6 +263,7 @@ const params = reactive({
   n: 1,
   audio_format: 'wav',
   denoise: 'off',
+  lm_expansion: 'auto',
   lora: '',
   lora_scale: 0.8,
 });
@@ -346,9 +347,11 @@ const hasCustomParams = computed(() => {
   const durationDef = p.duration?.default ?? 30;
   const formatDef = (p.audio_formats && p.audio_formats[0]) || audioFormats.value[0] || 'wav';
   const denoiseDef = p.denoise?.default ?? 'off';
+  const lmDef = p.lm_expansion?.default ?? 'auto';
   return params.steps !== stepsDef || params.guidance !== guidanceDef
     || params.seed !== null || params.n !== 1 || params.duration !== durationDef
     || params.audio_format !== formatDef || params.denoise !== denoiseDef
+    || params.lm_expansion !== lmDef
     || !!params.lora;
 });
 
@@ -516,6 +519,7 @@ function applyAudioComposerParams(val: Record<string, unknown>) {
   params.vocal_language = val.vocal_language as string;
   params.vocal_type = val.vocal_type as string;
   params.denoise = String(val.denoise || 'off');
+  params.lm_expansion = String(val.lm_expansion || 'auto');
   params.lora = String(val.lora || '');
   params.lora_scale = Number(val.lora_scale) || 0.8;
   coverParams.source_fidelity = (val.source_fidelity as number) ?? 1.0;
@@ -605,6 +609,7 @@ function applyDefaults(modelConfig: any) {
     params.audio_format = audioFormats.value[0] || 'wav';
   }
   params.denoise = p.denoise?.default ?? 'off';
+  params.lm_expansion = p.lm_expansion?.default ?? 'auto';
   params.negative_prompt = '';
   params.lyrics = '';
   params.bpm = null;
@@ -1150,6 +1155,7 @@ async function startGeneration(options: AudioGenerationOptions = {}) {
       n: params.n ?? 1,
       audio_format: params.audio_format || 'wav',
       denoise: params.denoise || 'off',
+      lm_expansion: params.lm_expansion || 'auto',
       adapters,
       metadata: buildCanvasMeta(),
     };
@@ -1539,6 +1545,7 @@ function persistComposerSnapshot() {
     negative_prompt: String(params.negative_prompt || ''),
     seed: params.seed != null ? String(params.seed) : undefined,
     denoise: params.denoise || 'off',
+    lm_expansion: params.lm_expansion || 'auto',
     mode: audioWorkTab.value,
     cover_source_path: coverSourceAssetPath.value || undefined,
   });
@@ -1551,6 +1558,7 @@ function onCanvasComposerRestore(snapshot: {
   negative_prompt?: string;
   seed?: string;
   denoise?: string;
+  lm_expansion?: string;
   mode?: string;
   cover_source_path?: string;
 }) {
@@ -1560,6 +1568,9 @@ function onCanvasComposerRestore(snapshot: {
   if (snapshot.negative_prompt != null) params.negative_prompt = snapshot.negative_prompt;
   if (['off', 'mild', 'strong'].includes(snapshot.denoise || '')) {
     params.denoise = snapshot.denoise as string;
+  }
+  if (['auto', 'format', 'off'].includes(snapshot.lm_expansion || '')) {
+    params.lm_expansion = snapshot.lm_expansion as string;
   }
   if (snapshot.seed != null && snapshot.seed !== '') {
     const n = parseInt(snapshot.seed, 10);

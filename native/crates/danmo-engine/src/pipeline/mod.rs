@@ -150,6 +150,13 @@ pub struct AudioCreateRequest<'a> {
     pub guidance: f32,
     pub steps: Option<u32>,
     pub vocal_language: &'a str,
+    pub bpm: Option<i32>,
+    pub keyscale: &'a str,
+    pub timesignature: &'a str,
+    /// `auto` | `format` | `off` — run 5Hz LM format_sample before DiT when not off.
+    pub lm_expansion: &'a str,
+    /// Optional explicit 5Hz LM card (when DiT has no companions/lm).
+    pub lm_bundle: Option<&'a Path>,
     /// Optional 5Hz LM FSQ codebook indices for DiT context.
     pub audio_code_indices: Option<&'a [i32]>,
     /// Optional time-major `[T*64]` latents for the timbre encoder.
@@ -263,18 +270,86 @@ pub fn audio_create(
             "{family} does not match the requested media"
         )));
     }
+    // 5Hz LM format_sample is ACE-Step-only; other audio families ignore the switch.
+    let expanded = if family == "ace_step" {
+        Some(families::ace_step::maybe_expand_for_create(
+            bundle,
+            &families::ace_step::LmExpandRequest {
+                mode: request.lm_expansion,
+                caption: request.prompt,
+                lyrics: request.lyrics,
+                duration: request.duration_sec,
+                bpm: request.bpm.unwrap_or(0),
+                keyscale: request.keyscale,
+                timesignature: request.timesignature,
+                vocal_language: request.vocal_language,
+                seed: request.seed.unwrap_or(0) as u64,
+                lm_bundle: request.lm_bundle,
+                existing_codes: request.audio_code_indices,
+            },
+        )?)
+    } else if !request.lm_expansion.trim().is_empty()
+        && !request.lm_expansion.eq_ignore_ascii_case("off")
+    {
+        return Err(EngineError::BadRequest(format!(
+            "{family} does not support lm_expansion"
+        )));
+    } else {
+        None
+    };
+    let duration_sec = expanded
+        .as_ref()
+        .and_then(|e| e.duration)
+        .map(|d| d as f32)
+        .filter(|d| *d > 0.0)
+        .unwrap_or(request.duration_sec);
+    let owned_codes = expanded
+        .as_ref()
+        .map(|e| e.audio_code_indices.clone())
+        .unwrap_or_default();
+    let prompt = expanded
+        .as_ref()
+        .map(|e| e.caption.as_str())
+        .unwrap_or(request.prompt);
+    let lyrics = expanded
+        .as_ref()
+        .map(|e| e.lyrics.as_str())
+        .unwrap_or(request.lyrics);
+    let vocal = expanded
+        .as_ref()
+        .map(|e| e.language.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(request.vocal_language);
+    let keyscale = expanded
+        .as_ref()
+        .map(|e| e.keyscale.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(request.keyscale);
+    let timesignature = expanded
+        .as_ref()
+        .map(|e| e.timesignature.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(request.timesignature);
+    let bpm = expanded
+        .as_ref()
+        .and_then(|e| e.bpm)
+        .or(request.bpm);
     let create = families::ace_step::CreateRequest {
-        prompt: request.prompt,
-        lyrics: request.lyrics,
-        duration_sec: request.duration_sec,
+        prompt,
+        lyrics,
+        duration_sec,
         seed: request.seed,
         guidance: request.guidance,
         steps: request.steps,
-        vocal_language: request.vocal_language,
-        bpm: None,
-        keyscale: "",
-        timesignature: "",
-        audio_code_indices: request.audio_code_indices,
+        vocal_language: vocal,
+        bpm,
+        keyscale,
+        timesignature,
+        audio_code_indices: if owned_codes.is_empty() {
+            request.audio_code_indices
+        } else {
+            Some(owned_codes.as_slice())
+        },
         timbre_latents: request.timbre_latents,
     };
     if let Some(out) = families::run_audio_facade(family, bundle, &create)? {

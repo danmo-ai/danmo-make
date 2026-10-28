@@ -18,6 +18,7 @@ mod lyrics;
 mod lyrics_dtw;
 mod lm;
 mod lm_codes;
+mod lm_expand;
 mod lm_format;
 mod lm_fsm;
 mod lm_prompt;
@@ -89,6 +90,10 @@ pub fn run_cover_nofsq(
 }
 
 pub use lm::AceLmConfig;
+pub use lm_expand::{
+    maybe_expand_for_create, resolve_lm_bundle_for_create, LmExpandOutput, LmExpandRequest,
+    LmExpansionMode,
+};
 pub use lm_prompt::{AcePrompt, LmMode};
 #[cfg(test)]
 pub use lm::write_smoke_lm;
@@ -591,6 +596,11 @@ mod tests {
                 guidance: 1.0,
                 steps: None,
                 vocal_language: "en",
+                bpm: None,
+                keyscale: "",
+                timesignature: "",
+                lm_expansion: "off",
+                lm_bundle: None,
                 audio_code_indices: None,
                 timbre_latents: None,
             },
@@ -598,6 +608,38 @@ mod tests {
         .unwrap_err();
         assert!(
             err.to_string().contains("companions") || err.to_string().contains("text_encoder"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audio_create_auto_lm_fails_loud_when_lm_missing() {
+        let dir = scratch("create-auto-lm");
+        write_dit(&dir, AceStepConfig::smoke());
+        let err = crate::pipeline::audio_create(
+            "ace_step",
+            &dir,
+            &crate::pipeline::AudioCreateRequest {
+                prompt: "lofi",
+                lyrics: "[inst]",
+                duration_sec: 5.0,
+                seed: Some(0),
+                guidance: 1.0,
+                steps: None,
+                vocal_language: "en",
+                bpm: Some(90),
+                keyscale: "C major",
+                timesignature: "4",
+                lm_expansion: "auto",
+                lm_bundle: None,
+                audio_code_indices: None,
+                timbre_latents: None,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("5Hz LM") || err.to_string().contains("lm_expansion"),
             "{err}"
         );
         let _ = std::fs::remove_dir_all(&dir);

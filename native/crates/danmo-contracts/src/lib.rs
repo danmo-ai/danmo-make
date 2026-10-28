@@ -128,12 +128,27 @@ pub struct AudioGenerationRequest {
     pub vocal_language: String,
     pub guidance: Option<f32>,
     pub steps: Option<u32>,
+    /// BPM hint for DiT / 5Hz LM (optional).
+    pub bpm: Option<i32>,
+    /// Key/scale hint (`C major`, …). Accepts `keyscale` alias.
+    #[serde(default, alias = "keyscale")]
+    pub key_scale: String,
+    /// Time signature hint (`4`, `4/4`, …). Accepts `timesignature` alias.
+    #[serde(default, alias = "timesignature")]
+    pub time_signature: String,
+    /// `auto` (default) | `format` | `off` — 5Hz LM format_sample before DiT.
+    #[serde(default = "default_lm_expansion")]
+    pub lm_expansion: String,
     /// Optional 5Hz LM / planner FSQ codebook indices for DiT context hints.
     #[serde(default)]
     pub audio_code_indices: Option<Vec<i32>>,
     /// Optional time-major `[T*64]` latents for the timbre encoder.
     #[serde(default)]
     pub timbre_latents: Option<Vec<f32>>,
+}
+
+fn default_lm_expansion() -> String {
+    "auto".into()
 }
 
 /// ACE-Step cover / cover-nofsq / repaint edit.
@@ -259,4 +274,39 @@ pub fn parse_size(size: &str) -> Result<(u32, u32), String> {
         return Err(format!("size must be non-zero, got {size}"));
     }
     Ok((w, h))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_generation_defaults_lm_expansion_auto() {
+        let req: AudioGenerationRequest = serde_json::from_value(serde_json::json!({
+            "model": "ace-step-xl-sft",
+            "prompt": "lofi"
+        }))
+        .unwrap();
+        assert_eq!(req.lm_expansion, "auto");
+        assert!(req.key_scale.is_empty());
+        assert!(req.time_signature.is_empty());
+        assert!(req.bpm.is_none());
+    }
+
+    #[test]
+    fn audio_generation_accepts_keyscale_aliases_and_lm_off() {
+        let req: AudioGenerationRequest = serde_json::from_value(serde_json::json!({
+            "model": "ace-step-xl-sft",
+            "prompt": "lofi",
+            "bpm": 96,
+            "keyscale": "A minor",
+            "timesignature": "4",
+            "lm_expansion": "off"
+        }))
+        .unwrap();
+        assert_eq!(req.bpm, Some(96));
+        assert_eq!(req.key_scale, "A minor");
+        assert_eq!(req.time_signature, "4");
+        assert_eq!(req.lm_expansion, "off");
+    }
 }

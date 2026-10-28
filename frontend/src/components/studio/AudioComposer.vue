@@ -263,8 +263,19 @@
                 </div>
               </div>
 
-              <div v-if="workMode === 'create' && showDenoise" class="audio-composer__advanced-row">
-                <div class="audio-composer__field">
+              <div
+                v-if="workMode === 'create' && (showDenoise || showLmExpansion)"
+                class="audio-composer__advanced-row"
+              >
+                <div v-if="showLmExpansion" class="audio-composer__field">
+                  <label>{{ $tt('audio.lmExpansion') }}</label>
+                  <DqSelect v-model="localParams.lm_expansion" size="sm">
+                    <DqOption value="auto" :label="$tt('audio.lmExpansionAuto')" />
+                    <DqOption value="format" :label="$tt('audio.lmExpansionFormat')" />
+                    <DqOption value="off" :label="$tt('audio.lmExpansionOff')" />
+                  </DqSelect>
+                </div>
+                <div v-if="showDenoise" class="audio-composer__field">
                   <label>{{ $tt('audio.denoise') }}</label>
                   <DqSelect v-model="localParams.denoise" size="sm">
                     <DqOption value="off" :label="$tt('audio.denoiseOff')" />
@@ -726,6 +737,7 @@ function onStyleCommand(command: string) {
 // Capability flags from registry
 const paramDefs = computed(() => props.currentModelConfig?.parameters || {});
 const showDenoise = computed(() => paramDefs.value.denoise?.type === 'enum');
+const showLmExpansion = computed(() => paramDefs.value.lm_expansion?.type === 'enum');
 
 const stepsDef = computed(() => {
   const p = paramDefs.value.steps;

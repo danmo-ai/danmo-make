@@ -215,6 +215,12 @@ fn run_task(
             } else {
                 request.vocal_language.as_str()
             };
+            // Prefer catalog LM card when DiT has no companions/lm (fail later if still missing).
+            let lm_override = if request.lm_expansion.trim().eq_ignore_ascii_case("off") {
+                None
+            } else {
+                gguf_bundle(state, "ace-step-5hz-lm").ok()
+            };
             let out = audio_create(
                 family,
                 &bundle,
@@ -226,6 +232,11 @@ fn run_task(
                     guidance: request.guidance.unwrap_or(1.0),
                     steps: request.steps,
                     vocal_language: vocal,
+                    bpm: request.bpm,
+                    keyscale: request.key_scale.as_str(),
+                    timesignature: request.time_signature.as_str(),
+                    lm_expansion: request.lm_expansion.as_str(),
+                    lm_bundle: lm_override.as_deref(),
                     audio_code_indices: request.audio_code_indices.as_deref(),
                     timbre_latents: request.timbre_latents.as_deref(),
                 },

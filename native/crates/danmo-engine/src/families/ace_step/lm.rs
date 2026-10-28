@@ -107,15 +107,16 @@ fn find_lm_gguf(bundle: &Path) -> Result<std::path::PathBuf, WeightError> {
     for sub in ["lm", "companions/lm", "5hz-lm"] {
         let dir = bundle.join(sub);
         if dir.is_dir() {
-            if let Ok(path) = collect_lm_gguf(&dir) {
+            if let Ok(path) = find_lm_gguf_in_dir(&dir) {
                 return Ok(path);
             }
         }
     }
-    collect_lm_gguf(bundle)
+    find_lm_gguf_in_dir(bundle)
 }
 
-fn collect_lm_gguf(dir: &Path) -> Result<std::path::PathBuf, WeightError> {
+/// Locate a single LM GGUF under `dir` (named `*lm*` / `*qwen*` preferred).
+pub(crate) fn find_lm_gguf_in_dir(dir: &Path) -> Result<std::path::PathBuf, WeightError> {
     let mut named = Vec::new();
     let mut any = Vec::new();
     for entry in std::fs::read_dir(dir).map_err(|err| WeightError::Open {
