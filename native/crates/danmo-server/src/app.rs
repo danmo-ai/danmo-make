@@ -340,6 +340,7 @@ fn run_task(
                     top_p: request.top_p.unwrap_or(1.0),
                     top_k: request.top_k.unwrap_or(0),
                     seed: request.seed.unwrap_or(0),
+                    use_fsm: request.use_fsm,
                 },
             )
             .map_err(|e| e.to_string())?;

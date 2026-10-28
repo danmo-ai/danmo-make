@@ -199,6 +199,69 @@ pub fn is_valid_timesignature(raw: &str) -> bool {
         .is_some_and(|n| VALID_TIME_SIGNATURES.contains(&n))
 }
 
+/// Resolve single-digit and newline token ids via plain BPE encode.
+pub fn resolve_digit_newline_ids(
+    tokenizer_json: &str,
+    vocab: i64,
+) -> Result<([i32; 10], i32), WeightError> {
+    let mut digits = [0i32; 10];
+    for d in 0..10 {
+        let ids = crate::common::qwen3::tokenize_plain(tokenizer_json, &d.to_string(), vocab)?;
+        if ids.len() != 1 {
+            return Err(WeightError::NotBuilt(format!(
+                "ACE-Step LM FSM digit {d} did not encode to a single token (got {})",
+                ids.len()
+            )));
+        }
+        digits[d] = ids[0];
+    }
+    let nl = crate::common::qwen3::tokenize_plain(tokenizer_json, "\n", vocab)?;
+    if nl.len() != 1 {
+        return Err(WeightError::NotBuilt(format!(
+            "ACE-Step LM FSM newline did not encode to a single token (got {})",
+            nl.len()
+        )));
+    }
+    Ok((digits, nl[0]))
+}
+
+/// If `decoded` ends inside a bpm or duration value, mask logits to valid digits.
+/// Returns true when a mask was applied.
+pub fn maybe_mask_numeric_field(
+    logits: &mut [f32],
+    decoded: &str,
+    digit_ids: &[i32; 10],
+    newline_id: i32,
+    max_duration: i32,
+) -> Result<bool, WeightError> {
+    if let Some(prefix) = open_numeric_field(decoded, "bpm: ") {
+        MetadataFsm::mask_numeric_value(
+            logits, prefix, BPM_MIN, BPM_MAX, digit_ids, newline_id,
+        )?;
+        return Ok(true);
+    }
+    if let Some(prefix) = open_numeric_field(decoded, "duration: ") {
+        let max_v = max_duration.min(DURATION_MAX);
+        MetadataFsm::mask_numeric_value(
+            logits, prefix, DURATION_MIN, max_v, digit_ids, newline_id,
+        )?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn open_numeric_field<'a>(decoded: &'a str, field: &str) -> Option<&'a str> {
+    let idx = decoded.rfind(field)?;
+    let after = &decoded[idx + field.len()..];
+    if after.contains('\n') {
+        return None;
+    }
+    if !after.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(after)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +300,26 @@ mod tests {
         assert!(!is_valid_language("xx"));
         assert!(is_valid_timesignature("4"));
         assert!(!is_valid_timesignature("5"));
+    }
+
+    #[test]
+    fn open_numeric_detects_bpm_prefix() {
+        assert_eq!(open_numeric_field("<think>\nbpm: 12", "bpm: "), Some("12"));
+        assert_eq!(open_numeric_field("<think>\nbpm: 12\n", "bpm: "), None);
+        assert_eq!(
+            open_numeric_field("<think>\nbpm: 120\nduration: 3", "duration: "),
+            Some("3")
+        );
+    }
+
+    #[test]
+    fn maybe_mask_applies_on_open_bpm() {
+        let mut logits = vec![1.0f32; 20];
+        let digits = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
+        let applied =
+            maybe_mask_numeric_field(&mut logits, "bpm: 12", &digits, 5, DURATION_MAX).unwrap();
+        assert!(applied);
+        assert!(logits[5].is_infinite()); // 12 < BPM_MIN → no newline
+        assert_eq!(logits[10], 0.0); // digit 0 → 120
     }
 }

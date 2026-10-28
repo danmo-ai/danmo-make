@@ -115,6 +115,8 @@ pub struct LmRequest<'a> {
     pub top_k: i32,
     /// RNG seed for non-greedy sampling.
     pub seed: u64,
+    /// Apply MetadataFSM numeric early-block during phase-1 (needs tokenizer).
+    pub use_fsm: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -231,18 +233,53 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
         .filter(|&id| (id as i64) < config.vocab)
         .collect();
     let max_new = request.max_new_tokens.max(1).min(2048);
-    let generated = lm::sample_generate(
-        &ctx,
-        &weights,
-        config,
-        &prompt_ids,
-        max_new,
-        &stop,
-        request.temperature,
-        request.top_p,
-        request.top_k,
-        request.seed,
-    )?;
+    let generated = if request.use_fsm {
+        let json = tokenizer.ok_or_else(|| {
+            WeightError::NotBuilt(
+                "ACE-Step LM MetadataFSM needs tokenizer.json (set use_fsm=false to skip)"
+                    .into(),
+            )
+        })?;
+        let (digit_ids, newline_id) = lm_fsm::resolve_digit_newline_ids(json, config.vocab)?;
+        let decode_json = json.to_string();
+        let decode_fn = |ids: &[i32]| -> String {
+            token_decode::Decoder::from_tokenizer_json(&decode_json)
+                .map(|d| d.decode(ids))
+                .unwrap_or_default()
+        };
+        let fsm = lm::Phase1FsmMask {
+            digit_ids: &digit_ids,
+            newline_id,
+            max_duration: lm_fsm::DURATION_MAX,
+            decode: &decode_fn,
+        };
+        lm::sample_generate_fsm(
+            &ctx,
+            &weights,
+            config,
+            &prompt_ids,
+            max_new,
+            &stop,
+            request.temperature,
+            request.top_p,
+            request.top_k,
+            request.seed,
+            Some(fsm),
+        )?
+    } else {
+        lm::sample_generate(
+            &ctx,
+            &weights,
+            config,
+            &prompt_ids,
+            max_new,
+            &stop,
+            request.temperature,
+            request.top_p,
+            request.top_k,
+            request.seed,
+        )?
+    };
     let new_ids = generated[prompt_ids.len()..].to_vec();
     let text = if let Some(json) = tokenizer {
         token_decode::Decoder::from_tokenizer_json(json)?.decode(&new_ids)
@@ -297,6 +334,7 @@ pub fn run_lm_expand(bundle: &Path) -> Result<LmOutput, WeightError> {
             top_p: 1.0,
             top_k: 0,
             seed: 0,
+            use_fsm: false,
         },
     )
 }
@@ -537,6 +575,7 @@ mod tests {
                 top_p: 1.0,
                 top_k: 0,
                 seed: 0,
+                use_fsm: false,
             },
         )
         .unwrap();
@@ -567,6 +606,7 @@ mod tests {
                 top_p: 1.0,
                 top_k: 0,
                 seed: 0,
+                use_fsm: false,
             },
         )
         .unwrap_err();

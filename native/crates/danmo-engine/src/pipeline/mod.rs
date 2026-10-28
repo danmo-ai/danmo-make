@@ -194,6 +194,7 @@ pub struct AudioLmRequest<'a> {
     pub top_p: f32,
     pub top_k: i32,
     pub seed: u64,
+    pub use_fsm: bool,
 }
 
 #[derive(Debug)]
@@ -361,6 +362,7 @@ pub fn audio_lm(
         top_p: request.top_p,
         top_k: request.top_k,
         seed: request.seed,
+        use_fsm: request.use_fsm,
     };
     if let Some(out) = families::run_audio_lm_facade(family, bundle, &lm)? {
         return Ok(AudioLmOutput {

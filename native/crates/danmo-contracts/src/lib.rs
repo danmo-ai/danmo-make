@@ -208,6 +208,9 @@ pub struct AudioLmRequest {
     pub top_k: Option<i32>,
     /// RNG seed for non-greedy sampling.
     pub seed: Option<u64>,
+    /// Apply MetadataFSM numeric early-block (needs tokenizer; default false).
+    #[serde(default)]
+    pub use_fsm: bool,
     #[serde(default = "default_priority")]
     pub priority: String,
 }
