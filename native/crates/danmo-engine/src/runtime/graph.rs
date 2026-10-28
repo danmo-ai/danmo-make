@@ -422,6 +422,84 @@ impl GraphBuilder {
         unsafe { g::ggml_upscale(self.ctx, a, 2, g::ggml_scale_mode_GGML_SCALE_MODE_NEAREST) }
     }
 
+    pub fn sqr(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_sqr(self.ctx, a) }
+    }
+
+    pub fn sqrt(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_sqrt(self.ctx, a) }
+    }
+
+    pub fn div(&self, a: *mut g::ggml_tensor, b: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_div(self.ctx, a, b) }
+    }
+
+    /// Sum along `ne[0]`. The result has `ne[0] == 1`.
+    pub fn sum_rows(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_sum_rows(self.ctx, a) }
+    }
+
+    pub fn clamp(&self, a: *mut g::ggml_tensor, min: f32, max: f32) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_clamp(self.ctx, a, min, max) }
+    }
+
+    /// Asymmetric pad. Each pair is the left and right pad of `ne[0]` through `ne[3]`.
+    pub fn pad_ext(
+        &self,
+        a: *mut g::ggml_tensor,
+        lp0: i32,
+        rp0: i32,
+        lp1: i32,
+        rp1: i32,
+        lp2: i32,
+        rp2: i32,
+        lp3: i32,
+        rp3: i32,
+    ) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_pad_ext(self.ctx, a, lp0, rp0, lp1, rp1, lp2, rp2, lp3, rp3) }
+    }
+
+    /// Direct 3D convolution. Kernel is `[KW, KH, KD, IC * OC]`, data is `[W, H, D, C * N]`.
+    /// `IC * OC` is packed as `ic + IC * oc`. Padding here is symmetric; causal time pad is
+    /// applied with `pad_ext` before a zero-pad call.
+    pub fn conv3d_direct(
+        &self,
+        kernel: Tensor,
+        data: Tensor,
+        stride0: i32,
+        stride1: i32,
+        stride2: i32,
+        pad0: i32,
+        pad1: i32,
+        pad2: i32,
+        dil0: i32,
+        dil1: i32,
+        dil2: i32,
+        n_channels: i32,
+        n_batch: i32,
+        n_channels_out: i32,
+    ) -> Tensor {
+        unsafe {
+            g::ggml_conv_3d_direct(
+                self.ctx,
+                kernel,
+                data,
+                stride0,
+                stride1,
+                stride2,
+                pad0,
+                pad1,
+                pad2,
+                dil0,
+                dil1,
+                dil2,
+                n_channels,
+                n_batch,
+                n_channels_out,
+            )
+        }
+    }
+
     /// Direct 2D convolution. Kernel is `[KW, KH, IC, OC]`, data is `[W, H, C, N]`.
     /// This is ggml's direct conv, not the im2col plus matmul path.
     pub fn conv2d_direct(

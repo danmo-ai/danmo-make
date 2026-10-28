@@ -1,14 +1,18 @@
 //! Qwen-Image create path. The DiT graph reads bare diffusers names.
 //!
-//! The text encoder is Qwen2.5-VL, not the shared Qwen3 tower. The VAE is the
-//! 3D causal decoder, not AutoencoderKL. Neither graph is built, so a bundle
-//! that matches the DiT table still fails before a step.
+//! The text encoder is the Qwen2.5-VL trunk in `text.rs`, not the shared Qwen3
+//! tower. The VAE is the 3D causal decoder in `vae.rs`, not AutoencoderKL.
+//! The Euler loop steps a packed latent once text embeddings exist. Create
+//! still stops on the tokenizer, so the loop is not asked to produce a picture.
 
 mod graph;
 mod ids;
+mod text;
 mod transformer;
+mod vae;
 mod weights;
 
+use crate::common::ops::{empirical_mu_sigmas, flow_match_shift_sigmas, linear_sigmas};
 use crate::runtime::GgmlContext;
 use crate::weights::{assert_gguf_bundle, GgufWeights, LoraFile, WeightError};
 use std::path::Path;
@@ -19,14 +23,14 @@ pub fn execute(
     _ctx: &GgmlContext,
     bundle: &Path,
     _prompt: &str,
-    _steps: u32,
+    steps: u32,
     width: u32,
     height: u32,
-    _guidance: f32,
+    guidance: f32,
     _seed: Option<i64>,
     scheduler: Option<&str>,
-    _scheduler_shift: Option<f32>,
-    _empirical_mu: bool,
+    scheduler_shift: Option<f32>,
+    empirical_mu: bool,
     negative: &str,
     loras: &[LoraFile],
     _on_progress: impl FnMut(u32, u32),
@@ -40,16 +44,6 @@ pub fn execute(
         return Err(WeightError::NotBuilt(
             "lora inference graph is not built".into(),
         ));
-    }
-    // Registry names. The Euler step is not in this family yet, so the API
-    // still rejects the scheduler before a request reaches here.
-    match scheduler.unwrap_or("flow_match_euler_discrete") {
-        "flow_match_euler" | "flow_match_euler_discrete" => {}
-        other => {
-            return Err(WeightError::NotBuilt(format!(
-                "scheduler {other} is not built"
-            )))
-        }
     }
     let files = assert_gguf_bundle(bundle)?;
     let loaded = GgufWeights::open_parts(&files.transformer)?;
@@ -71,13 +65,68 @@ pub fn execute(
             "zero_cond_t edit path is not built".into(),
         ));
     }
+    let _sigmas = schedule(
+        steps,
+        width,
+        height,
+        scale,
+        scheduler,
+        scheduler_shift,
+        empirical_mu,
+    )?;
+    if !guidance.is_finite() || (guidance - 1.0).abs() >= f32::EPSILON {
+        return Err(WeightError::NotBuilt(
+            "cfg needs the negative embedding and the Qwen2.5-VL tokenizer is not built".into(),
+        ));
+    }
     Err(WeightError::NotBuilt(
-        "Qwen2.5-VL text tower is not built, and the Qwen-Image 3D causal VAE is not built".into(),
+        "Qwen2.5-VL tokenizer is not built".into(),
     ))
 }
 
-/// Referenced from `execute` so the DiT stays in the non-test crate.
-/// The branch does not run: create still stops on the missing text tower.
+/// Published card: `requires_sigma_shift` is true and no `scheduler_shift` is
+/// stored, so both Euler names take empirical mu on
+/// `(width / vae_scale) * (height / vae_scale)`. A request that sets a positive
+/// shift and leaves `use_empirical_mu` false takes the static shift instead.
+/// `linear` uses the same resolution shift as `LinearScheduler`.
+fn schedule(
+    steps: u32,
+    width: u32,
+    height: u32,
+    vae_scale: u32,
+    scheduler: Option<&str>,
+    scheduler_shift: Option<f32>,
+    empirical_mu: bool,
+) -> Result<Vec<f32>, WeightError> {
+    match scheduler.unwrap_or("flow_match_euler_discrete") {
+        "linear" => Ok(linear_sigmas(steps, width, height, true)),
+        "flow_match_euler" | "flow_match_euler_discrete" => {
+            if empirical_mu || scheduler_shift.is_none() {
+                let scale = vae_scale.max(1);
+                if width % scale != 0 || height % scale != 0 {
+                    return Err(WeightError::NotBuilt(format!(
+                        "size {width}x{height} is not divisible by vae scale {scale}"
+                    )));
+                }
+                let seq = (width / scale) * (height / scale);
+                return Ok(empirical_mu_sigmas(steps, seq));
+            }
+            let shift = scheduler_shift.unwrap_or(0.0);
+            if !shift.is_finite() || shift <= 0.0 {
+                return Err(WeightError::NotBuilt(format!(
+                    "scheduler shift {shift} is not a positive finite value"
+                )));
+            }
+            Ok(flow_match_shift_sigmas(steps, shift))
+        }
+        other => Err(WeightError::NotBuilt(format!(
+            "scheduler {other} is not built"
+        ))),
+    }
+}
+
+/// Referenced from `execute` so the graphs stay in the non-test crate.
+/// The branch does not run: create still stops on the tokenizer.
 fn link_dit() {
     if false {
         let Ok(ctx) = GgmlContext::new(crate::runtime::BackendKind::Cpu) else {
@@ -102,12 +151,36 @@ fn link_dit() {
         let _ = forward.load_f32("img_in.weight", &[]);
         let _ = forward.node_count();
         let _ = forward.forward(&[], &[], &[]);
+        let _ = forward.denoise(&[], &[], &[1.0, 0.0], 1.0, |_, _| {});
+        let _ = text::PROMPT_TEMPLATE.len() + text::MAX_LENGTH;
+        let _ = text::ggml_mrope_axis(0, [16, 24, 24]);
+        let _ = text::hf_mrope_cos(
+            [0, 0, 0],
+            128,
+            text::Qwen25VlConfig::published().mrope,
+            1_000_000.0,
+        );
+        let _ = text::trim_system_prefix(&[0.0], 1, 0);
+        let _ = text::text_layout(text::Qwen25VlConfig::published());
+        if let Ok(mut tower) = text::TextForward::build(&ctx, text::Qwen25VlConfig::smoke(), 1) {
+            let _ = tower.load_f32("model.norm.weight", &[]);
+            let _ = tower.compute(&[], &[]);
+        }
+        let _ = vae::scale_latents(&[], 0, 0, 0);
+        let _ = vae::required_names(vae::DecoderSpec::published());
+        let _ = vae::decoder_dims(96, [1, 2, 4, 4]);
+        if let Ok(mut decode) = vae::VaeDecode::build(&ctx, vae::DecoderSpec::smoke(), 1, 1) {
+            let _ = decode.load_f32("decoder.conv_out.bias", &[]);
+            let _ = decode.decode(&[]);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::execute;
+    use super::ids::timestep_features;
+    use super::schedule;
     use super::transformer::QwenImageForward;
     use super::weights::{
         check_layout, config_from_weights, stored_f32, weight_layout, QwenImageConfig,
@@ -369,12 +442,29 @@ mod tests {
         ));
         let message = err.to_string();
         assert!(
-            message.contains("Qwen2.5-VL text tower is not built"),
+            message.contains("Qwen2.5-VL tokenizer is not built"),
             "{message}"
         );
+        assert!(!message.contains("step loop"), "{message}");
+        let cfg = must_err(execute(
+            &ctx,
+            &dir,
+            "a red cube",
+            4,
+            16,
+            16,
+            4.0,
+            Some(1),
+            None,
+            None,
+            false,
+            "",
+            &[],
+            |_, _| {},
+        ));
         assert!(
-            message.contains("Qwen-Image 3D causal VAE is not built"),
-            "{message}"
+            cfg.to_string().contains("cfg needs the negative embedding"),
+            "{cfg}"
         );
     }
 
@@ -407,9 +497,11 @@ mod tests {
             matches!(err, WeightError::NotBuilt(ref message) if message.contains("zero_cond_t")),
             "{err}"
         );
+        let clean = scratch("linear");
+        write_bundle(&clean, loader_config(), None);
         let err = must_err(execute(
             &ctx,
-            &dir,
+            &clean,
             "a red cube",
             4,
             16,
@@ -424,7 +516,28 @@ mod tests {
             |_, _| {},
         ));
         assert!(
-            err.to_string().contains("scheduler linear is not built"),
+            err.to_string()
+                .contains("Qwen2.5-VL tokenizer is not built"),
+            "{err}"
+        );
+        let err = must_err(execute(
+            &ctx,
+            &clean,
+            "a red cube",
+            4,
+            16,
+            16,
+            1.0,
+            Some(1),
+            Some("unipc"),
+            None,
+            false,
+            "",
+            &[],
+            |_, _| {},
+        ));
+        assert!(
+            err.to_string().contains("scheduler unipc is not built"),
             "{err}"
         );
         let err = must_err(execute(
@@ -444,6 +557,75 @@ mod tests {
             |_, _| {},
         ));
         assert!(err.to_string().contains("vae scale"), "{err}");
+    }
+
+    #[test]
+    fn published_schedule_is_empirical_mu_until_a_static_shift_is_set() {
+        use crate::common::ops::{empirical_mu_sigmas, flow_match_shift_sigmas, linear_sigmas};
+        let card = schedule(4, 1024, 1024, 16, None, None, false).unwrap();
+        assert_eq!(card, empirical_mu_sigmas(4, 64 * 64));
+        let named = schedule(4, 1024, 1024, 16, Some("flow_match_euler"), Some(6.0), true).unwrap();
+        assert_eq!(named, card);
+        let shifted = schedule(
+            4,
+            1024,
+            1024,
+            16,
+            Some("flow_match_euler_discrete"),
+            Some(6.0),
+            false,
+        )
+        .unwrap();
+        assert_eq!(shifted, flow_match_shift_sigmas(4, 6.0));
+        let linear = schedule(4, 1024, 768, 16, Some("linear"), None, false).unwrap();
+        assert_eq!(linear, linear_sigmas(4, 1024, 768, true));
+        let bad = schedule(
+            4,
+            1024,
+            1024,
+            16,
+            Some("flow_match_euler"),
+            Some(0.0),
+            false,
+        );
+        assert!(bad.unwrap_err().to_string().contains("scheduler shift"));
+    }
+
+    #[test]
+    fn one_euler_step_matches_the_conditional_forward() {
+        let config = QwenImageConfig::smoke();
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let mut forward = QwenImageForward::build(&ctx, config, 2, 1, 2, &HashMap::new()).unwrap();
+        for (name, ne0, ne1) in weight_layout(config) {
+            forward.load_f32(&name, &fill(&name, ne0, ne1)).unwrap();
+        }
+        let latent = vec![
+            0.2, -0.4, 0.6, -0.1, 0.3, 0.8, -0.7, 0.5, 1.0, -1.5, 0.25, 0.0, 2.0, -0.2, 0.4, -0.8,
+        ];
+        let txt = vec![0.0; (config.joint_attention_dim * 2) as usize];
+        let sigma = 0.5f32;
+        let freq = timestep_features(sigma, config.freq_dim as usize);
+        let velocity = forward.forward(&latent, &txt, &freq).unwrap();
+        let mut expect = latent.clone();
+        for (value, vel) in expect.iter_mut().zip(&velocity) {
+            *value += (0.0 - sigma) * vel;
+        }
+        let mut steps = 0u32;
+        let got = forward
+            .denoise(&latent, &txt, &[sigma, 0.0], 1.0, |done, _| steps = done)
+            .unwrap();
+        assert_eq!(steps, 1);
+        assert_eq!(got.len(), expect.len());
+        for (i, (left, right)) in got.iter().zip(&expect).enumerate() {
+            assert!(
+                (left - right).abs() < 1e-4,
+                "index {i} got {left} expect {right}"
+            );
+        }
+        let cfg = forward
+            .denoise(&latent, &txt, &[sigma, 0.0], 4.0, |_, _| {})
+            .unwrap_err();
+        assert!(cfg.to_string().contains("tokenizer"), "{cfg}");
     }
 
     #[test]

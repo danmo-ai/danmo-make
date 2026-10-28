@@ -1305,6 +1305,10 @@ fn scheduler_built(family: &str, scheduler: &str) -> bool {
             )
         }
         "flux2" => matches!(scheduler, "flow_match_euler" | "flow_match_euler_discrete"),
+        "qwen_image" => matches!(
+            scheduler,
+            "linear" | "flow_match_euler" | "flow_match_euler_discrete"
+        ),
         _ => scheduler.is_empty(),
     }
 }
