@@ -266,54 +266,14 @@ pub fn greedy_generate_set_rows(
     stop_ids: &[i32],
     max_seq: i64,
 ) -> Result<Vec<i32>, WeightError> {
-    if prompt.is_empty() {
-        return Err(WeightError::NotBuilt(
-            "ACE-Step LM generate needs a non-empty prompt".into(),
-        ));
-    }
     if max_seq < (prompt.len() + max_new) as i64 {
         return Err(WeightError::NotBuilt(format!(
             "ACE-Step LM max_seq {max_seq} is shorter than prompt+new {}",
             prompt.len() + max_new
         )));
     }
-    for &id in prompt {
-        if id < 0 || id as i64 >= config.vocab {
-            return Err(WeightError::NotBuilt(format!(
-                "ACE-Step LM token id {id} is outside vocab {}",
-                config.vocab
-            )));
-        }
-    }
-    let mut types = HashMap::new();
-    for (name, _, _) in weight_layout(config) {
-        types.insert(name.clone(), weights.ggml_type_of(&name).unwrap_or(TYPE_F32));
-    }
-    let mut graph = LmSetRows::build(ctx, config, max_seq, &types)
-        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-    for (name, ne0, ne1) in weight_layout(config) {
-        let data = weights.f32_widened(&name, &[ne0, ne1])?;
-        graph
-            .set_f32(&name, &data)
-            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-    }
-    // Zero KV caches once; set_rows fills rows as tokens arrive.
-    let cache_elems = (config.head_dim * max_seq * config.kv_heads) as usize;
-    let zeros = vec![0f32; cache_elems];
-    for layer in 0..config.layers {
-        graph
-            .set_f32(&format!("cache_k.{layer}"), &zeros)
-            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-        graph
-            .set_f32(&format!("cache_v.{layer}"), &zeros)
-            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-    }
-    let mut logits = Vec::new();
-    let mut pos = 0i64;
-    for &tok in prompt {
-        logits = set_rows_step(&mut graph, config, max_seq, tok, pos)?;
-        pos += 1;
-    }
+    let mut session = LmSetRowsSession::open(ctx, weights, config, max_seq)?;
+    let mut logits = session.prefill(prompt)?;
     let mut seq = prompt.to_vec();
     for _ in 0..max_new {
         let next = argmax(&logits);
@@ -321,57 +281,149 @@ pub fn greedy_generate_set_rows(
         if stop_ids.contains(&next) {
             break;
         }
-        if pos >= max_seq {
-            return Err(WeightError::NotBuilt(
-                "ACE-Step LM set_rows KV exceeded max_seq".into(),
-            ));
-        }
-        logits = set_rows_step(&mut graph, config, max_seq, next, pos)?;
-        pos += 1;
+        logits = session.decode(next)?;
     }
     Ok(seq)
 }
 
-fn set_rows_step(
-    graph: &mut ReusedGraph,
+/// Fixed-topology KV session (acestep.cpp single-graph replay).
+pub struct LmSetRowsSession {
     config: AceLmConfig,
     max_seq: i64,
-    token: i32,
+    graph: ReusedGraph,
     pos: i64,
-) -> Result<Vec<f32>, WeightError> {
-    graph
-        .set_i32("token_ids", &[token])
-        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-    graph
-        .set_i32("positions", &[pos as i32])
-        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-    graph
-        .set_i64("kv_rows", &[pos])
-        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-    // Causal mask [max_seq, 1]: attend columns 0..=pos.
-    let mut mask = vec![f32::NEG_INFINITY; max_seq as usize];
-    for j in 0..=pos as usize {
-        if j < mask.len() {
-            mask[j] = 0.0;
+}
+
+impl LmSetRowsSession {
+    pub fn open(
+        ctx: &GgmlContext,
+        weights: &GgufWeights,
+        config: AceLmConfig,
+        max_seq: i64,
+    ) -> Result<Self, WeightError> {
+        if max_seq < 1 {
+            return Err(WeightError::NotBuilt(
+                "ACE-Step LM set_rows max_seq must be >= 1".into(),
+            ));
         }
+        let mut types = HashMap::new();
+        for (name, _, _) in weight_layout(config) {
+            types.insert(name.clone(), weights.ggml_type_of(&name).unwrap_or(TYPE_F32));
+        }
+        let graph = LmSetRows::build(ctx, config, max_seq, &types)
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        for (name, ne0, ne1) in weight_layout(config) {
+            let data = weights.f32_widened(&name, &[ne0, ne1])?;
+            graph
+                .set_f32(&name, &data)
+                .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        }
+        let cache_elems = (config.head_dim * max_seq * config.kv_heads) as usize;
+        let zeros = vec![0f32; cache_elems];
+        for layer in 0..config.layers {
+            graph
+                .set_f32(&format!("cache_k.{layer}"), &zeros)
+                .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+            graph
+                .set_f32(&format!("cache_v.{layer}"), &zeros)
+                .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        }
+        Ok(Self {
+            config,
+            max_seq,
+            graph,
+            pos: 0,
+        })
     }
-    graph
-        .set_f32("attn_mask", &mask)
-        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-    let logits = graph
-        .compute()
-        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-    if logits.len() as i64 != config.vocab {
-        return Err(WeightError::NotBuilt(format!(
-            "ACE-Step LM set_rows logits length {} is not vocab {}",
-            logits.len(),
-            config.vocab
-        )));
+
+    pub fn config(&self) -> AceLmConfig {
+        self.config
     }
-    if let Some(detail) = non_finite("ACE-Step LM logits", &logits) {
-        return Err(WeightError::NotBuilt(detail));
+
+    pub fn pos(&self) -> i64 {
+        self.pos
     }
-    Ok(logits)
+
+    /// Feed prompt tokens; returns logits after the last prompt token.
+    pub fn prefill(&mut self, prompt: &[i32]) -> Result<Vec<f32>, WeightError> {
+        if prompt.is_empty() {
+            return Err(WeightError::NotBuilt(
+                "ACE-Step LM set_rows prefill needs a non-empty prompt".into(),
+            ));
+        }
+        for &id in prompt {
+            if id < 0 || id as i64 >= self.config.vocab {
+                return Err(WeightError::NotBuilt(format!(
+                    "ACE-Step LM token id {id} is outside vocab {}",
+                    self.config.vocab
+                )));
+            }
+        }
+        if self.pos != 0 {
+            return Err(WeightError::NotBuilt(
+                "ACE-Step LM set_rows session was already primed".into(),
+            ));
+        }
+        let mut logits = Vec::new();
+        for &tok in prompt {
+            logits = self.step(tok)?;
+        }
+        Ok(logits)
+    }
+
+    /// Append one token and return next-step logits.
+    pub fn decode(&mut self, token: i32) -> Result<Vec<f32>, WeightError> {
+        if token < 0 || token as i64 >= self.config.vocab {
+            return Err(WeightError::NotBuilt(format!(
+                "ACE-Step LM token id {token} is outside vocab {}",
+                self.config.vocab
+            )));
+        }
+        self.step(token)
+    }
+
+    fn step(&mut self, token: i32) -> Result<Vec<f32>, WeightError> {
+        if self.pos >= self.max_seq {
+            return Err(WeightError::NotBuilt(
+                "ACE-Step LM set_rows KV exceeded max_seq".into(),
+            ));
+        }
+        let pos = self.pos;
+        self.graph
+            .set_i32("token_ids", &[token])
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        self.graph
+            .set_i32("positions", &[pos as i32])
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        self.graph
+            .set_i64("kv_rows", &[pos])
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        let mut mask = vec![f32::NEG_INFINITY; self.max_seq as usize];
+        for j in 0..=pos as usize {
+            if j < mask.len() {
+                mask[j] = 0.0;
+            }
+        }
+        self.graph
+            .set_f32("attn_mask", &mask)
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        let logits = self
+            .graph
+            .compute()
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        if logits.len() as i64 != self.config.vocab {
+            return Err(WeightError::NotBuilt(format!(
+                "ACE-Step LM set_rows logits length {} is not vocab {}",
+                logits.len(),
+                self.config.vocab
+            )));
+        }
+        if let Some(detail) = non_finite("ACE-Step LM logits", &logits) {
+            return Err(WeightError::NotBuilt(detail));
+        }
+        self.pos += 1;
+        Ok(logits)
+    }
 }
 
 struct LmSetRows;

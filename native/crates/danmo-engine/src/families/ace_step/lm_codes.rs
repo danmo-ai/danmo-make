@@ -3,7 +3,7 @@
 //! After CoT metadata, logits are masked to `{IM_END} ∪ audio_code_*` and
 //! greedily sampled until EOS or `max_codes`.
 
-use super::lm::{prefill_logits, AceLmConfig};
+use super::lm::{LmSetRowsSession, AceLmConfig};
 use super::lm_prompt::{AUDIO_CODE_BASE, AUDIO_CODE_COUNT, TOKEN_IM_END};
 use crate::runtime::GgmlContext;
 use crate::weights::{GgufWeights, WeightError};
@@ -92,12 +92,11 @@ pub fn greedy_audio_codes_ex(
             config.vocab
         )));
     }
-    let max_seq = (cot_prompt.len() + max_codes).max(1);
-    let mut seq = cot_prompt.to_vec();
+    let max_seq = (cot_prompt.len() + max_codes).max(1) as i64;
+    let mut session = LmSetRowsSession::open(ctx, weights, config, max_seq)?;
+    let mut logits = session.prefill(cot_prompt)?;
     let mut codes = Vec::new();
-    // Prefill-per-step for correct masked logits; KV-backed masked decode next.
     for _ in 0..max_codes {
-        let mut logits = prefill_logits(ctx, weights, config, &seq)?;
         mask_audio_code_logits(&mut logits, code_base, code_count, eos)?;
         let next = argmax(&logits);
         if next == eos {
@@ -109,12 +108,7 @@ pub fn greedy_audio_codes_ex(
             )));
         }
         codes.push(next - code_base);
-        seq.push(next);
-        if seq.len() > max_seq {
-            return Err(WeightError::NotBuilt(
-                "ACE-Step LM phase-2 exceeded max_seq".into(),
-            ));
-        }
+        logits = session.decode(next)?;
     }
     Ok(codes)
 }
