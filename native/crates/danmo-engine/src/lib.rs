@@ -427,7 +427,8 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("no ggml graph"));
-        assert!(audio_create("ace_step", &dir).is_err());
+        let ace = audio_create("ace_step", &dir).unwrap_err();
+        assert!(ace.to_string().contains("ACE-Step"), "{ace}");
         assert!(upscale("esrgan", &dir).is_err());
         let missing = dir.join("missing");
         let err = match image_create(&req, "flux2", &missing, BackendKind::Cpu, |_, _| ()) {

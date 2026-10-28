@@ -1,5 +1,6 @@
 //! One factory row per registry family. Shape A/B/C matches `docs/engine_architecture.md`.
 
+mod ace_step;
 mod flux2;
 mod qwen_image;
 mod z_image;
@@ -290,6 +291,23 @@ pub fn run_dit_image(
             loras,
             on_progress,
         )?)),
+        _ => Ok(None),
+    }
+}
+
+/// Shape C audio entry. `Ok(None)` leaves the generic bundle check to the
+/// pipeline. ACE-Step validates the DiT GGUF then refuses generate.
+pub fn run_audio_facade(
+    family: &str,
+    bundle: &std::path::Path,
+) -> Result<Option<()>, crate::weights::WeightError> {
+    match family {
+        "ace_step" => {
+            let _ = ace_step::probe_layout(bundle)?;
+            Err(crate::weights::WeightError::NotBuilt(
+                "ACE-Step DiT graph is not built".into(),
+            ))
+        }
         _ => Ok(None),
     }
 }

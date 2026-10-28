@@ -143,7 +143,23 @@ pub fn video_create(family: &str, bundle: &Path) -> Result<(), EngineError> {
 }
 
 pub fn audio_create(family: &str, bundle: &Path) -> Result<(), EngineError> {
-    route_media(family, bundle, Media::Audio)
+    let spec = families::spec(family).ok_or_else(|| EngineError::UnknownFamily(family.into()))?;
+    if spec.media != Media::Audio {
+        return Err(EngineError::BadRequest(format!(
+            "{family} does not match the requested media"
+        )));
+    }
+    if families::run_audio_facade(family, bundle)?.is_some() {
+        return Err(EngineError::GraphNotBuilt {
+            family: family.into(),
+            shape: shape_name(spec.shape).into(),
+        });
+    }
+    weights::assert_gguf_bundle(bundle)?;
+    Err(EngineError::GraphNotBuilt {
+        family: family.into(),
+        shape: shape_name(spec.shape).into(),
+    })
 }
 
 pub fn upscale(family: &str, bundle: &Path) -> Result<(), EngineError> {
