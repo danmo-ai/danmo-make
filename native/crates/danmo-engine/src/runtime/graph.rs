@@ -11,6 +11,9 @@ struct SideResidual {
     scale: f32,
 }
 
+/// One reserved graph. 20480 matches SD.cpp `QWEN_IMAGE_GRAPH_SIZE`.
+const GRAPH_NODES: usize = 20480;
+
 pub struct GraphBuilder {
     backend: g::ggml_backend_t,
     buft: g::ggml_backend_buffer_type_t,
@@ -150,6 +153,13 @@ impl GraphBuilder {
 
     pub fn tanh(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
         unsafe { g::ggml_tanh(self.ctx, a) }
+    }
+
+    /// `ggml_gelu`: `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))`.
+    /// Diffusers `gelu-approximate` and the Qwen-Image MLP. Not `ggml_gelu_erf`
+    /// and not `ggml_gelu_quick`.
+    pub fn gelu(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_gelu(self.ctx, a) }
     }
 
     pub fn mul(&self, a: *mut g::ggml_tensor, b: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
@@ -451,7 +461,10 @@ impl GraphBuilder {
     pub fn finish(self, output: *mut g::ggml_tensor) -> Result<ReusedGraph, RuntimeError> {
         unsafe {
             g::ggml_set_output(output);
-            let graph = g::ggml_new_graph_custom(self.ctx, 8192, false);
+            // Qwen-Image is 60 joint blocks. SD.cpp sizes that graph at
+            // QWEN_IMAGE_GRAPH_SIZE (20480). The depth test records the node
+            // count and keeps this cap above it.
+            let graph = g::ggml_new_graph_custom(self.ctx, GRAPH_NODES, false);
             if graph.is_null() {
                 g::ggml_free(self.ctx);
                 return Err(RuntimeError::Init);
@@ -572,6 +585,10 @@ fn align_up(value: usize, align: usize) -> usize {
 impl ReusedGraph {
     pub fn compute_count(&self) -> u32 {
         self.computes
+    }
+
+    pub fn node_count(&self) -> i32 {
+        unsafe { g::ggml_graph_n_nodes(self.graph) }
     }
 
     pub fn host_readbacks(&self) -> u32 {

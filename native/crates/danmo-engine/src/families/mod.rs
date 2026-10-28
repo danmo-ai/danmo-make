@@ -1,6 +1,7 @@
 //! One factory row per registry family. Shape A/B/C matches `docs/engine_architecture.md`.
 
 mod flux2;
+mod qwen_image;
 mod z_image;
 
 pub use flux2::{
@@ -194,6 +195,22 @@ pub fn run_dit_image(
             guidance,
             seed,
             scheduler,
+            negative,
+            loras,
+            on_progress,
+        )?)),
+        "qwen_image" => Ok(Some(qwen_image::execute(
+            ctx,
+            bundle,
+            prompt,
+            steps,
+            width,
+            height,
+            guidance,
+            seed,
+            scheduler,
+            scheduler_shift,
+            empirical_mu,
             negative,
             loras,
             on_progress,

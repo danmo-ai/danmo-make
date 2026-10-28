@@ -92,13 +92,15 @@ Shape on `FamilySpec`:
 
 | Shape | Entry | Built graphs |
 |-------|--------|----------------|
-| **A — `DitPipeline`** | `pipeline::image_create` → `run_dit_image` | `flux2` (MM-DiT), `z_image` (DiT) |
+| **A — `DitPipeline`** | `pipeline::image_create` → `run_dit_image` | `flux2` (MM-DiT), `z_image` (DiT), `qwen_image` (joint DiT; text tower and VAE still fail) |
 | **B — `JobPipeline`** | `pipeline::upscale` | none; fails after the bundle check |
 | **C — `GenerationFacade`** | video / audio routes | none; fails after the bundle check |
 
-Any other registered family passes the bundle check and then fails with `has no ggml graph yet`. Edit, upscale, ControlNet, LoRA inference, and LoRA training are not built.
+Any other registered family passes the bundle check and then fails with `has no ggml graph yet`. LoRA inference is a residual on `flux2` and `z_image`. Qwen-Image LoRA, edit, upscale, ControlNet, and LoRA training are not built.
 
 `flux2` text is the Qwen3 tower. `flux2` pixels use the packed-latent front end and then the shared AutoencoderKL graph when the file contains `decoder.conv_in.weight`. `z_image` pixels use that same decoder when `decoder.conv_in.weight` is present. Either family keeps the 1×1 preview when the VAE file is only `decoder.conv.weight`. Any other VAE file fails.
+
+`qwen_image` reads the bare diffusers DiT names (`img_in`, `txt_in`, `txt_norm`, `time_text_embed.timestep_embedder.linear_*`, `transformer_blocks.*.img_mlp.net.0.proj`, `attn.to_q`, `norm_out.linear`, `proj_out`). It does not add `model.diffusion_model.` and it does not apply the MLX remap (`mlp_in`, `img_mod_linear`). RoPE positions follow `QwenEmbedRope(scale_rope=True)`: spatial ids are centered, text ids start at `max(height / 2, width / 2)` on all three axes, and attention scale is `1/sqrt(head_dim)`. The Qwen2.5-VL tower and the 3D causal VAE are not built, so create fails before a step. The scheduler stays unaccepted until that step loop exists.
 
 One graph is reserved and replayed. Steps replace inputs. The host reads the latent after the last step.
 
@@ -118,7 +120,7 @@ One graph is reserved and replayed. Steps replace inputs. The host reads the lat
 
 ## 7. Weights and backends
 
-A bundle directory holds a GGUF DiT, a GGUF or safetensors text encoder, a GGUF or safetensors VAE, `tokenizer.json`, and `bundle.manifest.json`. Shards are mmap'd per file. Duplicate tensor names across shards fail. FLUX.2 Klein 4B and Z-Image version installs download the published text encoder, VAE, and tokenizer into that version directory. When that install lists `components`, the downloader writes `bundle.manifest.json` after the last file lands: `quant` is the version key, `transformer` is the GGUF, and `text_encoder` / `vae` are the planned weight files. The text encoder uses the `model.` prefix when `model.embed_tokens.weight` is in the file. `blk.*` names fail. The Flux2 DiT graph reads the published fused names (`double_blocks.*`, `single_blocks.*`, `img_in`, `txt_in`, `time_in`, `final_layer`). The Z-Image DiT graph reads the published unfused names already in its weight table.
+A bundle directory holds a GGUF DiT, a GGUF or safetensors text encoder, a GGUF or safetensors VAE, `tokenizer.json`, and `bundle.manifest.json`. Shards are mmap'd per file. Duplicate tensor names across shards fail. FLUX.2 Klein 4B and Z-Image version installs download the published text encoder, VAE, and tokenizer into that version directory. When that install lists `components`, the downloader writes `bundle.manifest.json` after the last file lands: `quant` is the version key, `transformer` is the GGUF, and `text_encoder` / `vae` are the planned weight files. The text encoder uses the `model.` prefix when `model.embed_tokens.weight` is in the file. `blk.*` names fail. The Flux2 DiT graph reads the published fused names (`double_blocks.*`, `single_blocks.*`, `img_in`, `txt_in`, `time_in`, `final_layer`). The Z-Image DiT graph reads the published unfused names already in its weight table. The Qwen-Image DiT graph reads the bare diffusers names in its weight table. A tensor that is not in that table fails. The Qwen2.5-VL encoder and the 3D causal VAE are not opened.
 
 Version keys are `bf16`, `q8_0`, and `q4_k`. Inside a quantized DiT, norm scales stay F32. Matmul accepts F32, F16, BF16, Q8_0, and Q4_K. The VAE graph is F32, so BF16 and F16 VAE tensors are widened at the load boundary. A published 4B forward reserves one ggml compute buffer for the whole graph; a machine that cannot hold that buffer fails at reserve.
 
