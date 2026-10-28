@@ -140,7 +140,7 @@ pub struct AudioEditRequest {
     pub vocal_language: String,
     pub guidance: Option<f32>,
     pub steps: Option<u32>,
-    /// `cover-nofsq` (default) or `cover` (needs FSQ — fails loud until ported).
+    /// `cover-nofsq` (default, clean latents) or `cover` (FSQ roundtrip).
     #[serde(default = "default_cover_nofsq")]
     pub task: String,
     /// Absolute or workspace-relative path to a PCM16 WAV source.
