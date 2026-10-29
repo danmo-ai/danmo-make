@@ -147,6 +147,16 @@ class IV3TaskStore(ABC):
         ...
 
     @abstractmethod
+    def requeue_task(
+        self,
+        task_id: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Requeue a cancelled/failed task in place. Returns False if not eligible."""
+        ...
+
+    @abstractmethod
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         ...
 

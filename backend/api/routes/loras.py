@@ -16,6 +16,8 @@ from backend.core.contracts import (
     DatasetHealthVlmRequest,
     DatasetSkippedImagesRequest,
     DatasetImportAssetsRequest,
+    LoraContinueRequest,
+    LoraEvaluateEndpointRequest,
     LoraEvaluationRequest,
     LoraRegisterRequest,
     LoraSelectCheckpointRequest,
@@ -475,6 +477,38 @@ async def submit_training(
     return {"task": r}
 
 
+@router.post("/trainings/{task_id}/continue", status_code=202)
+async def continue_training(
+    task_id: str,
+    body: LoraContinueRequest | None = None,
+    sched: TaskScheduler = Depends(get_task_scheduler),
+):
+    """Requeue a cancelled/failed LoRA training task in place (same work_dir)."""
+    req = body or LoraContinueRequest()
+    try:
+        task = await sched.continue_lora_training(
+            task_id,
+            checkpoint=(req.checkpoint or None),
+            priority=req.priority,
+        )
+    except RuntimeError as exc:
+        msg = str(exc)
+        code = "not_resumable"
+        status = 409
+        low = msg.lower()
+        if "not found" in low:
+            code = "not_found"
+            status = 404
+        elif "filename only" in low or "missing optimizer" in low or "no resumable" in low:
+            code = "no_checkpoint"
+            status = 400
+        elif "cancelled/failed" in low or "in flight" in low:
+            code = "not_resumable"
+            status = 409
+        raise HTTPException(status, detail={"code": code, "message": msg}) from exc
+    return {"task": task}
+
+
 @router.get("/datasets/{dataset_id}/file/{file_path:path}")
 def dataset_image_file(dataset_id: str, file_path: str):
     from fastapi.responses import FileResponse
@@ -853,7 +887,7 @@ async def delete_training_result(task_id: str, sched: TaskScheduler = Depends(ge
 @router.post("/trainings/{task_id}/evaluate", status_code=202)
 async def submit_checkpoint_evaluation(
     task_id: str,
-    body: LoraEvaluationRequest | None = None,
+    body: LoraEvaluateEndpointRequest | None = None,
     sched: TaskScheduler = Depends(get_task_scheduler),
 ):
     """Queue (or force re-queue) the same-condition candidate matrix for a finished training run."""
@@ -871,7 +905,9 @@ async def submit_checkpoint_evaluation(
         raise HTTPException(409, detail={"code": "not_ready", "message": "training must complete before evaluation"})
     work = sched.task_work_dir(task_id)
     existing = load_candidate_evaluation(work)
-    force = bool(body.force) if body is not None else False
+    req = body or LoraEvaluateEndpointRequest()
+    force = bool(req.force)
+    priority = req.priority
     eval_id = str((existing or {}).get("evaluation_task_id") or "").strip()
     if eval_id:
         eval_row = sched.get_task(eval_id)
@@ -884,10 +920,10 @@ async def submit_checkpoint_evaluation(
         model_id=model_id,
         params={
             "training_task_id": task_id,
-            "priority": "normal",
+            "priority": priority,
             "force": force,
         },
-        priority="normal",
+        priority=priority,
     )
     mark_evaluation_queued(work, evaluation_task_id=str(submitted["id"]))
     return {"task": submitted, "reused": False}

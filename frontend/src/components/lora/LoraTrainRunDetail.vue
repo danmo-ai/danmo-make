@@ -74,9 +74,16 @@
     >
       <h4 class="lora-run-detail__section-title">{{ $t('loraTrain.resumeTraining') }}</h4>
       <p class="lora-run-detail__resume-hint">{{ $t('loraTrain.resumeHint') }}</p>
-      <DqButton size="sm" type="secondary" @click="resumeTraining">
-        {{ $t('loraTrain.resumeFromRun') }}
-      </DqButton>
+      <p class="lora-run-detail__resume-hint">{{ $t('loraTrain.resumeContinueInPlaceHint') }}</p>
+      <div class="lora-run-detail__resume-actions">
+        <DqButton type="primary" size="sm" :loading="continuing" @click="continueInPlace">
+          {{ $t('loraTrain.resumeContinueInPlace') }}
+        </DqButton>
+        <DqButton size="sm" type="secondary" :disabled="continuing" @click="forkResumeTraining">
+          {{ $t('loraTrain.resumeFromRun') }}
+        </DqButton>
+      </div>
+      <p class="lora-run-detail__resume-hint">{{ $t('loraTrain.resumeForkHint') }}</p>
     </div>
 
     <div
@@ -143,6 +150,7 @@ const emit = defineEmits<{
   (e: 'back'): void;
   (e: 'verify', payload: Record<string, unknown>): void;
   (e: 'resume', payload: { taskId: string; checkpoint: string }): void;
+  (e: 'continued'): void;
 }>();
 
 const { t } = useI18n();
@@ -158,6 +166,7 @@ const registeredCheckpoint = ref('');
 const verification = ref<Record<string, any>>({ seed: '42', steps: 30, guidance: 4, lora_scale: 0.85, width: 1024, height: 1024, model: 'z-image-turbo', scheduler: 'linear' });
 const visionAvailable = ref(false);
 const trainingVlmLoading = ref(false);
+const continuing = ref(false);
 let taskStream: EventSource | null = null;
 let lastArtifactRefresh = 0;
 let candidatePollTimer: ReturnType<typeof setInterval> | null = null;
@@ -209,11 +218,44 @@ function lossBarTitle(pt: { step: number; loss: number; val_loss?: number }): st
   return base;
 }
 
-function resumeTraining() {
-  const checkpoints = artifacts.value?.checkpoints as string[] | undefined;
-  if (!checkpoints?.length) return;
+function pickResumeCheckpoint(): string {
+  const checkpoints = (artifacts.value?.checkpoints as string[] | undefined) || [];
+  if (selectedCheckpoint.value && checkpoints.includes(selectedCheckpoint.value)) {
+    return selectedCheckpoint.value;
+  }
+  const periodics = checkpoints
+    .filter((c) => /^\d{7}_adapters\.safetensors$/.test(c))
+    .sort();
+  if (periodics.length) return periodics[periodics.length - 1];
+  const best = checkpoints.find((c) => c.includes('best'));
+  if (best) return best;
   const finals = checkpoints.filter((c) => c.includes('final'));
-  const ck = selectedCheckpoint.value || finals[finals.length - 1] || checkpoints[checkpoints.length - 1];
+  return finals[finals.length - 1] || checkpoints[checkpoints.length - 1] || '';
+}
+
+async function continueInPlace() {
+  if (continuing.value) return;
+  const ck = pickResumeCheckpoint();
+  if (!ck) return;
+  continuing.value = true;
+  try {
+    await api.loras.continueTraining(props.taskId, { checkpoint: ck });
+    toast.success(t('loraTrain.resumeContinueQueued'));
+    openGlobalTaskQueue();
+    await refreshTask();
+    startStream();
+    emit('continued');
+  } catch (e: any) {
+    const msg = e?.response?.data?.detail?.message || e?.message || String(e);
+    toast.error(t('loraTrain.resumeContinueFailed', { msg }));
+  } finally {
+    continuing.value = false;
+  }
+}
+
+function forkResumeTraining() {
+  const ck = pickResumeCheckpoint();
+  if (!ck) return;
   // Parent must apply: same-route navigation alone never re-runs onMounted, and
   // activeRunId would keep this detail panel open (resume looks like a no-op).
   emit('resume', { taskId: props.taskId, checkpoint: ck });
@@ -630,6 +672,13 @@ onUnmounted(() => {
 
 .lora-run-detail__quality {
   margin: 4px 0 8px;
+}
+
+.lora-run-detail__resume-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0;
 }
 
 .lora-run-detail__resume-hint {

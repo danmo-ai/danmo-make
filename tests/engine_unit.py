@@ -2536,6 +2536,82 @@ class TaskSchedulerCancellationTests(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_continue_lora_training_requeues_same_task_in_place(self) -> None:
+        import asyncio
+        import json
+        import tempfile
+
+        import backend.core.task_kinds as TK
+        from backend.engine.training.lora_train_config import resolve_training_config
+        from backend.persistence.v3_task_store import V3TaskStore
+        from backend.scheduler.task_scheduler import TaskScheduler
+
+        class _PathResolver:
+            def __init__(self, root: Path):
+                self._root = root
+
+            def get_outputs_dir(self) -> Path:
+                out = self._root / "outputs"
+                out.mkdir(parents=True, exist_ok=True)
+                return out
+
+        async def _run() -> None:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                store = V3TaskStore(root / "studio.db")
+                sched = TaskScheduler(
+                    path_resolver=_PathResolver(root),
+                    task_store=store,
+                    asset_store=SimpleNamespace(),
+                    engine_registry=SimpleNamespace(),
+                    config_store=None,
+                )
+                params = {
+                    "base_model": "z-image-turbo",
+                    "dataset_id": "ds_test",
+                    "progress_prompt": "ohwx",
+                    "preset": "turbo",
+                    "auto_register": False,
+                }
+                submitted = await sched.submit(
+                    kind=TK.LORA_TRAINING,
+                    model_id="z-image-turbo",
+                    params=params,
+                )
+                tid = submitted["id"]
+                work = sched.task_work_dir(tid)
+                adapters = work / "adapters"
+                adapters.mkdir(parents=True)
+                ckpt = adapters / "0001500_adapters.safetensors"
+                ckpt.write_bytes(b"weights")
+                cfg = resolve_training_config(params)
+                meta = {
+                    "iteration": 1500,
+                    "seed": 42,
+                    "base_model": "z-image-turbo",
+                    "lora_rank": cfg["lora_rank"],
+                    "lora_blocks": cfg["lora_blocks"],
+                    "lora_alpha": cfg.get("lora_alpha", cfg["lora_rank"]),
+                    "train_type": cfg.get("train_type", "lora"),
+                }
+                ckpt.with_suffix(".json").write_text(json.dumps(meta), encoding="utf-8")
+                (adapters / f"{ckpt.stem}_optimizer.safetensors").write_bytes(b"opt")
+                (adapters / f"{ckpt.stem}_rng.safetensors").write_bytes(b"rng")
+                store.mark_cancelled(tid)
+
+                view = await sched.continue_lora_training(tid)
+                self.assertEqual(view["id"], tid)
+                self.assertEqual(view["status"], "queued")
+                row = store.get_task(tid)
+                assert row is not None
+                self.assertEqual(row["params"]["resume_checkpoint"], "0001500_adapters.safetensors")
+                self.assertEqual(row["params"]["resume_task_id"], tid)
+                self.assertTrue(Path(row["params"]["resume_from"]).is_file())
+                queued_ids = {r["id"] for r in sched.queue_snapshot()["queued"]}
+                self.assertIn(tid, queued_ids)
+
+        asyncio.run(_run())
+
     def test_running_cancel_not_overwritten_by_completed(self) -> None:
         import asyncio
         import tempfile
@@ -10454,6 +10530,156 @@ class LoraTrainingContractTests(unittest.TestCase):
             )
             self.assertEqual(marked["status"], "registered")
             self.assertEqual(marked["selected_checkpoint"], "final_adapters.safetensors")
+
+    def test_mark_evaluation_aborted_unblocks_retry(self) -> None:
+        import json
+        import tempfile
+        from backend.engine.training.lora_checkpoint_evaluation import (
+            mark_evaluation_aborted,
+            mark_evaluation_queued,
+            save_candidate_evaluation,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            save_candidate_evaluation(
+                work,
+                {
+                    "status": "evaluating",
+                    "evaluation_task_id": "tsk_eval",
+                    "checkpoints": [{"checkpoint": "final_adapters.safetensors"}],
+                },
+            )
+            mark_evaluation_queued(work, evaluation_task_id="tsk_eval")
+            out = mark_evaluation_aborted(
+                work,
+                evaluation_task_id="tsk_eval",
+                reason="cancelled from queue",
+            )
+            assert out is not None
+            self.assertEqual(out["status"], "failed")
+            self.assertIn("cancelled", out["error"])
+            # Ready runs must not be clobbered.
+            save_candidate_evaluation(
+                work,
+                {"status": "ready", "evaluation_task_id": "tsk_eval", "checkpoints": []},
+            )
+            kept = mark_evaluation_aborted(work, evaluation_task_id="tsk_eval", reason="x")
+            self.assertEqual(kept["status"], "ready")
+
+    def test_requeue_task_only_from_cancelled_or_failed(self) -> None:
+        import tempfile
+        from backend.core.interfaces import TaskStatus
+        from backend.persistence.v3_task_store import V3TaskStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = V3TaskStore(Path(tmp) / "studio.db")
+            store.insert_task("tsk_a", "lora.training", "z-image-turbo", {"preset": "turbo"})
+            self.assertFalse(store.requeue_task("tsk_a"))
+            store.mark_running("tsk_a")
+            self.assertFalse(store.requeue_task("tsk_a"))
+            store.mark_cancelled("tsk_a")
+            self.assertTrue(
+                store.requeue_task(
+                    "tsk_a",
+                    params={"preset": "turbo", "resume_checkpoint": "0001500_adapters.safetensors"},
+                )
+            )
+            row = store.get_task("tsk_a")
+            assert row is not None
+            self.assertEqual(row["status"], TaskStatus.QUEUED.value)
+            self.assertEqual(row["params"]["resume_checkpoint"], "0001500_adapters.safetensors")
+            self.assertFalse(row.get("error_message"))
+            self.assertIsNone(row.get("completed_at"))
+
+            self.assertFalse(store.requeue_task("tsk_missing"))
+            store.insert_task("tsk_b", "lora.training", "z-image-turbo", {})
+            store.mark_failed("tsk_b", "boom")
+            self.assertTrue(store.requeue_task("tsk_b"))
+            self.assertEqual(store.get_task("tsk_b")["status"], TaskStatus.QUEUED.value)
+
+    def test_resolve_inplace_resume_checkpoint_prefers_latest_periodic(self) -> None:
+        import tempfile
+        from backend.engine.training.lora_train_runtime_mlx import resolve_inplace_resume_checkpoint
+
+        with tempfile.TemporaryDirectory() as tmp:
+            adapters = Path(tmp) / "adapters"
+            adapters.mkdir()
+            for step in (500, 1500, 1000):
+                name = f"{step:07d}_adapters.safetensors"
+                path = adapters / name
+                path.write_bytes(b"w")
+                path.with_suffix(".json").write_text("{}", encoding="utf-8")
+                (adapters / f"{path.stem}_optimizer.safetensors").write_bytes(b"o")
+                (adapters / f"{path.stem}_rng.safetensors").write_bytes(b"r")
+            (adapters / "final_adapters.safetensors").write_bytes(b"f")
+            (adapters / "final_adapters.json").write_text("{}", encoding="utf-8")
+            (adapters / "final_adapters_optimizer.safetensors").write_bytes(b"o")
+            (adapters / "final_adapters_rng.safetensors").write_bytes(b"r")
+            picked = resolve_inplace_resume_checkpoint(adapters)
+            self.assertEqual(picked.name, "0001500_adapters.safetensors")
+            explicit = resolve_inplace_resume_checkpoint(adapters, "0000500_adapters.safetensors")
+            self.assertEqual(explicit.name, "0000500_adapters.safetensors")
+            with self.assertRaisesRegex(RuntimeError, "filename only"):
+                resolve_inplace_resume_checkpoint(adapters, "../x.safetensors")
+
+    def test_copy_resume_checkpoint_lineage_walks_prior_work_dirs(self) -> None:
+        import json
+        from backend.engine.training.subprocess_runner import (
+            collect_resume_lineage_work_dirs,
+            copy_resume_checkpoint_lineage,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            older = root / "work_a"
+            mid = root / "work_b"
+            for work, names in (
+                (older, ("0000500_adapters.safetensors", "0001000_adapters.safetensors")),
+                (mid, ("0001500_adapters.safetensors",)),
+            ):
+                adapters = work / "adapters"
+                adapters.mkdir(parents=True)
+                for name in names:
+                    path = adapters / name
+                    path.write_bytes(f"w:{name}".encode())
+                    path.with_suffix(".json").write_text(
+                        json.dumps({"iteration": int(name[:7]), "base_model": "z-image-turbo"}),
+                        encoding="utf-8",
+                    )
+                    (adapters / f"{path.stem}_optimizer.safetensors").write_bytes(b"opt")
+                    (adapters / f"{path.stem}_rng.safetensors").write_bytes(b"rng")
+                (work / "loss_history.json").write_text("[]", encoding="utf-8")
+            (mid / "resume_source.json").write_text(
+                json.dumps({"source_work_dir": str(older), "source_checkpoint": "x"}),
+                encoding="utf-8",
+            )
+            resume = mid / "adapters" / "0001500_adapters.safetensors"
+            chain = collect_resume_lineage_work_dirs(resume)
+            self.assertEqual([p.resolve() for p in chain], [older.resolve(), mid.resolve()])
+
+            dest = root / "work_new"
+            # Pretend the resumed run already wrote a later checkpoint.
+            (dest / "adapters").mkdir(parents=True)
+            later = dest / "adapters" / "0002000_adapters.safetensors"
+            later.write_bytes(b"keep-me")
+            later.with_suffix(".json").write_text("{}", encoding="utf-8")
+
+            prov = copy_resume_checkpoint_lineage(resume_from=resume, dest_work=dest)
+            names = sorted(p.name for p in (dest / "adapters").glob("*_adapters.safetensors"))
+            self.assertEqual(
+                names,
+                [
+                    "0000500_adapters.safetensors",
+                    "0001000_adapters.safetensors",
+                    "0001500_adapters.safetensors",
+                    "0002000_adapters.safetensors",
+                ],
+            )
+            self.assertEqual((dest / "adapters" / "0002000_adapters.safetensors").read_bytes(), b"keep-me")
+            self.assertTrue((dest / "adapters" / "0001500_adapters_optimizer.safetensors").is_file())
+            self.assertIn("0001500_adapters.safetensors", prov["copied_checkpoints"])
+            self.assertTrue((dest / "resume_source.json").is_file())
 
     def test_finalize_training_adapters_respects_auto_register(self) -> None:
         import json

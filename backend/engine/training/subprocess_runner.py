@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,117 @@ from backend.core.contracts import ExecutionContext, LoraTrainingRequest
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
+
+
+def collect_resume_lineage_work_dirs(resume_from: Path) -> list[Path]:
+    """Return resume work dirs oldest→newest ending at ``resume_from``'s training work dir."""
+    adapter = Path(resume_from)
+    if not adapter.is_file():
+        raise RuntimeError(f"Resume checkpoint is missing: {adapter}")
+    current = adapter.parent.parent
+    seen: set[Path] = set()
+    newest_first: list[Path] = []
+    while current.is_dir():
+        resolved = current.resolve()
+        if resolved in seen:
+            break
+        seen.add(resolved)
+        newest_first.append(current)
+        prov_path = current / "resume_source.json"
+        if not prov_path.is_file():
+            break
+        try:
+            payload = json.loads(prov_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            break
+        if not isinstance(payload, dict):
+            break
+        nxt = Path(str(payload.get("source_work_dir") or "")).expanduser()
+        if not nxt.is_dir():
+            break
+        current = nxt
+    return list(reversed(newest_first))
+
+
+def _copy_adapter_bundle(src_weights: Path, dest_dir: Path, *, overwrite: bool) -> None:
+    """Copy one checkpoint weight file and its json/optimizer/rng sidecars when present."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_weights = dest_dir / src_weights.name
+    if not dest_weights.exists() or overwrite:
+        if src_weights.resolve() != dest_weights.resolve():
+            shutil.copy2(src_weights, dest_weights)
+    stem = (
+        src_weights.name[: -len(".safetensors")]
+        if src_weights.name.endswith(".safetensors")
+        else src_weights.stem
+    )
+    sidecar_paths = [
+        src_weights.with_suffix(".json"),
+        src_weights.parent / f"{stem}_optimizer.safetensors",
+        src_weights.parent / f"{stem}_rng.safetensors",
+    ]
+    for src_side in sidecar_paths:
+        if not src_side.is_file():
+            continue
+        dest_side = dest_dir / src_side.name
+        if dest_side.exists() and not overwrite:
+            continue
+        if src_side.resolve() != dest_side.resolve():
+            shutil.copy2(src_side, dest_side)
+
+
+def copy_resume_checkpoint_lineage(*, resume_from: Path, dest_work: Path) -> dict[str, Any]:
+    """Bring prior periodic/best checkpoints into the new resume work dir for the candidate matrix.
+
+    Only overwrites a destination file when copying the exact ``resume_from`` bundle (needed so
+    optimizer/RNG match the resume point). Older lineage files fill gaps without clobbering
+    checkpoints the new run has already written.
+    """
+    resume_adapter = Path(resume_from)
+    dest = Path(dest_work)
+    dest.mkdir(parents=True, exist_ok=True)
+    lineage = collect_resume_lineage_work_dirs(resume_adapter)
+    if not lineage:
+        raise RuntimeError(f"Resume checkpoint work dir missing for {resume_adapter}")
+
+    history_src = lineage[-1] / "loss_history.json"
+    if history_src.is_file():
+        shutil.copy2(history_src, dest / "loss_history.json")
+
+    dest_adapters = dest / "adapters"
+    dest_adapters.mkdir(parents=True, exist_ok=True)
+    copied: list[str] = []
+    resume_name = resume_adapter.name
+    for work in lineage:
+        src_adapters = work / "adapters"
+        if not src_adapters.is_dir():
+            continue
+        for src_weights in sorted(src_adapters.glob("*_adapters.safetensors")):
+            # Skip fused exports; candidates are periodic/best/final only.
+            if src_weights.name == "fused_adapters.safetensors":
+                continue
+            overwrite = src_weights.name == resume_name and work.resolve() == lineage[-1].resolve()
+            before = (dest_adapters / src_weights.name).is_file()
+            _copy_adapter_bundle(src_weights, dest_adapters, overwrite=overwrite)
+            if (dest_adapters / src_weights.name).is_file() and (overwrite or not before):
+                copied.append(src_weights.name)
+
+    provenance = {
+        "source_checkpoint": str(resume_adapter),
+        "source_work_dir": str(lineage[-1]),
+        "lineage_work_dirs": [str(p) for p in lineage],
+        "copied_checkpoints": sorted(set(copied)),
+    }
+    meta_path = resume_adapter.with_suffix(".json")
+    if meta_path.is_file():
+        try:
+            provenance["source_meta"] = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+    (dest / "resume_source.json").write_text(
+        json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return provenance
 
 
 def _worker_exit_error(*, returncode: int | None, stderr: bytes | None, stdout: bytes | None) -> RuntimeError:
@@ -52,37 +164,27 @@ async def run_lora_training_subprocess(
     work_dir = Path(exec_ctx.work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     if request.resume_from:
-        import shutil
-
-        source = Path(request.resume_from)
-        source_work = source.parent.parent
-        if not source.is_file():
-            raise RuntimeError(f"Resume checkpoint is missing: {source}")
-        history = source_work / "loss_history.json"
-        if history.is_file():
-            shutil.copy2(history, work_dir / "loss_history.json")
-        for name in (
-            "best_adapters.safetensors",
-            "best_adapters.json",
-            "best_adapters_optimizer.safetensors",
-            "best_adapters_rng.safetensors",
-        ):
-            source_best = source_work / "adapters" / name
-            if source_best.is_file():
-                target = work_dir / "adapters" / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if source_best.resolve() != target.resolve():
-                    shutil.copy2(source_best, target)
-        provenance = {
-            "source_checkpoint": str(source),
-            "source_work_dir": str(source_work),
-        }
-        meta_path = source.with_suffix(".json")
-        if meta_path.is_file():
-            provenance["source_meta"] = json.loads(meta_path.read_text(encoding="utf-8"))
-        (work_dir / "resume_source.json").write_text(
-            json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        resume_path = Path(request.resume_from).resolve()
+        work_resolved = work_dir.resolve()
+        try:
+            same_work = resume_path.is_relative_to(work_resolved)
+        except AttributeError:
+            same_work = str(resume_path).startswith(str(work_resolved) + "/")
+        if same_work:
+            # In-place continue: adapters / latent_cache already live in this work_dir.
+            provenance = {
+                "source_checkpoint": str(resume_path),
+                "source_work_dir": str(work_resolved),
+                "inplace": True,
+            }
+            (work_dir / "resume_source.json").write_text(
+                json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        else:
+            copy_resume_checkpoint_lineage(
+                resume_from=Path(request.resume_from),
+                dest_work=work_dir,
+            )
     job_path = work_dir / "lora_worker_job.json"
     result_path = work_dir / "lora_worker_result.json"
     if result_path.is_file():

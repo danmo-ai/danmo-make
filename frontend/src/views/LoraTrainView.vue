@@ -34,6 +34,7 @@
         @back="onRunBack"
         @verify="onVerifyGenerate"
         @resume="onResumeFromRun"
+        @continued="onContinuedInPlace"
       />
 
       <template v-else>
@@ -1427,6 +1428,10 @@ function applyResumeIntent(taskId: string, checkpoint: string): Promise<void> {
 
 function onResumeFromRun(payload: { taskId: string; checkpoint: string }) {
   void applyResumeIntent(payload.taskId, payload.checkpoint);
+}
+
+function onContinuedInPlace() {
+  historyRef.value?.refresh();
 }
 
 function resumeFromRouteQuery() {

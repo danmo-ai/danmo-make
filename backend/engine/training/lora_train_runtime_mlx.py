@@ -408,6 +408,67 @@ def training_rng_state_path(adapter_path: Path) -> Path:
     return adapter_path.with_name(f"{adapter_path.stem}_rng.safetensors")
 
 
+def checkpoint_has_resume_state(adapter_path: Path) -> bool:
+    """True when weights + optimizer moments + MLX RNG sidecars are all present."""
+    path = Path(adapter_path)
+    if not path.is_file():
+        return False
+    has_opt = optimizer_state_path(path).is_file() or _legacy_optimizer_state_path(path).is_file()
+    return has_opt and training_rng_state_path(path).is_file()
+
+
+def resolve_inplace_resume_checkpoint(
+    adapter_dir: Path,
+    checkpoint: str | None = None,
+) -> Path:
+    """Pick a resumable checkpoint inside ``adapter_dir`` (filename only when provided).
+
+    Default preference: highest numeric periodic step; then ``best``; then ``final``.
+    Fail loud when nothing is resumable.
+    """
+    root = Path(adapter_dir)
+    if not root.is_dir():
+        raise RuntimeError(f"Adapter directory not found: {root}")
+
+    requested = (checkpoint or "").strip()
+    if requested:
+        if ".." in requested or "/" in requested or "\\" in requested:
+            raise RuntimeError("resume checkpoint must be a filename only")
+        path = root / requested
+        if not path.is_file():
+            raise RuntimeError(f"Checkpoint not found: {requested}")
+        if not checkpoint_has_resume_state(path):
+            raise RuntimeError(
+                f"Checkpoint {requested!r} is missing optimizer or RNG state; "
+                "pick another checkpoint or start a fresh training task."
+            )
+        return path
+
+    periodics: list[tuple[int, Path]] = []
+    for path in root.glob("*_adapters.safetensors"):
+        name = path.name
+        if name in {"best_adapters.safetensors", "final_adapters.safetensors", "fused_adapters.safetensors"}:
+            continue
+        if not name[:7].isdigit():
+            continue
+        if not checkpoint_has_resume_state(path):
+            continue
+        periodics.append((int(name[:7]), path))
+    if periodics:
+        periodics.sort(key=lambda item: item[0])
+        return periodics[-1][1]
+
+    for name in ("best_adapters.safetensors", "final_adapters.safetensors"):
+        path = root / name
+        if checkpoint_has_resume_state(path):
+            return path
+
+    raise RuntimeError(
+        "No resumable checkpoint in this task's adapters/ "
+        "(need *_adapters.safetensors plus optimizer and RNG sidecars)."
+    )
+
+
 def _snapshot_mlx_rng_state() -> list[Any]:
     """Copy the current key: MLX's RandomState yields a live mutable tensor."""
     snapshot = [mx.array(tensor) for tensor in mx.random.state]

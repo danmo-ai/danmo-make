@@ -1012,11 +1012,14 @@ export const api = {
 
     async submitCheckpointEvaluation(
       taskId: string,
-      body: { force?: boolean } = {}
+      body: { force?: boolean; priority?: 'normal' | 'high' } = {}
     ): Promise<unknown> {
       const response = await client.post(
         `/api/loras/trainings/${encodeURIComponent(taskId)}/evaluate`,
-        body
+        {
+          force: Boolean(body.force),
+          priority: body.priority || 'normal',
+        }
       );
       return response.data;
     },
@@ -1042,6 +1045,17 @@ export const api = {
 
     async submitTraining(body: Record<string, unknown>): Promise<unknown> {
       const response = await client.post('/api/loras/trainings', body);
+      return response.data;
+    },
+
+    async continueTraining(
+      taskId: string,
+      body: { checkpoint?: string; priority?: 'normal' | 'high' } = {}
+    ): Promise<unknown> {
+      const response = await client.post(
+        `/api/loras/trainings/${encodeURIComponent(taskId)}/continue`,
+        body
+      );
       return response.data;
     },
 

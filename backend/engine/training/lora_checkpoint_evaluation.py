@@ -313,6 +313,34 @@ def mark_evaluation_queued(work_dir: Path, *, evaluation_task_id: str) -> dict[s
     return payload
 
 
+def mark_evaluation_aborted(
+    work_dir: Path,
+    *,
+    evaluation_task_id: str = "",
+    reason: str = "",
+) -> dict[str, Any] | None:
+    """When the follow-up eval task is cancelled/deleted, unblock the training UI to retry."""
+    payload = load_candidate_evaluation(work_dir)
+    if payload is None:
+        return None
+    status = str(payload.get("status") or "")
+    if status in {"ready", "registered"}:
+        return payload
+    linked = str(payload.get("evaluation_task_id") or "").strip()
+    ev_id = (evaluation_task_id or "").strip()
+    if linked and ev_id and linked != ev_id:
+        return payload
+    payload["status"] = "failed"
+    payload["error"] = (
+        reason
+        or "Candidate evaluation was cancelled from the queue; retry evaluation to regenerate the matrix."
+    )
+    if ev_id:
+        payload["evaluation_task_id"] = ev_id
+    save_candidate_evaluation(work_dir, payload)
+    return payload
+
+
 def mark_selection(
     work_dir: Path,
     *,
@@ -500,6 +528,13 @@ def run_lora_checkpoint_evaluation(
                     )
                     # Isolate outputs under the evaluation task work dir, then copy into
                     # the training candidate folder so the training artifacts API can serve them.
+                    # ImageSession._prepare expects on_log(LogEvent), not (level, msg).
+                    def _forward_session_log(ev: Any) -> None:
+                        level = str(getattr(ev, "level", "info") or "info")
+                        message = str(getattr(ev, "message", ev) or "")
+                        if message:
+                            _log(level, message)
+
                     result = dispatch_image_create(
                         runtime=runtime,
                         registry=registry,
@@ -509,7 +544,7 @@ def run_lora_checkpoint_evaluation(
                         request=gen_req,
                         exec_ctx=exec_ctx,
                         on_progress=None,
-                        on_log=lambda level, msg: _log(str(level), str(msg)),
+                        on_log=_forward_session_log,
                     )
                     if result is None:
                         raise RuntimeError("Candidate generation cancelled")

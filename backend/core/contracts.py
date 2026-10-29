@@ -540,10 +540,26 @@ class LoraTrainingResult(BaseModel):
 class LoraEvaluationRequest(BaseModel):
     """Same-condition checkpoint candidate grid for one completed training task."""
 
-    training_task_id: str
+    # Engine/scheduler path requires this. REST ``POST .../trainings/{task_id}/evaluate``
+    # may omit it and fill from the path parameter.
+    training_task_id: str = ""
     priority: Literal["normal", "high"] = "normal"
     # Optional override; empty → regenerate the default identity/style matrix.
     force: bool = False
+
+
+class LoraEvaluateEndpointRequest(BaseModel):
+    """Body for ``POST /api/loras/trainings/{task_id}/evaluate`` (task id is in the path)."""
+
+    force: bool = False
+    priority: Literal["normal", "high"] = "normal"
+
+
+class LoraContinueRequest(BaseModel):
+    """Requeue an interrupted LoRA training task in place (same task_id / work_dir)."""
+
+    checkpoint: Optional[str] = None
+    priority: Literal["normal", "high"] = "normal"
 
 
 class LoraSelectCheckpointRequest(BaseModel):

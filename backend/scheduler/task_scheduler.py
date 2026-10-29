@@ -162,6 +162,31 @@ class TaskScheduler:
             },
         }
 
+    def _sync_lora_evaluation_aborted(self, row: dict[str, Any], *, reason: str) -> None:
+        """Keep training candidate_evaluation.json in sync when an eval follow-up is cancelled/removed."""
+        kind = str(row.get("kind") or "")
+        if not TK.is_lora_evaluation_kind(kind):
+            return
+        params = row.get("params") if isinstance(row.get("params"), dict) else {}
+        training_task_id = str(params.get("training_task_id") or "").strip()
+        if not training_task_id:
+            return
+        from backend.engine.training.lora_checkpoint_evaluation import mark_evaluation_aborted
+
+        mark_evaluation_aborted(
+            self._work_dir(training_task_id),
+            evaluation_task_id=str(row.get("id") or ""),
+            reason=reason,
+        )
+        try:
+            self._tasks.append_log(
+                training_task_id,
+                reason,
+                "warning",
+            )
+        except Exception:
+            pass
+
     async def cancel(self, task_id: str) -> Literal["ok", "not_found", "not_cancellable"]:
         tok = self._tokens.get(task_id)
         if tok:
@@ -175,6 +200,10 @@ class TaskScheduler:
         if st == "queued":
             self._tasks.mark_cancelled(task_id)
             await self._rebuild_queued_heap()
+            self._sync_lora_evaluation_aborted(
+                row,
+                reason="Candidate evaluation was cancelled from the queue; open the training run and retry evaluation.",
+            )
             return "ok"
         if st == "running":
             k = row.get("kind") or ""
@@ -188,17 +217,27 @@ class TaskScheduler:
             elif TK.is_audio_kind(k):
                 await self._engines.get_audio(mid).cancel(task_id)
             self._tasks.mark_cancelled(task_id)
+            self._sync_lora_evaluation_aborted(
+                row,
+                reason="Candidate evaluation was cancelled while running; open the training run and retry evaluation.",
+            )
             return "ok"
         return "not_cancellable"
 
     def delete_task(self, task_id: str) -> bool:
         if task_id in self._in_flight:
             raise RuntimeError("task is still running")
+        row = self._tasks.get_task(task_id)
         removed = self._tasks.delete_task(task_id)
         if removed:
             self._tokens.pop(task_id, None)
             self._progress_meta.pop(task_id, None)
             self._realtime_queues.pop(task_id, None)
+            if row is not None:
+                self._sync_lora_evaluation_aborted(
+                    row,
+                    reason="Candidate evaluation task was removed; open the training run and retry evaluation.",
+                )
         return removed
 
     def get_task(self, task_id: str) -> Optional[dict[str, Any]]:
@@ -546,6 +585,90 @@ class TaskScheduler:
             result=result,
             error_message=str(row.get("error_message") or ""),
         )
+
+    async def continue_lora_training(
+        self,
+        task_id: str,
+        *,
+        checkpoint: str | None = None,
+        priority: str = "normal",
+    ) -> dict[str, Any]:
+        """Requeue an interrupted LoRA training task in place (same work_dir / checkpoints)."""
+        from backend.engine.training.lora_train_config import resolve_training_config
+        from backend.engine.training.lora_train_runtime_mlx import (
+            resolve_inplace_resume_checkpoint,
+            resume_checkpoint_incompatibility,
+        )
+
+        row = self._tasks.get_task(task_id)
+        if row is None:
+            raise RuntimeError(f"Training task not found: {task_id}")
+        kind = str(row.get("kind") or "")
+        if not TK.is_lora_training_kind(kind):
+            raise RuntimeError(f"Task {task_id} is not a LoRA training task")
+        status = str(row.get("status") or "")
+        if status not in (TaskStatus.CANCELLED.value, TaskStatus.FAILED.value):
+            raise RuntimeError(
+                f"Only cancelled/failed training tasks can continue in place (status={status!r})"
+            )
+        if task_id in self._in_flight:
+            raise RuntimeError(f"Task {task_id} is still in flight and cannot be requeued")
+
+        params = row.get("params")
+        if not isinstance(params, dict):
+            raise RuntimeError(f"Task {task_id} has no usable params")
+        work = self._work_dir(task_id)
+        adapter_dir = work / "adapters"
+        ckpt_path = resolve_inplace_resume_checkpoint(adapter_dir, checkpoint)
+        cfg = resolve_training_config(params)
+        reason = resume_checkpoint_incompatibility(
+            base_model=str(params.get("base_model") or row.get("model_id") or ""),
+            adapter_path=ckpt_path,
+            source_task_params=params,
+            expected_config=cfg,
+        )
+        if reason:
+            raise RuntimeError(reason)
+
+        next_params = dict(params)
+        next_params["resume_from"] = str(ckpt_path)
+        next_params["resume_task_id"] = task_id
+        next_params["resume_checkpoint"] = ckpt_path.name
+        # Studio continue keeps candidate registration deferred.
+        next_params["auto_register"] = False
+        if priority == "high":
+            next_params["priority"] = "high"
+        elif "priority" not in next_params:
+            next_params["priority"] = "normal"
+
+        if not self._tasks.requeue_task(task_id, params=next_params):
+            raise RuntimeError(
+                f"Failed to requeue task {task_id}; status may have changed concurrently"
+            )
+        pri_int = 50 if priority == "high" else 100
+        self._tasks.update_task_priority(task_id, pri_int)
+
+        self._tokens[task_id] = CancelToken()
+        self._progress_meta.pop(task_id, None)
+        self._realtime_queues.pop(task_id, None)
+        self._tasks.append_log(
+            task_id,
+            f"Continuing in place from checkpoint {ckpt_path.name}",
+            "info",
+        )
+        self._record_task_activity(
+            "task_submitted",
+            task_id,
+            kind,
+            str(row.get("model_id") or ""),
+            next_params,
+            status=TaskStatus.QUEUED.value,
+        )
+        await self._rebuild_queued_heap()
+        refreshed = self._tasks.get_task(task_id)
+        if refreshed is None:
+            raise RuntimeError(f"Task {task_id} disappeared after requeue")
+        return self.public_task_view(refreshed)
 
     async def _maybe_enqueue_lora_evaluation(
         self,

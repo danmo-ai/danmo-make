@@ -12,6 +12,9 @@
       :title="$t('loraTrain.candidateEvaluating')"
     >
       <p>{{ $t('loraTrain.candidateEvaluatingBody') }}</p>
+      <DqButton size="sm" type="secondary" :loading="retrying" @click="retryEval">
+        {{ $t('loraTrain.candidateRetry') }}
+      </DqButton>
     </DqAlert>
 
     <DqAlert
@@ -25,6 +28,15 @@
         {{ $t('loraTrain.candidateRetry') }}
       </DqButton>
     </DqAlert>
+
+    <div
+      v-else-if="status === 'ready'"
+      class="lora-ckpt-compare__ready-actions"
+    >
+      <DqButton size="sm" type="secondary" :loading="retrying" @click="retryEval">
+        {{ $t('loraTrain.candidateRetry') }}
+      </DqButton>
+    </div>
 
     <DqAlert
       v-else-if="status === 'registered'"
@@ -392,6 +404,13 @@ async function confirmRegister() {
   width: 100%;
   height: 100%;
   color: var(--dq-label-tertiary);
+}
+
+.lora-ckpt-compare__ready-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
 .lora-ckpt-compare__register {

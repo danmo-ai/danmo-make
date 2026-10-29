@@ -171,6 +171,56 @@ class V3TaskStore(IV3TaskStore):
                 )
                 conn.commit()
 
+    def requeue_task(
+        self,
+        task_id: str,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> bool:
+        """Move a terminal cancelled/failed row back to ``queued`` (same id / work dir).
+
+        Clears error/result/completed_at and resets progress. Optionally replaces ``params``.
+        Returns False when the row is missing or not in a resumable terminal status.
+        """
+        allowed = (TaskStatus.CANCELLED.value, TaskStatus.FAILED.value)
+        with self._lock:
+            with self._conn() as conn:
+                row = conn.execute("SELECT status, params FROM tasks WHERE id = ?", (task_id,)).fetchone()
+                if not row or row["status"] not in allowed:
+                    return False
+                next_params = params
+                if next_params is None:
+                    try:
+                        next_params = json.loads(row["params"] or "{}")
+                    except (TypeError, json.JSONDecodeError) as exc:
+                        raise RuntimeError(
+                            f"Task {task_id} has unreadable params; cannot requeue"
+                        ) from exc
+                if not isinstance(next_params, dict):
+                    raise RuntimeError(f"Task {task_id} params must be a JSON object to requeue")
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = ?,
+                        progress = 0.0,
+                        result = NULL,
+                        error_message = NULL,
+                        completed_at = NULL,
+                        started_at = NULL,
+                        params = ?
+                    WHERE id = ? AND status IN (?, ?)
+                    """,
+                    (
+                        TaskStatus.QUEUED.value,
+                        json.dumps(next_params, ensure_ascii=False),
+                        task_id,
+                        TaskStatus.CANCELLED.value,
+                        TaskStatus.FAILED.value,
+                    ),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+
     def get_task(self, task_id: str) -> Optional[dict[str, Any]]:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
