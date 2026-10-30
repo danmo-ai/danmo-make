@@ -8448,8 +8448,7 @@
                   "tokenizer.json",
                   "tokenizer_config.json",
                   "vocab.json",
-                  "merges.txt",
-                  "special_tokens_map.json"
+                  "merges.txt"
                 ]
               }
             ]
@@ -8492,8 +8491,7 @@
                   "tokenizer.json",
                   "tokenizer_config.json",
                   "vocab.json",
-                  "merges.txt",
-                  "special_tokens_map.json"
+                  "merges.txt"
                 ]
               }
             ]
@@ -8536,8 +8534,7 @@
                   "tokenizer.json",
                   "tokenizer_config.json",
                   "vocab.json",
-                  "merges.txt",
-                  "special_tokens_map.json"
+                  "merges.txt"
                 ]
               }
             ]
@@ -8738,8 +8735,7 @@
                   "tokenizer.json",
                   "tokenizer_config.json",
                   "vocab.json",
-                  "merges.txt",
-                  "special_tokens_map.json"
+                  "merges.txt"
                 ]
               }
             ]
@@ -8782,8 +8778,7 @@
                   "tokenizer.json",
                   "tokenizer_config.json",
                   "vocab.json",
-                  "merges.txt",
-                  "special_tokens_map.json"
+                  "merges.txt"
                 ]
               }
             ]
@@ -8826,8 +8821,7 @@
                   "tokenizer.json",
                   "tokenizer_config.json",
                   "vocab.json",
-                  "merges.txt",
-                  "special_tokens_map.json"
+                  "merges.txt"
                 ]
               }
             ]

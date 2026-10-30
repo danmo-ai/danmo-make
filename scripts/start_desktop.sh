@@ -8,21 +8,34 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/out_paths.sh"
 # shellcheck source=dev_process.sh
 source "$SCRIPT_DIR/dev_process.sh"
+# shellcheck source=workspace_env.sh
+source "$SCRIPT_DIR/workspace_env.sh"
 
 APP_NAME="${DQ_APP_NAME:-danmo-make}"
 BACKEND_PORT="${DQ_BACKEND_PORT}"
 FRONTEND_PORT="${DQ_FRONTEND_PORT}"
 
 dq_ensure_out_layout
+dq_resolve_workspace_env
 "$SCRIPT_DIR/stop.sh" 2>/dev/null || true
 
 echo "==> Starting $APP_NAME (dev-desktop) [${DQ_PROJECT}]"
 echo "    Backend : http://127.0.0.1:${BACKEND_PORT}  (danqing-api, ggml)"
 echo "    Desktop : Tauri webview (Vite HMR on :${FRONTEND_PORT})"
+echo "    Workspace: $DANQING_WORKSPACE"
+echo "    DB: $DANQING_DB"
 echo "    SKIP_BACKEND=1 to use an already-running API"
 
 if ! command -v cargo >/dev/null 2>&1; then
   echo "cargo not found. Install Rust: https://rustup.rs/" >&2
+  exit 1
+fi
+if ! command -v cmake >/dev/null 2>&1; then
+  echo "cmake not found (required to build danmo-ggml-sys). Install: brew install cmake" >&2
+  exit 1
+fi
+if [[ ! -f "$DQ_ROOT/native/third_party/ggml/CMakeLists.txt" ]]; then
+  echo "ggml sources missing. Run: git submodule update --init --recursive native/third_party/ggml" >&2
   exit 1
 fi
 
@@ -35,10 +48,13 @@ if [[ "${SKIP_BACKEND:-0}" == "1" ]]; then
   echo "==> SKIP_BACKEND=1: using external backend on :${BACKEND_PORT}"
   echo ""
 else
-  mkdir -p "$DQ_ROOT/db"
-  export DQ_DEV_ENV=$'DANQING_HTTP_PORT='"${BACKEND_PORT}"$'\nDANQING_HTTP_HOST=127.0.0.1'$'\nDANQING_DB='"$DQ_ROOT/db/studio.db"$'\nDANQING_REGISTRY='"$DQ_ROOT/default_config/models_registry.json"
+  CARGO_FEATURES=()
+  case "$(uname -s)" in
+    Darwin) CARGO_FEATURES=(--features metal) ;;
+  esac
+  export DQ_DEV_ENV=$'DANQING_HTTP_PORT='"${BACKEND_PORT}"$'\nDANQING_HTTP_HOST=127.0.0.1'$'\nDANQING_WORKSPACE='"${DANQING_WORKSPACE}"$'\nDANQING_DB='"${DANQING_DB}"$'\nDANQING_OUTPUT='"${DANQING_OUTPUT}"$'\nDANQING_REGISTRY='"${DANQING_REGISTRY}"
   dq_dev_start backend "$DQ_ROOT" \
-    cargo run --manifest-path "$DQ_ROOT/native/Cargo.toml" -p danmo-server
+    cargo run --manifest-path "$DQ_ROOT/native/Cargo.toml" -p danmo-server "${CARGO_FEATURES[@]}"
   unset DQ_DEV_ENV
   echo "==> Backend PID: $(cat "$DQ_RUN_DIR/backend.pid")"
   echo "    Logs: $DQ_RUN_DIR/backend.log"

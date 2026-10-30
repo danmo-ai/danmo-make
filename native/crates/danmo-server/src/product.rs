@@ -66,7 +66,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/assets/reconcile", post(reconcile_assets))
         .route("/api/assets/:id", axum::routing::delete(delete_asset))
         .route("/api/assets/:id/file", get(asset_file))
-        .route("/api/assets/:id/thumbnail", get(asset_file))
+        .route("/api/assets/:id/thumbnail", get(asset_thumbnail))
         .route("/api/assets/:id/lineage", get(asset_lineage))
         .route("/api/gallery/upload", post(upload_asset))
         .route("/api/canvas/sessions", get(list_canvas).post(create_canvas))
@@ -1099,7 +1099,7 @@ async fn delete_asset(
         .delete_asset(&id)
         .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
         .ok_or_else(|| fail(StatusCode::NOT_FOUND, "asset not found"))?;
-    let _ = std::fs::remove_file(&row.file_path);
+    remove_asset_files(&state, &row);
     Ok(Json(json!({ "ok": true, "id": id })))
 }
 
@@ -1116,7 +1116,7 @@ async fn batch_delete_assets(
     for id in ids {
         let Some(id) = id.as_str() else { continue };
         if let Ok(Some(row)) = state.scheduler.delete_asset(id) {
-            let _ = std::fs::remove_file(&row.file_path);
+            remove_asset_files(&state, &row);
             deleted.push(id.to_string());
         }
     }
@@ -1137,10 +1137,79 @@ async fn asset_file(State(state): State<AppState>, Path(id): Path<String>) -> Re
         Ok(None) => return (StatusCode::NOT_FOUND, "asset not found").into_response(),
         Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
     };
-    match std::fs::read(&row.file_path) {
-        Ok(bytes) => ([(header::CONTENT_TYPE, row.mime_type)], bytes).into_response(),
+    serve_asset_bytes(&state, &row.file_path, &row.mime_type)
+}
+
+async fn asset_thumbnail(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let row = match state.scheduler.get_asset(&id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return (StatusCode::NOT_FOUND, "asset not found").into_response(),
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+    if let Some(thumb) = row
+        .thumbnail_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        let mime = mime_for_stored_path(thumb);
+        let response = serve_asset_bytes(&state, thumb, mime);
+        if response.status() != StatusCode::NOT_FOUND {
+            return response;
+        }
+    }
+    serve_asset_bytes(&state, &row.file_path, &row.mime_type)
+}
+
+/// Resolve legacy Python DB paths (`ast_….png`) under `{outputs}/assets`, plus absolute paths.
+pub(crate) fn resolve_asset_fs_path(
+    outputs: &FsPath,
+    workspace: &FsPath,
+    stored: &str,
+) -> PathBuf {
+    let raw = PathBuf::from(stored);
+    if raw.is_absolute() {
+        return raw;
+    }
+    let under_assets = outputs.join("assets").join(&raw);
+    if under_assets.is_file() {
+        return under_assets;
+    }
+    let under_workspace = workspace.join(&raw);
+    if under_workspace.is_file() {
+        return under_workspace;
+    }
+    under_assets
+}
+
+fn serve_asset_bytes(state: &AppState, stored: &str, mime: &str) -> Response {
+    let path = resolve_asset_fs_path(&state.outputs, &state.workspace, stored);
+    match std::fs::read(&path) {
+        Ok(bytes) => ([(header::CONTENT_TYPE, mime.to_string())], bytes).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "asset file is missing").into_response(),
     }
+}
+
+fn remove_asset_files(state: &AppState, row: &AssetRow) {
+    let main = resolve_asset_fs_path(&state.outputs, &state.workspace, &row.file_path);
+    let _ = std::fs::remove_file(main);
+    if let Some(thumb) = row
+        .thumbnail_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        let path = resolve_asset_fs_path(&state.outputs, &state.workspace, thumb);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn mime_for_stored_path(stored: &str) -> &'static str {
+    FsPath::new(stored)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(mime_for)
+        .unwrap_or("application/octet-stream")
 }
 
 async fn asset_lineage(
@@ -1969,4 +2038,41 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
     let year = if month <= 2 { y + 1 } else { y };
     (year, month, day)
+}
+
+#[cfg(test)]
+mod asset_path_tests {
+    use super::resolve_asset_fs_path;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn relative_basename_resolves_under_outputs_assets() {
+        let root = std::env::temp_dir().join(format!(
+            "danmo-asset-path-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let outputs = root.join("outputs");
+        let assets = outputs.join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        let file = assets.join("ast_demo.png");
+        fs::write(&file, b"png").unwrap();
+
+        let resolved = resolve_asset_fs_path(&outputs, &root, "ast_demo.png");
+        assert_eq!(resolved, file);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn absolute_path_is_kept() {
+        let absolute = PathBuf::from("/tmp/danmo-absolute-asset.bin");
+        let resolved = resolve_asset_fs_path(
+            PathBuf::from("/unused/outputs").as_path(),
+            PathBuf::from("/unused/workspace").as_path(),
+            absolute.to_str().unwrap(),
+        );
+        assert_eq!(resolved, absolute);
+    }
 }

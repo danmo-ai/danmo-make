@@ -27,7 +27,21 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 export DANQING_REGISTRY="${DANQING_REGISTRY:-$ROOT/models_registry.json}"
 export DANQING_HTTP_HOST="${DANQING_HTTP_HOST:-127.0.0.1}"
 export DANQING_HTTP_PORT="${DANQING_HTTP_PORT:-7800}"
-export DANQING_DB="${DANQING_DB:-$ROOT/db/studio.db}"
+# Prefer an explicit workspace / control-plane pointer when present.
+if [[ -z "${DANQING_WORKSPACE:-}" ]]; then
+  _pointer="${DANQING_USER_DATA_DIR:-$HOME/.danmo-make}/workspace.pointer.json"
+  if [[ -f "$_pointer" ]]; then
+    DANQING_WORKSPACE="$(python3 -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]);
+d=json.loads(p.read_text()); print((d.get("custom_workspace_dir") or d.get("workspace_dir") or "").strip())' "$_pointer" 2>/dev/null || true)"
+    export DANQING_WORKSPACE
+  fi
+fi
+if [[ -n "${DANQING_WORKSPACE:-}" ]]; then
+  export DANQING_DB="${DANQING_DB:-$DANQING_WORKSPACE/db/studio.db}"
+  export DANQING_OUTPUT="${DANQING_OUTPUT:-$DANQING_WORKSPACE/outputs}"
+else
+  export DANQING_DB="${DANQING_DB:-$ROOT/db/studio.db}"
+fi
 mkdir -p "$(dirname "$DANQING_DB")"
 exec "$ROOT/bin/danqing-api"
 EOF

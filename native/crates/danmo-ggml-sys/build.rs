@@ -73,22 +73,52 @@ fn main() {
 
     let lib_dir = build_dir.join("src");
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    // Backend static libs land in src/<backend>/ (ggml cmake layout).
+    println!(
+        "cargo:rustc-link-search=native={}",
+        lib_dir.join("ggml-cpu").display()
+    );
     println!("cargo:rustc-link-lib=static=ggml");
     println!("cargo:rustc-link-lib=static=ggml-cpu");
     println!("cargo:rustc-link-lib=static=ggml-base");
     if cuda {
+        println!(
+            "cargo:rustc-link-search=native={}",
+            lib_dir.join("ggml-cuda").display()
+        );
         println!("cargo:rustc-link-lib=static=ggml-cuda");
         println!("cargo:rustc-link-lib=cudart");
         println!("cargo:rustc-link-lib=cublas");
     }
     if vulkan {
+        println!(
+            "cargo:rustc-link-search=native={}",
+            lib_dir.join("ggml-vulkan").display()
+        );
         println!("cargo:rustc-link-lib=static=ggml-vulkan");
         println!("cargo:rustc-link-lib=vulkan");
     }
-    println!("cargo:rustc-link-lib=stdc++");
-    println!("cargo:rustc-link-lib=pthread");
-    println!("cargo:rustc-link-lib=dl");
-    println!("cargo:rustc-link-lib=m");
+    if metal {
+        println!(
+            "cargo:rustc-link-search=native={}",
+            lib_dir.join("ggml-metal").display()
+        );
+        println!("cargo:rustc-link-lib=static=ggml-metal");
+        println!("cargo:rustc-link-lib=framework=Foundation");
+        println!("cargo:rustc-link-lib=framework=Metal");
+        println!("cargo:rustc-link-lib=framework=MetalKit");
+        println!("cargo:rustc-link-lib=framework=Accelerate");
+    }
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    // Apple Clang has libc++; GNU/Linux toolchains use libstdc++.
+    if target_os == "macos" || target_os == "ios" {
+        println!("cargo:rustc-link-lib=c++");
+    } else {
+        println!("cargo:rustc-link-lib=stdc++");
+        println!("cargo:rustc-link-lib=pthread");
+        println!("cargo:rustc-link-lib=dl");
+        println!("cargo:rustc-link-lib=m");
+    }
 
     let mut clang_args = vec![
         format!("-I{}", ggml_src.join("include").display()),
