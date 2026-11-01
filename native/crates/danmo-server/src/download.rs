@@ -116,13 +116,65 @@ pub fn resolve_model_path(workspace: &Path, path: &str) -> PathBuf {
 }
 
 pub fn version_ready(path: &Path) -> bool {
-    if path.join("bundle.manifest.json").is_file() {
-        return true;
+    let manifest = path.join("bundle.manifest.json");
+    if manifest.is_file() {
+        return manifest_ready(path, &manifest);
     }
     let mut gguf = false;
     let mut partial = false;
     walk_marks(path, &mut gguf, &mut partial);
     gguf && !partial
+}
+
+fn manifest_ready(root: &Path, manifest: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(manifest) else {
+        return false;
+    };
+    let Ok(body) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    let mut weights = Vec::new();
+    let mut partial = false;
+    collect_manifest_weights(body.get("files"), &mut weights);
+    if weights.is_empty() {
+        return false;
+    }
+    let mut gguf = false;
+    walk_marks(root, &mut gguf, &mut partial);
+    if partial || !gguf {
+        return false;
+    }
+    body.get("files")
+        .and_then(|files| files.get("transformer"))
+        .is_some_and(|transformer| {
+            let mut required = Vec::new();
+            collect_manifest_weights(Some(transformer), &mut required);
+            !required.is_empty()
+        })
+        && weights.iter().all(|relative| {
+            let path = Path::new(relative);
+            !relative.is_empty()
+                && !path.is_absolute()
+                && !path.components().any(|part| part.as_os_str() == "..")
+                && root.join(path).is_file()
+        })
+}
+
+fn collect_manifest_weights(value: Option<&Value>, out: &mut Vec<String>) {
+    match value {
+        Some(Value::String(path)) => out.push(path.clone()),
+        Some(Value::Array(rows)) => {
+            for row in rows {
+                collect_manifest_weights(Some(row), out);
+            }
+        }
+        Some(Value::Object(rows)) => {
+            for row in rows.values() {
+                collect_manifest_weights(Some(row), out);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn walk_marks(path: &Path, gguf: &mut bool, partial: &mut bool) {
@@ -246,7 +298,7 @@ impl Downloads {
         {
             return Err(format!("download URL is not a GGUF file: {url}"));
         }
-        let dest = self.resolve("models/imports").join(&filename);
+        let dest = self.resolve("models/Lora/imports").join(&filename);
         let file = PlannedFile {
             url: url.into(),
             dest: dest.display().to_string(),
@@ -365,6 +417,24 @@ impl Downloads {
         }
         drop(inner);
         self.set_status(id, "cancelled", "");
+        Ok(())
+    }
+
+    /// Replace a model task's frozen registry snapshot before resume/retry.
+    pub fn refresh_model_spec(&self, id: &str, spec: Value) -> Result<(), String> {
+        let mut inner = self.lock();
+        let task = inner
+            .tasks
+            .iter_mut()
+            .find(|task| task.id == id)
+            .ok_or_else(|| "download task not found".to_string())?;
+        if task.kind != "model" {
+            return Err("download task is not a model install".into());
+        }
+        task.job = Job::Model { spec };
+        task.error_message.clear();
+        drop(inner);
+        self.persist();
         Ok(())
     }
 
@@ -698,7 +768,7 @@ impl Downloads {
         } else {
             display_name
         });
-        let dest = self.resolve("models/loras").join(folder).join(&name);
+        let dest = self.resolve("models/Lora").join(folder).join(&name);
         let file = PlannedFile {
             url: file_url,
             dest: dest.display().to_string(),
@@ -1299,10 +1369,7 @@ fn plan_component(
         revision: revision.clone(),
     })?;
     let selected = select_component_files(&entries, &patterns)?;
-    let role = component
-        .get("role")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let role = component.get("role").and_then(|v| v.as_str()).unwrap_or("");
     let mut files = Vec::new();
     for entry in selected {
         let url = resolve_file_url(source, repo_id, &revision, &entry.path)?;
@@ -1552,12 +1619,24 @@ fn select_component_files(
             });
         }
         if !matched {
-            return Err(format!(
-                "component pattern {pattern} matched no published file"
-            ));
+            // Hub repos often drop optional tokenizer sidecars (e.g. special_tokens_map.json).
+            // Weights must still match; skip only non-weight patterns.
+            if pattern_requires_published_file(pattern) {
+                return Err(format!(
+                    "component pattern {pattern} matched no published file"
+                ));
+            }
         }
     }
+    if out.is_empty() {
+        return Err("component allow_patterns matched no published files".into());
+    }
     Ok(out)
+}
+
+fn pattern_requires_published_file(pattern: &str) -> bool {
+    let lower = pattern.to_ascii_lowercase();
+    lower.contains(".gguf") || lower.contains(".safetensors")
 }
 
 fn is_component_file(path: &str) -> bool {
@@ -2012,34 +2091,34 @@ mod component_role_tests {
 
     #[test]
     fn role_remaps_flat_gguf_into_bundle_subdirs() {
-        let root = PathBuf::from("/models/ace-step-xl-turbo/q8_0");
+        let root = PathBuf::from("/models/Audio/ace-step-xl-turbo/q8_0");
         assert_eq!(
             component_dest(&root, "text_encoder", "Qwen3-Embedding-0.6B-Q8_0.gguf")
                 .unwrap()
                 .display()
                 .to_string(),
-            "/models/ace-step-xl-turbo/q8_0/text_encoder/Qwen3-Embedding-0.6B-Q8_0.gguf"
+            "/models/Audio/ace-step-xl-turbo/q8_0/text_encoder/Qwen3-Embedding-0.6B-Q8_0.gguf"
         );
         assert_eq!(
             component_dest(&root, "vae", "vae-BF16.gguf")
                 .unwrap()
                 .display()
                 .to_string(),
-            "/models/ace-step-xl-turbo/q8_0/vae/vae-BF16.gguf"
+            "/models/Audio/ace-step-xl-turbo/q8_0/vae/vae-BF16.gguf"
         );
         assert_eq!(
             component_dest(&root, "tokenizer", "tokenizer.json")
                 .unwrap()
                 .display()
                 .to_string(),
-            "/models/ace-step-xl-turbo/q8_0/tokenizer/tokenizer.json"
+            "/models/Audio/ace-step-xl-turbo/q8_0/tokenizer/tokenizer.json"
         );
         assert_eq!(
             component_dest(&root, "", "nested/file.gguf")
                 .unwrap()
                 .display()
                 .to_string(),
-            "/models/ace-step-xl-turbo/q8_0/nested/file.gguf"
+            "/models/Audio/ace-step-xl-turbo/q8_0/nested/file.gguf"
         );
     }
 }
@@ -2080,20 +2159,19 @@ fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Res
     if transformer.is_empty() {
         return Err("bundle manifest has no transformer file".into());
     }
-    if text_encoder.is_empty() {
-        return Err("bundle manifest has no text_encoder file".into());
+    let mut files_map = json!({
+        "transformer": role_value(transformer),
+    });
+    if !text_encoder.is_empty() {
+        files_map["text_encoder"] = role_value(text_encoder);
     }
-    if vae.is_empty() {
-        return Err("bundle manifest has no vae file".into());
+    if !vae.is_empty() {
+        files_map["vae"] = role_value(vae);
     }
     Ok(json!({
         "format": "gguf",
         "quant": quant,
-        "files": {
-            "transformer": role_value(transformer),
-            "text_encoder": role_value(text_encoder),
-            "vae": role_value(vae),
-        }
+        "files": files_map,
     }))
 }
 
@@ -2326,6 +2404,35 @@ mod tests {
     }
 
     #[test]
+    fn manifest_ready_requires_referenced_files_and_no_partial_download() {
+        let dir = std::env::temp_dir().join(format!("danmo-ready-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("text_encoder")).unwrap();
+        std::fs::create_dir_all(dir.join("vae")).unwrap();
+        std::fs::write(
+            dir.join("bundle.manifest.json"),
+            r#"{"format":"gguf","quant":"q4_k","files":{"transformer":"model.gguf","text_encoder":["text_encoder/model.safetensors"],"vae":"vae/model.safetensors","tokenizer":"tokenizer/tokenizer.json"}}"#,
+        )
+        .unwrap();
+        assert!(!version_ready(&dir));
+        std::fs::write(dir.join("model.gguf"), b"gguf").unwrap();
+        std::fs::write(dir.join("text_encoder/model.safetensors"), b"text").unwrap();
+        std::fs::write(dir.join("vae/model.safetensors"), b"vae").unwrap();
+        std::fs::create_dir_all(dir.join("tokenizer")).unwrap();
+        std::fs::write(dir.join("tokenizer/tokenizer.json"), b"{}").unwrap();
+        assert!(version_ready(&dir));
+        std::fs::write(dir.join("model.gguf.partial"), b"partial").unwrap();
+        assert!(!version_ready(&dir));
+        std::fs::remove_file(dir.join("model.gguf.partial")).unwrap();
+        assert!(version_ready(&dir));
+        std::fs::remove_file(dir.join("vae/model.safetensors")).unwrap();
+        assert!(!version_ready(&dir));
+        std::fs::write(dir.join("bundle.manifest.json"), b"not-json").unwrap();
+        assert!(!version_ready(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn allow_patterns_keep_only_the_published_subtree() {
         let entries = vec![
             entry("vae/config.json", 1),
@@ -2371,6 +2478,89 @@ mod tests {
             .pointer(&format!("/models/{model}/distribution/versions/{weight}"))
             .unwrap_or_else(|| panic!("{model}:{weight} is not in the registry"))
             .clone()
+    }
+
+    fn synthetic_listing(spec: &Value) -> Vec<RemoteEntry> {
+        let mut paths = std::collections::BTreeSet::new();
+        let mut patterns = patterns_of(spec);
+        for component in spec
+            .get("components")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            patterns.extend(patterns_of(component));
+        }
+        for pattern in patterns {
+            match pattern.as_str() {
+                "text_encoder/**" => {
+                    paths.insert("text_encoder/model.safetensors".to_string());
+                }
+                "vae/**" => {
+                    paths.insert("vae/diffusion.safetensors".to_string());
+                }
+                "tokenizer/**" => {
+                    for name in [
+                        "tokenizer/tokenizer.json",
+                        "tokenizer/tokenizer_config.json",
+                        "tokenizer/vocab.json",
+                        "tokenizer/merges.txt",
+                    ] {
+                        paths.insert(name.to_string());
+                    }
+                }
+                other => {
+                    paths.insert(other.to_string());
+                }
+            }
+        }
+        paths.into_iter().map(|path| entry(&path, 1)).collect()
+    }
+
+    #[test]
+    fn every_published_version_plans_and_classifies_its_bundle() {
+        let registry_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../default_config/models_registry.json");
+        let registry: Value =
+            serde_json::from_str(&std::fs::read_to_string(registry_path).unwrap()).unwrap();
+        let workspace = PathBuf::from("/tmp/danmo-all-published-models");
+        let mut checked = 0;
+        for (model_id, model) in registry["models"].as_object().unwrap() {
+            for (quant, spec) in model["distribution"]["versions"]
+                .as_object()
+                .into_iter()
+                .flatten()
+            {
+                let plan = plan_version(spec, &mut |_| Ok(synthetic_listing(spec)), &|path| {
+                    resolve_model_path(&workspace, path)
+                })
+                .unwrap_or_else(|error| panic!("{model_id}:{quant}: {error}"));
+                let Plan::Files(files) = plan;
+                assert!(!files.is_empty(), "{model_id}:{quant} has no files");
+                let root = resolve_model_path(
+                    &workspace,
+                    spec["local_path"].as_str().expect("local_path"),
+                );
+                for file in &files {
+                    assert!(
+                        Path::new(&file.dest).starts_with(&root),
+                        "{model_id}:{quant} escaped the bundle: {}",
+                        file.dest
+                    );
+                    assert!(
+                        file.url.starts_with("https://") || file.url.starts_with("http://"),
+                        "{model_id}:{quant} has invalid URL {}",
+                        file.url
+                    );
+                }
+                if version_lists_components(spec) {
+                    bundle_manifest_value(quant, &root, &files)
+                        .unwrap_or_else(|error| panic!("{model_id}:{quant} manifest: {error}"));
+                }
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 84);
     }
 
     fn published_listing(query: &RepoQuery) -> Result<Vec<RemoteEntry>, String> {
@@ -2503,10 +2693,10 @@ mod tests {
             .any(|name| name.ends_with("flux-2-klein-4b-BF16.gguf")));
         assert!(bf16_names
             .iter()
-            .all(|name| name.starts_with("models/flux2-klein-4b/bf16/")));
+            .all(|name| name.starts_with("models/Image/flux2-klein-4b/bf16/")));
         assert!(names
             .iter()
-            .all(|name| name.starts_with("models/flux2-klein-4b/q4_k/")));
+            .all(|name| name.starts_with("models/Image/flux2-klein-4b/q4_k/")));
 
         let err = plan_version(
             &json!({ "graph_pack": "flux2-chain" }),
@@ -2524,7 +2714,7 @@ mod tests {
         let names = planned_names(&spec, &workspace);
         assert!(names
             .iter()
-            .any(|name| name == "models/z-image/q4_k/z-image-Q4_K_M.gguf"));
+            .any(|name| name == "models/Image/z-image/q4_k/z-image-Q4_K_M.gguf"));
         assert_eq!(
             names.iter().filter(|name| name.ends_with(".gguf")).count(),
             1,
@@ -2539,7 +2729,7 @@ mod tests {
             assert!(
                 names
                     .iter()
-                    .any(|name| name == &format!("models/z-image/q4_k/{suffix}")),
+                    .any(|name| name == &format!("models/Image/z-image/q4_k/{suffix}")),
                 "missing {suffix} in {names:?}"
             );
         }
@@ -2547,14 +2737,14 @@ mod tests {
         assert!(!names.iter().any(|name| name.contains("Q2_K")));
         assert!(!names
             .iter()
-            .any(|name| name.starts_with("models/flux2-klein-4b/")));
+            .any(|name| name.starts_with("models/Image/flux2-klein-4b/")));
         assert_eq!(names.len(), 13, "{names:?}");
     }
 
     #[test]
     fn component_pattern_must_match_a_published_file() {
         let spec = json!({
-            "local_path": "models/demo/q4_k",
+            "local_path": "models/Image/demo/q4_k",
             "source": "modelscope",
             "repo_id": "acme/dit",
             "allow_patterns": ["demo-Q4_K_M.gguf"],
@@ -2576,10 +2766,13 @@ mod tests {
             &|path| PathBuf::from(path.to_string()),
         )
         .unwrap_err();
-        assert!(err.contains("vae/**"), "{err}");
+        assert!(
+            err.contains("vae/**") || err.contains("matched no published files"),
+            "{err}"
+        );
 
         let empty = json!({
-            "local_path": "models/demo/q4_k",
+            "local_path": "models/Image/demo/q4_k",
             "source": "modelscope",
             "repo_id": "acme/dit",
             "allow_patterns": ["demo-Q4_K_M.gguf"],
@@ -2649,18 +2842,24 @@ mod tests {
             .unwrap()
             .iter()
             .any(|value| value == "text_encoder/model-00001-of-00003.safetensors"));
-        assert!(!zbody.to_string().contains("models/flux2-klein-4b"));
+        assert!(!zbody.to_string().contains("models/Image/flux2-klein-4b"));
 
         let bare = json!({
-            "local_path": "models/demo/q4_k",
+            "local_path": "models/Image/demo/q4_k",
             "repo_id": "acme/dit",
             "allow_patterns": ["a.gguf"]
         });
         assert!(!version_lists_components(&bare));
         let err = bundle_manifest_value("fp16", &root, &files).unwrap_err();
         assert!(err.contains("fp16"), "{err}");
-        let err = bundle_manifest_value("q4_k", &root, &files[..1]).unwrap_err();
-        assert!(err.contains("text_encoder"), "{err}");
+        // A transformer-only bundle is valid for LM/LLM models.
+        let bare_only = bundle_manifest_value("q4_k", &root, &files[..1]).unwrap();
+        assert_eq!(
+            bare_only["files"]["transformer"],
+            "flux-2-klein-4b-Q4_K_M.gguf"
+        );
+        assert!(bare_only["files"].get("text_encoder").is_none());
+        assert!(bare_only["files"].get("vae").is_none());
 
         let scratch = std::env::temp_dir().join(format!(
             "danmo-manifest-{}-{}",

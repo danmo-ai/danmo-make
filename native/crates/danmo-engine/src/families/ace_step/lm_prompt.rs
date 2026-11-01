@@ -18,8 +18,7 @@ pub const AUDIO_CODE_BASE: i32 = 151_669;
 pub const AUDIO_CODE_COUNT: i32 = 65_535;
 
 /// acestep.cpp `LM_INSTRUCTION` (generate / codes).
-pub const LM_INSTRUCTION: &str =
-    "Generate audio semantic tokens based on the given conditions:";
+pub const LM_INSTRUCTION: &str = "Generate audio semantic tokens based on the given conditions:";
 /// acestep.cpp `LM_INSPIRE_INSTRUCTION`.
 pub const LM_INSPIRE_INSTRUCTION: &str =
     "Expand the user's input into a more detailed and specific musical description:";
@@ -78,7 +77,11 @@ pub struct AcePrompt {
 
 type EncodeFn<'a> = dyn FnMut(&str) -> Result<Vec<i32>, WeightError> + 'a;
 
-fn append_text(ids: &mut Vec<i32>, encode: &mut EncodeFn<'_>, text: &str) -> Result<(), WeightError> {
+fn append_text(
+    ids: &mut Vec<i32>,
+    encode: &mut EncodeFn<'_>,
+    text: &str,
+) -> Result<(), WeightError> {
     if text.is_empty() {
         return Ok(());
     }
@@ -202,11 +205,7 @@ pub fn build_lm_prompt_uncond_with_cot(
     append_text(&mut ids, encode, "\n")?;
     ids.push(TOKEN_IM_START);
     // Bare `user\n` + negative (may be empty) — not Caption/Lyric wrappers.
-    append_text(
-        &mut ids,
-        encode,
-        &format!("user\n{negative_prompt}"),
-    )?;
+    append_text(&mut ids, encode, &format!("user\n{negative_prompt}"))?;
     ids.push(TOKEN_IM_END);
     append_text(&mut ids, encode, "\n")?;
     ids.push(TOKEN_IM_START);
@@ -375,11 +374,7 @@ mod tests {
         };
         let mut enc = |t: &str| fake_encode(t);
         let ids = build_inspire_prompt(&mut enc, &prompt).unwrap();
-        let flat: Vec<u8> = ids
-            .iter()
-            .filter(|&&t| t < 256)
-            .map(|&t| t as u8)
-            .collect();
+        let flat: Vec<u8> = ids.iter().filter(|&&t| t < 256).map(|&t| t as u8).collect();
         let s = String::from_utf8_lossy(&flat);
         assert!(s.contains("Expand the user's input"));
         assert!(s.contains("instrumental: true"));
@@ -387,11 +382,7 @@ mod tests {
 
         let mut enc = |t: &str| fake_encode(t);
         let ids = build_format_prompt(&mut enc, &prompt).unwrap();
-        let flat: Vec<u8> = ids
-            .iter()
-            .filter(|&&t| t < 256)
-            .map(|&t| t as u8)
-            .collect();
+        let flat: Vec<u8> = ids.iter().filter(|&&t| t < 256).map(|&t| t as u8).collect();
         let s = String::from_utf8_lossy(&flat);
         assert!(s.contains("Format the user's input"));
         assert!(s.contains("# Lyric"));
@@ -425,7 +416,11 @@ mod tests {
     fn audio_code_tokens_offset_from_base() {
         assert_eq!(
             audio_code_token_ids(&[0, 12, 65535]).unwrap(),
-            vec![AUDIO_CODE_BASE, AUDIO_CODE_BASE + 12, AUDIO_CODE_BASE + 65535]
+            vec![
+                AUDIO_CODE_BASE,
+                AUDIO_CODE_BASE + 12,
+                AUDIO_CODE_BASE + 65535
+            ]
         );
         assert!(audio_code_token_ids(&[-1]).is_err());
         assert!(audio_code_token_ids(&[65536]).is_err());
@@ -440,11 +435,7 @@ mod tests {
         };
         let mut enc = |t: &str| fake_encode(t);
         let ids = build_lm_prompt_uncond_with_cot(&mut enc, &prompt, "noisy drums").unwrap();
-        let flat: Vec<u8> = ids
-            .iter()
-            .filter(|&&t| t < 256)
-            .map(|&t| t as u8)
-            .collect();
+        let flat: Vec<u8> = ids.iter().filter(|&&t| t < 256).map(|&t| t as u8).collect();
         let s = String::from_utf8_lossy(&flat);
         assert!(s.contains("user\nnoisy drums"));
         assert!(!s.contains("# Caption"));
@@ -466,11 +457,7 @@ mod tests {
         };
         let mut enc = |t: &str| fake_encode(t);
         let ids = build_lm_prompt_uncond(&mut enc, &prompt, "bad mix").unwrap();
-        let flat: Vec<u8> = ids
-            .iter()
-            .filter(|&&t| t < 256)
-            .map(|&t| t as u8)
-            .collect();
+        let flat: Vec<u8> = ids.iter().filter(|&&t| t < 256).map(|&t| t as u8).collect();
         let s = String::from_utf8_lossy(&flat);
         assert!(s.contains("# Caption\nbad mix"));
         assert!(s.contains("# Lyric\nla la"));

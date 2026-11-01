@@ -30,6 +30,85 @@ fn decoder_spec() -> VaeSpec {
     }
 }
 
+/// Rewrite img2img reference encode. The input is the planar `[W, H, 3]`
+/// tensor in `[-1, 1]`; the output is the packed DiT latent
+/// `[128, (W/16)*(H/16)]`: encoder, `quant_conv`, mean half, scale, even
+/// crop, 2×2 patchify, and the batch-norm normalization
+/// `(z - mean) / sqrt(var + 1e-4)`. This is the exact inverse of `decode`.
+pub(super) fn encode_packed(
+    ctx: &GgmlContext,
+    paths: &[std::path::PathBuf],
+    image: &[f32],
+    width: u32,
+    height: u32,
+) -> Result<Vec<f32>, WeightError> {
+    let vae = GgufWeights::open_parts(paths)?;
+    if !vae.contains("encoder.conv_in.weight") {
+        return Err(WeightError::NotBuilt(
+            "vae encoder graph is not built".into(),
+        ));
+    }
+    let spec = vae::encoder_spec_from_weights(&vae, &decoder_spec())?;
+    let conv_out = vae::encode_conv_out(ctx, &vae, image, &spec, width, height)?;
+    let factor = 1i64 << (spec.block_out.len() - 1);
+    let lw = (width as i64 / factor) as usize;
+    let lh = (height as i64 / factor) as usize;
+    let latent = spec.latent_channels as usize;
+    let double = latent * 2;
+    let weight = vae.f32_widened("quant_conv.weight", &[1, 1, double as i64, double as i64])?;
+    let bias = vae.f32_widened("quant_conv.bias", &[double as i64])?;
+    let plane = lw * lh;
+    let mut mean = vec![0f32; plane * latent];
+    for oc in 0..latent {
+        for i in 0..plane {
+            let mut acc = bias[oc];
+            for ic in 0..double {
+                acc += conv_out[i + ic * plane] * weight[ic + oc * double];
+            }
+            mean[i + oc * plane] = (acc - spec.shift) * spec.scaling;
+        }
+    }
+    let lw2 = lw & !1;
+    let lh2 = lh & !1;
+    if lw2 < 2 || lh2 < 2 {
+        return Err(WeightError::NotBuilt(format!(
+            "flux2 edit latent grid {lw}x{lh} is too small to patchify"
+        )));
+    }
+    let packed_c = latent * 4;
+    let packed_w = lw2 / 2;
+    let packed_h = lh2 / 2;
+    let bn_mean = vae.f32_widened("bn.running_mean", &[packed_c as i64])?;
+    let bn_var = vae.f32_widened("bn.running_var", &[packed_c as i64])?;
+    let mut packed = vec![0f32; packed_c * packed_w * packed_h];
+    for y in 0..lh2 {
+        for x in 0..lw2 {
+            let px = x / 2;
+            let py = y / 2;
+            let pw = x % 2;
+            let ph = y % 2;
+            for c in 0..latent {
+                let pc = c * 4 + ph * 2 + pw;
+                let value = mean[x + y * lw + c * plane];
+                let var = bn_var[pc];
+                if !var.is_finite() || var < 0.0 {
+                    return Err(WeightError::NotBuilt(format!(
+                        "bn.running_var[{pc}] is not a finite non-negative value"
+                    )));
+                }
+                let normed = (value - bn_mean[pc]) / (var + BN_EPS).sqrt();
+                if !normed.is_finite() {
+                    return Err(WeightError::NotBuilt(
+                        "flux2 batch-norm encode produced a non-finite value".into(),
+                    ));
+                }
+                packed[pc + (px + py * packed_w) * packed_c] = normed;
+            }
+        }
+    }
+    Ok(packed)
+}
+
 pub(super) fn decode(
     ctx: &GgmlContext,
     paths: &[std::path::PathBuf],
@@ -65,7 +144,7 @@ pub(super) fn decode(
     let latent_w = grid_w * 2;
     let latent_h = grid_h * 2;
     let quantized = post_quant(ctx, &scaled, latent_w, latent_h, &weight, &bias)?;
-    let spec = decoder_spec();
+    let spec = vae::decoder_spec_from_weights(&vae, &decoder_spec())?;
     let samples = vae::decode_samples(
         ctx,
         &vae,

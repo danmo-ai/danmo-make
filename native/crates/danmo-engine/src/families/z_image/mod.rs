@@ -11,13 +11,18 @@
 //! The pixel decoder is the shared AutoencoderKL graph with this family's
 //! spec. A one-tensor `decoder.conv.weight` file stays the 1×1 preview.
 
+mod edit_session;
 mod geom;
 mod graph;
 #[cfg(test)]
 mod reference;
+mod session;
 mod transformer;
 mod vae;
 mod weights;
+
+pub(crate) use edit_session::ZImageEditFamily;
+pub(crate) use session::ZImageFamily;
 
 use crate::common::ops::{
     empirical_mu_sigmas, flow_match_shift_sigmas, linear_sigmas, normal_latent,
@@ -27,16 +32,14 @@ use crate::weights::{
     assert_gguf_bundle, load_lora_factors, matmul_type, type_block, GgufWeights, LoraFile,
     WeightError,
 };
-#[cfg(test)]
 use crate::weights::{write_f32_tensors, F32Tensor};
 use std::collections::HashMap;
 use std::path::Path;
 
 use transformer::ZImageDenoise;
-#[cfg(test)]
-use weights::ZImageConfig;
-use weights::{config_from_weights, vector_param, weight_layout};
+use weights::{config_from_weights, vector_param, weight_layout, ZImageConfig};
 
+#[cfg(test)]
 pub fn execute(
     ctx: &GgmlContext,
     bundle: &Path,
@@ -75,7 +78,8 @@ pub fn execute(
         check_stored_type(name, ggml_type, *ne0)?;
         types.insert(name.clone(), ggml_type);
     }
-    let mut denoise = ZImageDenoise::build(ctx, config, width, height, cap_real, &types, &factors)?;
+    let mut denoise =
+        ZImageDenoise::build(ctx, config, width, height, cap_real, &types, &factors, None)?;
     for (name, ne0, ne1) in &layout {
         let raw = loaded.raw_exact(name, &[*ne0, *ne1])?;
         denoise.load_bytes(name, &raw)?;
@@ -103,6 +107,7 @@ pub fn execute(
         uncond.as_deref(),
         &sigmas,
         guidance,
+        None,
         on_progress,
     )?;
     if let Some(detail) = crate::common::ops::non_finite("z-image latent", &latents) {
@@ -364,6 +369,163 @@ pub fn write_smoke_bundle(dir: &Path) -> Result<(), WeightError> {
     Ok(())
 }
 
+/// Edit smoke bundle: the smoke DiT and token-embed fixture plus a VAE file
+/// with full encoder and decoder towers (latent 4, blocks 32/32/64/64, 32
+/// groups) so the rewrite img2img path can encode and decode.
+pub fn write_edit_smoke_bundle(dir: &Path) -> Result<(), WeightError> {
+    let config = ZImageConfig::smoke();
+    std::fs::create_dir_all(dir).map_err(|err| WeightError::Open {
+        path: dir.display().to_string(),
+        detail: err.to_string(),
+    })?;
+    let layout = weight_layout(config);
+    let owned: Vec<(String, i64, i64, Vec<f32>)> = layout
+        .iter()
+        .map(|(name, ne0, ne1)| {
+            (
+                name.clone(),
+                *ne0,
+                *ne1,
+                weights::smoke_values(name, *ne0, *ne1),
+            )
+        })
+        .collect();
+    let tensors: Vec<F32Tensor<'_>> = owned
+        .iter()
+        .map(|(name, ne0, ne1, data)| F32Tensor {
+            name,
+            ne0: *ne0,
+            ne1: *ne1,
+            data,
+        })
+        .collect();
+    write_f32_tensors(&dir.join("transformer.gguf"), &tensors)?;
+    let embed = vec![0.1f32; config.cap_dim as usize];
+    write_f32_tensors(
+        &dir.join("text_encoder.gguf"),
+        &[F32Tensor {
+            name: "token_embed.weight",
+            ne0: config.cap_dim,
+            ne1: 1,
+            data: &embed,
+        }],
+    )?;
+    let spec = crate::common::vae::VaeSpec {
+        latent_channels: config.in_channels,
+        block_out: vec![32, 32, 64, 64],
+        resnets: 3,
+        groups: 32,
+        scaling: 0.3611,
+        shift: 0.1159,
+        attention: true,
+    };
+    let mut params = crate::common::vae::parameter_list(&spec)?;
+    params.extend(crate::common::vae::encoder_parameter_list(
+        &spec,
+        "encoder.conv_norm_out",
+    )?);
+    let owned: Vec<(String, [i64; 4], Vec<f32>)> = params
+        .iter()
+        .map(|param| {
+            let mut ne = [1i64; 4];
+            for (index, dim) in param.shape.iter().enumerate() {
+                ne[index] = *dim;
+            }
+            let n = param.shape.iter().map(|dim| *dim as usize).product();
+            let data = if param.name.ends_with(".bias") {
+                vec![0.0; n]
+            } else if param.name.contains("norm") {
+                vec![1.0; n]
+            } else {
+                (0..n).map(|i| ((i % 5) as f32 - 2.0) * 0.02).collect()
+            };
+            (param.name.clone(), ne, data)
+        })
+        .collect();
+    let tensors: Vec<crate::weights::F32Nd<'_>> = owned
+        .iter()
+        .map(|(name, ne, data)| crate::weights::F32Nd {
+            name,
+            ne: *ne,
+            data,
+        })
+        .collect();
+    crate::weights::write_f32_nd(&dir.join("vae.gguf"), &tensors)?;
+    std::fs::write(dir.join("tokenizer.json"), "{}\n").map_err(|err| WeightError::Open {
+        path: dir.display().to_string(),
+        detail: err.to_string(),
+    })?;
+    let manifest = r#"{
+  "format": "gguf",
+  "quant": "bf16",
+  "files": {
+    "transformer": "transformer.gguf",
+    "text_encoder": "text_encoder.gguf",
+    "vae": "vae.gguf"
+  }
+}
+"#;
+    std::fs::write(dir.join("bundle.manifest.json"), manifest).map_err(|err| {
+        WeightError::Open {
+            path: dir.display().to_string(),
+            detail: err.to_string(),
+        }
+    })?;
+    Ok(())
+}
+
+/// Control smoke pair: the edit smoke bundle (full VAE encoder) plus a
+/// controlnet adapter bundle with the smoke control branch weights.
+pub fn write_control_smoke_bundle(base: &Path, controlnet: &Path) -> Result<(), WeightError> {
+    write_edit_smoke_bundle(base)?;
+    let config = ZImageConfig::smoke();
+    let control = weights::ControlConfig {
+        refiner_blocks: config.refiners,
+        layer_blocks: 1,
+        in_channels: config.in_channels * 2 + 1,
+    };
+    std::fs::create_dir_all(controlnet).map_err(|err| WeightError::Open {
+        path: controlnet.display().to_string(),
+        detail: err.to_string(),
+    })?;
+    let owned: Vec<(String, i64, i64, Vec<f32>)> = weights::control_weight_layout(config, control)
+        .iter()
+        .map(|(name, ne0, ne1)| {
+            (
+                name.clone(),
+                *ne0,
+                *ne1,
+                weights::smoke_values(name, *ne0, *ne1),
+            )
+        })
+        .collect();
+    let tensors: Vec<F32Tensor<'_>> = owned
+        .iter()
+        .map(|(name, ne0, ne1, data)| F32Tensor {
+            name,
+            ne0: *ne0,
+            ne1: *ne1,
+            data,
+        })
+        .collect();
+    write_f32_tensors(&controlnet.join("controlnet.gguf"), &tensors)?;
+    let manifest = r#"{
+  "format": "gguf",
+  "quant": "bf16",
+  "files": {
+    "transformer": "controlnet.gguf"
+  }
+}
+"#;
+    std::fs::write(controlnet.join("bundle.manifest.json"), manifest).map_err(|err| {
+        WeightError::Open {
+            path: controlnet.display().to_string(),
+            detail: err.to_string(),
+        }
+    })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::weights::ZImageConfig;
@@ -402,7 +564,7 @@ mod tests {
             types.insert(name, TYPE_F32);
         }
         let ctx = GgmlContext::new(BackendKind::Cpu).expect("cpu");
-        let graph = ZImageDenoise::build(&ctx, config, 64, 64, 4, &types, &[])
+        let graph = ZImageDenoise::build(&ctx, config, 64, 64, 4, &types, &[], None)
             .expect("published-depth z-image graph reserves");
         drop(graph);
     }
@@ -576,6 +738,7 @@ mod tests {
             scheduler_shift: None,
             use_empirical_mu: false,
             adapters: Vec::new(),
+            structural_guide: None,
             priority: "normal".into(),
         }
     }

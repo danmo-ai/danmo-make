@@ -14,6 +14,15 @@ pub struct GgufBundle {
     pub vae: Vec<PathBuf>,
 }
 
+/// Upscale bundle (SeedVR2): GGUF DiT plus a GGUF or safetensors VAE. There
+/// is no text encoder and no tokenizer.
+pub struct UpscaleBundle {
+    pub root: PathBuf,
+    pub quant: String,
+    pub transformer: Vec<PathBuf>,
+    pub vae: Vec<PathBuf>,
+}
+
 #[derive(Deserialize)]
 struct Manifest {
     format: String,
@@ -24,8 +33,10 @@ struct Manifest {
 #[derive(Deserialize)]
 struct ManifestFiles {
     transformer: FileList,
-    text_encoder: FileList,
-    vae: FileList,
+    #[serde(default)]
+    text_encoder: Option<FileList>,
+    #[serde(default)]
+    vae: Option<FileList>,
 }
 
 #[derive(Deserialize)]
@@ -45,6 +56,57 @@ impl FileList {
 }
 
 pub fn assert_gguf_bundle(dir: &Path) -> Result<GgufBundle, WeightError> {
+    let (root, manifest) = read_manifest(dir)?;
+    if !tokenizer_ready(&root) {
+        return Err(WeightError::Bundle {
+            path: root.display().to_string(),
+            detail: "tokenizer is missing".into(),
+        });
+    }
+    let text_encoder = manifest
+        .files
+        .text_encoder
+        .as_ref()
+        .ok_or_else(|| WeightError::Bundle {
+            path: root.display().to_string(),
+            detail: "text_encoder file list is missing".into(),
+        })?;
+    let vae = manifest
+        .files
+        .vae
+        .as_ref()
+        .ok_or_else(|| WeightError::Bundle {
+            path: root.display().to_string(),
+            detail: "vae file list is missing".into(),
+        })?;
+    Ok(GgufBundle {
+        transformer: resolve_role(&root, "transformer", manifest.files.transformer.names())?,
+        text_encoder: resolve_role(&root, "text_encoder", text_encoder.names())?,
+        vae: resolve_role(&root, "vae", vae.names())?,
+        quant: manifest.quant,
+        root,
+    })
+}
+
+pub fn assert_upscale_bundle(dir: &Path) -> Result<UpscaleBundle, WeightError> {
+    let (root, manifest) = read_manifest(dir)?;
+    let vae = manifest
+        .files
+        .vae
+        .as_ref()
+        .ok_or_else(|| WeightError::Bundle {
+            path: root.display().to_string(),
+            detail: "vae file list is missing".into(),
+        })?;
+    Ok(UpscaleBundle {
+        transformer: resolve_role(&root, "transformer", manifest.files.transformer.names())?,
+        vae: resolve_role(&root, "vae", vae.names())?,
+        quant: manifest.quant,
+        root,
+    })
+}
+
+fn read_manifest(dir: &Path) -> Result<(PathBuf, Manifest), WeightError> {
     let root = dir.to_path_buf();
     if !root.is_dir() {
         return Err(WeightError::Bundle {
@@ -87,19 +149,7 @@ pub fn assert_gguf_bundle(dir: &Path) -> Result<GgufBundle, WeightError> {
             detail: format!("quant {} is not bf16, q8_0, or q4_k", manifest.quant),
         });
     }
-    if !tokenizer_ready(&root) {
-        return Err(WeightError::Bundle {
-            path: root.display().to_string(),
-            detail: "tokenizer is missing".into(),
-        });
-    }
-    Ok(GgufBundle {
-        transformer: resolve_role(&root, "transformer", manifest.files.transformer.names())?,
-        text_encoder: resolve_role(&root, "text_encoder", manifest.files.text_encoder.names())?,
-        vae: resolve_role(&root, "vae", manifest.files.vae.names())?,
-        quant: manifest.quant,
-        root,
-    })
+    Ok((root, manifest))
 }
 
 fn resolve_role(root: &Path, role: &str, names: &[String]) -> Result<Vec<PathBuf>, WeightError> {

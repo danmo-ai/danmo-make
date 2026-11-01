@@ -6,6 +6,7 @@ use crate::runtime::{GgmlContext, ReusedGraph, RuntimeError, TYPE_F32};
 use crate::weights::{matmul_type, type_block, GgufWeights, WeightError};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Qwen3Config {
@@ -35,7 +36,8 @@ impl Qwen3Config {
 }
 
 pub struct Loaded {
-    weights: GgufWeights,
+    weights: Arc<GgufWeights>,
+    paths: Vec<PathBuf>,
     config: Qwen3Config,
     prefix: String,
 }
@@ -52,6 +54,7 @@ impl Loaded {
         let config = infer_config(&weights, &prefix)?;
         Ok(Self {
             weights,
+            paths: paths.to_vec(),
             config,
             prefix,
         })
@@ -112,7 +115,14 @@ impl Loaded {
         if ids.is_empty() {
             return Err(WeightError::NotBuilt("prompt has no tokens".into()));
         }
-        let embed = run_tower(ctx, &self.weights, self.config, &self.prefix, layers, ids)?;
+        let embed = crate::common::conditioning::get_or_compute(
+            &self.paths,
+            ctx.kind(),
+            layers,
+            width,
+            ids,
+            || run_tower(ctx, &self.weights, self.config, &self.prefix, layers, ids),
+        )?;
         if let Some(detail) = crate::common::ops::non_finite("text embedding", &embed) {
             return Err(WeightError::NotBuilt(detail));
         }
@@ -134,11 +144,7 @@ impl Loaded {
             .f32_widened(&name, &[self.config.hidden, self.config.vocab])
     }
 
-    pub fn plain_ids(
-        &self,
-        tokenizer_json: &str,
-        prompt: &str,
-    ) -> Result<Vec<i32>, WeightError> {
+    pub fn plain_ids(&self, tokenizer_json: &str, prompt: &str) -> Result<Vec<i32>, WeightError> {
         tokenize_plain(tokenizer_json, prompt, self.config.vocab)
     }
 }

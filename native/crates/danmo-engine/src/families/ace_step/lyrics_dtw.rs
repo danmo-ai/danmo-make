@@ -175,13 +175,7 @@ pub fn align_lyrics_from_attention(
         )));
     }
 
-    let calc = consensus_alignment_matrix(
-        attention,
-        n_heads,
-        n_tokens,
-        n_frames,
-        violence_level,
-    )?;
+    let calc = consensus_alignment_matrix(attention, n_heads, n_tokens, n_frames, violence_level)?;
     let mut neg = vec![0f64; calc.len()];
     for (i, &v) in calc.iter().enumerate() {
         neg[i] = -(v as f64);
@@ -413,10 +407,8 @@ mod tests {
             }
             s
         };
-        let align = align_lyrics_from_attention(
-            &attn, heads, &ids, frames, 20.0, &decode, 2.0,
-        )
-        .unwrap();
+        let align =
+            align_lyrics_from_attention(&attn, heads, &ids, frames, 20.0, &decode, 2.0).unwrap();
         assert_eq!(align.mode, DIT_ALIGNMENT_MODE);
         assert!(align.segments.len() >= 2, "{:?}", align.segments);
         assert!(align.segments[0].text.contains('a'));

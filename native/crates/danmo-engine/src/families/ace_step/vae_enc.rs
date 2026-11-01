@@ -10,7 +10,7 @@ use super::vae::{
     res_unit_placeholder, snake, AceVaeConfig, ResUnitW, AUDIO_UPSAMPLE, LATENT_CHANNELS,
     OUT_CHANNELS,
 };
-use crate::runtime::{shape, GraphBuilder, GgmlContext, ReusedGraph, Tensor, TYPE_F16, TYPE_F32};
+use crate::runtime::{shape, GgmlContext, GraphBuilder, ReusedGraph, Tensor, TYPE_F16, TYPE_F32};
 use crate::weights::{GgufWeights, WeightError};
 
 const ENC_IN_CH: [i64; 5] = [128, 128, 256, 512, 1024];
@@ -261,7 +261,8 @@ pub fn encode_tiled(
         let win_start = (core_start - audio_overlap).max(0);
         let win_end = (core_end + audio_overlap).min(t_audio);
         let win_len = win_end - win_start;
-        let slice = &interleaved[(win_start * OUT_CHANNELS) as usize..(win_end * OUT_CHANNELS) as usize];
+        let slice =
+            &interleaved[(win_start * OUT_CHANNELS) as usize..(win_end * OUT_CHANNELS) as usize];
         let mut session = AceVaeEncSession::build(ctx, config, win_len)?;
         load_weights(&mut session, weights, config)?;
         let tile = session.run_raw_mean(slice, win_len)?;
@@ -273,7 +274,11 @@ pub fn encode_tiled(
         let trim_start = (added_start as f32 * downsample).round() as i64;
         let added_end = win_end - core_end;
         let trim_end = (added_end as f32 * downsample).round() as i64;
-        let end_idx = if trim_end > 0 { tile_t - trim_end } else { tile_t };
+        let end_idx = if trim_end > 0 {
+            tile_t - trim_end
+        } else {
+            tile_t
+        };
         let core_len = end_idx - trim_start;
         if core_len > 0 {
             let start = (trim_start * MEAN_CHANNELS) as usize;
@@ -579,9 +584,7 @@ pub fn load_smoke_zeros(session: &mut AceVaeEncSession) -> Result<(), WeightErro
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        encode, graph_weight_layout, load_smoke_zeros, weight_layout, AceVaeEncSession,
-    };
+    use super::{encode, graph_weight_layout, load_smoke_zeros, weight_layout, AceVaeEncSession};
     use crate::families::ace_step::vae::{AceVaeConfig, AUDIO_UPSAMPLE, LATENT_CHANNELS};
     use crate::runtime::{BackendKind, GgmlContext};
     use crate::weights::{write_f32_nd, F32Nd, GgufWeights};

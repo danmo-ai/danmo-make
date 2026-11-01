@@ -13,4 +13,4 @@ mod tokenizer;
 pub(crate) use session::{encoder_layout, is_rms, tower_present, Loaded, Qwen3Config};
 pub(crate) use tokenizer::load_tokenizer;
 #[allow(unused_imports)]
-pub(crate) use tokenizer::tokenize_plain;
+pub(crate) use tokenizer::{parse_tokenizer_json, tokenize_plain, tokenize_plain_parsed};

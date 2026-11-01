@@ -3,7 +3,7 @@
 //! `text_first` is SD.cpp's caption-then-image order.
 
 use super::geom::{positions_image_first, timestep_features, TokenGrid, FINAL_EPS, PATCH, RMS_EPS};
-use super::weights::ZImageConfig;
+use super::weights::{ControlConfig, ZImageConfig};
 use std::collections::HashMap;
 
 pub fn velocity(
@@ -74,6 +74,330 @@ pub fn velocity(
         grid.img_real as usize,
     );
     unpatchify(&real, grid, config.in_channels as usize)
+}
+
+/// Host forward of the Fun ControlNet Union branch on top of `velocity`.
+/// The flow is diffusers `ZImageControlNetModel.forward`: control noise
+/// refiner hints land on the main noise refiner, control layer hints land on
+/// every second main layer, all scaled by the guide weight.
+pub fn velocity_control(
+    weights: &HashMap<String, Vec<f32>>,
+    control_weights: &HashMap<String, Vec<f32>>,
+    config: ZImageConfig,
+    control: ControlConfig,
+    grid: TokenGrid,
+    latent: &[f32],
+    txt: &[f32],
+    control_context: &[f32],
+    scale: f32,
+    sigma: f32,
+) -> Vec<f32> {
+    let dim = config.dim as usize;
+    let t = (1.0 - sigma) * config.t_scale;
+    let freq = timestep_features(t, config.freq as usize);
+    let t_emb = timestep_mlp(weights, config, &freq);
+    let ids = positions_image_first(grid);
+    let (image_ids, caption_ids) = ids.split_at(grid.img_len as usize);
+    let image = embed_image(weights, config, grid, latent);
+    let caption = embed_caption(weights, config, grid, txt);
+    let tokens = patchify(control_context, grid, control.in_channels as usize);
+    let token_dim = (PATCH * PATCH) as usize * control.in_channels as usize;
+    let embedded = add_bias(
+        &linear(
+            &tokens,
+            w(control_weights, "control_all_x_embedder.2-1.weight"),
+            token_dim,
+            dim,
+            grid.img_real as usize,
+        ),
+        w(control_weights, "control_all_x_embedder.2-1.bias"),
+        dim,
+        grid.img_real as usize,
+    );
+    let mut c = pad_seq(
+        &embedded,
+        dim,
+        w(weights, "x_pad_token"),
+        grid.img_pad as usize,
+    );
+    let mut refiner_hints: Vec<Vec<f32>> = Vec::new();
+    for i in 0..control.refiner_blocks {
+        let prefix = format!("control_noise_refiner.{i}");
+        let input = if i == 0 {
+            add(&before_proj(control_weights, &prefix, &c, config), &image)
+        } else {
+            c
+        };
+        c = control_block(control_weights, &prefix, &input, image_ids, &t_emb, config);
+        refiner_hints.push(scale_hint(
+            &after_proj(control_weights, &prefix, &c, config),
+            scale,
+        ));
+    }
+    let mut image = image;
+    for i in 0..config.refiners {
+        image = block(
+            weights,
+            &format!("noise_refiner.{i}"),
+            &image,
+            image_ids,
+            Some(&t_emb),
+            config,
+            true,
+        );
+        if let Some(hint) = refiner_hints.get(i as usize) {
+            image = add(&image, hint);
+        }
+    }
+    let mut caption = caption;
+    for i in 0..config.refiners {
+        caption = block(
+            weights,
+            &format!("context_refiner.{i}"),
+            &caption,
+            caption_ids,
+            None,
+            config,
+            false,
+        );
+    }
+    let mut unified = concat_seq(&image, &caption, dim);
+    let unified_ids = concat_ids(image_ids, caption_ids);
+    let mut cu = concat_seq(&c, &caption, dim);
+    let mut layer_hints: Vec<Vec<f32>> = Vec::new();
+    for j in 0..control.layer_blocks {
+        let prefix = format!("control_layers.{j}");
+        let input = if j == 0 {
+            add(
+                &before_proj(control_weights, &prefix, &cu, config),
+                &unified,
+            )
+        } else {
+            cu
+        };
+        cu = control_block(
+            control_weights,
+            &prefix,
+            &input,
+            &unified_ids,
+            &t_emb,
+            config,
+        );
+        layer_hints.push(scale_hint(
+            &after_proj(control_weights, &prefix, &cu, config),
+            scale,
+        ));
+    }
+    for i in 0..config.layers {
+        unified = block(
+            weights,
+            &format!("layers.{i}"),
+            &unified,
+            &unified_ids,
+            Some(&t_emb),
+            config,
+            true,
+        );
+        if i % 2 == 0 {
+            if let Some(hint) = layer_hints.get((i / 2) as usize) {
+                unified = add(&unified, hint);
+            }
+        }
+    }
+    let tokens = final_layer(weights, config, &unified, &t_emb);
+    let real = slice_tokens(
+        &tokens,
+        config.token_dim() as usize,
+        0,
+        grid.img_real as usize,
+    );
+    unpatchify(&real, grid, config.in_channels as usize)
+}
+
+fn before_proj(
+    weights: &HashMap<String, Vec<f32>>,
+    prefix: &str,
+    c: &[f32],
+    config: ZImageConfig,
+) -> Vec<f32> {
+    let dim = config.dim as usize;
+    let seq = c.len() / dim;
+    add_bias(
+        &linear(
+            c,
+            w(weights, &format!("{prefix}.before_proj.weight")),
+            dim,
+            dim,
+            seq,
+        ),
+        w(weights, &format!("{prefix}.before_proj.bias")),
+        dim,
+        seq,
+    )
+}
+
+fn after_proj(
+    weights: &HashMap<String, Vec<f32>>,
+    prefix: &str,
+    c: &[f32],
+    config: ZImageConfig,
+) -> Vec<f32> {
+    let dim = config.dim as usize;
+    let seq = c.len() / dim;
+    add_bias(
+        &linear(
+            c,
+            w(weights, &format!("{prefix}.after_proj.weight")),
+            dim,
+            dim,
+            seq,
+        ),
+        w(weights, &format!("{prefix}.after_proj.bias")),
+        dim,
+        seq,
+    )
+}
+
+fn scale_hint(skip: &[f32], scale: f32) -> Vec<f32> {
+    skip.iter().map(|v| v * scale).collect()
+}
+
+fn control_block(
+    weights: &HashMap<String, Vec<f32>>,
+    prefix: &str,
+    x: &[f32],
+    ids: &[[i32; 3]],
+    t_emb: &[f32],
+    config: ZImageConfig,
+) -> Vec<f32> {
+    let dim = config.dim as usize;
+    let seq = x.len() / dim;
+    let packed = add_bias(
+        &linear(
+            t_emb,
+            w(weights, &format!("{prefix}.adaLN_modulation.0.weight")),
+            config.adaln as usize,
+            dim * 4,
+            1,
+        ),
+        w(weights, &format!("{prefix}.adaLN_modulation.0.bias")),
+        dim * 4,
+        1,
+    );
+    let scale_msa = chunk(&packed, 0, dim);
+    let gate_msa = tanh_vec(&chunk(&packed, dim, dim));
+    let scale_mlp = chunk(&packed, dim * 2, dim);
+    let gate_mlp = tanh_vec(&chunk(&packed, dim * 3, dim));
+    let normed = rms(
+        x,
+        w(weights, &format!("{prefix}.attention_norm1.weight")),
+        dim,
+        seq,
+        RMS_EPS,
+    );
+    let normed = modulate(&normed, &scale_msa, dim, seq);
+    let attn = control_attention(weights, prefix, &normed, ids, config);
+    let attn = rms(
+        &attn,
+        w(weights, &format!("{prefix}.attention_norm2.weight")),
+        dim,
+        seq,
+        RMS_EPS,
+    );
+    let x = gate_add(x, &gate_msa, &attn, dim, seq);
+    let normed = rms(
+        &x,
+        w(weights, &format!("{prefix}.ffn_norm1.weight")),
+        dim,
+        seq,
+        RMS_EPS,
+    );
+    let normed = modulate(&normed, &scale_mlp, dim, seq);
+    let ffn = swiglu(weights, prefix, &normed, config);
+    let ffn = rms(
+        &ffn,
+        w(weights, &format!("{prefix}.ffn_norm2.weight")),
+        dim,
+        seq,
+        RMS_EPS,
+    );
+    gate_add(&x, &gate_mlp, &ffn, dim, seq)
+}
+
+fn control_attention(
+    weights: &HashMap<String, Vec<f32>>,
+    prefix: &str,
+    x: &[f32],
+    ids: &[[i32; 3]],
+    config: ZImageConfig,
+) -> Vec<f32> {
+    let dim = config.dim as usize;
+    let head = config.head_dim as usize;
+    let heads = config.heads as usize;
+    let seq = x.len() / dim;
+    let mut q = linear(
+        x,
+        w(weights, &format!("{prefix}.attention.to_q.weight")),
+        dim,
+        dim,
+        seq,
+    );
+    let mut k = linear(
+        x,
+        w(weights, &format!("{prefix}.attention.to_k.weight")),
+        dim,
+        dim,
+        seq,
+    );
+    let v = linear(
+        x,
+        w(weights, &format!("{prefix}.attention.to_v.weight")),
+        dim,
+        dim,
+        seq,
+    );
+    q = rms_heads(
+        &q,
+        w(weights, &format!("{prefix}.attention.norm_q.weight")),
+        head,
+        heads,
+        seq,
+        RMS_EPS,
+    );
+    k = rms_heads(
+        &k,
+        w(weights, &format!("{prefix}.attention.norm_k.weight")),
+        head,
+        heads,
+        seq,
+        RMS_EPS,
+    );
+    rope_seq(
+        &mut q,
+        ids,
+        config.axes,
+        config.rope_theta,
+        head,
+        heads,
+        seq,
+    );
+    rope_seq(
+        &mut k,
+        ids,
+        config.axes,
+        config.rope_theta,
+        head,
+        heads,
+        seq,
+    );
+    let mixed = attend(&q, &k, &v, head, heads, seq);
+    linear(
+        &mixed,
+        w(weights, &format!("{prefix}.attention.to_out.0.weight")),
+        dim,
+        dim,
+        seq,
+    )
 }
 
 fn timestep_mlp(
@@ -800,6 +1124,122 @@ mod tests {
     }
 
     #[test]
+    fn ggml_control_velocity_matches_the_host_reference() {
+        use super::super::graph::ControlBuild;
+        use super::super::transformer::ControlInput;
+        use super::super::weights::{control_weight_layout, smoke_values, ControlConfig};
+        use super::velocity_control;
+        use crate::weights::{write_f32_tensors, F32Tensor};
+
+        let dir = scratch("z-image-control");
+        write_smoke_bundle(&dir).unwrap();
+        let config = ZImageConfig::smoke();
+        let control = ControlConfig {
+            refiner_blocks: config.refiners,
+            layer_blocks: 1,
+            in_channels: config.in_channels * 2 + 1,
+        };
+        let layout = control_weight_layout(config, control);
+        let owned: Vec<(String, i64, i64, Vec<f32>)> = layout
+            .iter()
+            .map(|(name, ne0, ne1)| (name.clone(), *ne0, *ne1, smoke_values(name, *ne0, *ne1)))
+            .collect();
+        let tensors: Vec<F32Tensor<'_>> = owned
+            .iter()
+            .map(|(name, ne0, ne1, data)| F32Tensor {
+                name,
+                ne0: *ne0,
+                ne1: *ne1,
+                data,
+            })
+            .collect();
+        write_f32_tensors(&dir.join("controlnet.gguf"), &tensors).unwrap();
+        let loaded_control = GgufWeights::open(&dir.join("controlnet.gguf")).unwrap();
+        let mut control_weights = HashMap::new();
+        for (name, ne0, ne1) in &layout {
+            control_weights.insert(
+                name.clone(),
+                loaded_control.f32_exact(name, &[*ne0, *ne1]).unwrap(),
+            );
+        }
+        let (weights, _, grid, latent, txt, sigma) = smoke_case_from(&dir);
+        let control_context: Vec<f32> = (0..grid.latent_w * grid.latent_h * control.in_channels)
+            .map(|i| ((i % 6) as f32 - 2.5) * 0.03)
+            .collect();
+        let scale = 0.7f32;
+        let expect = velocity_control(
+            &weights,
+            &control_weights,
+            config,
+            control,
+            grid,
+            &latent,
+            &txt,
+            &control_context,
+            scale,
+            sigma,
+        );
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let types = HashMap::new();
+        let loaded = GgufWeights::open(&dir.join("transformer.gguf")).unwrap();
+        let mut denoise = ZImageDenoise::build(
+            &ctx,
+            config,
+            64,
+            64,
+            grid.cap_real,
+            &types,
+            &[],
+            Some(ControlBuild {
+                config: control,
+                types: HashMap::new(),
+            }),
+        )
+        .unwrap();
+        for (name, ne0, ne1) in weight_layout(config) {
+            let raw = loaded.raw_exact(&name, &[ne0, ne1]).unwrap();
+            denoise.load_bytes(&name, &raw).unwrap();
+        }
+        for (name, ne0, ne1) in &layout {
+            let raw = loaded_control.raw_exact(name, &[*ne0, *ne1]).unwrap();
+            denoise.load_bytes(name, &raw).unwrap();
+        }
+        let got = denoise
+            .forward_velocity(
+                &latent,
+                &txt,
+                sigma,
+                Some(ControlInput {
+                    context: &control_context,
+                    scale,
+                }),
+            )
+            .unwrap();
+        let worst = worst_abs(&got, &expect);
+        assert!(
+            worst < 5e-3,
+            "control forward worst {worst} ggml {:?} host {:?}",
+            &got[..8],
+            &expect[..8]
+        );
+        let zero = velocity_control(
+            &weights,
+            &control_weights,
+            config,
+            control,
+            grid,
+            &latent,
+            &txt,
+            &control_context,
+            0.0,
+            sigma,
+        );
+        let plain = velocity(&weights, config, grid, &latent, &txt, sigma, false);
+        assert_close(&zero, &plain, 1e-5);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn ggml_velocity_matches_the_host_reference() {
         let dir = scratch("z-image-parity");
         write_smoke_bundle(&dir).unwrap();
@@ -808,12 +1248,14 @@ mod tests {
         let types = HashMap::new();
         let loaded = GgufWeights::open(&dir.join("transformer.gguf")).unwrap();
         let mut denoise =
-            ZImageDenoise::build(&ctx, config, 64, 64, grid.cap_real, &types, &[]).unwrap();
+            ZImageDenoise::build(&ctx, config, 64, 64, grid.cap_real, &types, &[], None).unwrap();
         for (name, ne0, ne1) in weight_layout(config) {
             let raw = loaded.raw_exact(&name, &[ne0, ne1]).unwrap();
             denoise.load_bytes(&name, &raw).unwrap();
         }
-        let got = denoise.forward_velocity(&latent, &txt, sigma).unwrap();
+        let got = denoise
+            .forward_velocity(&latent, &txt, sigma, None)
+            .unwrap();
         let expect = velocity(&weights, config, grid, &latent, &txt, sigma, false);
         let worst_forward = worst_abs(&got, &expect);
         assert!(
@@ -823,14 +1265,14 @@ mod tests {
             &expect[..8]
         );
         let mut session =
-            ZImageDenoise::build(&ctx, config, 64, 64, grid.cap_real, &types, &[]).unwrap();
+            ZImageDenoise::build(&ctx, config, 64, 64, grid.cap_real, &types, &[], None).unwrap();
         for (name, ne0, ne1) in weight_layout(config) {
             let raw = loaded.raw_exact(&name, &[ne0, ne1]).unwrap();
             session.load_bytes(&name, &raw).unwrap();
         }
         let sigmas = linear_sigmas(1, 64, 64, true);
         let stepped = session
-            .denoise(latent.clone(), &txt, None, &sigmas, 0.0, |_, _| ())
+            .denoise(latent.clone(), &txt, None, &sigmas, 0.0, None, |_, _| ())
             .unwrap();
         assert_eq!(session.graph_computes(), 1);
         assert_eq!(session.host_readbacks(), 0);

@@ -7,10 +7,13 @@
 use super::apg::broadcast_null_enc;
 use super::cond;
 use super::create::{
-    load_null_condition, load_silence_latent, silence_context, CreateOutput, SILENCE_MAX_FRAMES,
+    duration_to_latent_frames, load_null_condition, load_silence_latent, silence_context,
+    snap_latent_frames, CreateOutput, SILENCE_MAX_FRAMES,
 };
+use super::dcw::DcwSettings;
 use super::fsq;
 use super::lyrics;
+use super::quality;
 use super::repaint;
 use super::schedule::{shift_schedule, TURBO_SHIFT, TURBO_TIMESTEPS};
 use super::text::{
@@ -25,7 +28,9 @@ use super::wav::{self, SAMPLE_RATE};
 use super::weights::{check_layout, config_from_weights};
 use crate::common::ops::normal_latent;
 use crate::runtime::{BackendKind, GgmlContext};
-use crate::weights::{self, GgufWeights, WeightError};
+use crate::weights::{
+    self, load_lora_factors_with_default_alpha, GgufWeights, LoraFile, WeightError,
+};
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +97,7 @@ impl CoverMode {
 pub struct CoverRequest<'a> {
     pub prompt: &'a str,
     pub lyrics: &'a str,
+    pub duration_sec: Option<f32>,
     pub seed: Option<i64>,
     pub guidance: f32,
     pub steps: Option<u32>,
@@ -122,12 +128,26 @@ pub struct CoverRequest<'a> {
     pub timbre_from_source: bool,
     /// Track name(s) for lego / extract / complete (`"drums | bass"` for complete).
     pub track: &'a str,
+    pub loras: &'a [LoraFile],
+    pub dcw: DcwSettings,
 }
 
+#[cfg(test)]
 pub fn run_full_cover(
     bundle: &Path,
     request: &CoverRequest<'_>,
+    backend: BackendKind,
 ) -> Result<CreateOutput, WeightError> {
+    let ctx = GgmlContext::new(backend).map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    run_full_cover_with_context(bundle, request, &ctx)
+}
+
+pub fn run_full_cover_with_context(
+    bundle: &Path,
+    request: &CoverRequest<'_>,
+    ctx: &GgmlContext,
+) -> Result<CreateOutput, WeightError> {
+    let started = std::time::Instant::now();
     if !request.guidance.is_finite() || request.guidance < 1.0 {
         return Err(WeightError::NotBuilt(format!(
             "ACE-Step guidance {} must be >= 1",
@@ -159,7 +179,7 @@ pub fn run_full_cover(
     let config = config_from_weights(&dit)?;
     check_layout(&dit, config)?;
 
-    let mut cover_latents = resolve_cover_latents(bundle, request)?;
+    let mut cover_latents = resolve_cover_latents(bundle, request, ctx)?;
     let frames_pre = cover_latents.len() as i64 / LATENT_CHANNELS;
     if frames_pre < 1 || cover_latents.len() as i64 != frames_pre * LATENT_CHANNELS {
         return Err(WeightError::NotBuilt(
@@ -179,20 +199,30 @@ pub fn run_full_cover(
         None
     };
 
+    let silence_full = load_silence_latent(&dit, config.out_channels)?;
     // Full cover: FSQ tokenize/detokenize degrades micro-timing (acestep.cpp ops_fsq_roundtrip).
     // cover-nofsq skips this and feeds clean 25Hz VAE latents.
     if request.mode == CoverMode::Cover {
-        let silence = load_silence_latent(&dit, config.out_channels)?;
-        let ctx_fsq = GgmlContext::new(BackendKind::Cpu)
-            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-        cover_latents = fsq::roundtrip(&ctx_fsq, &dit, &cover_latents, &silence)?;
+        cover_latents = fsq::roundtrip(ctx, &dit, &cover_latents, &silence_full)?;
     }
 
-    let frames = cover_latents.len() as i64 / LATENT_CHANNELS;
+    let mut frames = cover_latents.len() as i64 / LATENT_CHANNELS;
     if frames < 1 || cover_latents.len() as i64 != frames * LATENT_CHANNELS {
         return Err(WeightError::NotBuilt(
             "ACE-Step cover latents after FSQ must be a non-empty multiple of 64".into(),
         ));
+    }
+    if let Some(duration) = request.duration_sec {
+        let requested = snap_latent_frames(duration_to_latent_frames(duration)?);
+        let target = requested.max(snap_latent_frames(frames));
+        if target > frames {
+            let start = cover_latents.len();
+            cover_latents.extend_from_slice(
+                &silence_full[..(target - frames) as usize * LATENT_CHANNELS as usize],
+            );
+            debug_assert_eq!(cover_latents.len(), start + (target - frames) as usize * 64);
+            frames = target;
+        }
     }
     let is_turbo = config.is_turbo
         || dit_path
@@ -217,7 +247,8 @@ pub fn run_full_cover(
 
     let duration_sec = frames as f32 / 25.0;
     let (lyrics_effective, lyrics_alignment, lyrics_txt, lyrics_lrc) =
-        lyrics::prepare_create_lyrics(request.lyrics, duration_sec).map_err(WeightError::NotBuilt)?;
+        lyrics::prepare_create_lyrics(request.lyrics, duration_sec)
+            .map_err(WeightError::NotBuilt)?;
 
     let is_repaint = request.mode == CoverMode::Repaint;
     let is_lego = request.mode == CoverMode::Lego;
@@ -256,9 +287,6 @@ pub fn run_full_cover(
         request.vocal_language,
     );
 
-    let ctx = GgmlContext::new(BackendKind::Cpu)
-        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-    let silence_full = load_silence_latent(&dit, config.out_channels)?;
     let seed = request.seed.unwrap_or(0);
     let timbre_owned = if let Some(src) = timbre_source.as_ref() {
         let src_frames = src.len() as i64 / LATENT_CHANNELS;
@@ -282,8 +310,7 @@ pub fn run_full_cover(
     )?;
 
     // Repaint/lego never switch to silence context mid-run (mask handles the zone).
-    let need_switch =
-        !is_region && request.audio_cover_strength < 1.0 - f32::EPSILON;
+    let need_switch = !is_region && request.audio_cover_strength < 1.0 - f32::EPSILON;
     let (enc_text2music, enc_seq_t2m) = if need_switch {
         let pair_t2m = build_prompt_strings(
             request.prompt,
@@ -323,7 +350,12 @@ pub fn run_full_cover(
             repaint_t1,
         )?
     } else {
-        cover_context(&cover_latents, frames, config.out_channels, config.in_channels)?
+        cover_context(
+            &cover_latents,
+            frames,
+            config.out_channels,
+            config.in_channels,
+        )?
     };
     let context_silence = if need_switch {
         Some(silence_context(
@@ -336,10 +368,24 @@ pub fn run_full_cover(
         None
     };
 
+    let factors = load_lora_factors_with_default_alpha(
+        request.loras,
+        &super::graph::graph_weight_layout(config),
+        Some(128.0),
+    )?;
     let types = dit_graph_types(&dit, config);
-    let mut model = AceStepDit::build_typed(&ctx, config, frames, enc_seq_graph, &types)
-        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    let mut model =
+        AceStepDit::build_typed_with_loras(&ctx, config, frames, enc_seq_graph, &types, &factors)
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     load_weights(&mut model, &dit, config)?;
+    for (index, factor) in factors.iter().enumerate() {
+        model
+            .load_f32(&format!("lora.{index}.a"), &factor.a)
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        model
+            .load_f32(&format!("lora.{index}.b"), &factor.b)
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    }
 
     let enc_hidden = pad_enc(&enc_hidden, enc_seq, enc_seq_graph, config.condition_dim)?;
     let enc_text2music = enc_text2music
@@ -348,9 +394,7 @@ pub fn run_full_cover(
 
     let null_enc = if request.guidance > 1.0 + f32::EPSILON {
         let emb = load_null_condition(&dit, config.condition_dim)?;
-        Some(
-            broadcast_null_enc(&emb, enc_seq_graph).map_err(WeightError::NotBuilt)?,
-        )
+        Some(broadcast_null_enc(&emb, enc_seq_graph).map_err(WeightError::NotBuilt)?)
     } else {
         None
     };
@@ -404,6 +448,7 @@ pub fn run_full_cover(
             null_enc.as_deref(),
             switch,
             repaint_hook,
+            Some(request.dcw),
             |_, _| (),
         )
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
@@ -434,6 +479,9 @@ pub fn run_full_cover(
         .ok_or_else(|| WeightError::NotBuilt("ACE-Step VAE GGUF is missing".into()))?;
     let vae = GgufWeights::open(vae_path)?;
     let audio = super::vae::decode(&ctx, &vae, &latents, frames)?;
+    let audio = quality::normalize_planar_stereo(&audio, frames)?;
+    let quality =
+        quality::assess_output(&latents, &cover_latents, &audio, SAMPLE_RATE, false, 0.0, 1)?;
     let wav = wav::write_planar_stereo_pcm16(&audio, SAMPLE_RATE)?;
 
     Ok(CreateOutput {
@@ -443,6 +491,10 @@ pub fn run_full_cover(
         steps,
         enc_seq: enc_seq_graph,
         graph_computes: model.graph_computes(),
+        dcw: request.dcw,
+        dcw_active: request.dcw.active(is_turbo),
+        quality,
+        timings: vec![("total", started.elapsed().as_secs_f64())],
         lyrics_effective: lyrics_effective.into_owned(),
         lyrics_alignment,
         lyrics_txt,
@@ -453,6 +505,7 @@ pub fn run_full_cover(
 fn resolve_cover_latents(
     bundle: &Path,
     request: &CoverRequest<'_>,
+    ctx: &GgmlContext,
 ) -> Result<Vec<f32>, WeightError> {
     if let Some(latents) = request.source_latents {
         if latents.is_empty() || latents.len() as i64 % LATENT_CHANNELS != 0 {
@@ -479,8 +532,6 @@ fn resolve_cover_latents(
         .first()
         .ok_or_else(|| WeightError::NotBuilt("ACE-Step VAE GGUF is missing".into()))?;
     let vae = GgufWeights::open(vae_path)?;
-    let ctx = GgmlContext::new(BackendKind::Cpu)
-        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     // Short clips encode directly; longer use tiled path (chunk=256, overlap=64).
     if t_audio <= 256 * AUDIO_UPSAMPLE {
         super::vae_enc::encode(&ctx, &vae, audio, t_audio)
@@ -708,12 +759,15 @@ fn apply_cover_noise_blend(
 pub fn encode_source_audio(
     bundle: &Path,
     interleaved: &[f32],
+    backend: BackendKind,
 ) -> Result<Vec<f32>, WeightError> {
+    let ctx = GgmlContext::new(backend).map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     resolve_cover_latents(
         bundle,
         &CoverRequest {
             prompt: "",
             lyrics: "[inst]",
+            duration_sec: None,
             seed: None,
             guidance: 1.0,
             steps: None,
@@ -732,7 +786,10 @@ pub fn encode_source_audio(
             repaint_crossfade_frames: 8,
             timbre_from_source: false,
             track: "",
+            loras: &[],
+            dcw: Default::default(),
         },
+        &ctx,
     )
 }
 

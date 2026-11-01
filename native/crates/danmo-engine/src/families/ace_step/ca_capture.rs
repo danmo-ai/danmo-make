@@ -208,10 +208,8 @@ pub fn load_capture_weights(
 ) -> Result<(), WeightError> {
     for (name, ne0, ne1) in graph_weight_layout(config) {
         if name == "decoder.proj_in.1.weight" {
-            let raw = weights.f32_exact(
-                &name,
-                &[config.patch, config.in_channels, config.hidden],
-            )?;
+            let raw =
+                weights.f32_exact(&name, &[config.patch, config.in_channels, config.hidden])?;
             let remapped = remap_proj_in(&raw, config.patch, config.in_channels, config.hidden);
             capture
                 .load_f32(&name, &remapped)
@@ -220,10 +218,8 @@ pub fn load_capture_weights(
         }
         if name == "decoder.proj_out.1.weight" {
             // Capture early-exits before proj_out; still bind so the weight table matches.
-            let raw = weights.f32_exact(
-                &name,
-                &[config.patch, config.out_channels, config.hidden],
-            )?;
+            let raw =
+                weights.f32_exact(&name, &[config.patch, config.out_channels, config.hidden])?;
             let remapped = remap_proj_out(&raw, config.patch, config.out_channels, config.hidden);
             capture
                 .load_f32(&name, &remapped)
@@ -320,7 +316,11 @@ fn build_ca_capture(
     let patched = nn(b.reshape_2d(input, config.in_channels * config.patch, seq))?;
     let mut hidden = add_bias(
         b,
-        nn(linear(b, patched, wt(&weights, "decoder.proj_in.1.weight")?))?,
+        nn(linear(
+            b,
+            patched,
+            wt(&weights, "decoder.proj_in.1.weight")?,
+        ))?,
         wt(&weights, "decoder.proj_in.1.bias")?,
     )?;
     let enc = add_bias(
@@ -612,7 +612,12 @@ fn mlp(
     ))
 }
 
-fn adaln(b: &GraphBuilder, norm: Tensor, scale: Tensor, shift: Tensor) -> Result<Tensor, RuntimeError> {
+fn adaln(
+    b: &GraphBuilder,
+    norm: Tensor,
+    scale: Tensor,
+    shift: Tensor,
+) -> Result<Tensor, RuntimeError> {
     let scale = nn(b.repeat(scale, norm))?;
     let shift = nn(b.repeat(shift, norm))?;
     let scaled = nn(b.add(norm, nn(b.mul(norm, scale))?))?;

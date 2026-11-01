@@ -65,7 +65,26 @@ pub fn flash_attend(
         nn(b.cont(b.cast_f16(mask_f32)))?
     };
     let scale = 1.0 / (qs[0] as f32).sqrt();
-    nn(b.flash_attn(q, k, v, mask, scale))
+    let output = nn(b.flash_attn(q, k, v, mask, scale))?;
+    if b.supports(output) {
+        return Ok(output);
+    }
+    if qs[0] < 64 {
+        let padded = 64 - qs[0];
+        let q = b.pad_ext(q, 0, padded as i32, 0, 0, 0, 0, 0, 0);
+        let k = b.pad_ext(k, 0, padded as i32, 0, 0, 0, 0, 0, 0);
+        let v = b.pad_ext(v, 0, padded as i32, 0, 0, 0, 0, 0, 0);
+        let output = nn(b.flash_attn(q, k, v, mask, scale))?;
+        if b.supports(output) {
+            let nb1 = 64 * std::mem::size_of::<f32>();
+            let nb2 = nb1 * qs[1] as usize;
+            return nn(b.cont(b.view_3d(output, qs[0], qs[1], qs[2], nb1, nb2, 0)));
+        }
+    }
+    Err(RuntimeError::Message(format!(
+        "backend does not support flash attention for head dim {} or its padded form",
+        qs[0]
+    )))
 }
 
 /// `ggml_rope_ext` on one head vector. Four-axis Flux2 positions are four

@@ -7,15 +7,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use danmo_catalog::Catalog;
 use danmo_contracts::{
-    AudioEditRequest, AudioGenerationRequest, AudioLmRequest, ImageGenerationRequest, TaskAccepted,
-    TaskKind, VideoGenerationRequest,
+    AudioEditRequest, AudioGenerationRequest, AudioLmRequest, ImageEditRequest,
+    ImageGenerationRequest, ImageUpscaleRequest, TaskAccepted, TaskKind, VideoGenerationRequest,
 };
-use danmo_engine::{
-    audio_create, audio_edit, audio_lm, image_create, read_audio_wav_pcm16, spec, upscale,
-    video_create, BackendKind,
-};
+use danmo_engine::{spec, BackendKind};
 use danmo_schedule::Scheduler;
-use danmo_store::AssetRow;
 use serde_json::{json, Value};
 use std::convert::Infallible;
 use std::path::{Path as FsPath, PathBuf};
@@ -27,30 +23,43 @@ use uuid::Uuid;
 pub(crate) struct AppState {
     pub(crate) scheduler: Scheduler,
     pub(crate) backend: BackendKind,
+    pub(crate) backend_selection: danmo_engine::BackendSelection,
     pub(crate) registry: PathBuf,
     pub(crate) workspace: PathBuf,
     pub(crate) outputs: PathBuf,
     pub(crate) downloads: Downloads,
 }
 
-pub fn router(db: &std::path::Path, registry: &std::path::Path) -> Router {
-    let backend = BackendKind::from_env().unwrap_or(BackendKind::Cpu);
+pub fn try_router(db: &std::path::Path, registry: &std::path::Path) -> Result<Router, String> {
+    let backend_selection = danmo_engine::select_from_env().map_err(|error| error.to_string())?;
+    let backend = backend_selection.backend;
+    tracing::info!(
+        "ggml backend {} selected: {}{}",
+        backend.name(),
+        backend_selection.reason,
+        backend_selection
+            .probe
+            .as_ref()
+            .map(|probe| format!("; {}", probe.summary()))
+            .unwrap_or_default()
+    );
     let workspace = workspace_of(db);
     let outputs = std::env::var("DANQING_OUTPUT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| workspace.join("outputs"));
-    let scheduler = Scheduler::open(db, true).expect("open task db");
+    let scheduler = Scheduler::open(db, true).map_err(|error| error.to_string())?;
     let downloads = Downloads::open(&workspace);
     let state = AppState {
         scheduler,
         backend,
+        backend_selection,
         registry: registry.to_path_buf(),
         workspace,
         outputs,
         downloads,
     };
     spawn_worker(state.clone());
-    Router::new()
+    Ok(Router::new()
         .route("/api/system/health", get(health))
         .route("/api/registry", get(registry_route))
         .route("/api/queue", get(queue))
@@ -68,7 +77,7 @@ pub fn router(db: &std::path::Path, registry: &std::path::Path) -> Router {
         .route("/api/audios/lm", post(audio_lm_route))
         .merge(product::routes())
         .fallback(product::spa)
-        .with_state(state)
+        .with_state(state))
 }
 
 fn workspace_of(db: &FsPath) -> PathBuf {
@@ -100,26 +109,64 @@ fn absolute_dir(path: PathBuf) -> PathBuf {
 
 fn spawn_worker(state: AppState) {
     std::thread::spawn(move || loop {
-        let next = state.scheduler.dequeue().ok().flatten();
+        let next = match state.scheduler.dequeue() {
+            Ok(next) => next,
+            Err(error) => {
+                tracing::error!("task dequeue failed: {error}");
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
         let Some(task) = next else {
             std::thread::sleep(Duration::from_millis(50));
             continue;
         };
-        let params: Value = serde_json::from_str(&task.params).unwrap_or(json!({}));
-        let family = params.get("family").and_then(|v| v.as_str()).unwrap_or("");
-        let outcome = run_task(&state, &task.kind, family, &task.model_id, &params);
-        match outcome {
-            Ok(result) => {
-                let _ = state.scheduler.finish_ok(&task.id, &result.to_string());
+        let params: Value = match serde_json::from_str(&task.params) {
+            Ok(params) => params,
+            Err(error) => {
+                let message = format!("invalid task params: {error}");
+                if let Err(finish_error) = state.scheduler.finish_err(&task.id, &message) {
+                    tracing::error!("task finish failed: {finish_error}");
+                }
+                continue;
             }
-            Err(err) => {
-                let _ = state.scheduler.finish_err(&task.id, &err);
+        };
+        let cancellation = state.scheduler.start_cancellable(&task.id);
+        let outcome = run_task(
+            &state,
+            &task.kind,
+            &task.model_id,
+            &params,
+            cancellation.clone(),
+        );
+        state.scheduler.finish_cancellable(&task.id);
+        let outcome = if cancellation.is_cancelled() {
+            state.scheduler.finish_cancelled(&task.id)
+        } else {
+            match outcome {
+                Ok(result) => state.scheduler.finish_ok(&task.id, &result.to_string()),
+                Err(error) => state.scheduler.finish_err(&task.id, &error),
             }
+        };
+        if let Err(error) = outcome {
+            tracing::error!("task finish failed: {error}");
         }
     });
 }
 
 fn run_task(
+    state: &AppState,
+    kind: &str,
+    model: &str,
+    params: &Value,
+    cancellation: danmo_engine::CancellationToken,
+) -> Result<Value, String> {
+    crate::engine_host::execute(state, kind, model, params, cancellation)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(any())]
+fn run_task_legacy(
     state: &AppState,
     kind: &str,
     family: &str,
@@ -139,12 +186,21 @@ fn run_task(
             | "audio.edit"
             | "audio.lm"
     );
+    let task_id = params.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
+    let note = |level: &str, message: String| {
+        if !task_id.is_empty() {
+            let _ = state.scheduler.log(task_id, level, &message);
+        }
+    };
     let bundle = if needs_bundle {
-        Some(gguf_bundle(state, model)?)
+        let resolved = gguf_bundle(state, model)?;
+        note("info", format!("bundle {}", resolved.display()));
+        Some(resolved)
     } else {
         None
     };
-    match kind {
+    let started = std::time::Instant::now();
+    let outcome = match kind {
         "image.generation" => {
             let request: ImageGenerationRequest =
                 serde_json::from_value(params.get("request").cloned().unwrap_or(json!({})))
@@ -240,12 +296,34 @@ fn run_task(
                     audio_code_indices: request.audio_code_indices.as_deref(),
                     timbre_latents: request.timbre_latents.as_deref(),
                 },
+                state.backend,
+                |phase, step, total| {
+                    let task_id = params.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
+                    if task_id.is_empty() || total == 0 {
+                        return;
+                    }
+                    // LM expansion owns the first quarter of the bar, denoise the rest.
+                    let frac = step as f64 / total as f64;
+                    let progress = if phase == "lm" {
+                        frac * 0.25
+                    } else {
+                        0.25 + frac * 0.75
+                    };
+                    // One row per token would flood the task log; sample it.
+                    let sample = phase != "lm" || step % 8 == 0 || step + 1 == total;
+                    if !sample {
+                        let _ = state.scheduler.set_progress(task_id, progress);
+                        return;
+                    }
+                    let _ = state.scheduler.progress(
+                        task_id,
+                        progress,
+                        &format!("{phase} {step}/{total}"),
+                    );
+                },
             )
             .map_err(|e| e.to_string())?;
-            let task_id = params
-                .get("task_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let task_id = params.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
             let asset_ids = persist_audio_wav(state, task_id, model, params, &out)?;
             let alignment: Value = serde_json::from_str(&out.lyrics_alignment_json)
                 .unwrap_or_else(|_| json!({"lyrics_alignment": "unknown"}));
@@ -282,6 +360,7 @@ fn run_task(
             let out = audio_edit(
                 family,
                 &bundle,
+                state.backend,
                 &danmo_engine::AudioEditRequest {
                     prompt: &request.prompt,
                     lyrics,
@@ -303,10 +382,7 @@ fn run_task(
                 },
             )
             .map_err(|e| e.to_string())?;
-            let task_id = params
-                .get("task_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let task_id = params.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
             let asset_ids = persist_audio_wav(state, task_id, model, params, &out)?;
             let alignment: Value = serde_json::from_str(&out.lyrics_alignment_json)
                 .unwrap_or_else(|_| json!({"lyrics_alignment": "unknown"}));
@@ -337,6 +413,7 @@ fn run_task(
             let out = audio_lm(
                 family,
                 &bundle,
+                state.backend,
                 &danmo_engine::AudioLmRequest {
                     mode: &request.mode,
                     prompt: &request.prompt,
@@ -379,14 +456,25 @@ fn run_task(
             Err(format!("{family} graph is not built"))
         }
         other => Err(format!("unsupported task kind {other}")),
+    };
+    let elapsed = started.elapsed().as_secs_f64();
+    match &outcome {
+        Ok(_) => note("info", format!("done in {elapsed:.1}s")),
+        Err(err) => note("error", format!("failed after {elapsed:.1}s: {err}")),
     }
+    outcome
 }
 
+#[cfg(any())]
 fn resolve_edit_source_audio(
     state: &AppState,
     request: &AudioEditRequest,
 ) -> Result<(Option<Vec<f32>>, u32), String> {
-    if request.source_latents.as_ref().is_some_and(|v| !v.is_empty()) {
+    if request
+        .source_latents
+        .as_ref()
+        .is_some_and(|v| !v.is_empty())
+    {
         return Ok((None, 48_000));
     }
     let bytes = if let Some(path) = request.source_audio.as_ref().filter(|p| !p.is_empty()) {
@@ -396,12 +484,8 @@ fn resolve_edit_source_audio(
         } else {
             state.workspace.join(p)
         };
-        std::fs::read(&resolved).map_err(|err| {
-            format!(
-                "ACE-Step cover source_audio {}: {err}",
-                resolved.display()
-            )
-        })?
+        std::fs::read(&resolved)
+            .map_err(|err| format!("ACE-Step cover source_audio {}: {err}", resolved.display()))?
     } else if let Some(b64) = request
         .source_audio_base64
         .as_ref()
@@ -424,6 +508,7 @@ fn resolve_edit_source_audio(
     Ok((Some(pcm), sr))
 }
 
+#[cfg(any())]
 fn persist_audio_wav(
     state: &AppState,
     task_id: &str,
@@ -489,6 +574,7 @@ fn persist_audio_wav(
     Ok(vec![id])
 }
 
+#[cfg(any())]
 fn persist_preview(
     state: &AppState,
     task_id: &str,
@@ -553,6 +639,7 @@ fn parse_step_message(message: &str) -> (u32, u32) {
     )
 }
 
+#[cfg(any())]
 fn png_size(png: &[u8]) -> (i64, i64) {
     if png.len() < 24 {
         return (0, 0);
@@ -562,12 +649,55 @@ fn png_size(png: &[u8]) -> (i64, i64) {
     (width as i64, height as i64)
 }
 
-fn gguf_bundle(state: &AppState, model: &str) -> Result<PathBuf, String> {
+/// Resolve a model id to its installed bundle. `id:version` pins the tier.
+/// A bare id picks the first **installed** tier, so a registry `default` the
+/// user never downloaded cannot win over one they did.
+pub(crate) fn gguf_bundle(state: &AppState, model: &str) -> Result<PathBuf, String> {
     let catalog = Catalog::open(&state.registry).map_err(|e| e.to_string())?;
+    let (bare, requested) = match model.split_once(':') {
+        Some((bare, version)) if !bare.is_empty() && !version.is_empty() => (bare, Some(version)),
+        _ => (model, None),
+    };
+    if requested.is_some() {
+        let path = catalog.gguf_local_path(model).map_err(|e| e.to_string())?;
+        return Ok(download::resolve_model_path(&state.workspace, &path));
+    }
+    if let Some(version) = installed_version(&state.workspace, catalog.root(), bare) {
+        let path = catalog
+            .gguf_local_path(&format!("{bare}:{version}"))
+            .map_err(|e| e.to_string())?;
+        return Ok(download::resolve_model_path(&state.workspace, &path));
+    }
     let path = catalog.gguf_local_path(model).map_err(|e| e.to_string())?;
     Ok(download::resolve_model_path(&state.workspace, &path))
 }
 
+/// First tier whose directory is a ready GGUF bundle, in bf16 / q8_0 / q4_k order.
+pub(crate) fn installed_version(
+    workspace: &std::path::Path,
+    root: &serde_json::Value,
+    model_id: &str,
+) -> Option<String> {
+    let versions = root
+        .pointer(&format!("/models/{model_id}/distribution/versions"))?
+        .as_object()?;
+    for key in danmo_catalog::GGUF_VERSION_KEYS {
+        let Some(path) = versions
+            .get(*key)
+            .and_then(|v| v.get("local_path"))
+            .and_then(|v| v.as_str())
+            .filter(|path| !path.is_empty())
+        else {
+            continue;
+        };
+        if download::version_ready(&download::resolve_model_path(workspace, path)) {
+            return Some((*key).to_string());
+        }
+    }
+    None
+}
+
+#[cfg(any())]
 fn upscale_or_edit(kind: &str, family: &str, bundle: &std::path::Path) -> Result<Value, String> {
     if kind == "image.upscale" {
         upscale(family, bundle)
@@ -583,7 +713,9 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "ok": true,
         "runtime": "ggml",
-        "backend": format!("{:?}", state.backend).to_lowercase(),
+        "backend": state.backend.name(),
+        "backend_selection": state.backend_selection.reason,
+        "backend_probe": state.backend_selection.probe.as_ref().map(|probe| probe.summary()),
     }))
 }
 
@@ -687,11 +819,16 @@ async fn stream_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
+    use axum::body::{Body, Bytes};
+    use axum::http::{header, HeaderMap, Request, StatusCode};
+    use axum::response::{IntoResponse, Response};
     use http_body_util::BodyExt;
     use std::io::{Read, Write};
     use tower::ServiceExt;
+
+    fn router(db: &std::path::Path, registry: &std::path::Path) -> Router {
+        try_router(db, registry).expect("test router")
+    }
 
     fn factory_registry() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -814,6 +951,605 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn base64_encode(bytes: &[u8]) -> String {
+        const ALPHA: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let b0 = chunk[0] as u32;
+            let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+            let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+            let n = (b0 << 16) | (b1 << 8) | b2;
+            out.push(ALPHA[(n >> 18) as usize & 63] as char);
+            out.push(ALPHA[(n >> 12) as usize & 63] as char);
+            out.push(if chunk.len() > 1 {
+                ALPHA[(n >> 6) as usize & 63] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                ALPHA[n as usize & 63] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn qwen_image_edit_runs_end_to_end() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-edit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (model, local_path) = published_weight("qwen-image-edit", "q4_k");
+        let bundle = dir.join(&local_path);
+        danmo_engine::write_edit_smoke_bundle(&bundle).unwrap();
+        let app = router(&dir.join("studio.db"), &factory_registry());
+        let rgb = vec![128u8; 48 * 32 * 3];
+        let png = danmo_engine::png::encode_rgb(48, 32, &rgb);
+        let upload = post_json(
+            &app,
+            "/api/assets",
+            &json!({
+                "filename": "source.png",
+                "data_base64": base64_encode(&png),
+            }),
+        )
+        .await;
+        assert_eq!(upload.0, StatusCode::OK, "{}", upload.1);
+        let source_id = upload.1["id"].as_str().unwrap().to_string();
+        let edit = post_json(
+            &app,
+            "/api/images/edits",
+            &json!({
+                "model": model,
+                "operation": "rewrite",
+                "source_asset_id": source_id,
+                "title": "smoke edit",
+                "prompt": "make it blue",
+                "steps": 2,
+                "guidance": 1.0,
+                "seed": 1,
+                "priority": "normal"
+            }),
+        )
+        .await;
+        assert_eq!(edit.0, StatusCode::ACCEPTED, "{}", edit.1);
+        let id = edit.1["id"].as_str().unwrap();
+        let task = wait_terminal_for(&app, id, 300, 100).await;
+        assert_eq!(task["status"], "completed", "task {task}");
+        assert_eq!(task["result"]["width"], 48, "task {task}");
+        assert_eq!(task["result"]["height"], 32, "task {task}");
+        assert_eq!(task["result"]["source_asset_id"], json!(source_id));
+        let ids = task["result"]["asset_ids"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(ids.len(), 1, "task {task}");
+        let assets = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/assets")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = assets.into_body().collect().await.unwrap().to_bytes();
+        let listed: Value = serde_json::from_slice(&bytes).unwrap();
+        let edited = listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == ids[0])
+            .cloned()
+            .unwrap_or(json!({}));
+        assert_eq!(edited["parent_asset_id"], json!(source_id), "{edited}");
+        assert_eq!(edited["relation_type"], "edit", "{edited}");
+        let unbuilt = post_json(
+            &app,
+            "/api/images/edits",
+            &json!({
+                "model": "fibo",
+                "operation": "rewrite",
+                "source_asset_id": source_id,
+                "prompt": "make it blue",
+                "steps": 2
+            }),
+        )
+        .await;
+        assert_eq!(unbuilt.0, StatusCode::NOT_IMPLEMENTED, "{}", unbuilt.1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    async fn rewrite_edit_runs_end_to_end(model: &str, write_bundle: fn(&std::path::Path)) {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-edit-{}-{}-{}",
+            model.replace(':', "-"),
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (model, local_path) = published_weight(model, "q4_k");
+        let bundle = dir.join(&local_path);
+        write_bundle(&bundle);
+        let app = router(&dir.join("studio.db"), &factory_registry());
+        let rgb = vec![128u8; 32 * 32 * 3];
+        let png = danmo_engine::png::encode_rgb(32, 32, &rgb);
+        let upload = post_json(
+            &app,
+            "/api/assets",
+            &json!({
+                "filename": "source.png",
+                "data_base64": base64_encode(&png),
+            }),
+        )
+        .await;
+        assert_eq!(upload.0, StatusCode::OK, "{}", upload.1);
+        let source_id = upload.1["id"].as_str().unwrap().to_string();
+        let edit = post_json(
+            &app,
+            "/api/images/edits",
+            &json!({
+                "model": model,
+                "operation": "rewrite",
+                "source_asset_id": source_id,
+                "title": "smoke edit",
+                "prompt": "make it blue",
+                "steps": 4,
+                "guidance": 1.0,
+                "seed": 1,
+                "priority": "normal"
+            }),
+        )
+        .await;
+        assert_eq!(edit.0, StatusCode::ACCEPTED, "{}", edit.1);
+        let id = edit.1["id"].as_str().unwrap();
+        let task = wait_terminal_for(&app, id, 300, 100).await;
+        assert_eq!(task["status"], "completed", "task {task}");
+        assert_eq!(task["result"]["width"], 32, "task {task}");
+        assert_eq!(task["result"]["height"], 32, "task {task}");
+        assert_eq!(task["result"]["source_asset_id"], json!(source_id));
+        assert_eq!(task["result"]["init_timestep"], json!(2), "task {task}");
+        let ids = task["result"]["asset_ids"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(ids.len(), 1, "task {task}");
+        let assets = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/assets")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = assets.into_body().collect().await.unwrap().to_bytes();
+        let listed: Value = serde_json::from_slice(&bytes).unwrap();
+        let edited = listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == ids[0])
+            .cloned()
+            .unwrap_or(json!({}));
+        assert_eq!(edited["parent_asset_id"], json!(source_id), "{edited}");
+        assert_eq!(edited["relation_type"], "edit", "{edited}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn z_image_edit_runs_end_to_end() {
+        rewrite_edit_runs_end_to_end("z-image", |bundle| {
+            danmo_engine::write_z_image_edit_smoke_bundle(bundle).unwrap()
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn flux2_edit_runs_end_to_end() {
+        rewrite_edit_runs_end_to_end("flux2-klein-4b", |bundle| {
+            danmo_engine::write_flux2_edit_smoke_bundle(bundle).unwrap()
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn seedvr2_upscale_runs_end_to_end() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-upscale-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (model, local_path) = published_weight("seedvr2-3b", "q4_k");
+        let bundle = dir.join(&local_path);
+        danmo_engine::write_seedvr2_smoke_bundle(&bundle).unwrap();
+        let app = router(&dir.join("studio.db"), &factory_registry());
+        let rgb = vec![128u8; 32 * 32 * 3];
+        let png = danmo_engine::png::encode_rgb(32, 32, &rgb);
+        let upload = post_json(
+            &app,
+            "/api/assets",
+            &json!({
+                "filename": "source.png",
+                "data_base64": base64_encode(&png),
+            }),
+        )
+        .await;
+        assert_eq!(upload.0, StatusCode::OK, "{}", upload.1);
+        let source_id = upload.1["id"].as_str().unwrap().to_string();
+        let upscale = post_json(
+            &app,
+            "/api/images/upscales",
+            &json!({
+                "model": model,
+                "source_asset_id": source_id,
+                "scale": 2,
+                "seed": 1,
+                "priority": "normal"
+            }),
+        )
+        .await;
+        assert_eq!(upscale.0, StatusCode::ACCEPTED, "{}", upscale.1);
+        let id = upscale.1["id"].as_str().unwrap();
+        let task = wait_terminal_for(&app, id, 300, 100).await;
+        assert_eq!(task["status"], "completed", "task {task}");
+        assert_eq!(task["result"]["width"], 64, "task {task}");
+        assert_eq!(task["result"]["height"], 64, "task {task}");
+        assert_eq!(task["result"]["source_asset_id"], json!(source_id));
+        let ids = task["result"]["asset_ids"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(ids.len(), 1, "task {task}");
+        let assets = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/assets")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = assets.into_body().collect().await.unwrap().to_bytes();
+        let listed: Value = serde_json::from_slice(&bytes).unwrap();
+        let upscaled = listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == ids[0])
+            .cloned()
+            .unwrap_or(json!({}));
+        assert_eq!(upscaled["parent_asset_id"], json!(source_id), "{upscaled}");
+        assert_eq!(upscaled["relation_type"], "upscale", "{upscaled}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn z_image_controlnet_create_runs_end_to_end() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-control-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The factory registry leaves the union controlnet unpublished; the
+        // test copy points its q4_k tier at the smoke adapter bundle.
+        let mut registry: Value =
+            serde_json::from_str(&std::fs::read_to_string(factory_registry()).unwrap()).unwrap();
+        let control_local = "models/ControlNet/z-image-turbo-fun-controlnet-union/q4_k";
+        registry["models"]["z-image-turbo-fun-controlnet-union"]["distribution"]["versions"] = json!({
+            "q4_k": {
+                "name": { "zh": "Q4_K", "en": "Q4_K" },
+                "size": "1GB",
+                "local_path": control_local
+            }
+        });
+        let registry_path = dir.join("registry.json");
+        std::fs::write(&registry_path, serde_json::to_string(&registry).unwrap()).unwrap();
+        let (model, base_local) = published_weight("z-image", "q4_k");
+        danmo_engine::write_z_image_control_smoke_bundle(
+            &dir.join(&base_local),
+            &dir.join(control_local),
+        )
+        .unwrap();
+        let app = router(&dir.join("studio.db"), &registry_path);
+        let rgb = vec![200u8; 64 * 64 * 3];
+        let png = danmo_engine::png::encode_rgb(64, 64, &rgb);
+        let upload = post_json(
+            &app,
+            "/api/assets",
+            &json!({
+                "filename": "control.png",
+                "data_base64": base64_encode(&png),
+            }),
+        )
+        .await;
+        assert_eq!(upload.0, StatusCode::OK, "{}", upload.1);
+        let control_id = upload.1["id"].as_str().unwrap().to_string();
+        let mut body = vue_generate_body(&model, "a cat");
+        body["structural_guide"] = json!({
+            "asset_id": control_id,
+            "model_id": "z-image-turbo-fun-controlnet-union:q4_k",
+            "type": "canny",
+            "weight": 0.8
+        });
+        let create = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(create.0, StatusCode::ACCEPTED, "{}", create.1);
+        let id = create.1["id"].as_str().unwrap();
+        let task = wait_terminal_for(&app, id, 300, 100).await;
+        assert_eq!(task["status"], "completed", "task {task}");
+        assert_eq!(task["result"]["width"], 64, "task {task}");
+        assert_eq!(task["result"]["height"], 64, "task {task}");
+        let ids = task["result"]["asset_ids"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(ids.len(), 1, "task {task}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn assistant_endpoints_fail_loud_without_configuration() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-assistant-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = router(&dir.join("studio.db"), &factory_registry());
+        let info = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/llm/model")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(info.status(), StatusCode::OK);
+        let bytes = info.into_body().collect().await.unwrap().to_bytes();
+        let info: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(info["model_id"], "qwen3-vl-4b-instruct", "{info}");
+        assert_eq!(info["provider"], "builtin", "{info}");
+        assert_eq!(info["available"], false, "{info}");
+        assert_eq!(info["think_supported"], false, "{info}");
+        let vision = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/vision/model")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(vision.status(), StatusCode::OK);
+        let bytes = vision.into_body().collect().await.unwrap().to_bytes();
+        let vision: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(vision["available"], false, "{vision}");
+        let enhance = post_json(
+            &app,
+            "/api/chat/enhance-prompt",
+            &json!({ "prompt": "a cat" }),
+        )
+        .await;
+        assert_eq!(enhance.0, StatusCode::SERVICE_UNAVAILABLE, "{}", enhance.1);
+        assert!(
+            enhance.1["detail"]
+                .as_str()
+                .unwrap()
+                .contains("not installed"),
+            "{}",
+            enhance.1
+        );
+        let chat = post_json(
+            &app,
+            "/v1/chat/completions",
+            &json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+        )
+        .await;
+        assert_eq!(chat.0, StatusCode::SERVICE_UNAVAILABLE, "{}", chat.1);
+        let put = put_json(
+            &app,
+            "/api/settings",
+            &json!({ "llm_inference_provider": "openai_compatible" }),
+        )
+        .await;
+        assert_eq!(put.0, StatusCode::OK, "{}", put.1);
+        let info = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/llm/model")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = info.into_body().collect().await.unwrap().to_bytes();
+        let info: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(info["provider"], "openai_compatible", "{info}");
+        assert_eq!(info["available"], false, "{info}");
+        let enhance = post_json(
+            &app,
+            "/api/chat/enhance-prompt",
+            &json!({ "prompt": "a cat" }),
+        )
+        .await;
+        assert_eq!(enhance.0, StatusCode::SERVICE_UNAVAILABLE, "{}", enhance.1);
+        assert!(
+            enhance.1["detail"]
+                .as_str()
+                .unwrap()
+                .contains("not configured"),
+            "{}",
+            enhance.1
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn assistant_cloud_proxy_roundtrip() {
+        async fn mock_chat(headers: HeaderMap, body: Bytes) -> Response {
+            let auth = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if auth != "Bearer test-key" {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": "bad key" })),
+                )
+                    .into_response();
+            }
+            let request: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(request["model"], "mock-model", "{request}");
+            if request["stream"].as_bool() == Some(true) {
+                let sse =
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n";
+                return Response::builder()
+                    .header(header::CONTENT_TYPE, "text/event-stream")
+                    .body(Body::from(sse))
+                    .unwrap();
+            }
+            Json(json!({
+                "id": "chatcmpl-mock",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "mock-model",
+                "choices": [{
+                    "index": 0,
+                    "message": { "role": "assistant", "content": "a vivid cat portrait, soft light" },
+                    "finish_reason": "stop"
+                }],
+                "usage": { "prompt_tokens": 3, "completion_tokens": 6, "total_tokens": 9 }
+            }))
+            .into_response()
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mock = Router::new().route("/v1/chat/completions", post(mock_chat));
+        tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-cloud-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = router(&dir.join("studio.db"), &factory_registry());
+        let put = put_json(
+            &app,
+            "/api/settings",
+            &json!({
+                "llm_inference_provider": "openai_compatible",
+                "llm_inference_base_url": format!("http://127.0.0.1:{port}"),
+                "llm_inference_api_key": "test-key",
+                "llm_inference_cloud_model": "mock-model"
+            }),
+        )
+        .await;
+        assert_eq!(put.0, StatusCode::OK, "{}", put.1);
+        let info = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/llm/model")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = info.into_body().collect().await.unwrap().to_bytes();
+        let info: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(info["available"], true, "{info}");
+        assert_eq!(info["provider"], "openai_compatible", "{info}");
+        let enhance = post_json(
+            &app,
+            "/api/chat/enhance-prompt",
+            &json!({ "prompt": "a cat", "target_action": "image_create" }),
+        )
+        .await;
+        assert_eq!(enhance.0, StatusCode::OK, "{}", enhance.1);
+        assert_eq!(
+            enhance.1["enhanced_prompt"], "a vivid cat portrait, soft light",
+            "{}",
+            enhance.1
+        );
+        let chat = post_json(
+            &app,
+            "/v1/chat/completions",
+            &json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+        )
+        .await;
+        assert_eq!(chat.0, StatusCode::OK, "{}", chat.1);
+        assert_eq!(
+            chat.1["choices"][0]["message"]["content"], "a vivid cat portrait, soft light",
+            "{}",
+            chat.1
+        );
+        let streaming = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "messages": [{ "role": "user", "content": "hi" }],
+                            "stream": true
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(streaming.status(), StatusCode::OK);
+        assert_eq!(
+            streaming
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/event-stream")
+        );
+        let bytes = streaming.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(text.contains("data: {"), "{text}");
+        assert!(text.contains("data: [DONE]"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn image_create_rejects_unbuilt_inference_options() {
         let dir = std::env::temp_dir().join(format!(
@@ -890,13 +1626,190 @@ mod tests {
         body["use_empirical_mu"] = json!(true);
         let empirical = post_json(&app, "/api/images/generations", &body).await;
         assert_eq!(empirical.0, StatusCode::ACCEPTED, "{}", empirical.1);
-        let edit = post_json(&app, "/api/images/edits", &body).await;
-        assert_eq!(edit.0, StatusCode::NOT_IMPLEMENTED);
+        let edit = post_json(
+            &app,
+            "/api/images/edits",
+            &json!({
+                "model": "fibo",
+                "operation": "rewrite",
+                "source_asset_id": "asset-missing",
+                "prompt": "a cat",
+                "steps": 2
+            }),
+        )
+        .await;
+        assert_eq!(edit.0, StatusCode::NOT_IMPLEMENTED, "{}", edit.1);
         assert!(
-            edit.1["detail"].as_str().unwrap().contains("edit graph"),
+            edit.1["detail"].as_str().unwrap().contains("image.edit"),
             "{}",
             edit.1
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn image_create_validates_structural_guide() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-guide-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = router(&dir.join("studio.db"), &factory_registry());
+        let controlnet = "z-image-turbo-fun-controlnet-union";
+        let mut body = vue_generate_body("z-image-turbo", "a cat");
+        body["structural_guide"] = json!({ "asset_id": "asset-control" });
+        let missing_model = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(missing_model.0, StatusCode::BAD_REQUEST);
+        assert!(
+            missing_model.1["detail"]
+                .as_str()
+                .unwrap()
+                .contains("structural_guide.model_id"),
+            "{}",
+            missing_model.1
+        );
+        body["structural_guide"] = json!({
+            "asset_id": "asset-control",
+            "model_id": "z-image-turbo"
+        });
+        let not_controlnet = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(not_controlnet.0, StatusCode::BAD_REQUEST);
+        assert!(
+            not_controlnet.1["detail"]
+                .as_str()
+                .unwrap()
+                .contains("is not a controlnet"),
+            "{}",
+            not_controlnet.1
+        );
+        body["structural_guide"] = json!({
+            "asset_id": "asset-control",
+            "model_id": controlnet,
+            "type": "redux"
+        });
+        let redux = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(redux.0, StatusCode::BAD_REQUEST);
+        assert!(
+            redux.1["detail"].as_str().unwrap().contains("redux"),
+            "{}",
+            redux.1
+        );
+        body["structural_guide"] = json!({
+            "asset_id": "asset-control",
+            "model_id": controlnet,
+            "inpaint_source_asset_id": "asset-src"
+        });
+        let half_pair = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(half_pair.0, StatusCode::BAD_REQUEST);
+        assert!(
+            half_pair.1["detail"]
+                .as_str()
+                .unwrap()
+                .contains("inpaint_mask_asset_id"),
+            "{}",
+            half_pair.1
+        );
+        body["structural_guide"] = json!({
+            "asset_id": "asset-control",
+            "model_id": controlnet,
+            "weight": 3.0
+        });
+        let heavy = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(heavy.0, StatusCode::BAD_REQUEST);
+        body["model"] = json!("fibo");
+        body["structural_guide"] = json!({
+            "asset_id": "asset-control",
+            "model_id": controlnet
+        });
+        let wrong_family = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(
+            wrong_family.0,
+            StatusCode::NOT_IMPLEMENTED,
+            "{}",
+            wrong_family.1
+        );
+        assert!(
+            wrong_family.1["detail"]
+                .as_str()
+                .unwrap()
+                .contains("structural guide graph is not built"),
+            "{}",
+            wrong_family.1
+        );
+        body["model"] = json!("z-image-turbo");
+        let accepted = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(accepted.0, StatusCode::ACCEPTED, "{}", accepted.1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn audio_create_binds_installed_ace_loras() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-ace-lora-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = router(&dir.join("studio.db"), &factory_registry());
+        let body = json!({
+            "model": "ace-step-xl-sft",
+            "prompt": "lofi",
+            "lyrics": "[inst]",
+            "instrumental": true,
+            "vocal_type": "female",
+            "n": 2,
+            "audio_format": "mp3",
+            "denoise": "mild",
+            "duration": 5,
+            "lm_expansion": "off",
+            "dcw_enabled": false,
+            "dcw_mode": "pix",
+            "dcw_wavelet": "haar",
+            "dcw_scaler": 0.1,
+            "dcw_high_scaler": 0.02,
+            "adapters": [{"id": "ace-style", "weight": 0.75}]
+        });
+        let missing = post_json(&app, "/api/audios/generations", &body).await;
+        assert_eq!(missing.0, StatusCode::BAD_REQUEST);
+        assert!(missing.1["detail"]
+            .as_str()
+            .unwrap_or("")
+            .contains("not installed"));
+
+        let config = dir.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("user_loras.json"),
+            r#"{"items":[{"id":"ace-style","base_model":"ace-step-xl-sft","local_path":"models/Lora/ace-style.gguf"}]}"#,
+        )
+        .unwrap();
+        let lora = dir.join("models/Lora/ace-style.gguf");
+        std::fs::create_dir_all(lora.parent().unwrap()).unwrap();
+        std::fs::write(&lora, b"test").unwrap();
+        let accepted = post_json(&app, "/api/audios/generations", &body).await;
+        assert_eq!(accepted.0, StatusCode::ACCEPTED, "{}", accepted.1);
+        let edit = json!({
+            "model": "ace-step-xl-sft",
+            "prompt": "lofi",
+            "task": "cover-nofsq",
+            "source_latents": vec![0.0; 64],
+            "duration": 8,
+            "n": 2,
+            "audio_format": "flac",
+            "denoise": "strong",
+            "dcw_enabled": true,
+            "dcw_mode": "double",
+            "adapters": [{"id": "ace-style", "weight": 0.5}]
+        });
+        let accepted_edit = post_json(&app, "/api/audios/edits", &edit).await;
+        assert_eq!(accepted_edit.0, StatusCode::ACCEPTED, "{}", accepted_edit.1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -906,6 +1819,26 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let payload = serde_json::from_slice(&bytes)
+            .unwrap_or(json!({ "raw": String::from_utf8_lossy(&bytes).to_string() }));
+        (status, payload)
+    }
+
+    async fn put_json(app: &Router, uri: &str, body: &Value) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
                     .uri(uri)
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
@@ -1313,6 +2246,63 @@ mod tests {
         assert_eq!(removed.status(), StatusCode::OK, "{removed:?}");
         assert!(!bundle.join("demo.gguf").exists());
 
+        let batch = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/models/install-batch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model_ids":["demo-gguf"]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(batch.status(), StatusCode::OK);
+        let bytes = batch.into_body().collect().await.unwrap().to_bytes();
+        let batch: Value = serde_json::from_slice(&bytes).unwrap();
+        let batch_id = batch["task_ids"][0].as_str().unwrap().to_string();
+        let mut batch_status = String::new();
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let listed = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/download/tasks")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let bytes = listed.into_body().collect().await.unwrap().to_bytes();
+            let tasks: Value = serde_json::from_slice(&bytes).unwrap();
+            let task = tasks
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|task| task["id"] == batch_id)
+                .unwrap();
+            batch_status = task["status"].as_str().unwrap_or("").to_string();
+            if matches!(batch_status.as_str(), "completed" | "failed" | "cancelled") {
+                break;
+            }
+        }
+        assert_eq!(batch_status, "completed");
+        assert_eq!(std::fs::read(bundle.join("demo.gguf")).unwrap(), payload);
+        let removed_batch = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/models/demo-gguf/versions/bf16")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(removed_batch.status(), StatusCode::OK);
+
         let refused = app
             .clone()
             .oneshot(
@@ -1375,6 +2365,14 @@ fn accept(
     let entry = catalog
         .model(model)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let action = action_for_kind(kind.as_str()).ok_or_else(|| {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            format!("unsupported task kind {}", kind.as_str()),
+        )
+    })?;
+    danmo_engine::ensure_available(&entry.family, action)
+        .map_err(|error| (StatusCode::NOT_IMPLEMENTED, error.to_string()))?;
     let id = Uuid::new_v4().to_string();
     let params = json!({
         "task_id": id,
@@ -1410,6 +2408,23 @@ fn stored_model_id(requested: &str, bare: &str) -> String {
     }
 }
 
+fn action_for_kind(kind: &str) -> Option<danmo_engine::Action> {
+    use danmo_engine::Action;
+    Some(match kind {
+        "image.generation" => Action::ImageCreate,
+        "image.edit" => Action::ImageEdit,
+        "image.upscale" => Action::ImageUpscale,
+        "video.generation" => Action::VideoCreate,
+        "video.edit" => Action::VideoEdit,
+        "video.upscale" => Action::VideoUpscale,
+        "video.avatar" => Action::VideoAvatar,
+        "audio.generation" => Action::AudioCreate,
+        "audio.edit" => Action::AudioEdit,
+        "audio.lm" => Action::AudioLm,
+        _ => return None,
+    })
+}
+
 async fn image_generations(
     State(state): State<AppState>,
     Json(body): Json<Value>,
@@ -1427,20 +2442,88 @@ async fn image_generations(
 }
 
 async fn image_edits(
-    State(_state): State<AppState>,
-    Json(_body): Json<Value>,
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<TaskAccepted>), ApiError> {
-    Err(fail(StatusCode::NOT_IMPLEMENTED, "edit graph is not built"))
+    let request = prepare_image_edit_request(&state, body)?;
+    let accepted = accept(
+        &state,
+        TaskKind::ImageEdit,
+        &request.model,
+        &request,
+        &request.priority,
+    )
+    .map_err(|(status, detail)| fail(status, detail))?;
+    Ok((StatusCode::ACCEPTED, accepted))
+}
+
+fn prepare_image_edit_request(
+    state: &AppState,
+    mut body: Value,
+) -> Result<ImageEditRequest, ApiError> {
+    let model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if model.is_empty() {
+        return Err(fail(StatusCode::BAD_REQUEST, "model is required"));
+    }
+    let catalog = Catalog::open(&state.registry)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
+    let entry = catalog
+        .model(&model)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
+    reject_unbuilt_inference(&entry.family, &body, false)?;
+    bind_installed_loras(state, &model, &mut body)?;
+    fill_registry_defaults(&catalog, &entry.id, &mut body);
+    let request: ImageEditRequest = serde_json::from_value(body)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
+    if request.n == 0 {
+        return Err(fail(StatusCode::BAD_REQUEST, "n must be at least 1"));
+    }
+    Ok(request)
 }
 
 async fn image_upscales(
-    State(_state): State<AppState>,
-    Json(_body): Json<Value>,
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<TaskAccepted>), ApiError> {
-    Err(fail(
-        StatusCode::NOT_IMPLEMENTED,
-        "upscale graph is not built",
-    ))
+    let request = prepare_image_upscale_request(&state, body)?;
+    let accepted = accept(
+        &state,
+        TaskKind::ImageUpscale,
+        &request.model,
+        &request,
+        &request.priority,
+    )
+    .map_err(|(status, detail)| fail(status, detail))?;
+    Ok((StatusCode::ACCEPTED, accepted))
+}
+
+fn prepare_image_upscale_request(
+    state: &AppState,
+    body: Value,
+) -> Result<ImageUpscaleRequest, ApiError> {
+    let model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if model.is_empty() {
+        return Err(fail(StatusCode::BAD_REQUEST, "model is required"));
+    }
+    let catalog = Catalog::open(&state.registry)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
+    catalog
+        .model(&model)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
+    let request: ImageUpscaleRequest = serde_json::from_value(body)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
+    if request.source_asset_id.trim().is_empty() {
+        return Err(fail(StatusCode::BAD_REQUEST, "source_asset_id is required"));
+    }
+    Ok(request)
 }
 
 fn prepare_image_request(
@@ -1460,7 +2543,7 @@ fn prepare_image_request(
     let entry = catalog
         .model(&model)
         .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
-    reject_unbuilt_inference(&entry.family, &body)?;
+    reject_unbuilt_inference(&entry.family, &body, true)?;
     bind_installed_loras(state, &model, &mut body)?;
     fill_registry_defaults(&catalog, &entry.id, &mut body);
     let request: ImageGenerationRequest = serde_json::from_value(body)
@@ -1468,10 +2551,116 @@ fn prepare_image_request(
     if request.n == 0 {
         return Err(fail(StatusCode::BAD_REQUEST, "n must be at least 1"));
     }
+    if let Some(guide) = &request.structural_guide {
+        validate_structural_guide(&catalog, &entry, guide)?;
+    }
     Ok(request)
 }
 
-fn reject_unbuilt_inference(family: &str, body: &Value) -> Result<(), ApiError> {
+fn validate_structural_guide(
+    catalog: &Catalog,
+    entry: &danmo_catalog::ModelEntry,
+    guide: &danmo_contracts::StructuralGuide,
+) -> Result<(), ApiError> {
+    if entry.family != "z_image" {
+        return Err(fail(
+            StatusCode::NOT_IMPLEMENTED,
+            format!(
+                "structural guide graph is not built for family {}",
+                entry.family
+            ),
+        ));
+    }
+    if guide.asset_id.trim().is_empty() {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            "structural_guide.asset_id is required",
+        ));
+    }
+    if guide.model_id.trim().is_empty() {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            "structural_guide.model_id is required",
+        ));
+    }
+    let controlnet = catalog
+        .model(&guide.model_id)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
+    let category = catalog
+        .root()
+        .pointer(&format!("/models/{}/catalog/category", controlnet.id))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if category != "controlnets" {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "structural_guide.model_id {} is not a controlnet",
+                controlnet.id
+            ),
+        ));
+    }
+    match guide.guide_type.as_str() {
+        "canny" | "depth" | "pose" | "hed" | "mlsd" | "scribble" | "gray" | "auto" => {}
+        "redux" => {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                "redux structural_guide is FLUX-only; use a control image",
+            ));
+        }
+        other => {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                format!("structural_guide.type {other} is not supported"),
+            ));
+        }
+    }
+    if !(0.0..=2.0).contains(&guide.weight) {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            "structural_guide.weight must be between 0 and 2",
+        ));
+    }
+    let has_source = guide
+        .inpaint_source_asset_id
+        .as_deref()
+        .is_some_and(|id| !id.trim().is_empty());
+    let has_mask = guide
+        .inpaint_mask_asset_id
+        .as_deref()
+        .is_some_and(|id| !id.trim().is_empty());
+    if has_source != has_mask {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            "structural_guide.inpaint_source_asset_id and inpaint_mask_asset_id must both be set for inpaint mode",
+        ));
+    }
+    Ok(())
+}
+
+fn prepare_audio_request<T: serde::de::DeserializeOwned>(
+    state: &AppState,
+    mut body: Value,
+) -> Result<T, ApiError> {
+    let model = body
+        .get("model")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    if model.is_empty() {
+        return Err(fail(StatusCode::BAD_REQUEST, "model is required"));
+    }
+    let catalog = Catalog::open(&state.registry)
+        .map_err(|error| fail(StatusCode::BAD_REQUEST, error.to_string()))?;
+    let entry = catalog
+        .model(&model)
+        .map_err(|error| fail(StatusCode::BAD_REQUEST, error.to_string()))?;
+    reject_unbuilt_inference(&entry.family, &body, false)?;
+    bind_installed_loras(state, &model, &mut body)?;
+    serde_json::from_value(body).map_err(|error| fail(StatusCode::BAD_REQUEST, error.to_string()))
+}
+
+fn reject_unbuilt_inference(family: &str, body: &Value, allow_guide: bool) -> Result<(), ApiError> {
     let adapters = body.get("adapters").and_then(|v| v.as_array());
     let family_spec = spec(family);
     if adapters.is_some_and(|rows| !rows.is_empty())
@@ -1482,9 +2671,10 @@ fn reject_unbuilt_inference(family: &str, body: &Value) -> Result<(), ApiError> 
             "lora inference graph is not built",
         ));
     }
-    if body
-        .get("structural_guide")
-        .is_some_and(|value| !value.is_null())
+    if !allow_guide
+        && body
+            .get("structural_guide")
+            .is_some_and(|value| !value.is_null())
     {
         return Err(fail(
             StatusCode::NOT_IMPLEMENTED,
@@ -1656,8 +2846,17 @@ async fn video_avatar_script(
 async fn audio_edits(
     State(state): State<AppState>,
     Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
-    accept_value(&state, "audio.edit", &body)
+) -> Result<(StatusCode, Json<TaskAccepted>), ApiError> {
+    let body: AudioEditRequest = prepare_audio_request(&state, body)?;
+    let accepted = accept(
+        &state,
+        TaskKind::AudioEdit,
+        &body.model,
+        &body,
+        &body.priority,
+    )
+    .map_err(|(status, detail)| fail(status, detail))?;
+    Ok((StatusCode::ACCEPTED, accepted))
 }
 
 async fn audio_lm_route(
@@ -1696,6 +2895,14 @@ fn accept_value(
     let entry = catalog
         .model(&model)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let action = action_for_kind(kind).ok_or_else(|| {
+        (
+            StatusCode::NOT_IMPLEMENTED,
+            format!("unsupported task kind {kind}"),
+        )
+    })?;
+    danmo_engine::ensure_available(&entry.family, action)
+        .map_err(|error| (StatusCode::NOT_IMPLEMENTED, error.to_string()))?;
     let id = Uuid::new_v4().to_string();
     let params = json!({
         "task_id": id,
@@ -1719,14 +2926,16 @@ fn accept_value(
 
 async fn audio_generations(
     State(state): State<AppState>,
-    Json(body): Json<AudioGenerationRequest>,
-) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<TaskAccepted>), ApiError> {
+    let body: AudioGenerationRequest = prepare_audio_request(&state, body)?;
     let accepted = accept(
         &state,
         TaskKind::AudioGeneration,
         &body.model,
         &body,
         &body.priority,
-    )?;
+    )
+    .map_err(|(status, detail)| fail(status, detail))?;
     Ok((StatusCode::ACCEPTED, accepted))
 }

@@ -1,8 +1,13 @@
 //! ggml runtime. Families never open a device and never call ggml directly.
 
+mod capacity;
 mod context;
 mod extend;
 mod graph;
+mod probe;
+mod selection;
+
+pub use capacity::{snapshot as capacity_snapshot, CapacityReport};
 
 use danmo_ggml_sys as g;
 use thiserror::Error;
@@ -14,8 +19,15 @@ pub use extend::{
     DiffusionTiming, RopeIn,
 };
 pub use graph::{shape, GraphBuilder, ReusedGraph};
+pub use probe::{probe_attention, AttentionProbeReport};
+pub use selection::{select_from_env, BackendSelection};
 
 pub type Tensor = *mut g::ggml_tensor;
+
+pub fn element_size(tensor: Tensor) -> usize {
+    unsafe { g::ggml_element_size(tensor) }
+}
+
 pub const TYPE_F32: u32 = g::ggml_type_GGML_TYPE_F32;
 pub const TYPE_F16: u32 = g::ggml_type_GGML_TYPE_F16;
 pub const TYPE_Q8_0: u32 = g::ggml_type_GGML_TYPE_Q8_0;
@@ -44,6 +56,7 @@ pub enum RuntimeError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
+    Auto,
     Cpu,
     Cuda,
     Vulkan,
@@ -53,6 +66,7 @@ pub enum BackendKind {
 impl BackendKind {
     pub fn parse(name: &str) -> Result<Self, RuntimeError> {
         match name {
+            "auto" => Ok(Self::Auto),
             "cpu" => Ok(Self::Cpu),
             "cuda" => Ok(Self::Cuda),
             "vulkan" => Ok(Self::Vulkan),
@@ -64,12 +78,13 @@ impl BackendKind {
     pub fn from_env() -> Result<Self, RuntimeError> {
         match std::env::var("DANQING_GGML_BACKEND") {
             Ok(name) => Self::parse(name.trim()),
-            Err(_) => Ok(Self::Cpu),
+            Err(_) => Ok(Self::Auto),
         }
     }
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::Auto => "auto",
             Self::Cpu => "cpu",
             Self::Cuda => "cuda",
             Self::Vulkan => "vulkan",

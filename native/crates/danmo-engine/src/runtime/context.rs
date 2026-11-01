@@ -41,7 +41,20 @@ impl GgmlContext {
     }
 
     pub fn builder(&self, mem_size: usize) -> Result<GraphBuilder, RuntimeError> {
-        GraphBuilder::new(self.backend, self.buft, mem_size)
+        GraphBuilder::new(self.backend, self.buft, self.kind, mem_size)
+    }
+
+    pub fn memory(&self) -> (usize, usize) {
+        unsafe {
+            let device = g::ggml_backend_get_device(self.backend);
+            if device.is_null() {
+                return (0, 0);
+            }
+            let mut free = 0usize;
+            let mut total = 0usize;
+            g::ggml_backend_dev_memory(device, &mut free, &mut total);
+            (free, total)
+        }
     }
 }
 
@@ -53,6 +66,11 @@ impl Drop for GgmlContext {
 
 unsafe fn init_backend(kind: BackendKind) -> Result<g::ggml_backend_t, RuntimeError> {
     let backend = match kind {
+        BackendKind::Auto => {
+            return Err(RuntimeError::BackendUnavailable(
+                "auto must be resolved before context init".into(),
+            ))
+        }
         BackendKind::Cpu => g::ggml_backend_cpu_init(),
         BackendKind::Cuda => {
             #[cfg(feature = "cuda")]

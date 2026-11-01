@@ -14,8 +14,7 @@ pub const DIT_INSTR_TEXT2MUSIC: &str =
     "Fill the audio semantic mask based on the given conditions:";
 
 /// acestep.cpp `DIT_INSTR_COVER`.
-pub const DIT_INSTR_COVER: &str =
-    "Generate audio semantic tokens based on the given conditions:";
+pub const DIT_INSTR_COVER: &str = "Generate audio semantic tokens based on the given conditions:";
 
 /// acestep.cpp `DIT_INSTR_REPAINT`.
 pub const DIT_INSTR_REPAINT: &str = "Repaint the mask area based on the given conditions:";
@@ -134,11 +133,7 @@ pub fn build_prompt_strings(
         .filter(|v| *v > 0)
         .map(|v| v.to_string())
         .unwrap_or_else(|| "N/A".into());
-    let keyscale_b = if keyscale.is_empty() {
-        "N/A"
-    } else {
-        keyscale
-    };
+    let keyscale_b = if keyscale.is_empty() { "N/A" } else { keyscale };
     let timesig_b = if timesignature.is_empty() {
         "N/A"
     } else {
@@ -174,8 +169,13 @@ pub fn encode_caption(
             config.hidden
         )));
     }
-    let (mut embed, seq) =
-        loaded.encode_plain(ctx, tokenizer_json, caption_prompt, &[config.layers], config.hidden)?;
+    let (mut embed, seq) = loaded.encode_plain(
+        ctx,
+        tokenizer_json,
+        caption_prompt,
+        &[config.layers],
+        config.hidden,
+    )?;
     let weights = GgufWeights::open_parts(paths)?;
     if let Some(gamma) = final_norm_gamma(&weights, config.hidden)? {
         embed = rms_norm_rows(&embed, &gamma, config.hidden as usize, 1e-6);

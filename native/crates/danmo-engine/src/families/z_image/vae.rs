@@ -40,19 +40,32 @@ pub(super) fn decode(
     if !vae.contains("decoder.conv_in.weight") {
         return Err(WeightError::NotBuilt("vae graph is not built".into()));
     }
+    let spec = vae::decoder_spec_from_weights(&vae, &ae_spec())?;
     let samples = vae::decode_samples(
-        ctx,
-        &vae,
-        latent,
-        &ae_spec(),
-        in_ch,
-        grid_w,
-        grid_h,
-        width,
-        height,
+        ctx, &vae, latent, &spec, in_ch, grid_w, grid_h, width, height,
     )?;
     let rgb = vae::rgb_bytes(&samples, width, height);
     Ok(encode_rgb(width, height, &rgb))
+}
+
+/// Rewrite img2img reference encode. The input is the planar `[W, H, 3]`
+/// tensor in `[-1, 1]`; the output is the scaled latent `[W/8, H/8, 16]`
+/// planar, the same layout the DiT denoise and the decoder use.
+pub(super) fn encode(
+    ctx: &GgmlContext,
+    paths: &[std::path::PathBuf],
+    image: &[f32],
+    width: u32,
+    height: u32,
+) -> Result<Vec<f32>, WeightError> {
+    let vae = GgufWeights::open_parts(paths)?;
+    if !vae.contains("encoder.conv_in.weight") {
+        return Err(WeightError::NotBuilt(
+            "vae encoder graph is not built".into(),
+        ));
+    }
+    let spec = vae::encoder_spec_from_weights(&vae, &ae_spec())?;
+    vae::encode_samples(ctx, &vae, image, &spec, width, height)
 }
 
 fn decode_preview(

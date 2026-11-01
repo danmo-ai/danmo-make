@@ -52,6 +52,44 @@ pub fn position_ids(grid_h: i64, grid_w: i64, seq_txt: i64) -> Result<RopeIds, R
     Ok(RopeIds { text, image })
 }
 
+pub fn position_ids_edit(
+    target_h: i64,
+    target_w: i64,
+    cond_h: i64,
+    cond_w: i64,
+    seq_txt: i64,
+) -> Result<RopeIds, RuntimeError> {
+    if target_h < 1 || target_w < 1 || cond_h < 1 || cond_w < 1 {
+        return Err(RuntimeError::Message("qwen edit rope grid is empty".into()));
+    }
+    let target_height = spatial_axis(target_h);
+    let target_width = spatial_axis(target_w);
+    let cond_height = spatial_axis(cond_h);
+    let cond_width = spatial_axis(cond_w);
+    let start = (target_h / 2)
+        .max(target_w / 2)
+        .max(cond_h / 2)
+        .max(cond_w / 2) as i32;
+    let text = (0..seq_txt)
+        .map(|j| {
+            let id = start + j as i32;
+            [id, id, id]
+        })
+        .collect();
+    let mut image = Vec::with_capacity((target_h * target_w + cond_h * cond_w) as usize);
+    for row in 0..target_h {
+        for col in 0..target_w {
+            image.push([0, target_height[row as usize], target_width[col as usize]]);
+        }
+    }
+    for row in 0..cond_h {
+        for col in 0..cond_w {
+            image.push([1, cond_height[row as usize], cond_width[col as usize]]);
+        }
+    }
+    Ok(RopeIds { text, image })
+}
+
 /// Centered positions. `n = 4` is `[-2, -1, 0, 1]`. `n = 3` is `[-2, -1, 0]`.
 pub fn spatial_axis(n: i64) -> Vec<i32> {
     let right = n / 2;
@@ -120,6 +158,15 @@ mod tests {
         assert_ne!(spatial_axis(3), sdcpp_spatial(3));
         assert_eq!(spatial_axis(1), vec![-1]);
         assert_eq!(sdcpp_spatial(1), vec![0]);
+    }
+
+    #[test]
+    fn edit_grid_uses_frame_zero_and_one() {
+        let ids = super::position_ids_edit(2, 2, 1, 1, 1).unwrap();
+        assert_eq!(ids.text, vec![[1, 1, 1]]);
+        assert_eq!(ids.image.len(), 5);
+        assert_eq!(ids.image[0][0], 0);
+        assert_eq!(ids.image[4][0], 1);
     }
 
     #[test]

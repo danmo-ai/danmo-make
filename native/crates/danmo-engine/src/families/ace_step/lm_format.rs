@@ -170,7 +170,8 @@ pub fn build_lm_format_result(
         .cloned()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| caption_in.to_string());
-    let lm_lyrics = normalize_lyrics_body(meta.get("lyrics_tail").map(|s| s.as_str()).unwrap_or(""));
+    let lm_lyrics =
+        normalize_lyrics_body(meta.get("lyrics_tail").map(|s| s.as_str()).unwrap_or(""));
     let lyrics_in_norm = normalize_lyrics_body(lyrics_in);
     let user_wants_vocals = want_vocals || !is_instrumental_lyrics(lyrics_in);
     let out_lyrics = if preserve_user_lyrics
@@ -301,8 +302,14 @@ mod tests {
         let meta = parse_lm_output(text);
         assert_eq!(meta.get("bpm").map(String::as_str), Some("96"));
         assert_eq!(meta.get("caption").map(String::as_str), Some("soft pop"));
-        assert_eq!(meta.get("lyrics_tail").map(String::as_str), Some("[Verse]\nline"));
-        assert_eq!(meta.get("audio_code_indices").map(String::as_str), Some("7"));
+        assert_eq!(
+            meta.get("lyrics_tail").map(String::as_str),
+            Some("[Verse]\nline")
+        );
+        assert_eq!(
+            meta.get("audio_code_indices").map(String::as_str),
+            Some("7")
+        );
         let _ = DEFAULT_LM_REWRITE_INSTRUCTION;
     }
 }

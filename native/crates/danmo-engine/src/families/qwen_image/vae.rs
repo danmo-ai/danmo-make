@@ -392,6 +392,370 @@ impl VaeDecode {
     }
 }
 
+pub struct VaeEncode {
+    graph: crate::runtime::ReusedGraph,
+    width: i64,
+    height: i64,
+    z_dim: i64,
+}
+
+impl VaeEncode {
+    pub fn build(
+        ctx: &crate::runtime::GgmlContext,
+        spec: DecoderSpec,
+        width: i64,
+        height: i64,
+    ) -> Result<Self, RuntimeError> {
+        validate(spec, width, height)?;
+        let mut builder = ctx.builder(64 * 1024 * 1024)?;
+        let mut weights = HashMap::new();
+        for row in encoder_tensors(spec) {
+            let tensor = match row.rank {
+                1 => builder.f32_1d(&row.name, row.ne[0], true),
+                4 => builder.f32_4d(&row.name, row.ne[0], row.ne[1], row.ne[2], row.ne[3], true),
+                _ => {
+                    return Err(RuntimeError::Message(format!(
+                        "vae tensor {} has rank {}",
+                        row.name, row.rank
+                    )))
+                }
+            };
+            if tensor.is_null() {
+                return Err(RuntimeError::Init);
+            }
+            weights.insert(row.name, tensor);
+        }
+        let image = nn(builder.f32_4d("image", width, height, 1, 3, true))?;
+        let output = encode_graph(&builder, &weights, spec, image)?;
+        let graph = builder.finish(output)?;
+        Ok(Self {
+            graph,
+            width,
+            height,
+            z_dim: spec.z_dim,
+        })
+    }
+
+    pub fn load_f32(&mut self, name: &str, data: &[f32]) -> Result<(), RuntimeError> {
+        self.graph.set_f32(name, data)
+    }
+
+    pub fn encode(&mut self, image: &[f32]) -> Result<Vec<f32>, RuntimeError> {
+        let expect = (self.width * self.height * 3) as usize;
+        if image.len() != expect {
+            return Err(RuntimeError::Message(format!(
+                "qwen vae image has {} values, graph expects {expect}",
+                image.len()
+            )));
+        }
+        self.graph.set_f32("image", image)?;
+        self.graph.compute()
+    }
+}
+
+pub fn encode_packed(
+    ctx: &crate::runtime::GgmlContext,
+    paths: &[std::path::PathBuf],
+    image: &[f32],
+    pixel_w: u32,
+    pixel_h: u32,
+) -> Result<Vec<f32>, crate::weights::WeightError> {
+    if pixel_w % 16 != 0 || pixel_h % 16 != 0 {
+        return Err(crate::weights::WeightError::NotBuilt(format!(
+            "qwen edit image size {pixel_w}x{pixel_h} must be divisible by 16"
+        )));
+    }
+    if image.len() != pixel_w as usize * pixel_h as usize * 3 {
+        return Err(crate::weights::WeightError::NotBuilt(format!(
+            "qwen edit RGB length {} is not {pixel_w}×{pixel_h}×3",
+            image.len()
+        )));
+    }
+    let weights = crate::weights::GgufWeights::open_parts(paths)?;
+    let spec = spec_from_weights(&weights)?;
+    if spec.z_dim != 16 {
+        return Err(crate::weights::WeightError::NotBuilt(format!(
+            "qwen packed encode needs 16 latent channels, encoder has {}",
+            spec.z_dim
+        )));
+    }
+    let mut encode = VaeEncode::build(ctx, spec, pixel_w as i64, pixel_h as i64)?;
+    for row in encoder_tensors(spec) {
+        let data = if row.rank == 1 {
+            weights.f32_widened(&row.name, &[row.ne[0]])?
+        } else {
+            weights.f32_widened(&row.name, &row.ne)?
+        };
+        encode.load_f32(&row.name, &data)?;
+    }
+    let mean = encode.encode(image)?;
+    let latent_w = pixel_w as usize / 8;
+    let latent_h = pixel_h as usize / 8;
+    let scaled = unscale_latents(&mean, latent_w, latent_h)?;
+    Ok(pack_latents(&scaled, latent_w / 2, latent_h / 2)?)
+}
+
+pub fn unscale_latents(
+    latent: &[f32],
+    width: usize,
+    height: usize,
+) -> Result<Vec<f32>, RuntimeError> {
+    let channels = LATENTS_MEAN.len();
+    if width == 0 || height == 0 || latent.len() != width * height * channels {
+        return Err(RuntimeError::Message(format!(
+            "qwen latent unscale expected {width}x{height}x{channels}, got {} values",
+            latent.len()
+        )));
+    }
+    let mut out = latent.to_vec();
+    for y in 0..height {
+        for x in 0..width {
+            for channel in 0..channels {
+                let index = x + width * (y + height * channel);
+                out[index] = (latent[index] - LATENTS_MEAN[channel]) / LATENTS_STD[channel];
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub fn pack_latents(
+    scaled: &[f32],
+    grid_w: usize,
+    grid_h: usize,
+) -> Result<Vec<f32>, RuntimeError> {
+    if grid_w == 0 || grid_h == 0 || scaled.len() != 64 * grid_w * grid_h {
+        return Err(RuntimeError::Message(format!(
+            "qwen pack expected 64x{}x{}, got {} values",
+            grid_w,
+            grid_h,
+            scaled.len()
+        )));
+    }
+    let width = grid_w * 2;
+    let height = grid_h * 2;
+    let mut out = vec![0f32; 64 * grid_w * grid_h];
+    for row in 0..grid_h {
+        for col in 0..grid_w {
+            let token = col + grid_w * row;
+            for k in 0..64 {
+                let channel = k / 4;
+                let rest = k % 4;
+                let ph = rest / 2;
+                let pw = rest % 2;
+                let x = col * 2 + pw;
+                let y = row * 2 + ph;
+                let index = x + width * (y + height * channel);
+                out[k + 64 * token] = scaled[index];
+            }
+        }
+    }
+    Ok(out)
+}
+
+pub(crate) fn encoder_tensors(spec: DecoderSpec) -> Vec<NamedShape> {
+    let mut out = Vec::new();
+    let dims = decoder_dims(spec.base_dim, spec.dim_mult);
+    push_conv3(&mut out, "encoder.conv_in", 3, 3, 3, 3, dims[0]);
+    for block in 0..4 {
+        let in_dim = dims[block];
+        let out_dim = dims[block + 1];
+        let mut current = in_dim;
+        for res in 0..(spec.num_res_blocks + 1) {
+            push_res(
+                &mut out,
+                &format!("encoder.down_blocks.{block}.resnets.{res}"),
+                current,
+                out_dim,
+            );
+            current = out_dim;
+        }
+        if block < 3 {
+            push_conv2(
+                &mut out,
+                &format!("encoder.down_blocks.{block}.downsamplers.0.conv"),
+                3,
+                3,
+                out_dim,
+                out_dim,
+            );
+        }
+    }
+    for index in 0..2 {
+        push_res(
+            &mut out,
+            &format!("encoder.mid_block.resnets.{index}"),
+            dims[4],
+            dims[4],
+        );
+    }
+    push_gamma(
+        &mut out,
+        "encoder.mid_block.attentions.0.norm.gamma",
+        dims[4],
+    );
+    push_conv2(
+        &mut out,
+        "encoder.mid_block.attentions.0.to_qkv",
+        1,
+        1,
+        dims[4],
+        dims[4] * 3,
+    );
+    push_conv2(
+        &mut out,
+        "encoder.mid_block.attentions.0.proj",
+        1,
+        1,
+        dims[4],
+        dims[4],
+    );
+    push_gamma(&mut out, "encoder.norm_out.gamma", dims[4]);
+    push_conv3(
+        &mut out,
+        "encoder.conv_out",
+        3,
+        3,
+        3,
+        dims[4],
+        spec.z_dim * 2,
+    );
+    push_conv3(
+        &mut out,
+        "quant_conv",
+        1,
+        1,
+        1,
+        spec.z_dim * 2,
+        spec.z_dim * 2,
+    );
+    out
+}
+
+fn encode_graph(
+    b: &GraphBuilder,
+    weights: &HashMap<String, Tensor>,
+    spec: DecoderSpec,
+    image: Tensor,
+) -> Result<Tensor, RuntimeError> {
+    let dims = decoder_dims(spec.base_dim, spec.dim_mult);
+    let mut x = causal(
+        b,
+        weights,
+        image,
+        "encoder.conv_in",
+        3,
+        dims[0],
+        3,
+        3,
+        3,
+        1,
+        1,
+        1,
+    )?;
+    for block in 0..4 {
+        let in_dim = dims[block];
+        let out_dim = dims[block + 1];
+        let mut current = in_dim;
+        for res in 0..(spec.num_res_blocks + 1) {
+            let prefix = format!("encoder.down_blocks.{block}.resnets.{res}");
+            x = res_block(b, weights, x, &prefix, current, out_dim)?;
+            current = out_dim;
+        }
+        if block < 3 {
+            let prefix = format!("encoder.down_blocks.{block}.downsamplers.0");
+            x = downsample(b, weights, x, &prefix, out_dim)?;
+        }
+    }
+    x = res_block(
+        b,
+        weights,
+        x,
+        "encoder.mid_block.resnets.0",
+        dims[4],
+        dims[4],
+    )?;
+    x = attention_named(b, weights, x, dims[4], "encoder.mid_block")?;
+    x = res_block(
+        b,
+        weights,
+        x,
+        "encoder.mid_block.resnets.1",
+        dims[4],
+        dims[4],
+    )?;
+    x = channel_norm(b, x, wt(weights, "encoder.norm_out.gamma")?, dims[4])?;
+    x = nn(b.silu(x))?;
+    x = causal(
+        b,
+        weights,
+        x,
+        "encoder.conv_out",
+        dims[4],
+        spec.z_dim * 2,
+        3,
+        3,
+        3,
+        1,
+        1,
+        1,
+    )?;
+    x = causal(
+        b,
+        weights,
+        x,
+        "quant_conv",
+        spec.z_dim * 2,
+        spec.z_dim * 2,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+    )?;
+    let dims = shape(x);
+    let tokens = dims[0] * dims[1] * dims[2];
+    let flat = nn(b.reshape_2d(x, tokens, spec.z_dim * 2))?;
+    let mean = nn(b.view_2d(
+        flat,
+        tokens,
+        spec.z_dim,
+        (spec.z_dim as usize) * std::mem::size_of::<f32>(),
+        0,
+    ))?;
+    let mean = nn(b.cont(mean))?;
+    nn(b.reshape_4d(mean, dims[0], dims[1], dims[2], spec.z_dim))
+}
+
+fn downsample(
+    b: &GraphBuilder,
+    weights: &HashMap<String, Tensor>,
+    x: Tensor,
+    prefix: &str,
+    channels: i64,
+) -> Result<Tensor, RuntimeError> {
+    if shape(x)[2] != 1 {
+        return Err(RuntimeError::Message(
+            "multi-frame encoder downsample is not built".into(),
+        ));
+    }
+    let nchw = nn(b.cont(b.permute(x, 0, 1, 3, 2)))?;
+    let padded = nn(b.pad_ext(nchw, 0, 1, 0, 1, 0, 0, 0, 0))?;
+    let y = nn(b.conv2d_direct(
+        wt(weights, &format!("{prefix}.conv.weight"))?,
+        padded,
+        2,
+        2,
+        0,
+        0,
+        1,
+        1,
+    ))?;
+    let y = add_bias_ne2(b, y, wt(weights, &format!("{prefix}.conv.bias"))?, channels)?;
+    nn(b.cont(b.permute(y, 0, 1, 3, 2)))
+}
+
 /// True when every frame-0 graph tensor is present with the expected shape.
 pub fn layout_matches(weights: &crate::weights::GgufWeights, spec: DecoderSpec) -> bool {
     for row in frame0_tensors(spec) {
@@ -606,6 +970,12 @@ fn res_block(
     in_dim: i64,
     out_dim: i64,
 ) -> Result<Tensor, RuntimeError> {
+    if shape(x)[3] != in_dim {
+        return Err(RuntimeError::Message(format!(
+            "{prefix} input shape {:?} does not have {in_dim} channels",
+            shape(x)
+        )));
+    }
     let mut h = channel_norm(b, x, wt(weights, &format!("{prefix}.norm1.gamma"))?, in_dim)?;
     h = nn(b.silu(h))?;
     h = causal(
@@ -670,6 +1040,16 @@ fn attention(
     x: Tensor,
     dim: i64,
 ) -> Result<Tensor, RuntimeError> {
+    attention_named(b, weights, x, dim, "decoder.mid_block")
+}
+
+fn attention_named(
+    b: &GraphBuilder,
+    weights: &HashMap<String, Tensor>,
+    x: Tensor,
+    dim: i64,
+    mid: &str,
+) -> Result<Tensor, RuntimeError> {
     let identity = x;
     let dims = shape(x);
     if dims[2] != 1 {
@@ -680,12 +1060,12 @@ fn attention(
     let x = channel_norm(
         b,
         x,
-        wt(weights, "decoder.mid_block.attentions.0.norm.gamma")?,
+        wt(weights, &format!("{mid}.attentions.0.norm.gamma"))?,
         dim,
     )?;
     let nchw = nn(b.cont(b.permute(x, 0, 1, 3, 2)))?;
     let qkv = nn(b.conv2d_direct(
-        wt(weights, "decoder.mid_block.attentions.0.to_qkv.weight")?,
+        wt(weights, &format!("{mid}.attentions.0.to_qkv.weight"))?,
         nchw,
         1,
         1,
@@ -697,7 +1077,7 @@ fn attention(
     let qkv = add_bias_ne2(
         b,
         qkv,
-        wt(weights, "decoder.mid_block.attentions.0.to_qkv.bias")?,
+        wt(weights, &format!("{mid}.attentions.0.to_qkv.bias"))?,
         dim * 3,
     )?;
     // ggml_permute stores source axis i at destination slot axis_i.
@@ -718,7 +1098,7 @@ fn attention(
     // [C, W, H, 1] → [W, H, C, 1] for conv2d_direct.
     let mixed = nn(b.cont(b.permute(mixed, 2, 0, 1, 3)))?;
     let proj = nn(b.conv2d_direct(
-        wt(weights, "decoder.mid_block.attentions.0.proj.weight")?,
+        wt(weights, &format!("{mid}.attentions.0.proj.weight"))?,
         mixed,
         1,
         1,
@@ -730,7 +1110,7 @@ fn attention(
     let proj = add_bias_ne2(
         b,
         proj,
-        wt(weights, "decoder.mid_block.attentions.0.proj.bias")?,
+        wt(weights, &format!("{mid}.attentions.0.proj.bias"))?,
         dim,
     )?;
     let proj = nn(b.cont(b.permute(proj, 0, 1, 3, 2)))?;
@@ -813,6 +1193,12 @@ fn channel_norm(
 ) -> Result<Tensor, RuntimeError> {
     // [W, H, T, C] → [C, W, H, T]. sum_rows then reduces the channel axis.
     let x = nn(b.cont(b.permute(x, 1, 2, 3, 0)))?;
+    let dims = shape(x);
+    if dims[0] != channels {
+        return Err(RuntimeError::Message(format!(
+            "qwen vae norm got channel shape {dims:?}, expected {channels}"
+        )));
+    }
     let sum_sq = nn(b.sum_rows(nn(b.sqr(x))?))?;
     let denom = nn(b.clamp(nn(b.sqrt(sum_sq))?, NORM_EPS, 1.0e30))?;
     let normed = nn(b.div(x, denom))?;
@@ -1404,6 +1790,44 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn pack_and_unpack_are_exact_inverses() {
+        let scaled: Vec<f32> = (0..128).map(|value| value as f32 / 10.0).collect();
+        let packed = super::pack_latents(&scaled, 2, 1).unwrap();
+        let restored = unpack_latents(&packed, 2, 1).unwrap();
+        assert_eq!(restored, scaled);
+    }
+
+    #[test]
+    fn encoder_graph_runs_downsampling_and_packs_the_mean() {
+        let spec = DecoderSpec::create_smoke();
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let mut encode = super::VaeEncode::build(&ctx, spec, 16, 16).unwrap();
+        for row in super::encoder_tensors(spec) {
+            let count = if row.rank == 1 {
+                row.ne[0] as usize
+            } else {
+                row.ne.iter().product::<i64>() as usize
+            };
+            let data = if row.name.ends_with(".gamma") {
+                vec![1.0; count]
+            } else {
+                vec![0.0; count]
+            };
+            encode.load_f32(&row.name, &data).unwrap();
+        }
+        let image: Vec<f32> = (0..16 * 16 * 3)
+            .map(|index| (index % 17) as f32 / 20.0 - 0.4)
+            .collect();
+        let mean = encode.encode(&image).unwrap();
+        assert_eq!(mean.len(), 2 * 2 * 16);
+        assert!(mean.iter().all(|value| value.is_finite()));
+        let scaled = super::unscale_latents(&mean, 2, 2).unwrap();
+        let packed = super::pack_latents(&scaled, 1, 1).unwrap();
+        assert_eq!(packed.len(), 64);
+        assert!(packed.iter().all(|value| value.is_finite()));
     }
 
     fn silu(x: f32) -> f32 {

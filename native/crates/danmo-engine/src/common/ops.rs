@@ -73,7 +73,9 @@ fn next_unit(state: &mut u64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{empirical_mu, empirical_mu_sigmas, flow_match_shift_sigmas, flux_timestep_embed};
+    use super::{
+        empirical_mu, empirical_mu_sigmas, flow_match_shift_sigmas, scaled_sinusoidal_timestep,
+    };
 
     #[test]
     fn static_shift_matches_the_z_image_base_schedule() {
@@ -109,7 +111,7 @@ mod tests {
 
     #[test]
     fn flux_timestep_is_cosine_then_sine_at_sigma_times_1000() {
-        let emb = flux_timestep_embed(0.5, 4);
+        let emb = scaled_sinusoidal_timestep(0.5, 4);
         let expect = [-0.88384926, 0.2836622, -0.4677718, -0.9589243];
         assert_eq!(emb.len(), expect.len());
         for (got, want) in emb.iter().zip(expect) {
@@ -194,7 +196,7 @@ pub fn sinusoidal_timestep(t: f32, dim: usize) -> Vec<f32> {
 /// Flux2 timestep embedding. `dim` is `time_in.in_layer`'s input
 /// width. Sigmas at or below 1 are scaled by 1000, then cosine occupies the
 /// first half and sine the second (`flip_sin_to_cos`).
-pub fn flux_timestep_embed(sigma: f32, dim: usize) -> Vec<f32> {
+pub fn scaled_sinusoidal_timestep(sigma: f32, dim: usize) -> Vec<f32> {
     let t = if sigma <= 1.0 { sigma * 1000.0 } else { sigma };
     sinusoidal_timestep(t, dim)
 }

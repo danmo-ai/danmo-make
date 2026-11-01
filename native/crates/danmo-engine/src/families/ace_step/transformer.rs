@@ -7,12 +7,13 @@
 //! (acestep.cpp `dit-sampler.h`).
 
 use super::apg::{apg_forward, ApgMomentum};
+use super::dcw::DcwSettings;
 use super::graph::{build_dit, graph_weight_layout};
 use super::schedule::{sft_schedule, turbo_schedule, SFT_DEFAULT_STEPS};
 use super::weights::{AceStepConfig, TIME_FREQ_DIM};
 use crate::common::ops::{non_finite, sinusoidal_timestep};
 use crate::runtime::{GgmlContext, ReusedGraph, RuntimeError};
-use crate::weights::{GgufWeights, WeightError};
+use crate::weights::{GgufWeights, LoraFactor, WeightError};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -65,13 +66,24 @@ impl AceStepDit {
         enc_seq: i64,
         types: &HashMap<String, u32>,
     ) -> Result<Self, RuntimeError> {
+        Self::build_typed_with_loras(ctx, config, frames, enc_seq, types, &[])
+    }
+
+    pub fn build_typed_with_loras(
+        ctx: &GgmlContext,
+        config: AceStepConfig,
+        frames: i64,
+        enc_seq: i64,
+        types: &HashMap<String, u32>,
+        loras: &[LoraFactor],
+    ) -> Result<Self, RuntimeError> {
         let mem = if config == AceStepConfig::smoke() {
             GRAPH_MEM_SMOKE
         } else {
             GRAPH_MEM_XL
         };
         let mut builder = ctx.builder(mem)?;
-        let built = build_dit(&mut builder, config, frames, enc_seq, types)?;
+        let built = build_dit(&mut builder, config, frames, enc_seq, types, loras)?;
         let graph = builder.finish(built.output)?;
         Ok(Self {
             graph,
@@ -141,6 +153,7 @@ impl AceStepDit {
         null_enc: Option<&[f32]>,
         switch: Option<DenoiseContextSwitch<'_>>,
         repaint: Option<DenoiseRepaint<'_>>,
+        dcw: Option<DcwSettings>,
         mut on_step: impl FnMut(u32, u32),
     ) -> Result<Vec<f32>, RuntimeError> {
         if !guidance.is_finite() || guidance < 1.0 {
@@ -164,9 +177,7 @@ impl AceStepDit {
             }
         }
         if schedule.is_empty() {
-            return Err(RuntimeError::Message(
-                "ACE-Step schedule is empty".into(),
-            ));
+            return Err(RuntimeError::Message("ACE-Step schedule is empty".into()));
         }
         if xt.len() != self.xt_len()
             || context.len() != self.context_len()
@@ -210,6 +221,11 @@ impl AceStepDit {
                     rp.injection_ratio
                 )));
             }
+        }
+        if let Some(settings) = dcw {
+            settings.validate().map_err(|error| {
+                RuntimeError::Message(format!("ACE-Step DCW settings: {error}"))
+            })?;
         }
         let mut xt = xt.to_vec();
         let mut apg = ApgMomentum::new();
@@ -264,9 +280,25 @@ impl AceStepDit {
             } else {
                 vt_cond
             };
+            let previous = xt.clone();
             let dt = t_next - t_curr;
             for (sample, vel) in xt.iter_mut().zip(velocity.iter()) {
                 *sample += dt * *vel;
+            }
+            if index + 1 < schedule.len() {
+                if let Some(settings) = dcw {
+                    settings
+                        .apply(
+                            &mut xt,
+                            &previous,
+                            &velocity,
+                            t_curr,
+                            self.frames,
+                            self.config.out_channels,
+                            self.config.is_turbo,
+                        )
+                        .map_err(|error| RuntimeError::Message(error.to_string()))?;
+                }
             }
             if let Some(rp) = repaint {
                 super::repaint::inject_preserved(
@@ -351,7 +383,8 @@ pub(crate) fn pack_input(
         let ctx_off = t * ctx_ch as usize;
         let xt_off = t * oc as usize;
         let dst = t * config.in_channels as usize;
-        out[dst..dst + ctx_ch as usize].copy_from_slice(&context[ctx_off..ctx_off + ctx_ch as usize]);
+        out[dst..dst + ctx_ch as usize]
+            .copy_from_slice(&context[ctx_off..ctx_off + ctx_ch as usize]);
         out[dst + ctx_ch as usize..dst + config.in_channels as usize]
             .copy_from_slice(&xt[xt_off..xt_off + oc as usize]);
     }
@@ -369,20 +402,16 @@ pub fn load_weights(
 ) -> Result<(), WeightError> {
     for (name, ne0, ne1) in graph_weight_layout(config) {
         if name == "decoder.proj_in.1.weight" {
-            let raw = weights.f32_widened(
-                &name,
-                &[config.patch, config.in_channels, config.hidden],
-            )?;
+            let raw =
+                weights.f32_widened(&name, &[config.patch, config.in_channels, config.hidden])?;
             let remapped = remap_proj_in(&raw, config.patch, config.in_channels, config.hidden);
             dit.load_f32(&name, &remapped)
                 .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
             continue;
         }
         if name == "decoder.proj_out.1.weight" {
-            let raw = weights.f32_widened(
-                &name,
-                &[config.patch, config.out_channels, config.hidden],
-            )?;
+            let raw =
+                weights.f32_widened(&name, &[config.patch, config.out_channels, config.hidden])?;
             let remapped = remap_proj_out(&raw, config.patch, config.out_channels, config.hidden);
             dit.load_f32(&name, &remapped)
                 .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
@@ -496,7 +525,18 @@ pub fn prove_smoke_denoise(
     let context = vec![0f32; dit.context_len()];
     let enc = vec![0f32; dit.enc_len()];
     let latents = dit
-        .denoise(&xt, &context, &enc, &schedule, 1.0, None, None, None, |_, _| ())
+        .denoise(
+            &xt,
+            &context,
+            &enc,
+            &schedule,
+            1.0,
+            None,
+            None,
+            None,
+            None,
+            |_, _| (),
+        )
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     if let Some(detail) = non_finite("ACE-Step smoke latent", &latents) {
         return Err(WeightError::NotBuilt(detail));
@@ -593,7 +633,18 @@ mod tests {
         assert!(velocity.iter().all(|v| v.is_finite()));
         let schedule = turbo_schedule();
         let latents = dit
-            .denoise(&xt, &context, &enc, &schedule, 1.0, None, None, None, |_, _| ())
+            .denoise(
+                &xt,
+                &context,
+                &enc,
+                &schedule,
+                1.0,
+                None,
+                None,
+                None,
+                None,
+                |_, _| (),
+            )
             .unwrap();
         assert_eq!(latents.len(), dit.xt_len());
         assert!(latents.iter().all(|v| v.is_finite()));
@@ -611,12 +662,66 @@ mod tests {
                 Some(&null_enc),
                 None,
                 None,
+                None,
                 |_, _| (),
             )
             .unwrap();
         assert_eq!(guided.len(), dit.xt_len());
         assert!(guided.iter().all(|v| v.is_finite()));
         assert_ne!(guided, latents[..guided.len()].to_vec());
+    }
+
+    #[test]
+    fn lora_residual_changes_the_dit_forward() {
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let config = AceStepConfig::smoke();
+        let frames = config.patch * 2;
+        let enc_seq = 2;
+        let factor = crate::weights::LoraFactor {
+            target: "decoder.proj_out.1.weight".into(),
+            in_dim: config.hidden,
+            rank: 1,
+            out_dim: config.out_channels * config.patch,
+            scale: 128.0,
+            a: vec![0.01; config.hidden as usize],
+            b: vec![1.0; (config.out_channels * config.patch) as usize],
+        };
+        let mut base = AceStepDit::build(&ctx, config, frames, enc_seq).unwrap();
+        let mut adapted = AceStepDit::build_typed_with_loras(
+            &ctx,
+            config,
+            frames,
+            enc_seq,
+            &std::collections::HashMap::new(),
+            &[factor.clone()],
+        )
+        .unwrap();
+        for (name, ne0, ne1) in super::super::graph::graph_weight_layout(config) {
+            let n = (ne0 * ne1) as usize;
+            let data = if name.contains("norm") || name.contains("scale_shift") {
+                vec![1.0; n]
+            } else if name.ends_with(".bias") {
+                vec![0.0; n]
+            } else {
+                let mut values = vec![0.0; n];
+                for index in 0..ne0.min(ne1) as usize {
+                    values[index * ne0 as usize + index] = 0.05;
+                }
+                values
+            };
+            base.load_f32(&name, &data).unwrap();
+            adapted.load_f32(&name, &data).unwrap();
+        }
+        adapted.load_f32("lora.0.a", &factor.a).unwrap();
+        adapted.load_f32("lora.0.b", &factor.b).unwrap();
+        let xt = vec![0.1; base.xt_len()];
+        let context = vec![0.0; base.context_len()];
+        let enc = vec![0.0; base.enc_len()];
+        let plain = base.forward(&xt, &context, &enc, 1.0, 1.0).unwrap();
+        let residual = adapted.forward(&xt, &context, &enc, 1.0, 1.0).unwrap();
+        assert!(plain.iter().all(|value| value.is_finite()));
+        assert!(residual.iter().all(|value| value.is_finite()));
+        assert_ne!(plain, residual);
     }
 
     #[test]
@@ -638,12 +743,10 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 |_, _| (),
             )
             .unwrap_err();
-        assert!(
-            err.to_string().contains("null_condition_emb"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("null_condition_emb"), "{err}");
     }
 }

@@ -146,8 +146,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/tools/z-image/merge/models", get(merge_models))
         .route("/api/tools/z-image/merge/merged", get(empty_items))
         .route("/api/audios/generations", get(list_audio_tasks))
-        .route("/api/chat/enhance-prompt", post(reject_assistant))
-        .route("/v1/chat/completions", post(reject_assistant))
+        .route("/api/chat/enhance-prompt", post(enhance_prompt))
+        .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/llm/model", get(llm_model_info))
+        .route("/v1/vision/model", get(vision_model_info))
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -802,6 +804,30 @@ async fn resume_download(
     State(state): State<AppState>,
     Path(task_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    if let Some(snap) = state.downloads.snapshot(&task_id) {
+        if snap.get("kind").and_then(|v| v.as_str()) == Some("model") {
+            let model_id = snap
+                .get("model_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let version = snap.get("version").and_then(|v| v.as_str()).unwrap_or("");
+            if !model_id.is_empty() && danmo_catalog::GGUF_VERSION_KEYS.contains(&version) {
+                let catalog = open_catalog(&state)?;
+                if let Some(spec) = catalog
+                    .root()
+                    .pointer(&format!(
+                        "/models/{model_id}/distribution/versions/{version}"
+                    ))
+                    .cloned()
+                {
+                    state
+                        .downloads
+                        .refresh_model_spec(&task_id, spec)
+                        .map_err(|err| fail(StatusCode::BAD_REQUEST, err))?;
+                }
+            }
+        }
+    }
     state
         .downloads
         .resume(&task_id)
@@ -1162,11 +1188,7 @@ async fn asset_thumbnail(State(state): State<AppState>, Path(id): Path<String>) 
 }
 
 /// Resolve legacy Python DB paths (`ast_….png`) under `{outputs}/assets`, plus absolute paths.
-pub(crate) fn resolve_asset_fs_path(
-    outputs: &FsPath,
-    workspace: &FsPath,
-    stored: &str,
-) -> PathBuf {
+pub(crate) fn resolve_asset_fs_path(outputs: &FsPath, workspace: &FsPath, stored: &str) -> PathBuf {
     let raw = PathBuf::from(stored);
     if raw.is_absolute() {
         return raw;
@@ -1399,6 +1421,11 @@ fn default_settings() -> Value {
         "model_cache_ttl_minutes": 30,
         "llm_cache_ttl_minutes": 30,
         "llm_unload_each_request": false,
+        "llm_inference_provider": "builtin",
+        "llm_inference_base_url": "",
+        "llm_inference_api_key": "",
+        "llm_inference_api_key_hint": "",
+        "llm_inference_cloud_model": "",
         "queue_image_first": true,
         "civitai_token": "",
         "huggingface_token": "",
@@ -1429,16 +1456,20 @@ fn save_json(path: &FsPath, value: &Value) -> Result<(), ApiError> {
         .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
 }
 
-async fn get_settings(State(state): State<AppState>) -> Json<Value> {
+fn current_settings(state: &AppState) -> Value {
     let mut settings = default_settings();
     if let Value::Object(defaults) = &mut settings {
-        if let Value::Object(saved) = load_json(&settings_path(&state), json!({})) {
+        if let Value::Object(saved) = load_json(&settings_path(state), json!({})) {
             for (key, value) in saved {
                 defaults.insert(key, value);
             }
         }
     }
-    Json(settings)
+    settings
+}
+
+async fn get_settings(State(state): State<AppState>) -> Json<Value> {
+    Json(current_settings(&state))
 }
 
 async fn put_settings(
@@ -1614,7 +1645,7 @@ async fn settings_registry(State(state): State<AppState>) -> Result<Json<Value>,
 
 async fn disk_space(State(state): State<AppState>) -> Json<Value> {
     let models = state.workspace.join("models");
-    let loras = state.workspace.join("models/loras");
+    let loras = state.workspace.join("models/Lora");
     let anchor = models.parent().unwrap_or(&state.workspace);
     let (total, free) = stat_space(if anchor.as_os_str().is_empty() {
         std::path::Path::new(".")
@@ -1714,11 +1745,462 @@ async fn list_audio_tasks(State(state): State<AppState>) -> Result<Json<Value>, 
     .await
 }
 
-async fn reject_assistant() -> Result<Json<Value>, ApiError> {
-    Err(fail(
-        StatusCode::NOT_IMPLEMENTED,
-        "assistant graph is not built",
+const DEFAULT_ASSISTANT_MODEL_ID: &str = "qwen3-vl-4b-instruct";
+
+const ENHANCE_IMAGE_SYSTEM: &str = "# Role\n\nPrompt engineer for AI image models (Flux, Z-Image, Qwen-Image).\n\n## Task\n\nRewrite the user's idea into one vivid, comma-separated description. Keep their subject, names, and intent.\n\n## Style\n\n- Add at most a few cues for lighting, composition, color, texture, and mood.\n- If the input is already detailed, lightly polish only — do not lengthen.\n\n## Limits\n\n- Length cap: ~120 CJK characters or ~80 English words.\n- Never repeat the same word or phrase; never loop filler at the end.\n- Do not write \"Okay\", explanations, or quotes.\n\n## Output\n\nOutput **only** the enhanced prompt.";
+
+const ENHANCE_VIDEO_SYSTEM: &str = "# Role\n\nProfessional prompt engineer for AI video generation.\n\n## Task\n\nRewrite the user's brief into a detailed prompt for image-to-video or text-to-video models.\n\n## Include\n\nSubject, scene, lighting, style, camera movement, motion dynamics, pacing, and temporal mood.\n\nFor LTX audio-video models, write the caption in the language that should be heard. Quoted dialogue is spoken in the language of the surrounding sentences: an English caption with Chinese quotes is performed as English. Do not translate a spoken script. Put one space before each opening quotation mark and keep every spoken line verbatim.\nDistinguish static scene description from continuing motion the camera can follow.\n\n## Limits\n\n- One paragraph. Visual briefs stay within ~120 CJK characters or ~80 English words. Spoken scripts are exempt: keep every line.\n- Never repeat the same phrase or word. No filler loops.\n\n## Output\n\nOutput **only** the enhanced prompt text, without explanation. Keep spoken lines inside quotation marks.";
+
+const ENHANCE_AUDIO_SYSTEM: &str = "# Role\n\nMusic producer writing briefs for AI music generation (ACE-Step).\n\n## Task\n\nExpand the user's music idea into a clear, vivid description covering genre, mood, tempo feel, instrumentation, vocal style, and emotional arc.\n\n## Limits\n\n- One short paragraph.\n- Never repeat the same phrase or word. No filler loops.\n\n## Output\n\nOutput **only** the enhanced brief text, without explanation or quotation marks.";
+
+fn enhance_system_prompt(target_action: &str) -> &'static str {
+    let action = if target_action.trim().is_empty() {
+        "image_create"
+    } else {
+        target_action.trim()
+    };
+    match action.to_lowercase().as_str() {
+        "video" | "video_create" | "animate" | "video_generation" => ENHANCE_VIDEO_SYSTEM,
+        "audio" | "audio_create" | "music" | "audio_generation" => ENHANCE_AUDIO_SYSTEM,
+        _ => ENHANCE_IMAGE_SYSTEM,
+    }
+}
+
+fn enhance_user_locale_hint(text: &str) -> &'static str {
+    let raw = text.trim();
+    if raw.is_empty() {
+        return "";
+    }
+    let chars = raw.chars().count();
+    if raw
+        .chars()
+        .any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch))
+    {
+        if chars < 60 {
+            return "\n\n（输入较短：保留原意与关键词，最多补充少量画面细节，禁止堆砌形容词或重复用词。）";
+        }
+        return "\n\n（输入已够详细：只做轻微润色，禁止加长或重复用词。）";
+    }
+    if chars < 80 {
+        return "\n\n(Input is short: preserve intent and keywords; add at most a few visual cues; no filler loops.)";
+    }
+    "\n\n(Input is already detailed: light polish only; do not lengthen or repeat phrases.)"
+}
+
+fn is_thinking_model(model_id: &str) -> bool {
+    let mid = model_id.to_lowercase();
+    if mid.contains("thinking") {
+        return true;
+    }
+    ["qwen3.5", "qwen3-5", "qwen3.6", "qwen3-6"]
+        .iter()
+        .any(|prefix| mid.starts_with(prefix))
+}
+
+fn llm_provider(settings: &Value) -> &str {
+    match settings
+        .get("llm_inference_provider")
+        .and_then(|v| v.as_str())
+    {
+        Some("openai_compatible") => "openai_compatible",
+        _ => "builtin",
+    }
+}
+
+fn cloud_api_key(settings: &Value) -> String {
+    let env = std::env::var("DANQING_LLM_INFERENCE_API_KEY").unwrap_or_default();
+    let env = env.trim();
+    if !env.is_empty() {
+        return env.to_string();
+    }
+    settings
+        .get("llm_inference_api_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+fn cloud_ready(settings: &Value) -> bool {
+    if llm_provider(settings) != "openai_compatible" {
+        return false;
+    }
+    let base = settings
+        .get("llm_inference_base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if base.is_empty() {
+        return false;
+    }
+    let key = cloud_api_key(settings);
+    !key.is_empty() && !key.starts_with("v1:")
+}
+
+fn cloud_base_url(settings: &Value) -> String {
+    let base = settings
+        .get("llm_inference_base_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .trim_end_matches('/');
+    if base.is_empty() {
+        return "https://api.openai.com/v1".to_string();
+    }
+    if base.contains("/v1") {
+        return base.to_string();
+    }
+    format!("{base}/v1")
+}
+
+fn assistant_model_id(settings: &Value, catalog: &Catalog) -> String {
+    let preferred = settings
+        .get("default_model_llm")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let bare = preferred.split(':').next().unwrap_or("");
+    if !bare.is_empty() && catalog.model(bare).is_ok() {
+        return bare.to_string();
+    }
+    if catalog.model(DEFAULT_ASSISTANT_MODEL_ID).is_ok() {
+        return DEFAULT_ASSISTANT_MODEL_ID.to_string();
+    }
+    if let Some(models) = catalog.root().get("models").and_then(|m| m.as_object()) {
+        let mut llm: Vec<&String> = models
+            .iter()
+            .filter(|(_, m)| m.pointer("/catalog/media").and_then(|v| v.as_str()) == Some("llm"))
+            .map(|(key, _)| key)
+            .collect();
+        llm.sort();
+        if let Some(key) = llm.iter().find(|key| {
+            models
+                .get(**key)
+                .and_then(|m| m.get("actions"))
+                .and_then(|a| a.get("describe"))
+                .is_some()
+        }) {
+            return key.to_string();
+        }
+        if let Some(key) = llm.first() {
+            return key.to_string();
+        }
+    }
+    DEFAULT_ASSISTANT_MODEL_ID.to_string()
+}
+
+/// Human-readable reason the assistant cannot run, or `None` when it can.
+fn assistant_block_reason(settings: &Value, catalog: &Catalog) -> Option<String> {
+    if llm_provider(settings) == "openai_compatible" {
+        if cloud_ready(settings) {
+            return None;
+        }
+        return Some(
+            "Cloud LLM inference is not configured (base URL and API key required).".to_string(),
+        );
+    }
+    let id = assistant_model_id(settings, catalog);
+    Some(format!(
+        "Assistant model '{id}' is not installed. Install it from the Models page."
     ))
+}
+
+async fn llm_model_info(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let settings = current_settings(&state);
+    let catalog = open_catalog(&state)?;
+    let id = assistant_model_id(&settings, &catalog);
+    let think_supported = is_thinking_model(&id);
+    let think_enabled = think_supported
+        && settings
+            .get("default_model_llm_think")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+    Ok(Json(json!({
+        "model_id": id,
+        "name": id,
+        "available": assistant_block_reason(&settings, &catalog).is_none(),
+        "provider": llm_provider(&settings),
+        "unload_each_request": settings
+            .get("llm_unload_each_request")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        "llm_cache_ttl_minutes": settings
+            .get("llm_cache_ttl_minutes")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(30),
+        "think_supported": think_supported,
+        "think_enabled": think_enabled,
+    })))
+}
+
+async fn vision_model_info(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let settings = current_settings(&state);
+    let catalog = open_catalog(&state)?;
+    let id = assistant_model_id(&settings, &catalog);
+    Ok(Json(json!({
+        "model_id": id,
+        "name": id,
+        "available": assistant_block_reason(&settings, &catalog).is_none(),
+        "provider": llm_provider(&settings),
+    })))
+}
+
+fn cloud_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(30)))
+        .timeout_global(Some(Duration::from_secs(600)))
+        .build()
+        .into()
+}
+
+fn cloud_post(url: &str, key: &str, payload: &Value) -> Result<(u16, ureq::Body), String> {
+    let mut request = cloud_agent()
+        .post(url)
+        .header("accept", "application/json")
+        .header("content-type", "application/json");
+    if !key.is_empty() {
+        request = request.header("authorization", &format!("Bearer {key}"));
+    }
+    let body = serde_json::to_string(payload).map_err(|err| err.to_string())?;
+    let response = request
+        .send(body)
+        .map_err(|err| format!("POST {url} failed: {err}"))?;
+    Ok((response.status().as_u16(), response.into_body()))
+}
+
+fn cloud_chat(url: &str, key: &str, payload: &Value) -> Result<Value, String> {
+    let (status, mut body) = cloud_post(url, key, payload)?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(
+        &mut std::io::Read::take(body.as_reader(), 20 * 1024 * 1024),
+        &mut text,
+    )
+    .map_err(|err| format!("reading {url} failed: {err}"))?;
+    if !(200..300).contains(&status) {
+        return Err(format!(
+            "POST {url} returned {status}: {}",
+            text.chars().take(400).collect::<String>()
+        ));
+    }
+    serde_json::from_str(&text).map_err(|err| format!("{url} was not JSON: {err}"))
+}
+
+fn cloud_stream(
+    url: &str,
+    key: &str,
+    payload: &Value,
+    tx: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
+) -> Result<(), String> {
+    let (status, mut body) = cloud_post(url, key, payload)?;
+    if !(200..300).contains(&status) {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(
+            &mut std::io::Read::take(body.as_reader(), 1024 * 1024),
+            &mut text,
+        );
+        return Err(format!(
+            "POST {url} returned {status}: {}",
+            text.chars().take(400).collect::<String>()
+        ));
+    }
+    let mut reader = body.as_reader();
+    let mut buf = [0u8; 8192];
+    loop {
+        let read = std::io::Read::read(&mut reader, &mut buf).map_err(|err| err.to_string())?;
+        if read == 0 {
+            return Ok(());
+        }
+        if tx
+            .blocking_send(Ok(Bytes::copy_from_slice(&buf[..read])))
+            .is_err()
+        {
+            return Ok(());
+        }
+    }
+}
+
+fn cloud_chat_payload(request: &Value, model: &str, stream: bool) -> Value {
+    let mut payload = json!({
+        "model": model,
+        "messages": request.get("messages").cloned().unwrap_or(json!([])),
+        "temperature": request.get("temperature").cloned().unwrap_or(json!(0.7)),
+        "top_p": request.get("top_p").cloned().unwrap_or(json!(0.9)),
+        "stream": stream,
+    });
+    if let Some(max_tokens) = request.get("max_tokens") {
+        if !max_tokens.is_null() {
+            payload["max_tokens"] = max_tokens.clone();
+        }
+    }
+    payload
+}
+
+/// Keep the post-reasoning answer; empty when generation stopped inside thinking.
+fn extract_final_llm_content(text: &str) -> String {
+    let raw = text.trim();
+    if raw.is_empty() {
+        return String::new();
+    }
+    let lower = raw.to_lowercase();
+    for tag in ["</think>", "</redacted_reasoning>"] {
+        if let Some(pos) = lower.rfind(tag) {
+            return raw[pos + tag.len()..]
+                .trim()
+                .trim_end_matches("<|im_end|>")
+                .trim()
+                .to_string();
+        }
+    }
+    if lower.starts_with("<think>") || lower.starts_with("<redacted_reasoning>") {
+        return String::new();
+    }
+    raw.trim_end_matches("<|im_end|>").trim().to_string()
+}
+
+fn sanitize_enhanced_prompt(text: &str) -> String {
+    let answer = extract_final_llm_content(text);
+    let trimmed = answer.trim();
+    let unquoted = if trimmed.len() >= 2 {
+        let first = trimmed.as_bytes()[0];
+        let last = trimmed.as_bytes()[trimmed.len() - 1];
+        if first == last && (first == b'"' || first == b'\'') {
+            trimmed[1..trimmed.len() - 1].trim()
+        } else {
+            trimmed
+        }
+    } else {
+        trimmed
+    };
+    unquoted.chars().take(480).collect()
+}
+
+async fn enhance_prompt(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<Value>, ApiError> {
+    let request: Value = serde_json::from_slice(&body).map_err(|err| {
+        fail(
+            StatusCode::BAD_REQUEST,
+            format!("invalid enhance request: {err}"),
+        )
+    })?;
+    let settings = current_settings(&state);
+    let catalog = open_catalog(&state)?;
+    if let Some(reason) = assistant_block_reason(&settings, &catalog) {
+        return Err(fail(StatusCode::SERVICE_UNAVAILABLE, reason));
+    }
+    let prompt = request
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let target_action = request
+        .get("target_action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("image_create");
+    let action = target_action.to_lowercase();
+    let mut user_content = prompt.clone();
+    if matches!(action.as_str(), "image_create" | "create" | "image") {
+        user_content.push_str(enhance_user_locale_hint(&prompt));
+    }
+    let style = request
+        .get("style_positive")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if !style.is_empty() {
+        user_content.push_str(&format!("\n\nStyle cues to weave in: {style}"));
+    }
+    let catalog_id = assistant_model_id(&settings, &catalog);
+    let cloud_model = settings
+        .get("llm_inference_cloud_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let model = if cloud_model.is_empty() {
+        catalog_id
+    } else {
+        cloud_model.to_string()
+    };
+    let payload = json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": enhance_system_prompt(target_action) },
+            { "role": "user", "content": user_content },
+        ],
+        "temperature": 0.65,
+        "top_p": 0.9,
+        "max_tokens": 200,
+        "stream": false,
+    });
+    let url = format!("{}/chat/completions", cloud_base_url(&settings));
+    let key = cloud_api_key(&settings);
+    let response = tokio::task::spawn_blocking(move || cloud_chat(&url, &key, &payload))
+        .await
+        .map_err(|err| fail(StatusCode::BAD_GATEWAY, err.to_string()))?
+        .map_err(|err| fail(StatusCode::BAD_GATEWAY, err))?;
+    let content = response
+        .pointer("/choices/0/message/content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let cleaned = sanitize_enhanced_prompt(content);
+    let enhanced = if cleaned.is_empty() { prompt } else { cleaned };
+    Ok(Json(json!({ "enhanced_prompt": enhanced })))
+}
+
+async fn chat_completions(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let request: Value = serde_json::from_slice(&body).map_err(|err| {
+        fail(
+            StatusCode::BAD_REQUEST,
+            format!("invalid chat completion request: {err}"),
+        )
+    })?;
+    let settings = current_settings(&state);
+    let catalog = open_catalog(&state)?;
+    if let Some(reason) = assistant_block_reason(&settings, &catalog) {
+        return Err(fail(StatusCode::SERVICE_UNAVAILABLE, reason));
+    }
+    let catalog_id = assistant_model_id(&settings, &catalog);
+    let cloud_model = settings
+        .get("llm_inference_cloud_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let model = if cloud_model.is_empty() {
+        catalog_id
+    } else {
+        cloud_model.to_string()
+    };
+    let stream = request
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let url = format!("{}/chat/completions", cloud_base_url(&settings));
+    let key = cloud_api_key(&settings);
+    if !stream {
+        let payload = cloud_chat_payload(&request, &model, false);
+        let response = tokio::task::spawn_blocking(move || cloud_chat(&url, &key, &payload))
+            .await
+            .map_err(|err| fail(StatusCode::BAD_GATEWAY, err.to_string()))?
+            .map_err(|err| fail(StatusCode::BAD_GATEWAY, err))?;
+        return Ok(Json(response).into_response());
+    }
+    let payload = cloud_chat_payload(&request, &model, true);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(8);
+    tokio::task::spawn_blocking(move || {
+        if let Err(err) = cloud_stream(&url, &key, &payload, tx.clone()) {
+            let _ = tx.blocking_send(Err(std::io::Error::new(std::io::ErrorKind::Other, err)));
+        }
+    });
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(axum::body::Body::from_stream(ReceiverStream::new(rx)))
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
 }
 
 pub async fn spa(uri: axum::http::Uri) -> Response {
@@ -2048,10 +2530,7 @@ mod asset_path_tests {
 
     #[test]
     fn relative_basename_resolves_under_outputs_assets() {
-        let root = std::env::temp_dir().join(format!(
-            "danmo-asset-path-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("danmo-asset-path-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let outputs = root.join("outputs");
         let assets = outputs.join("assets");

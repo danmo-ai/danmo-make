@@ -112,6 +112,7 @@ fn main() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     // Apple Clang has libc++; GNU/Linux toolchains use libstdc++.
     if target_os == "macos" || target_os == "ios" {
+        println!("cargo:rustc-link-lib=framework=Accelerate");
         println!("cargo:rustc-link-lib=c++");
     } else {
         println!("cargo:rustc-link-lib=stdc++");

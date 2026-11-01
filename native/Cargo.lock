@@ -216,6 +216,7 @@ dependencies = [
 name = "danmo-schedule"
 version = "0.1.0"
 dependencies = [
+ "danmo-contracts",
  "danmo-store",
  "thiserror",
 ]

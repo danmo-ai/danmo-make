@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::path::Path;
+use std::sync::Arc;
 
 pub struct GgufWeights {
     parts: Vec<Part>,
@@ -25,13 +26,21 @@ struct TensorLoc {
 }
 
 impl GgufWeights {
-    pub fn open(path: &Path) -> Result<Self, WeightError> {
+    pub fn open(path: &Path) -> Result<Arc<Self>, WeightError> {
+        super::cache::open(path)
+    }
+
+    pub(crate) fn open_uncached(path: &Path) -> Result<Self, WeightError> {
         Ok(Self {
             parts: vec![Part::open(path)?],
         })
     }
 
-    pub fn open_parts(paths: &[std::path::PathBuf]) -> Result<Self, WeightError> {
+    pub fn open_parts(paths: &[std::path::PathBuf]) -> Result<Arc<Self>, WeightError> {
+        super::cache::open_parts(paths)
+    }
+
+    pub(crate) fn open_parts_uncached(paths: &[std::path::PathBuf]) -> Result<Self, WeightError> {
         let mut parts = Vec::with_capacity(paths.len());
         let mut seen = BTreeMap::<String, String>::new();
         for path in paths {
@@ -48,6 +57,10 @@ impl GgufWeights {
             parts.push(part);
         }
         Ok(Self { parts })
+    }
+
+    pub fn mapped_bytes(&self) -> usize {
+        self.parts.iter().map(|part| part.map.len).sum()
     }
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
@@ -305,11 +318,24 @@ fn read_safetensors(
             });
         }
         if shape_v.len() > 4 {
-            return Err(WeightError::Open {
-                path: origin.to_string(),
-                detail: format!("{name} has more than 4 dimensions"),
-            });
+            // Past four dimensions the leading PyTorch axes fold into ggml
+            // ne3. `[OC, IC, KD, KH, KW]` conv3d weights become
+            // `[KW, KH, KD, IC * OC]`; the flat bytes do not move.
         }
+        let fold = shape_v.len().saturating_sub(4);
+        let shape_v = if fold == 0 {
+            std::borrow::Cow::Borrowed(shape_v)
+        } else {
+            let mut folded: Vec<serde_json::Value> = Vec::with_capacity(4);
+            let lead: u64 = shape_v[..=fold]
+                .iter()
+                .map(|dim| dim.as_u64().unwrap_or(0))
+                .product();
+            folded.push(serde_json::Value::from(lead));
+            folded.extend(shape_v[fold + 1..].iter().cloned());
+            std::borrow::Cow::Owned(folded)
+        };
+        let shape_v = shape_v.as_slice();
         let mut dims = Vec::with_capacity(shape_v.len());
         for dim in shape_v {
             let dim = dim.as_u64().ok_or_else(|| WeightError::Open {
@@ -430,7 +456,19 @@ fn bf16_to_f32(bits: u16) -> f32 {
     f32::from_bits((bits as u32) << 16)
 }
 
-fn f16_to_f32(bits: u16) -> f32 {
+pub fn f32_row_to_f16(src: &[f32], dst_bytes: &mut [u8]) {
+    debug_assert_eq!(src.len() * 2, dst_bytes.len());
+    let mut f16 = vec![0u16; src.len()];
+    unsafe {
+        g::ggml_fp32_to_fp16_row(src.as_ptr(), f16.as_mut_ptr(), src.len() as i64);
+    }
+    for (i, value) in f16.iter().enumerate() {
+        dst_bytes[i * 2] = (value & 0xff) as u8;
+        dst_bytes[i * 2 + 1] = (value >> 8) as u8;
+    }
+}
+
+pub(crate) fn f16_to_f32(bits: u16) -> f32 {
     let sign = ((bits & 0x8000) as u32) << 16;
     let exp = ((bits >> 10) & 0x1f) as u32;
     let frac = (bits & 0x3ff) as u32;
@@ -842,7 +880,6 @@ pub fn write_f32_tensors(path: &Path, tensors: &[F32Tensor<'_>]) -> Result<(), W
     Ok(())
 }
 
-#[cfg(test)]
 pub struct F32Nd<'a> {
     pub name: &'a str,
     pub ne: [i64; 4],
@@ -850,7 +887,6 @@ pub struct F32Nd<'a> {
 }
 
 /// Write F32 tensors with an explicit ggml shape. `ne[0]` is the fastest dimension.
-#[cfg(test)]
 pub fn write_f32_nd(path: &Path, tensors: &[F32Nd<'_>]) -> Result<(), WeightError> {
     const MAX_NAME: usize = 256;
     if tensors.is_empty() {
@@ -1080,7 +1116,6 @@ impl MappedFile {
     }
 }
 
-#[cfg(test)]
 pub struct SafeTensor<'a> {
     pub name: &'a str,
     pub dtype: &'a str,
@@ -1089,7 +1124,6 @@ pub struct SafeTensor<'a> {
 }
 
 /// Write a safetensors file. `shape` is PyTorch order. `data` is that order's contiguous bytes.
-#[cfg(test)]
 pub fn write_safetensors(path: &Path, tensors: &[SafeTensor<'_>]) -> Result<(), WeightError> {
     if tensors.is_empty() {
         return Err(WeightError::Open {
@@ -1171,7 +1205,6 @@ pub fn write_safetensors(path: &Path, tensors: &[SafeTensor<'_>]) -> Result<(), 
     })
 }
 
-#[cfg(test)]
 fn align8(n: usize) -> usize {
     n.saturating_add(7) & !7
 }

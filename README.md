@@ -23,7 +23,7 @@ Product name: **Danmo Make**. Runtime / sidecar ids stay `danqing-*` ([AGENTS.md
 - **Global queue** — One serial worker for image / video / audio; SSE progress, priority, persistent logs.
 - **Studio UI** — Vue 3 + Vite + TypeScript + `@danqing/dq-ui`; Create / Gallery / Models / Settings; bilingual registry names.
 - **Infinite canvas** — Grid and canvas share one asset library; sessions, lineage edges, staging, composer bindings.
-- **Audio** — ACE-Step and DiffRhythm are registered; their graphs are not built yet, so generation fails loud.
+- **Audio** — ACE-Step create/edit batches, vocal/instrumental conditioning, applicable LoRA, Haar DCW, normalized wav/flac/mp3/opus/aac with denoise and quality metadata, and 5Hz LM run on ggml. Optional `ACESTEP_PMI_SCORING=1` enables LM log-prob scoring. DiffRhythm remains fail-loud.
 - **Desktop apps** — macOS ggml Metal `.dmg`; Linux ggml desktop / server tar.gz. Windows sidecar is Vulkan (CUDA when the toolkit is present).
 
 ---
@@ -211,18 +211,18 @@ danmo-make/
 ```
 Vue
   ↓ HTTP
-danqing-api (Axum)
+danqing-api (Axum + one-worker Scheduler)
+  ↓ Engine ports
+Engine → Session → shared DiT / Job / Facade pipeline
+  ↓ one factory in families/mod.rs
+Family session and graph on ggml
   ↓
-Scheduler (one worker, SQLite tasks)
-  ↓
-Image / Video / Audio pipeline
-  ↓
-Family graph on ggml
-  ↓
-GGUF mmap by tensor name
+GGUF mmap by tensor name → ArtifactSink → assets
 ```
 
-Image graphs that run today are Flux2 (MM-DiT) and Z-Image (DiT). They share the Qwen3 tower, the PNG writer, and the AutoencoderKL decoder. Flux2 first applies its packed-latent batch norm, 2×2 unpatch, and post-quant conv, then passes 32 channels with scaling 1 and shift 0. Z-Image passes 16 channels with scaling 0.3611 and shift 0.1159. A file whose only tensor is `decoder.conv.weight` stays the 1×1 preview. Shared code takes parameters and does not know the family id. Families do not import each other. Every other family fails loud after the bundle check. A registry version that is still `fp16` / `mlx-q4` / `mlx-q8` fails the task and asks for a GGUF re-download. There is no key remap. Principles: [docs/engine_architecture.md](docs/engine_architecture.md).
+The Engine creates one `GgmlContext` per task and injects it into every family session. Standard DiT phases are resolve → load → encode → schedule → infer → decode → persist. Image create runs Flux2, Z-Image, and Qwen-Image. ACE-Step audio create, cover/repaint/lego/extract/complete, applicable LoRA, and 5Hz LM use the shared GenerationFacade. All other registered actions fail with `GraphNotBuilt` before queueing or when called directly.
+
+`pipeline`, `session`, `common`, and `runtime` are family-neutral. Families do not import each other; only `families/mod.rs` dispatches on a family ID. Generic artifacts and engine ports own output persistence, progress, cancellation, sidecars, and lineage. Immutable mmap weights use a single-slot LRU + TTL cache, Qwen3 embeddings use a separate revision-aware LRU, and capacity snapshots report real graph/cache/device bytes. `DANQING_GGML_BACKEND=auto` selects a compiled backend at startup using platform priority and a validated attention probe, with CPU kept as the final fallback. Health and the System Info UI expose the result; task logs include the backend. Small heads use same-device padding rather than CPU fallback. Principles: [docs/engine_architecture.md](docs/engine_architecture.md).
 
 ---
 

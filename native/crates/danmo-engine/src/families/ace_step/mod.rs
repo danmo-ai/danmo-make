@@ -7,15 +7,16 @@
 //! generate phase-2 constrained audio codes when metas are complete.
 
 mod apg;
+mod audio_codec;
 mod ca_capture;
 mod cond;
 mod cover;
 mod create;
+mod dcw;
+mod facade;
 mod fsq;
 mod fsq_quant;
 mod graph;
-mod lyrics;
-mod lyrics_dtw;
 mod lm;
 mod lm_codes;
 mod lm_expand;
@@ -23,6 +24,9 @@ mod lm_format;
 mod lm_fsm;
 mod lm_prompt;
 mod lm_sample;
+mod lyrics;
+mod lyrics_dtw;
+mod quality;
 mod repaint;
 mod schedule;
 mod text;
@@ -30,21 +34,26 @@ mod token_decode;
 mod transformer;
 mod vae;
 mod vae_enc;
+mod vocal;
 pub(crate) mod wav;
 mod weights;
 
 use crate::runtime::{BackendKind, GgmlContext};
 use crate::weights::{GgufWeights, WeightError};
-use std::path::{Path, PathBuf};
 #[allow(unused_imports)]
 pub use cover::{CoverMode, CoverRequest};
 #[allow(unused_imports)]
 pub use create::{duration_to_latent_frames, snap_latent_frames, CreateOutput, CreateRequest};
+pub use dcw::{DcwMode, DcwSettings};
+pub(crate) use facade::AceStepFamily;
+#[allow(unused_imports)]
+pub use quality::QualityAssessment;
 #[allow(unused_imports)]
 pub use schedule::{
     sft_schedule, shift_schedule, turbo_schedule, SFT_DEFAULT_SHIFT, SFT_DEFAULT_STEPS,
     TURBO_SHIFT, TURBO_TIMESTEPS,
 };
+use std::path::{Path, PathBuf};
 #[allow(unused_imports)]
 pub use transformer::{prove_smoke_denoise, AceStepDit};
 pub use weights::{
@@ -63,7 +72,8 @@ pub fn probe_layout(bundle: &Path) -> Result<AceStepConfig, WeightError> {
 /// Prefer [`run_cover_edit`] with an explicit [`CoverRequest`].
 pub fn run_cover(_bundle: &Path) -> Result<(), WeightError> {
     Err(WeightError::NotBuilt(
-        "ACE-Step cover needs CoverRequest via audio.edit (task=cover, cover-nofsq, or repaint)".into(),
+        "ACE-Step cover needs CoverRequest via audio.edit (task=cover, cover-nofsq, or repaint)"
+            .into(),
     ))
 }
 
@@ -71,9 +81,19 @@ pub fn run_cover(_bundle: &Path) -> Result<(), WeightError> {
 pub fn run_cover_edit(
     bundle: &Path,
     request: &CoverRequest<'_>,
+    backend: BackendKind,
+) -> Result<CreateOutput, WeightError> {
+    let ctx = GgmlContext::new(backend).map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    run_cover_edit_with_context(bundle, request, &ctx)
+}
+
+pub fn run_cover_edit_with_context(
+    bundle: &Path,
+    request: &CoverRequest<'_>,
+    ctx: &GgmlContext,
 ) -> Result<CreateOutput, WeightError> {
     if crate::weights::assert_gguf_bundle(bundle).is_ok() {
-        return cover::run_full_cover(bundle, request);
+        return cover::run_full_cover_with_context(bundle, request, ctx);
     }
     Err(WeightError::NotBuilt(
         "ACE-Step cover needs a GGUF bundle with text encoder + VAE + FSQ weights".into(),
@@ -85,18 +105,21 @@ pub fn run_cover_edit(
 pub fn run_cover_nofsq(
     bundle: &Path,
     request: &CoverRequest<'_>,
+    backend: BackendKind,
 ) -> Result<CreateOutput, WeightError> {
-    run_cover_edit(bundle, request)
+    run_cover_edit(bundle, request, backend)
 }
 
-pub use lm::AceLmConfig;
-pub use lm_expand::{
-    maybe_expand_for_create, resolve_lm_bundle_for_create, LmExpandOutput, LmExpandRequest,
-    LmExpansionMode,
-};
-pub use lm_prompt::{AcePrompt, LmMode};
 #[cfg(test)]
 pub use lm::write_smoke_lm;
+pub use lm::AceLmConfig;
+#[cfg(test)]
+pub use lm_expand::maybe_expand_for_create;
+pub use lm_expand::{
+    maybe_expand_for_create_with_context, resolve_lm_bundle_for_create, LmExpandOutput,
+    LmExpandRequest,
+};
+pub use lm_prompt::{AcePrompt, LmMode};
 
 /// 5Hz LM request (acestep.cpp `ace_lm_generate`).
 pub struct LmRequest<'a> {
@@ -142,10 +165,26 @@ pub struct LmOutput {
     pub timesignature: String,
     pub language: String,
     pub audio_code_indices: Vec<i32>,
+    pub pmi: Option<quality::PmiAssessment>,
 }
 
 /// Run inspire / format (phase-1 greedy) or generate (CoT + phase-2 codes).
-pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, WeightError> {
+pub fn run_lm(
+    bundle: &Path,
+    request: &LmRequest<'_>,
+    backend: BackendKind,
+    on_token: &mut dyn FnMut(usize, usize),
+) -> Result<LmOutput, WeightError> {
+    let ctx = GgmlContext::new(backend).map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    run_lm_with_context(bundle, request, &ctx, on_token)
+}
+
+pub fn run_lm_with_context(
+    bundle: &Path,
+    request: &LmRequest<'_>,
+    ctx: &GgmlContext,
+    on_token: &mut dyn FnMut(usize, usize),
+) -> Result<LmOutput, WeightError> {
     let prompt = AcePrompt {
         caption: request.caption.to_string(),
         lyrics: request.lyrics.to_string(),
@@ -161,9 +200,7 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
     } else {
         None
     };
-    let tokenizer = request
-        .tokenizer_json
-        .or(owned_tokenizer.as_deref());
+    let tokenizer = request.tokenizer_json.or(owned_tokenizer.as_deref());
     let mut encode = |text: &str| -> Result<Vec<i32>, WeightError> {
         if let Some(json) = tokenizer {
             crate::common::qwen3::tokenize_plain(json, text, 200_000)
@@ -201,15 +238,12 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
             })
             .collect();
     }
-    let ctx = GgmlContext::new(BackendKind::Cpu)
-        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-
     if phase2 {
-        let max_codes = request
-            .max_new_tokens
-            .max(1)
-            .min(2048)
-            .min(((prompt.duration * 5.0) as usize).saturating_add(100).max(1));
+        let max_codes = request.max_new_tokens.max(1).min(2048).min(
+            ((prompt.duration * 5.0) as usize)
+                .saturating_add(100)
+                .max(1),
+        );
         let mut uncond_ids = if request.cfg_scale > 1.0 {
             let mut enc = |text: &str| -> Result<Vec<i32>, WeightError> {
                 if let Some(json) = tokenizer {
@@ -218,8 +252,11 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
                     Ok(text.bytes().map(|b| i32::from(b)).collect())
                 }
             };
-            let mut ids =
-                lm_prompt::build_lm_prompt_uncond_with_cot(&mut enc, &prompt, request.negative_prompt)?;
+            let mut ids = lm_prompt::build_lm_prompt_uncond_with_cot(
+                &mut enc,
+                &prompt,
+                request.negative_prompt,
+            )?;
             if tokenizer.is_none() {
                 ids = ids
                     .into_iter()
@@ -266,6 +303,7 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
             timesignature: prompt.timesignature,
             language: prompt.vocal_language,
             audio_code_indices: codes,
+            pmi: None,
         });
     }
 
@@ -274,11 +312,11 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
         .filter(|&id| (id as i64) < config.vocab)
         .collect();
     let max_new = request.max_new_tokens.max(1).min(2048);
-    let generated = if request.use_fsm {
+    let collect_logprob = quality::pmi_scoring_enabled();
+    let (generated, mean_logprob) = if request.use_fsm {
         let json = tokenizer.ok_or_else(|| {
             WeightError::NotBuilt(
-                "ACE-Step LM MetadataFSM needs tokenizer.json (set use_fsm=false to skip)"
-                    .into(),
+                "ACE-Step LM MetadataFSM needs tokenizer.json (set use_fsm=false to skip)".into(),
             )
         })?;
         let user_metas = lm_fsm::UserMetas {
@@ -292,11 +330,14 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
             timesignature: (!request.timesignature.is_empty())
                 .then(|| request.timesignature.to_string()),
         };
-        let mut fsm_session = lm_fsm::MetadataFsmSession::open(json, config.vocab)?
-            .with_user_metas(user_metas);
-        let decode_json = json.to_string();
+        let mut fsm_session =
+            lm_fsm::MetadataFsmSession::open(json, config.vocab)?.with_user_metas(user_metas);
+        // Build the id→text table once. Parsing tokenizer.json per decoded token
+        // rebuilt a 24 MB JSON and a full vocab map inside the sampling loop.
+        let decoder = token_decode::Decoder::from_tokenizer_json(json).ok();
         let decode_token = |id: i32| -> String {
-            token_decode::Decoder::from_tokenizer_json(&decode_json)
+            decoder
+                .as_ref()
                 .map(|d| d.decode(&[id]))
                 .unwrap_or_default()
         };
@@ -304,7 +345,7 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
             session: &mut fsm_session,
             decode_token: &decode_token,
         };
-        lm::sample_generate_fsm(
+        lm::sample_generate_fsm_with_stats(
             &ctx,
             &weights,
             config,
@@ -316,9 +357,11 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
             request.top_k,
             request.seed,
             Some(fsm),
+            collect_logprob,
+            on_token,
         )?
     } else {
-        lm::sample_generate(
+        lm::sample_generate_with_stats(
             &ctx,
             &weights,
             config,
@@ -329,6 +372,8 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
             request.top_p,
             request.top_k,
             request.seed,
+            collect_logprob,
+            on_token,
         )?
     };
     let new_ids = generated[prompt_ids.len()..].to_vec();
@@ -363,6 +408,7 @@ pub fn run_lm(bundle: &Path, request: &LmRequest<'_>) -> Result<LmOutput, Weight
         timesignature: formatted.timesignature,
         language: formatted.language,
         audio_code_indices: formatted.audio_code_indices,
+        pmi: mean_logprob.and_then(quality::PmiAssessment::from_mean_logprob),
     })
 }
 
@@ -389,27 +435,43 @@ pub fn run_lm_expand(bundle: &Path) -> Result<LmOutput, WeightError> {
             cfg_scale: 1.0,
             negative_prompt: "",
         },
+        BackendKind::Cpu,
+        &mut |_, _| (),
     )
 }
 
 /// Product create. A full `bundle.manifest.json` (DiT + text + VAE + tokenizer)
 /// runs the acestep.cpp text2music path. A DiT-only smoke card proves Euler
 /// then refuses until companions are installed.
-pub fn run_create(bundle: &Path, request: &CreateRequest<'_>) -> Result<CreateOutput, WeightError> {
+pub fn run_create(
+    bundle: &Path,
+    request: &CreateRequest<'_>,
+    backend: BackendKind,
+    on_step: impl FnMut(u32, u32),
+) -> Result<CreateOutput, WeightError> {
+    let ctx = GgmlContext::new(backend).map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    run_create_with_context(bundle, request, &ctx, on_step)
+}
+
+pub fn run_create_with_context(
+    bundle: &Path,
+    request: &CreateRequest<'_>,
+    ctx: &GgmlContext,
+    on_step: impl FnMut(u32, u32),
+) -> Result<CreateOutput, WeightError> {
     if crate::weights::assert_gguf_bundle(bundle).is_ok() {
-        return create::run_full_create(bundle, request);
+        return create::run_full_create_with_context(bundle, request, ctx, on_step);
     }
     let config = probe_layout(bundle)?;
     if config == AceStepConfig::smoke() {
-        let ctx = GgmlContext::new(BackendKind::Cpu)
-            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-        let _ = prove_smoke_denoise(&ctx, bundle, config)?;
+        let _ = prove_smoke_denoise(ctx, bundle, config)?;
         return Err(WeightError::NotBuilt(
             "ACE-Step needs text_encoder/, vae/, and tokenizer/ companions (install the registry components)".into(),
         ));
     }
     Err(WeightError::NotBuilt(
-        "ACE-Step XL create needs a GGUF bundle with text encoder + VAE (see registry components)".into(),
+        "ACE-Step XL create needs a GGUF bundle with text encoder + VAE (see registry components)"
+            .into(),
     ))
 }
 
@@ -454,7 +516,7 @@ mod tests {
 
     #[test]
     fn open_real_0_6b_q8_lm_gguf() {
-        let p = std::path::Path::new("/workspace/models/ace-step-5hz-lm-0.6b/q8_0");
+        let p = std::path::Path::new("/workspace/models/Audio/ace-step-5hz-lm-0.6b/q8_0");
         if !p.join("acestep-5Hz-lm-0.6B-Q8_0.gguf").is_file() {
             eprintln!("skip: real LM GGUF missing");
             return;
@@ -462,14 +524,17 @@ mod tests {
         let (_w, c) = super::lm::open_lm_gguf(p).expect("open lm");
         assert!(c.vocab > 150_000, "vocab {}", c.vocab);
         assert!(c.layers >= 8, "layers {}", c.layers);
-        eprintln!("lm config vocab={} hidden={} layers={}", c.vocab, c.hidden, c.layers);
+        eprintln!(
+            "lm config vocab={} hidden={} layers={}",
+            c.vocab, c.hidden, c.layers
+        );
     }
-
 
     use super::{
         config_from_weights, dit_gguf, layout_matches, probe_layout, run_cover, run_create,
         weight_layout, AceStepConfig, CreateRequest, TIME_FREQ_DIM,
     };
+    use crate::runtime::BackendKind;
     use crate::weights::{write_f32_nd, F32Nd, GgufWeights};
     use std::path::Path;
 
@@ -585,10 +650,10 @@ mod tests {
     fn audio_create_runs_smoke_denoise_then_refuses_companions() {
         let dir = scratch("create");
         write_dit(&dir, AceStepConfig::smoke());
-        let err = crate::pipeline::audio_create(
+        let err = crate::pipeline::legacy::audio_create(
             "ace_step",
             &dir,
-            &crate::pipeline::AudioCreateRequest {
+            &crate::pipeline::legacy::AudioCreateRequest {
                 prompt: "test",
                 lyrics: "[inst]",
                 duration_sec: 5.0,
@@ -604,6 +669,8 @@ mod tests {
                 audio_code_indices: None,
                 timbre_latents: None,
             },
+            BackendKind::Cpu,
+            |_, _, _| (),
         )
         .unwrap_err();
         assert!(
@@ -617,10 +684,10 @@ mod tests {
     fn audio_create_auto_lm_fails_loud_when_lm_missing() {
         let dir = scratch("create-auto-lm");
         write_dit(&dir, AceStepConfig::smoke());
-        let err = crate::pipeline::audio_create(
+        let err = crate::pipeline::legacy::audio_create(
             "ace_step",
             &dir,
-            &crate::pipeline::AudioCreateRequest {
+            &crate::pipeline::legacy::AudioCreateRequest {
                 prompt: "lofi",
                 lyrics: "[inst]",
                 duration_sec: 5.0,
@@ -636,6 +703,8 @@ mod tests {
                 audio_code_indices: None,
                 timbre_latents: None,
             },
+            BackendKind::Cpu,
+            |_, _, _| (),
         )
         .unwrap_err();
         assert!(
@@ -684,6 +753,8 @@ mod tests {
                 cfg_scale: 1.0,
                 negative_prompt: "",
             },
+            BackendKind::Cpu,
+            &mut |_, _| (),
         )
         .unwrap();
         assert_eq!(out.mode, "inspire");
@@ -717,6 +788,8 @@ mod tests {
                 cfg_scale: 1.0,
                 negative_prompt: "",
             },
+            BackendKind::Cpu,
+            &mut |_, _| (),
         )
         .unwrap_err();
         assert!(
@@ -745,7 +818,13 @@ mod tests {
                 timesignature: "",
                 audio_code_indices: None,
                 timbre_latents: None,
+                loras: &[],
+                dcw: Default::default(),
+                lm_expanded: false,
+                pmi_bonus: 0.0,
             },
+            BackendKind::Cpu,
+            |_, _| (),
         )
         .unwrap_err();
         assert!(
@@ -756,19 +835,14 @@ mod tests {
     }
 }
 
-
-
-
-
-
-
 #[cfg(test)]
 mod e2e_real_turbo {
-    use crate::pipeline::{audio_create, AudioCreateRequest};
+    use crate::pipeline::legacy::{audio_create, AudioCreateRequest};
+    use crate::runtime::BackendKind;
     use std::path::Path;
 
     fn turbo_bundle() -> Option<&'static Path> {
-        let bundle = Path::new("/workspace/models/ace-step-xl-turbo/q4_k");
+        let bundle = Path::new("/workspace/models/Audio/ace-step-xl-turbo/q4_k");
         if bundle.join("acestep-v15-xl-turbo-Q4_K_M.gguf").is_file() {
             Some(bundle)
         } else {
@@ -801,6 +875,8 @@ mod e2e_real_turbo {
                 audio_code_indices: None,
                 timbre_latents: None,
             },
+            BackendKind::Cpu,
+            |_, _, _| (),
         )
         .expect("create off");
         println!(
@@ -818,7 +894,7 @@ mod e2e_real_turbo {
             eprintln!("skip: turbo bundle missing");
             return;
         };
-        let lm = Path::new("/workspace/models/ace-step-5hz-lm-0.6b/q8_0");
+        let lm = Path::new("/workspace/models/Audio/ace-step-5hz-lm-0.6b/q8_0");
         if !lm.join("acestep-5Hz-lm-0.6B-Q8_0.gguf").is_file() {
             eprintln!("skip: 5Hz LM bundle missing");
             return;
@@ -842,6 +918,8 @@ mod e2e_real_turbo {
                 audio_code_indices: None,
                 timbre_latents: None,
             },
+            BackendKind::Cpu,
+            |_, _, _| (),
         )
         .expect("create auto");
         println!(

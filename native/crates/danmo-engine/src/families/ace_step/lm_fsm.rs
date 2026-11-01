@@ -16,10 +16,10 @@ pub const DURATION_MAX: i32 = 600;
 pub const VALID_TIME_SIGNATURES: [i32; 4] = [2, 3, 4, 6];
 
 pub const VALID_LANGUAGES: &[&str] = &[
-    "ar", "az", "bg", "bn", "ca", "cs", "da", "de", "el", "en", "es", "fa", "fi",
-    "fr", "he", "hi", "hr", "ht", "hu", "id", "is", "it", "ja", "ko", "la", "lt",
-    "ms", "ne", "nl", "no", "pa", "pl", "pt", "ro", "ru", "sa", "sk", "sr", "sv",
-    "sw", "ta", "te", "th", "tl", "tr", "uk", "ur", "vi", "yue", "zh", "unknown",
+    "ar", "az", "bg", "bn", "ca", "cs", "da", "de", "el", "en", "es", "fa", "fi", "fr", "he", "hi",
+    "hr", "ht", "hu", "id", "is", "it", "ja", "ko", "la", "lt", "ms", "ne", "nl", "no", "pa", "pl",
+    "pt", "ro", "ru", "sa", "sk", "sr", "sv", "sw", "ta", "te", "th", "tl", "tr", "uk", "ur", "vi",
+    "yue", "zh", "unknown",
 ];
 
 pub const KEYSCALE_NOTES: &[&str] = &["A", "B", "C", "D", "E", "F", "G"];
@@ -196,12 +196,18 @@ impl ForcedPhrase {
         Ok(Self { tokens, pos: 0 })
     }
 
-    pub fn from_text(
-        tokenizer_json: &str,
+    pub fn from_text(tokenizer_json: &str, text: &str, vocab: i64) -> Result<Self, WeightError> {
+        let tokens = crate::common::qwen3::tokenize_plain(tokenizer_json, text, vocab)?;
+        Self::from_ids(tokens)
+    }
+
+    /// [`from_text`] against an already-parsed tokenizer.
+    pub fn from_text_parsed(
+        tokenizer: &serde_json::Value,
         text: &str,
         vocab: i64,
     ) -> Result<Self, WeightError> {
-        let tokens = crate::common::qwen3::tokenize_plain(tokenizer_json, text, vocab)?;
+        let tokens = crate::common::qwen3::tokenize_plain_parsed(tokenizer, text, vocab)?;
         Self::from_ids(tokens)
     }
 
@@ -275,6 +281,9 @@ pub struct FsmLexicon {
 
 impl FsmLexicon {
     pub fn from_tokenizer(tokenizer_json: &str, vocab: i64) -> Result<Self, WeightError> {
+        // Parse once: the 5Hz LM tokenizer.json is ~24 MB and the lexicon builds
+        // ~120 encodes. Re-parsing per encode cost minutes of wall clock.
+        let value = crate::common::qwen3::parse_tokenizer_json(tokenizer_json)?;
         let think_id = super::lm_prompt::TOKEN_THINK;
         let think_end_id = super::lm_prompt::TOKEN_THINK_END;
         if think_id as i64 >= vocab || think_end_id as i64 >= vocab {
@@ -282,9 +291,8 @@ impl FsmLexicon {
                 "ACE-Step LM FSM think specials need vocab > {think_end_id}, got {vocab}"
             )));
         }
-        let (digit_ids, newline_id) = resolve_digit_newline_ids(tokenizer_json, vocab)?;
-        let backtick_ids =
-            crate::common::qwen3::tokenize_plain(tokenizer_json, "`", vocab)?;
+        let (digit_ids, newline_id) = resolve_digit_newline_ids_parsed(&value, vocab)?;
+        let backtick_ids = crate::common::qwen3::tokenize_plain_parsed(&value, "`", vocab)?;
         if backtick_ids.is_empty() {
             return Err(WeightError::NotBuilt(
                 "ACE-Step LM FSM backtick token encoded empty".into(),
@@ -292,7 +300,7 @@ impl FsmLexicon {
         }
         let backtick_id = *backtick_ids.last().unwrap();
         let mut encode = |text: &str| -> Result<Vec<i32>, WeightError> {
-            crate::common::qwen3::tokenize_plain(tokenizer_json, text, vocab)
+            crate::common::qwen3::tokenize_plain_parsed(&value, text, vocab)
         };
         let keyscales = valid_keyscales();
         let langs: Vec<String> = VALID_LANGUAGES.iter().map(|s| (*s).to_string()).collect();
@@ -315,12 +323,12 @@ impl FsmLexicon {
         Ok(Self {
             think: ForcedPhrase::from_ids(vec![think_id])?,
             newline: ForcedPhrase::from_ids(vec![newline_id])?,
-            bpm_name: ForcedPhrase::from_text(tokenizer_json, "bpm:", vocab)?,
-            caption_name: ForcedPhrase::from_text(tokenizer_json, "caption:", vocab)?,
-            duration_name: ForcedPhrase::from_text(tokenizer_json, "duration:", vocab)?,
-            keyscale_name: ForcedPhrase::from_text(tokenizer_json, "keyscale:", vocab)?,
-            language_name: ForcedPhrase::from_text(tokenizer_json, "language:", vocab)?,
-            timesig_name: ForcedPhrase::from_text(tokenizer_json, "timesignature:", vocab)?,
+            bpm_name: ForcedPhrase::from_text_parsed(&value, "bpm:", vocab)?,
+            caption_name: ForcedPhrase::from_text_parsed(&value, "caption:", vocab)?,
+            duration_name: ForcedPhrase::from_text_parsed(&value, "duration:", vocab)?,
+            keyscale_name: ForcedPhrase::from_text_parsed(&value, "keyscale:", vocab)?,
+            language_name: ForcedPhrase::from_text_parsed(&value, "language:", vocab)?,
+            timesig_name: ForcedPhrase::from_text_parsed(&value, "timesignature:", vocab)?,
             think_end: ForcedPhrase::from_ids(vec![think_end_id])?,
             digit_ids,
             newline_id,
@@ -424,25 +432,13 @@ impl MetadataFsm {
         }
     }
 
-    fn user_value_for_state(&self) -> Option<( &'static str, String)> {
+    fn user_value_for_state(&self) -> Option<(&'static str, String)> {
         match self.state {
             FsmState::BpmValue => self.user.bpm.map(|v| ("bpm", v.to_string())),
-            FsmState::CaptionValue => self
-                .user
-                .caption
-                .as_ref()
-                .map(|v| ("caption", v.clone())),
+            FsmState::CaptionValue => self.user.caption.as_ref().map(|v| ("caption", v.clone())),
             FsmState::DurationValue => self.user.duration.map(|v| ("duration", v.to_string())),
-            FsmState::KeyscaleValue => self
-                .user
-                .keyscale
-                .as_ref()
-                .map(|v| ("keyscale", v.clone())),
-            FsmState::LanguageValue => self
-                .user
-                .language
-                .as_ref()
-                .map(|v| ("language", v.clone())),
+            FsmState::KeyscaleValue => self.user.keyscale.as_ref().map(|v| ("keyscale", v.clone())),
+            FsmState::LanguageValue => self.user.language.as_ref().map(|v| ("language", v.clone())),
             FsmState::TimesigValue => self
                 .user
                 .timesignature
@@ -474,7 +470,11 @@ impl MetadataFsm {
             ("language", FsmState::LanguageName),
             ("timesignature", FsmState::TimesigName),
         ]);
-        let start = order.iter().position(|f| *f == current).map(|i| i + 1).unwrap_or(0);
+        let start = order
+            .iter()
+            .position(|f| *f == current)
+            .map(|i| i + 1)
+            .unwrap_or(0);
         for field in &order[start..] {
             if *field == "genres" && self.skip_genres {
                 continue;
@@ -1045,9 +1045,18 @@ pub fn resolve_digit_newline_ids(
     tokenizer_json: &str,
     vocab: i64,
 ) -> Result<([i32; 10], i32), WeightError> {
+    let value = crate::common::qwen3::parse_tokenizer_json(tokenizer_json)?;
+    resolve_digit_newline_ids_parsed(&value, vocab)
+}
+
+/// [`resolve_digit_newline_ids`] against an already-parsed tokenizer.
+pub fn resolve_digit_newline_ids_parsed(
+    tokenizer: &serde_json::Value,
+    vocab: i64,
+) -> Result<([i32; 10], i32), WeightError> {
     let mut digits = [0i32; 10];
     for d in 0..10 {
-        let ids = crate::common::qwen3::tokenize_plain(tokenizer_json, &d.to_string(), vocab)?;
+        let ids = crate::common::qwen3::tokenize_plain_parsed(tokenizer, &d.to_string(), vocab)?;
         if ids.len() != 1 {
             return Err(WeightError::NotBuilt(format!(
                 "ACE-Step LM FSM digit {d} did not encode to a single token (got {})",
@@ -1056,7 +1065,7 @@ pub fn resolve_digit_newline_ids(
         }
         digits[d] = ids[0];
     }
-    let nl = crate::common::qwen3::tokenize_plain(tokenizer_json, "\n", vocab)?;
+    let nl = crate::common::qwen3::tokenize_plain_parsed(tokenizer, "\n", vocab)?;
     if nl.len() != 1 {
         return Err(WeightError::NotBuilt(format!(
             "ACE-Step LM FSM newline did not encode to a single token (got {})",
@@ -1076,15 +1085,18 @@ pub fn maybe_mask_numeric_field(
     max_duration: i32,
 ) -> Result<bool, WeightError> {
     if let Some(prefix) = open_numeric_field(decoded, "bpm: ") {
-        MetadataFsm::mask_numeric_value(
-            logits, prefix, BPM_MIN, BPM_MAX, digit_ids, newline_id,
-        )?;
+        MetadataFsm::mask_numeric_value(logits, prefix, BPM_MIN, BPM_MAX, digit_ids, newline_id)?;
         return Ok(true);
     }
     if let Some(prefix) = open_numeric_field(decoded, "duration: ") {
         let max_v = max_duration.min(DURATION_MAX);
         MetadataFsm::mask_numeric_value(
-            logits, prefix, DURATION_MIN, max_v, digit_ids, newline_id,
+            logits,
+            prefix,
+            DURATION_MIN,
+            max_v,
+            digit_ids,
+            newline_id,
         )?;
         return Ok(true);
     }
@@ -1184,12 +1196,8 @@ mod tests {
         let digit_ids = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19];
         // Fake trees: "en" → [1, 2]; "G major" → [90, 91]
         let mut language_tree = TokenPrefixTree::default();
-        language_tree
-            .map
-            .insert(vec![], HashSet::from([1, 3]));
-        language_tree
-            .map
-            .insert(vec![1], HashSet::from([2]));
+        language_tree.map.insert(vec![], HashSet::from([1, 3]));
+        language_tree.map.insert(vec![1], HashSet::from([2]));
         language_tree
             .map
             .insert(vec![1, 2], HashSet::from([newline_id]));
@@ -1197,12 +1205,8 @@ mod tests {
             .map
             .insert(vec![3], HashSet::from([newline_id]));
         let mut keyscale_tree = TokenPrefixTree::default();
-        keyscale_tree
-            .map
-            .insert(vec![], HashSet::from([90]));
-        keyscale_tree
-            .map
-            .insert(vec![90], HashSet::from([91]));
+        keyscale_tree.map.insert(vec![], HashSet::from([90]));
+        keyscale_tree.map.insert(vec![90], HashSet::from([91]));
         keyscale_tree
             .map
             .insert(vec![90, 91], HashSet::from([newline_id]));
@@ -1231,12 +1235,16 @@ mod tests {
         fsm.state = FsmState::CaptionValue;
         // Vocab smaller than AUDIO_CODE_BASE: audio-band clamp is a no-op; backtick still blocked.
         let mut logits = vec![1.0f32; 32];
-        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
+        assert!(fsm
+            .mask_logits(&mut logits, &lex, "", &|_| String::new())
+            .unwrap());
         assert!(logits[lex.backtick_id as usize].is_infinite());
         assert_eq!(logits[0], 1.0);
         fsm.caption_token_count = CAPTION_MAX_TOKENS;
         let mut logits = vec![1.0f32; 32];
-        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
+        assert!(fsm
+            .mask_logits(&mut logits, &lex, "", &|_| String::new())
+            .unwrap());
         assert_eq!(logits[lex.newline_id as usize], 0.0);
         assert!(logits[0].is_infinite());
     }
@@ -1248,7 +1256,9 @@ mod tests {
         fsm.state = FsmState::CaptionValue;
         let base = crate::families::ace_step::lm_prompt::AUDIO_CODE_BASE as usize;
         let mut logits = vec![1.0f32; base + 8];
-        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
+        assert!(fsm
+            .mask_logits(&mut logits, &lex, "", &|_| String::new())
+            .unwrap());
         assert!(logits[base].is_infinite());
         assert!(logits[base + 7].is_infinite());
         assert_eq!(logits[0], 1.0);
@@ -1263,13 +1273,16 @@ mod tests {
         fsm.skip_language = true;
         fsm.reset(&lex);
         let mut logits = vec![1.0f32; 128];
-        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
+        assert!(fsm
+            .mask_logits(&mut logits, &lex, "", &|_| String::new())
+            .unwrap());
         assert_eq!(logits[100], 0.0);
         fsm.observe(100, &lex, "").unwrap();
         assert_eq!(fsm.state, FsmState::NewlineAfterThink);
         fsm.observe(newline_id, &lex, "\n").unwrap();
         assert_eq!(fsm.state, FsmState::BpmName);
-        fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap();
+        fsm.mask_logits(&mut logits, &lex, "", &|_| String::new())
+            .unwrap();
         assert_eq!(logits[20], 0.0);
         fsm.observe(20, &lex, "bp").unwrap();
         fsm.observe(21, &lex, "m:").unwrap();
@@ -1285,13 +1298,17 @@ mod tests {
         let mut logits = vec![0.0f32; 16];
         logits[1] = 0.5;
         logits[3] = 2.0; // top-1 among first tokens
-        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
+        assert!(fsm
+            .mask_logits(&mut logits, &lex, "", &|_| String::new())
+            .unwrap());
         assert_eq!(logits[3], 0.0);
         assert!(logits[1].is_infinite());
         fsm.observe(3, &lex, "zh").unwrap();
         // Complete after one token → newline only.
         let mut logits = vec![1.0f32; 16];
-        assert!(fsm.mask_logits(&mut logits, &lex, "zh", &|_| String::new()).unwrap());
+        assert!(fsm
+            .mask_logits(&mut logits, &lex, "zh", &|_| String::new())
+            .unwrap());
         assert_eq!(logits[lex.newline_id as usize], 0.0);
         assert!(logits[1].is_infinite());
     }
@@ -1302,16 +1319,22 @@ mod tests {
         let mut fsm = MetadataFsm::new();
         fsm.state = FsmState::KeyscaleValue;
         let mut logits = vec![1.0f32; 128];
-        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
+        assert!(fsm
+            .mask_logits(&mut logits, &lex, "", &|_| String::new())
+            .unwrap());
         assert_eq!(logits[90], 0.0);
         assert!(logits[91].is_infinite());
         fsm.observe(90, &lex, " G").unwrap();
         let mut logits = vec![1.0f32; 128];
-        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
+        assert!(fsm
+            .mask_logits(&mut logits, &lex, "", &|_| String::new())
+            .unwrap());
         assert_eq!(logits[91], 0.0);
         fsm.observe(91, &lex, " major").unwrap();
         let mut logits = vec![1.0f32; 128];
-        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
+        assert!(fsm
+            .mask_logits(&mut logits, &lex, "", &|_| String::new())
+            .unwrap());
         assert_eq!(logits[lex.newline_id as usize], 0.0);
     }
 
@@ -1322,8 +1345,7 @@ mod tests {
             Ok(text.chars().map(|c| c as i32).collect())
         };
         let values = vec!["en".into(), "zh".into()];
-        let tree =
-            build_value_prefix_tree(&mut encode, "L:", "L: ", &values, 10, false).unwrap();
+        let tree = build_value_prefix_tree(&mut encode, "L:", "L: ", &values, 10, false).unwrap();
         let first = tree.allowed(&[]).unwrap();
         // "L: en" → after "L:" remains " en" → [' ', 'e', 'n']
         assert!(first.contains(&(b' ' as i32)));
@@ -1341,7 +1363,9 @@ mod tests {
         fsm.user_field_token_queue = vec![11, 12, lex.newline_id]; // "12\n"
         fsm.current_user_field = Some("bpm");
         let mut logits = vec![1.0f32; 32];
-        assert!(fsm.mask_logits(&mut logits, &lex, "", &|_| String::new()).unwrap());
+        assert!(fsm
+            .mask_logits(&mut logits, &lex, "", &|_| String::new())
+            .unwrap());
         assert_eq!(logits[11], 0.0);
         assert!(logits[0].is_infinite());
         fsm.observe(11, &lex, "1").unwrap();
@@ -1421,10 +1445,13 @@ mod tests {
     #[ignore]
     fn lexicon_builds_trees_from_qwen_tokenizer_when_present() {
         let candidates = [
-            "/workspace/models/z-image/q4_k/tokenizer/tokenizer.json",
-            "/workspace/models/flux2-klein-4b/q4_k/tokenizer/tokenizer.json",
+            "/workspace/models/Image/z-image/q4_k/tokenizer/tokenizer.json",
+            "/workspace/models/Image/flux2-klein-4b/q4_k/tokenizer/tokenizer.json",
         ];
-        let Some(path) = candidates.iter().find(|p| std::path::Path::new(p).is_file()) else {
+        let Some(path) = candidates
+            .iter()
+            .find(|p| std::path::Path::new(p).is_file())
+        else {
             eprintln!("skip: no local Qwen tokenizer.json in workspace models/");
             return;
         };

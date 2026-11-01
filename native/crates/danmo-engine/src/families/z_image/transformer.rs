@@ -4,8 +4,8 @@
 use super::geom::{
     patch_index, positions_image_first, rope_columns, timestep_features, token_grid, TokenGrid,
 };
-use super::graph::build_dit;
-use super::weights::ZImageConfig;
+use super::graph::{build_dit, ControlBuild};
+use super::weights::{ControlConfig, ZImageConfig};
 use crate::runtime::{GgmlContext, ReusedGraph, RuntimeError};
 use crate::weights::LoraFactor;
 use std::collections::HashMap;
@@ -13,11 +13,20 @@ use std::collections::HashMap;
 const STEP_MEM: usize = 8 * 1024 * 1024;
 const GRAPH_MEM: usize = 64 * 1024 * 1024;
 
+/// Control branch activation for one denoise. `context` is the planar
+/// `[latent_w, latent_h, 2 * in_channels + 1]` control context; `scale` is the
+/// guide weight.
+pub struct ControlInput<'a> {
+    pub context: &'a [f32],
+    pub scale: f32,
+}
+
 pub struct ZImageDenoise {
     graph: ReusedGraph,
     steps_run: u32,
     config: ZImageConfig,
     grid: TokenGrid,
+    control: Option<ControlConfig>,
 }
 
 impl ZImageDenoise {
@@ -29,16 +38,24 @@ impl ZImageDenoise {
         cap_real: i64,
         types: &HashMap<String, u32>,
         loras: &[LoraFactor],
+        control: Option<ControlBuild>,
     ) -> Result<Self, RuntimeError> {
         let grid = token_grid(width, height, cap_real, config.vae_scale)?;
-        let mut builder = ctx.builder(GRAPH_MEM)?;
-        let built = build_dit(&mut builder, config, grid, types, loras)?;
+        let control_config = control.as_ref().map(|plan| plan.config);
+        let graph_mem = if control.is_some() {
+            GRAPH_MEM * 2
+        } else {
+            GRAPH_MEM
+        };
+        let mut builder = ctx.builder(graph_mem)?;
+        let built = build_dit(&mut builder, config, grid, types, loras, control)?;
         let graph = builder.finish(built.output)?;
         Ok(Self {
             graph,
             steps_run: 0,
             config,
             grid,
+            control: control_config,
         })
     }
 
@@ -65,8 +82,34 @@ impl ZImageDenoise {
         uncond_txt: Option<&[f32]>,
         sigmas: &[f32],
         guidance: f32,
+        control: Option<ControlInput>,
         mut on_step: impl FnMut(u32, u32),
     ) -> Result<Vec<f32>, RuntimeError> {
+        match (&self.control, &control) {
+            (Some(_), Some(_)) | (None, None) => {}
+            (Some(_), None) => {
+                return Err(RuntimeError::Message(
+                    "z-image graph has a control branch but the denoise got no control context"
+                        .into(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(RuntimeError::Message(
+                    "z-image denoise got a control context but the graph has no control branch"
+                        .into(),
+                ));
+            }
+        }
+        if let (Some(plan), Some(input)) = (&self.control, &control) {
+            let expect = (self.grid.latent_w * self.grid.latent_h * plan.in_channels) as usize;
+            if input.context.len() != expect {
+                return Err(RuntimeError::Message(format!(
+                    "control context has {} values, graph expects {expect}",
+                    input.context.len()
+                )));
+            }
+            self.bind_control(input, plan)?;
+        }
         self.bind(latent.as_slice(), txt)?;
         let mut euler = zimage_euler(&self.graph, self.grid, self.config.in_channels)?;
         if sigmas.len() < 2 {
@@ -127,10 +170,22 @@ impl ZImageDenoise {
         latent: &[f32],
         txt: &[f32],
         sigma: f32,
+        control: Option<ControlInput>,
     ) -> Result<Vec<f32>, RuntimeError> {
+        if let (Some(plan), Some(input)) = (&self.control, &control) {
+            self.bind_control(input, plan)?;
+        }
         self.bind(latent, txt)?;
         self.set_timestep(sigma)?;
         self.graph.compute()
+    }
+
+    fn bind_control(&self, input: &ControlInput, plan: &ControlConfig) -> Result<(), RuntimeError> {
+        self.graph.set_f32("control_context", input.context)?;
+        self.graph.set_f32("control_scale", &[input.scale])?;
+        let index = patch_index(self.grid, plan.in_channels);
+        self.graph.set_i32("control_patch_index", &index)?;
+        Ok(())
     }
 
     pub fn graph_computes(&self) -> u32 {

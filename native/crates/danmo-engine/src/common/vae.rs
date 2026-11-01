@@ -17,6 +17,7 @@ use std::collections::{BTreeSet, HashMap};
 const NORM_EPS: f32 = 1e-6;
 const GRAPH_MEM: usize = 64 * 1024 * 1024;
 
+#[derive(Clone)]
 pub struct VaeSpec {
     pub latent_channels: i64,
     pub block_out: Vec<i64>,
@@ -287,7 +288,9 @@ fn topology(spec: &VaeSpec) -> Result<Topology, RuntimeError> {
             resnet_block("decoder.mid_block.resnets.0", top, top, false),
             resnet_block("decoder.mid_block.resnets.1", top, top, false),
         ],
-        attn: spec.attention.then(|| attention_block(top)),
+        attn: spec
+            .attention
+            .then(|| attention_block("decoder.mid_block.attentions.0", top)),
         ups,
         norm_out: affine("decoder.conv_norm_out", spec.block_out[0]),
         conv_out: conv(
@@ -335,6 +338,419 @@ pub(crate) fn parameter_list(spec: &VaeSpec) -> Result<Vec<Param>, RuntimeError>
         }
     }
     Ok(params)
+}
+
+// ===== Encoder =====
+//
+// The mirror of the decoder: `encoder.conv_in`, down blocks with
+// `spec.resnets - 1` resnets each and a stride-2 downsampler on every block
+// but the last, the mid block, `encoder.conv_norm_out` (some files spell it
+// `encoder.norm_out`), and `encoder.conv_out` producing mean and logvar
+// channels. The downsampler pads the right and bottom edge by one and then
+// runs a 3×3 stride-2 zero-pad conv, matching diffusers `Downsample2D` and
+// `main`'s reference encoder. Activations stay `[W, H, C, 1]`.
+
+struct Down {
+    resnets: Vec<Resnet>,
+    downsample: Option<Conv>,
+}
+
+struct EncoderTopology {
+    conv_in: Conv,
+    downs: Vec<Down>,
+    mid: [Resnet; 2],
+    attn: Option<Attn>,
+    norm_out: Affine,
+    conv_out: Conv,
+}
+
+fn validate_spec(spec: &VaeSpec) -> Result<(), RuntimeError> {
+    scale_factor(spec.block_out.len())?;
+    if spec.groups < 1 {
+        return Err(RuntimeError::Message(
+            "vae group count must be positive".into(),
+        ));
+    }
+    if spec.latent_channels < 1 {
+        return Err(RuntimeError::Message(
+            "vae latent channels must be positive".into(),
+        ));
+    }
+    if !spec.scaling.is_finite() || spec.scaling == 0.0 {
+        return Err(RuntimeError::Message(format!(
+            "vae scaling {} is not a finite non-zero value",
+            spec.scaling
+        )));
+    }
+    if !spec.shift.is_finite() {
+        return Err(RuntimeError::Message(format!(
+            "vae shift {} is not finite",
+            spec.shift
+        )));
+    }
+    let groups = spec.groups as i64;
+    for &channels in &spec.block_out {
+        if channels < 1 || channels % groups != 0 {
+            return Err(RuntimeError::Message(format!(
+                "vae channels {channels} are not divisible by {} groups",
+                spec.groups
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn encoder_norm_out_name(vae: &GgufWeights) -> &'static str {
+    if vae.contains("encoder.conv_norm_out.weight") {
+        "encoder.conv_norm_out"
+    } else {
+        "encoder.norm_out"
+    }
+}
+
+fn encoder_topology(spec: &VaeSpec, norm_out: &str) -> Result<EncoderTopology, RuntimeError> {
+    validate_spec(spec)?;
+    if spec.resnets < 2 {
+        return Err(RuntimeError::Message(
+            "vae encoder needs a spec with at least two resnets per block".into(),
+        ));
+    }
+    let enc_resnets = spec.resnets - 1;
+    let levels = spec.block_out.len();
+    let top = *spec.block_out.last().expect("block list");
+    let mut downs = Vec::with_capacity(levels);
+    for i in 0..levels {
+        let out_ch = spec.block_out[i];
+        let in_ch = if i == 0 {
+            out_ch
+        } else {
+            spec.block_out[i - 1]
+        };
+        let mut resnets = Vec::with_capacity(enc_resnets);
+        for j in 0..enc_resnets {
+            let (rin, rout, shortcut) = if j == 0 {
+                (in_ch, out_ch, in_ch != out_ch)
+            } else {
+                (out_ch, out_ch, false)
+            };
+            resnets.push(resnet_block(
+                &format!("encoder.down_blocks.{i}.resnets.{j}"),
+                rin,
+                rout,
+                shortcut,
+            ));
+        }
+        let downsample = if i + 1 == levels {
+            None
+        } else {
+            Some(conv(
+                &format!("encoder.down_blocks.{i}.downsamplers.0.conv"),
+                3,
+                3,
+                out_ch,
+                out_ch,
+                0,
+                WeightLayout::Kernel,
+            ))
+        };
+        downs.push(Down {
+            resnets,
+            downsample,
+        });
+    }
+    Ok(EncoderTopology {
+        conv_in: conv(
+            "encoder.conv_in",
+            3,
+            3,
+            3,
+            spec.block_out[0],
+            1,
+            WeightLayout::Kernel,
+        ),
+        downs,
+        mid: [
+            resnet_block("encoder.mid_block.resnets.0", top, top, false),
+            resnet_block("encoder.mid_block.resnets.1", top, top, false),
+        ],
+        attn: spec
+            .attention
+            .then(|| attention_block("encoder.mid_block.attentions.0", top)),
+        norm_out: affine(norm_out, top),
+        conv_out: conv(
+            "encoder.conv_out",
+            3,
+            3,
+            top,
+            spec.latent_channels * 2,
+            1,
+            WeightLayout::Kernel,
+        ),
+    })
+}
+
+pub(crate) fn encoder_parameter_list(
+    spec: &VaeSpec,
+    norm_out: &str,
+) -> Result<Vec<Param>, RuntimeError> {
+    let topo = encoder_topology(spec, norm_out)?;
+    let mut params = Vec::new();
+    push_conv(&mut params, &topo.conv_in);
+    for down in &topo.downs {
+        for block in &down.resnets {
+            push_resnet(&mut params, block);
+        }
+        if let Some(downsample) = &down.downsample {
+            push_conv(&mut params, downsample);
+        }
+    }
+    push_resnet(&mut params, &topo.mid[0]);
+    if let Some(attn) = &topo.attn {
+        push_affine(&mut params, &attn.norm);
+        push_conv(&mut params, &attn.q);
+        push_conv(&mut params, &attn.k);
+        push_conv(&mut params, &attn.v);
+        push_conv(&mut params, &attn.out);
+    }
+    push_resnet(&mut params, &topo.mid[1]);
+    push_affine(&mut params, &topo.norm_out);
+    push_conv(&mut params, &topo.conv_out);
+    let mut seen = BTreeSet::new();
+    for param in &params {
+        if !seen.insert(param.name.clone()) {
+            return Err(RuntimeError::Message(format!(
+                "vae encoder parameter {} is declared twice",
+                param.name
+            )));
+        }
+    }
+    Ok(params)
+}
+
+/// Encoder `conv_out` output: `[W/f, H/f, 2*latent]` planar, unscaled. The
+/// caller slices the mean half and applies its own quant conv and scaling.
+pub(crate) fn encode_conv_out(
+    ctx: &GgmlContext,
+    vae: &GgufWeights,
+    image: &[f32],
+    spec: &VaeSpec,
+    width: u32,
+    height: u32,
+) -> Result<Vec<f32>, WeightError> {
+    let factor = scale_factor(spec.block_out.len())?;
+    if width < 1 || height < 1 || width as i64 % factor != 0 || height as i64 % factor != 0 {
+        return Err(WeightError::NotBuilt(format!(
+            "vae encode image {width}x{height} is not divisible by the {factor}x scale"
+        )));
+    }
+    let pixels = (width as i64 * height as i64 * 3) as usize;
+    if image.len() != pixels {
+        return Err(WeightError::Shape {
+            name: "pixels".into(),
+            expected: vec![width as i64, height as i64, 3],
+            got: vec![image.len() as i64],
+        });
+    }
+    if !vae.contains("encoder.conv_in.weight") {
+        return Err(WeightError::NotBuilt(
+            "vae encoder graph is not built".into(),
+        ));
+    }
+    let norm_out = encoder_norm_out_name(vae);
+    let topo = encoder_topology(spec, norm_out)?;
+    let params = encoder_parameter_list(spec, norm_out)?;
+    let mut loaded = Vec::with_capacity(params.len());
+    for param in &params {
+        loaded.push((
+            param.name.clone(),
+            vae.f32_widened(&param.name, &param.shape)?,
+        ));
+    }
+    let mut builder = ctx.builder(GRAPH_MEM)?;
+    let declared = declare(&mut builder, &params);
+    let output = forward_encoder(&mut builder, spec, &topo, &declared, width, height)?;
+    let mut graph = builder.finish(output)?;
+    graph.set_f32("pixels", image)?;
+    for (name, data) in &loaded {
+        graph.set_f32(name, data)?;
+    }
+    let encoded = graph.compute()?;
+    let out_w = width as i64 / factor;
+    let out_h = height as i64 / factor;
+    let expect = (out_w * out_h * spec.latent_channels * 2) as usize;
+    if encoded.len() != expect {
+        return Err(WeightError::Shape {
+            name: "vae encode".into(),
+            expected: vec![out_w, out_h, spec.latent_channels * 2],
+            got: vec![encoded.len() as i64],
+        });
+    }
+    if encoded.iter().any(|value| !value.is_finite()) {
+        return Err(WeightError::NotBuilt(
+            "vae encode produced a non-finite value".into(),
+        ));
+    }
+    Ok(encoded)
+}
+
+/// Full generic encode: mean half of `conv_out`, `z = (mean - shift) * scaling`,
+/// `[W/f, H/f, latent]` planar.
+pub(crate) fn encode_samples(
+    ctx: &GgmlContext,
+    vae: &GgufWeights,
+    image: &[f32],
+    spec: &VaeSpec,
+    width: u32,
+    height: u32,
+) -> Result<Vec<f32>, WeightError> {
+    let conv_out = encode_conv_out(ctx, vae, image, spec, width, height)?;
+    let factor = scale_factor(spec.block_out.len())?;
+    let out_w = (width as i64 / factor) as usize;
+    let out_h = (height as i64 / factor) as usize;
+    let channels = spec.latent_channels as usize;
+    let plane = out_w * out_h;
+    let mut out = vec![0f32; plane * channels];
+    for c in 0..channels {
+        for i in 0..plane {
+            out[i + c * plane] = (conv_out[i + c * plane] - spec.shift) * spec.scaling;
+        }
+    }
+    Ok(out)
+}
+
+fn forward_encoder(
+    b: &mut GraphBuilder,
+    spec: &VaeSpec,
+    topo: &EncoderTopology,
+    weights: &HashMap<String, Tensor>,
+    width: u32,
+    height: u32,
+) -> Result<Tensor, RuntimeError> {
+    let pixels = b.f32_3d("pixels", width as i64, height as i64, 3, true);
+    let x = nn(b.cont(b.reshape_4d(pixels, width as i64, height as i64, 3, 1)))?;
+    let mut w = width as i64;
+    let mut h = height as i64;
+    let mut x = apply_conv(b, weights, x, &topo.conv_in, w, h)?;
+    for down in &topo.downs {
+        for block in &down.resnets {
+            x = apply_resnet(b, weights, x, block, spec.groups, w, h)?;
+        }
+        if let Some(downsample) = &down.downsample {
+            x = nn(b.cont(x))?;
+            let padded = nn(b.pad_ext(x, 0, 1, 0, 1, 0, 0, 0, 0))?;
+            let padded = shaped(
+                padded,
+                [w + 1, h + 1, downsample.ic, 1],
+                "vae downsample pad",
+            )?;
+            let y =
+                nn(b.conv2d_direct(wt(weights, &downsample.weight)?, padded, 2, 2, 0, 0, 1, 1))?;
+            w = (w + 1 - 3) / 2 + 1;
+            h = (h + 1 - 3) / 2 + 1;
+            let y = nn(b.cont(y))?;
+            let y = shaped(y, [w, h, downsample.oc, 1], &downsample.weight)?;
+            x = add_bias(b, y, wt(weights, &downsample.bias)?, downsample.oc)?;
+        }
+    }
+    x = apply_resnet(b, weights, x, &topo.mid[0], spec.groups, w, h)?;
+    if let Some(attn) = &topo.attn {
+        x = apply_attention(b, weights, x, attn, spec.groups, w, h)?;
+    }
+    x = apply_resnet(b, weights, x, &topo.mid[1], spec.groups, w, h)?;
+    x = apply_norm(b, weights, x, &topo.norm_out, spec.groups, w, h)?;
+    x = nn(b.silu(x))?;
+    let x = apply_conv(b, weights, x, &topo.conv_out, w, h)?;
+    shaped(x, [w, h, spec.latent_channels * 2, 1], "encoder.conv_out")
+}
+
+/// Derive the decoder spec from tensor shapes. Falls back to `defaults` when
+/// the file does not carry the full decoder block list, so partial files keep
+/// their original fail-loud messages.
+pub(crate) fn decoder_spec_from_weights(
+    vae: &GgufWeights,
+    defaults: &VaeSpec,
+) -> Result<VaeSpec, WeightError> {
+    let conv_in = vae.shape("decoder.conv_in.weight")?;
+    let mut levels = 0i64;
+    while vae.contains(&format!(
+        "decoder.up_blocks.{levels}.resnets.0.conv2.weight"
+    )) {
+        levels += 1;
+    }
+    if levels < 2 {
+        return Ok(defaults.clone());
+    }
+    let mut block_out = Vec::with_capacity(levels as usize);
+    for i in 0..levels {
+        let shape = vae.shape(&format!("decoder.up_blocks.{i}.resnets.0.conv2.weight"))?;
+        block_out.push(shape[3]);
+    }
+    block_out.reverse();
+    let mut resnets = 0usize;
+    for i in 0..levels {
+        let mut count = 0usize;
+        while vae.contains(&format!(
+            "decoder.up_blocks.{i}.resnets.{count}.conv1.weight"
+        )) {
+            count += 1;
+        }
+        resnets = resnets.max(count);
+    }
+    Ok(VaeSpec {
+        latent_channels: conv_in[2],
+        block_out,
+        resnets,
+        groups: defaults.groups,
+        scaling: defaults.scaling,
+        shift: defaults.shift,
+        attention: vae.contains("decoder.mid_block.attentions.0.to_q.weight"),
+    })
+}
+
+/// Derive the encoder spec from tensor shapes. `spec.resnets` is the decoder
+/// convention, so an encoder with N resnets per down block reports N + 1.
+pub(crate) fn encoder_spec_from_weights(
+    vae: &GgufWeights,
+    defaults: &VaeSpec,
+) -> Result<VaeSpec, WeightError> {
+    let conv_in = vae.shape("encoder.conv_in.weight")?;
+    let mut levels = 0i64;
+    while vae.contains(&format!(
+        "encoder.down_blocks.{levels}.resnets.0.conv2.weight"
+    )) {
+        levels += 1;
+    }
+    if levels < 2 {
+        return Ok(defaults.clone());
+    }
+    let mut block_out = Vec::with_capacity(levels as usize);
+    for i in 0..levels {
+        let shape = vae.shape(&format!("encoder.down_blocks.{i}.resnets.0.conv2.weight"))?;
+        block_out.push(shape[3]);
+    }
+    let conv_out = vae.shape("encoder.conv_out.weight")?;
+    if conv_out[3] < 2 || conv_out[3] % 2 != 0 {
+        return Err(WeightError::Shape {
+            name: "encoder.conv_out.weight".into(),
+            expected: vec![3, 3, conv_out[2], conv_out[3]],
+            got: conv_out.to_vec(),
+        });
+    }
+    let mut count = 0usize;
+    while vae.contains(&format!(
+        "encoder.down_blocks.0.resnets.{count}.conv1.weight"
+    )) {
+        count += 1;
+    }
+    Ok(VaeSpec {
+        latent_channels: conv_out[3] / 2,
+        block_out,
+        resnets: count + 1,
+        groups: defaults.groups,
+        scaling: defaults.scaling,
+        shift: defaults.shift,
+        attention: vae.contains("encoder.mid_block.attentions.0.to_q.weight"),
+    })
 }
 
 fn conv(prefix: &str, kw: i64, kh: i64, ic: i64, oc: i64, pad: i32, layout: WeightLayout) -> Conv {
@@ -394,8 +810,7 @@ fn resnet_block(prefix: &str, in_ch: i64, out_ch: i64, shortcut: bool) -> Resnet
     }
 }
 
-fn attention_block(channels: i64) -> Attn {
-    let prefix = "decoder.mid_block.attentions.0";
+fn attention_block(prefix: &str, channels: i64) -> Attn {
     Attn {
         norm: affine(&format!("{prefix}.group_norm"), channels),
         q: conv(
@@ -1081,5 +1496,190 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn tiny_encoder_matches_the_host_reference() {
+        let spec = tiny();
+        let dir = scratch("vae-enc-tiny");
+        let params = super::encoder_parameter_list(&spec, "encoder.conv_norm_out").unwrap();
+        let owned: Vec<(String, [i64; 4], Vec<f32>)> = params
+            .iter()
+            .map(|param| {
+                let mut ne = [1i64; 4];
+                for (index, dim) in param.shape.iter().enumerate() {
+                    ne[index] = *dim;
+                }
+                let data = fill(&param.name, elems(&param.shape));
+                (param.name.clone(), ne, data)
+            })
+            .collect();
+        let tensors: Vec<F32Nd<'_>> = owned
+            .iter()
+            .map(|(name, ne, data)| F32Nd {
+                name,
+                ne: *ne,
+                data,
+            })
+            .collect();
+        let path = dir.join("vae.gguf");
+        write_f32_nd(&path, &tensors).unwrap();
+        let map: HashMap<String, Vec<f32>> = owned
+            .iter()
+            .map(|(name, _, data)| (name.clone(), data.clone()))
+            .collect();
+        let image: Vec<f32> = (0..4 * 4 * 3)
+            .map(|i| ((i % 7) as f32 - 3.0) * 0.2)
+            .collect();
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let vae = GgufWeights::open(&path).unwrap();
+        let got = super::encode_conv_out(&ctx, &vae, &image, &spec, 4, 4).unwrap();
+        let expect = host_encoder_reference(&spec, &map, &image, 4, 4);
+        assert_eq!(got.len(), expect.len());
+        let max = got
+            .iter()
+            .zip(&expect)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max < 1e-3,
+            "max abs {max} got {:?} expect {:?}",
+            &got[..8.min(got.len())],
+            &expect[..8.min(expect.len())]
+        );
+        let samples = super::encode_samples(&ctx, &vae, &image, &spec, 4, 4).unwrap();
+        let plane = 2 * 2;
+        for c in 0..spec.latent_channels as usize {
+            for i in 0..plane {
+                let want = (expect[i + c * plane] - spec.shift) * spec.scaling;
+                assert!(
+                    (samples[i + c * plane] - want).abs() < 1e-6,
+                    "channel {c} index {i}"
+                );
+            }
+        }
+        let inferred = super::encoder_spec_from_weights(&vae, &tiny()).unwrap();
+        assert_eq!(inferred.latent_channels, spec.latent_channels);
+        assert_eq!(inferred.block_out, spec.block_out);
+        assert_eq!(inferred.resnets, spec.resnets);
+        assert!(inferred.attention);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn encoder_spec_falls_back_without_blocks() {
+        let dir = scratch("vae-enc-fallback");
+        let path = dir.join("vae.gguf");
+        let conv_in = vec![0.0f32; 3 * 3 * 3 * 2];
+        write_f32_nd(
+            &path,
+            &[
+                F32Nd {
+                    name: "encoder.conv_in.weight",
+                    ne: [3, 3, 3, 2],
+                    data: &conv_in,
+                },
+                F32Nd {
+                    name: "encoder.conv_in.bias",
+                    ne: [2, 1, 1, 1],
+                    data: &[0.0, 0.0],
+                },
+            ],
+        )
+        .unwrap();
+        let vae = GgufWeights::open(&path).unwrap();
+        let defaults = tiny();
+        let inferred = super::encoder_spec_from_weights(&vae, &defaults).unwrap();
+        assert_eq!(inferred.block_out, defaults.block_out);
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let err =
+            super::encode_samples(&ctx, &vae, &[0.0; 4 * 4 * 3], &inferred, 4, 4).unwrap_err();
+        assert!(err.to_string().contains("encoder.down_blocks"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn host_encoder_reference(
+        spec: &VaeSpec,
+        weights: &HashMap<String, Vec<f32>>,
+        image: &[f32],
+        w: usize,
+        h: usize,
+    ) -> Vec<f32> {
+        let topo = super::encoder_topology(spec, "encoder.conv_norm_out").unwrap();
+        let mut x = conv2d(image, w, h, &topo.conv_in, weights);
+        let mut width = w;
+        let mut height = h;
+        for down in &topo.downs {
+            for block in &down.resnets {
+                x = resnet(&x, width, height, block, spec, weights);
+            }
+            if let Some(downsample) = &down.downsample {
+                let (y, ow, oh) = host_downsample(&x, width, height, downsample, weights);
+                x = y;
+                width = ow;
+                height = oh;
+            }
+        }
+        x = resnet(&x, width, height, &topo.mid[0], spec, weights);
+        if let Some(attn) = &topo.attn {
+            x = attend(&x, width, height, attn, spec, weights);
+        }
+        x = resnet(&x, width, height, &topo.mid[1], spec, weights);
+        x = silu(&group_norm(
+            &x,
+            width,
+            height,
+            &topo.norm_out,
+            spec,
+            weights,
+        ));
+        conv2d(&x, width, height, &topo.conv_out, weights)
+    }
+
+    /// Pad the right and bottom edge by one, then a 3×3 stride-2 zero-pad conv.
+    fn host_downsample(
+        x: &[f32],
+        w: usize,
+        h: usize,
+        conv: &Conv,
+        weights: &HashMap<String, Vec<f32>>,
+    ) -> (Vec<f32>, usize, usize) {
+        let channels = conv.ic as usize;
+        let pw = w + 1;
+        let ph = h + 1;
+        let mut padded = vec![0.0f32; pw * ph * channels];
+        for channel in 0..channels {
+            for y in 0..h {
+                for x0 in 0..w {
+                    padded[x0 + y * pw + channel * pw * ph] = x[x0 + y * w + channel * w * h];
+                }
+            }
+        }
+        let ow = (pw - 3) / 2 + 1;
+        let oh = (ph - 3) / 2 + 1;
+        let kernel = tensor(weights, &conv.weight);
+        let bias = tensor(weights, &conv.bias);
+        let oc = conv.oc as usize;
+        let mut out = vec![0.0f32; ow * oh * oc];
+        for oc_i in 0..oc {
+            for y in 0..oh {
+                for x0 in 0..ow {
+                    let mut acc = bias[oc_i];
+                    for ic_i in 0..channels {
+                        for ky in 0..3usize {
+                            for kx in 0..3usize {
+                                let ix = x0 * 2 + kx;
+                                let iy = y * 2 + ky;
+                                let xv = padded[ix + iy * pw + ic_i * pw * ph];
+                                let kv = kernel[kx + ky * 3 + ic_i * 9 + oc_i * 9 * channels];
+                                acc += xv * kv;
+                            }
+                        }
+                    }
+                    out[x0 + y * ow + oc_i * ow * oh] = acc;
+                }
+            }
+        }
+        (out, ow, oh)
     }
 }

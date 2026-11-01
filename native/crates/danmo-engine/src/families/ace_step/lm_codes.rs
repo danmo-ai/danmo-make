@@ -3,7 +3,7 @@
 //! After CoT metadata, logits are masked to `{IM_END} ∪ audio_code_*` and
 //! greedily sampled until EOS or `max_codes`.
 
-use super::lm::{LmSetRowsSession, AceLmConfig};
+use super::lm::{AceLmConfig, LmSetRowsSession};
 use super::lm_prompt::{AUDIO_CODE_BASE, AUDIO_CODE_COUNT, TOKEN_IM_END};
 use crate::runtime::GgmlContext;
 use crate::weights::{GgufWeights, WeightError};
@@ -52,9 +52,7 @@ pub fn greedy_audio_codes(
     cot_prompt: &[i32],
     max_codes: usize,
 ) -> Result<Vec<i32>, WeightError> {
-    sample_audio_codes(
-        ctx, weights, config, cot_prompt, max_codes, 0.0, 1.0, 0, 0,
-    )
+    sample_audio_codes(ctx, weights, config, cot_prompt, max_codes, 0.0, 1.0, 0, 0)
 }
 
 /// Phase-2 with temperature / top-k / top-p (acestep.cpp `run_phase2_*`).
@@ -99,20 +97,8 @@ pub fn greedy_audio_codes_ex(
     eos: i32,
 ) -> Result<Vec<i32>, WeightError> {
     sample_audio_codes_cfg(
-        ctx,
-        weights,
-        config,
-        cot_prompt,
-        None,
-        1.0,
-        max_codes,
-        code_base,
-        code_count,
-        eos,
-        0.0,
-        1.0,
-        0,
-        0,
+        ctx, weights, config, cot_prompt, None, 1.0, max_codes, code_base, code_count, eos, 0.0,
+        1.0, 0, 0,
     )
 }
 
@@ -213,9 +199,7 @@ pub fn sample_audio_codes_cfg(
             super::lm_sample::cfg_blend(&mut logits, ul, cfg_scale)?;
         }
         mask_audio_code_logits(&mut logits, code_base, code_count, eos)?;
-        let next = super::lm_sample::sample_top_k_p(
-            &logits, temperature, top_p, top_k, &mut rng,
-        )?;
+        let next = super::lm_sample::sample_top_k_p(&logits, temperature, top_p, top_k, &mut rng)?;
         if next == eos {
             break;
         }
@@ -275,20 +259,7 @@ mod tests {
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
         let prompt = vec![1i32, 2, 3];
         let err = sample_audio_codes_cfg(
-            &ctx,
-            &weights,
-            config,
-            &prompt,
-            None,
-            2.0,
-            2,
-            16,
-            8,
-            15,
-            0.0,
-            1.0,
-            0,
-            0,
+            &ctx, &weights, config, &prompt, None, 2.0, 2, 16, 8, 15, 0.0, 1.0, 0, 0,
         )
         .unwrap_err();
         assert!(
@@ -314,8 +285,7 @@ mod tests {
         let weights = GgufWeights::open(&dir.join("acestep-lm-smoke.gguf")).unwrap();
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
         let prompt = vec![1i32, 2, 3];
-        let codes =
-            greedy_audio_codes_ex(&ctx, &weights, config, &prompt, 4, 16, 8, 15).unwrap();
+        let codes = greedy_audio_codes_ex(&ctx, &weights, config, &prompt, 4, 16, 8, 15).unwrap();
         // Zero weights → argmax picks lowest allowed id (eos=15) first → empty codes.
         assert!(codes.len() <= 4);
         let _ = std::fs::remove_dir_all(&dir);

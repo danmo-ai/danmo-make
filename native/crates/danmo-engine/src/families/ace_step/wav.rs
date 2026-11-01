@@ -5,7 +5,10 @@ use crate::weights::WeightError;
 pub const SAMPLE_RATE: u32 = 48_000;
 
 /// Planar `[L0..Ln, R0..Rn]` → little-endian PCM16 WAV.
-pub fn write_planar_stereo_pcm16(left_right: &[f32], sample_rate: u32) -> Result<Vec<u8>, WeightError> {
+pub fn write_planar_stereo_pcm16(
+    left_right: &[f32],
+    sample_rate: u32,
+) -> Result<Vec<u8>, WeightError> {
     if left_right.len() % 2 != 0 {
         return Err(WeightError::NotBuilt(format!(
             "stereo planar buffer length {} is not even",
@@ -120,22 +123,16 @@ pub fn read_pcm16_interleaved(wav: &[u8]) -> Result<(Vec<f32>, u32), WeightError
         ));
     }
     let samples = pcm.len() / 2;
-    let mut out = Vec::with_capacity(if channels == 1 {
-        samples * 2
-    } else {
-        samples
-    });
+    let mut out = Vec::with_capacity(if channels == 1 { samples * 2 } else { samples });
     if channels == 1 {
         for i in 0..samples {
-            let s =
-                i16::from_le_bytes(pcm[i * 2..i * 2 + 2].try_into().unwrap()) as f32 / 32768.0;
+            let s = i16::from_le_bytes(pcm[i * 2..i * 2 + 2].try_into().unwrap()) as f32 / 32768.0;
             out.push(s);
             out.push(s);
         }
     } else {
         for i in 0..samples {
-            let s =
-                i16::from_le_bytes(pcm[i * 2..i * 2 + 2].try_into().unwrap()) as f32 / 32768.0;
+            let s = i16::from_le_bytes(pcm[i * 2..i * 2 + 2].try_into().unwrap()) as f32 / 32768.0;
             out.push(s);
         }
     }

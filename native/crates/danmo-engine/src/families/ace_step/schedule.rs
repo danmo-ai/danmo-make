@@ -58,7 +58,7 @@ pub fn sft_schedule(steps: u32, shift: Option<f32>) -> Result<Vec<f32>, WeightEr
 
 #[cfg(test)]
 mod tests {
-    use super::{shift_schedule, turbo_schedule, TURBO_TIMESTEPS, TURBO_SHIFT};
+    use super::{shift_schedule, turbo_schedule, TURBO_SHIFT, TURBO_TIMESTEPS};
 
     #[test]
     fn turbo_table_matches_the_published_eight_steps() {

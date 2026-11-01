@@ -1,7 +1,7 @@
 //! Denoise loop. Inputs are written after the graph is built. Each step peeks
 //! the velocity and the updated latent so a non-finite sample fails at that step.
 
-use crate::common::ops::{flux_timestep_embed, non_finite};
+use crate::common::ops::{non_finite, scaled_sinusoidal_timestep};
 use crate::runtime::{euler_graph, DeviceStep, ReusedGraph, RuntimeError};
 
 /// Replay `forward` once per conditional pass. Latents, CFG, and Euler stay on
@@ -111,7 +111,7 @@ pub fn flow_steps(sigmas: &[f32], freq_dim: usize) -> Result<Vec<DeviceStep>, Ru
         .map(|pair| DeviceStep {
             sigma: pair[0],
             sigma_next: pair[1],
-            temb: flux_timestep_embed(pair[0], freq_dim),
+            temb: scaled_sinusoidal_timestep(pair[0], freq_dim),
         })
         .collect())
 }

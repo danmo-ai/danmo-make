@@ -69,7 +69,9 @@ pub fn weight_layout(config: AceLmConfig) -> Vec<(String, i64, i64)> {
     out
 }
 
-pub fn open_lm_gguf(bundle: &Path) -> Result<(GgufWeights, AceLmConfig), WeightError> {
+pub fn open_lm_gguf(
+    bundle: &Path,
+) -> Result<(std::sync::Arc<GgufWeights>, AceLmConfig), WeightError> {
     let path = find_lm_gguf(bundle)?;
     let weights = GgufWeights::open(&path)?;
     let config = infer_config(&weights)?;
@@ -217,7 +219,10 @@ pub fn prefill_logits(
     }
     let mut types = HashMap::new();
     for (name, _, _) in weight_layout(config) {
-        types.insert(name.clone(), weights.ggml_type_of(&name).unwrap_or(TYPE_F32));
+        types.insert(
+            name.clone(),
+            weights.ggml_type_of(&name).unwrap_or(TYPE_F32),
+        );
     }
     let mut graph = LmPrefill::build(ctx, config, token_ids.len() as i64, &types)
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
@@ -251,7 +256,17 @@ pub fn greedy_generate(
     stop_ids: &[i32],
 ) -> Result<Vec<i32>, WeightError> {
     sample_generate(
-        ctx, weights, config, prompt, max_new, stop_ids, 0.0, 1.0, 0, 0,
+        ctx,
+        weights,
+        config,
+        prompt,
+        max_new,
+        stop_ids,
+        0.0,
+        1.0,
+        0,
+        0,
+        &mut |_, _| (),
     )
 }
 
@@ -267,9 +282,53 @@ pub fn sample_generate(
     top_p: f32,
     top_k: i32,
     seed: u64,
+    on_token: &mut dyn FnMut(usize, usize),
 ) -> Result<Vec<i32>, WeightError> {
-    sample_generate_fsm(
-        ctx, weights, config, prompt, max_new, stop_ids, temperature, top_p, top_k, seed, None,
+    sample_generate_with_stats(
+        ctx,
+        weights,
+        config,
+        prompt,
+        max_new,
+        stop_ids,
+        temperature,
+        top_p,
+        top_k,
+        seed,
+        false,
+        on_token,
+    )
+    .map(|(ids, _)| ids)
+}
+
+pub fn sample_generate_with_stats(
+    ctx: &GgmlContext,
+    weights: &GgufWeights,
+    config: AceLmConfig,
+    prompt: &[i32],
+    max_new: usize,
+    stop_ids: &[i32],
+    temperature: f32,
+    top_p: f32,
+    top_k: i32,
+    seed: u64,
+    collect_logprob: bool,
+    on_token: &mut dyn FnMut(usize, usize),
+) -> Result<(Vec<i32>, Option<f32>), WeightError> {
+    sample_generate_fsm_with_stats(
+        ctx,
+        weights,
+        config,
+        prompt,
+        max_new,
+        stop_ids,
+        temperature,
+        top_p,
+        top_k,
+        seed,
+        None,
+        collect_logprob,
+        on_token,
     )
 }
 
@@ -291,14 +350,52 @@ pub fn sample_generate_fsm(
     top_p: f32,
     top_k: i32,
     seed: u64,
-    mut fsm: Option<Phase1FsmMask<'_>>,
+    fsm: Option<Phase1FsmMask<'_>>,
+    on_token: &mut dyn FnMut(usize, usize),
 ) -> Result<Vec<i32>, WeightError> {
+    sample_generate_fsm_with_stats(
+        ctx,
+        weights,
+        config,
+        prompt,
+        max_new,
+        stop_ids,
+        temperature,
+        top_p,
+        top_k,
+        seed,
+        fsm,
+        false,
+        on_token,
+    )
+    .map(|(ids, _)| ids)
+}
+
+pub fn sample_generate_fsm_with_stats(
+    ctx: &GgmlContext,
+    weights: &GgufWeights,
+    config: AceLmConfig,
+    prompt: &[i32],
+    max_new: usize,
+    stop_ids: &[i32],
+    temperature: f32,
+    top_p: f32,
+    top_k: i32,
+    seed: u64,
+    mut fsm: Option<Phase1FsmMask<'_>>,
+    collect_logprob: bool,
+    on_token: &mut dyn FnMut(usize, usize),
+) -> Result<(Vec<i32>, Option<f32>), WeightError> {
     let max_seq = (prompt.len() + max_new).max(1) as i64;
     let mut session = LmSetRowsSession::open(ctx, weights, config, max_seq)?;
     let mut logits = session.prefill(prompt)?;
     let mut seq = prompt.to_vec();
     let mut rng = super::lm_sample::XorShift64::new(seed);
-    for _ in 0..max_new {
+    let mut logprob_sum = 0.0f64;
+    let mut logprob_count = 0usize;
+    for step in 0..max_new {
+        on_token(step, max_new);
+        let unmasked = collect_logprob.then(|| logits.clone());
         if let Some(mask) = fsm.as_mut() {
             let decode = mask.decode_token;
             let _ = mask.session.mask(&mut logits, decode)?;
@@ -306,9 +403,11 @@ pub fn sample_generate_fsm(
                 break;
             }
         }
-        let next = super::lm_sample::sample_top_k_p(
-            &logits, temperature, top_p, top_k, &mut rng,
-        )?;
+        let next = super::lm_sample::sample_top_k_p(&logits, temperature, top_p, top_k, &mut rng)?;
+        if let Some(logits) = unmasked {
+            logprob_sum += log_probability(&logits, next)?;
+            logprob_count += 1;
+        }
         seq.push(next);
         if let Some(mask) = fsm.as_mut() {
             let text = (mask.decode_token)(next);
@@ -322,7 +421,37 @@ pub fn sample_generate_fsm(
         }
         logits = session.decode(next)?;
     }
-    Ok(seq)
+    let mean = (logprob_count > 0).then_some((logprob_sum / logprob_count as f64) as f32);
+    Ok((seq, mean))
+}
+
+fn log_probability(logits: &[f32], token: i32) -> Result<f64, WeightError> {
+    let index = usize::try_from(token).map_err(|_| {
+        WeightError::NotBuilt(format!(
+            "ACE-Step LM token id {token} is outside the logits"
+        ))
+    })?;
+    let value = logits.get(index).copied().ok_or_else(|| {
+        WeightError::NotBuilt(format!(
+            "ACE-Step LM token id {token} is outside the logits"
+        ))
+    })?;
+    let max = logits
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .fold(f32::NEG_INFINITY, f32::max);
+    if !max.is_finite() {
+        return Err(WeightError::NotBuilt(
+            "ACE-Step LM logits have no finite values for PMI".into(),
+        ));
+    }
+    let sum = logits
+        .iter()
+        .filter(|value| value.is_finite())
+        .map(|value| f64::from(*value - max).exp())
+        .sum::<f64>();
+    Ok(f64::from(value - max) - sum.ln())
 }
 
 /// Fixed-topology decode: one graph, padded KV via `ggml_set_rows`.
@@ -377,7 +506,10 @@ impl LmSetRowsSession {
         }
         let mut types = HashMap::new();
         for (name, _, _) in weight_layout(config) {
-            types.insert(name.clone(), weights.ggml_type_of(&name).unwrap_or(TYPE_F32));
+            types.insert(
+                name.clone(),
+                weights.ggml_type_of(&name).unwrap_or(TYPE_F32),
+            );
         }
         let graph = LmSetRows::build(ctx, config, max_seq, &types)
             .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
@@ -520,10 +652,7 @@ impl LmSetRows {
         let pos = nn(b.i32_1d("positions", 1, true))?;
         let kv_rows = nn(b.i64_1d("kv_rows", 1, true))?;
         let mask = nn(b.f32_2d("attn_mask", max_seq, 1, true))?;
-        let mut hidden = nn(b.get_rows(
-            wt(&weights, "model.embed_tokens.weight")?,
-            token_ids,
-        ))?;
+        let mut hidden = nn(b.get_rows(wt(&weights, "model.embed_tokens.weight")?, token_ids))?;
         for layer in 0..config.layers {
             hidden = lm_set_rows_layer(
                 &mut b, &weights, config, layer, hidden, pos, kv_rows, mask, max_seq,
@@ -551,10 +680,23 @@ fn lm_set_rows_layer(
     let d = head;
     let nkv = config.kv_heads;
     let nh = config.heads;
-    let normed = rms(b, hidden, wt(weights, &format!("{p}.input_layernorm.weight"))?)?;
-    let q = nn(b.project(wt(weights, &format!("{p}.self_attn.q_proj.weight"))?, normed))?;
-    let k = nn(b.project(wt(weights, &format!("{p}.self_attn.k_proj.weight"))?, normed))?;
-    let v = nn(b.project(wt(weights, &format!("{p}.self_attn.v_proj.weight"))?, normed))?;
+    let normed = rms(
+        b,
+        hidden,
+        wt(weights, &format!("{p}.input_layernorm.weight"))?,
+    )?;
+    let q = nn(b.project(
+        wt(weights, &format!("{p}.self_attn.q_proj.weight"))?,
+        normed,
+    ))?;
+    let k = nn(b.project(
+        wt(weights, &format!("{p}.self_attn.k_proj.weight"))?,
+        normed,
+    ))?;
+    let v = nn(b.project(
+        wt(weights, &format!("{p}.self_attn.v_proj.weight"))?,
+        normed,
+    ))?;
     let q = nn(b.reshape_3d(q, d, nh, 1))?;
     let k = nn(b.reshape_3d(k, d, nkv, 1))?;
     let v = nn(b.reshape_3d(v, d, nkv, 1))?;
@@ -572,22 +714,8 @@ fn lm_set_rows_layer(
     let q = nn(b.cont(b.permute(q, 0, 2, 1, 3)))?; // [D, 1, Nh]
     let k = nn(b.cont(b.permute(k, 0, 2, 1, 3)))?; // [D, 1, Nkv]
     let v = nn(b.cont(b.permute(v, 0, 2, 1, 3)))?;
-    let cache_k = nn(b.tensor_3d(
-        &format!("cache_k.{layer}"),
-        TYPE_F32,
-        d,
-        max_seq,
-        nkv,
-        true,
-    ))?;
-    let cache_v = nn(b.tensor_3d(
-        &format!("cache_v.{layer}"),
-        TYPE_F32,
-        d,
-        max_seq,
-        nkv,
-        true,
-    ))?;
+    let cache_k = nn(b.tensor_3d(&format!("cache_k.{layer}"), TYPE_F32, d, max_seq, nkv, true))?;
+    let cache_v = nn(b.tensor_3d(&format!("cache_v.{layer}"), TYPE_F32, d, max_seq, nkv, true))?;
     let cache_k = nn(b.set_rows(cache_k, k, kv_rows))?;
     let cache_v = nn(b.set_rows(cache_v, v, kv_rows))?;
     let nb1 = (d as usize) * std::mem::size_of::<f32>();
@@ -605,10 +733,9 @@ fn lm_set_rows_layer(
         hidden,
         wt(weights, &format!("{p}.post_attention_layernorm.weight"))?,
     )?;
-    let gate = nn(b.silu(nn(b.project(
-        wt(weights, &format!("{p}.mlp.gate_proj.weight"))?,
-        normed,
-    ))?))?;
+    let gate = nn(b.silu(nn(
+        b.project(wt(weights, &format!("{p}.mlp.gate_proj.weight"))?, normed)
+    )?))?;
     let up = nn(b.project(wt(weights, &format!("{p}.mlp.up_proj.weight"))?, normed))?;
     let ff = nn(b.mul(gate, up))?;
     let ff = nn(b.project(wt(weights, &format!("{p}.mlp.down_proj.weight"))?, ff))?;
@@ -639,7 +766,10 @@ pub fn greedy_generate_host_kv(
     }
     let mut types = HashMap::new();
     for (name, _, _) in weight_layout(config) {
-        types.insert(name.clone(), weights.ggml_type_of(&name).unwrap_or(TYPE_F32));
+        types.insert(
+            name.clone(),
+            weights.ggml_type_of(&name).unwrap_or(TYPE_F32),
+        );
     }
     let mut session = LmKvSession {
         config,
@@ -797,10 +927,7 @@ impl LmDecode {
         }
         let token_ids = nn(b.i32_1d("token_ids", 1, true))?;
         let pos = nn(b.i32_1d("positions", 1, true))?;
-        let mut hidden = nn(b.get_rows(
-            wt(&weights, "model.embed_tokens.weight")?,
-            token_ids,
-        ))?;
+        let mut hidden = nn(b.get_rows(wt(&weights, "model.embed_tokens.weight")?, token_ids))?;
         let mut new_ks = Vec::new();
         let mut new_vs = Vec::new();
         for layer in 0..config.layers {
@@ -861,10 +988,23 @@ fn lm_decode_layer(
 ) -> Result<(Tensor, Tensor, Tensor), RuntimeError> {
     let p = format!("model.layers.{layer}");
     let head = config.head_dim;
-    let normed = rms(b, hidden, wt(weights, &format!("{p}.input_layernorm.weight"))?)?;
-    let q = nn(b.project(wt(weights, &format!("{p}.self_attn.q_proj.weight"))?, normed))?;
-    let k = nn(b.project(wt(weights, &format!("{p}.self_attn.k_proj.weight"))?, normed))?;
-    let v = nn(b.project(wt(weights, &format!("{p}.self_attn.v_proj.weight"))?, normed))?;
+    let normed = rms(
+        b,
+        hidden,
+        wt(weights, &format!("{p}.input_layernorm.weight"))?,
+    )?;
+    let q = nn(b.project(
+        wt(weights, &format!("{p}.self_attn.q_proj.weight"))?,
+        normed,
+    ))?;
+    let k = nn(b.project(
+        wt(weights, &format!("{p}.self_attn.k_proj.weight"))?,
+        normed,
+    ))?;
+    let v = nn(b.project(
+        wt(weights, &format!("{p}.self_attn.v_proj.weight"))?,
+        normed,
+    ))?;
     let q = nn(b.reshape_3d(q, head, config.heads, 1))?;
     let k = nn(b.reshape_3d(k, head, config.kv_heads, 1))?;
     let v = nn(b.reshape_3d(v, head, config.kv_heads, 1))?;
@@ -896,10 +1036,9 @@ fn lm_decode_layer(
         hidden,
         wt(weights, &format!("{p}.post_attention_layernorm.weight"))?,
     )?;
-    let gate = nn(b.silu(nn(b.project(
-        wt(weights, &format!("{p}.mlp.gate_proj.weight"))?,
-        normed,
-    ))?))?;
+    let gate = nn(b.silu(nn(
+        b.project(wt(weights, &format!("{p}.mlp.gate_proj.weight"))?, normed)
+    )?))?;
     let up = nn(b.project(wt(weights, &format!("{p}.mlp.up_proj.weight"))?, normed))?;
     let ff = nn(b.mul(gate, up))?;
     let ff = nn(b.project(wt(weights, &format!("{p}.mlp.down_proj.weight"))?, ff))?;
@@ -933,19 +1072,15 @@ impl LmPrefill {
         let token_ids = nn(b.i32_1d("token_ids", seq, true))?;
         let pos = nn(b.i32_1d("positions", seq, true))?;
         let mask = nn(b.f32_2d("attn_mask", seq, seq, true))?;
-        let mut hidden = nn(b.get_rows(
-            wt(&weights, "model.embed_tokens.weight")?,
-            token_ids,
-        ))?;
+        let mut hidden = nn(b.get_rows(wt(&weights, "model.embed_tokens.weight")?, token_ids))?;
         for layer in 0..config.layers {
             hidden = lm_layer(&b, &weights, config, layer, hidden, pos, mask, seq)?;
         }
         hidden = rms(&b, hidden, wt(&weights, "model.norm.weight")?)?;
         // Last token hidden [H] (acestep.cpp qw3lm_forward view_1d).
         let last = if seq > 1 {
-            let offset = ((seq - 1) as usize)
-                * (config.hidden as usize)
-                * std::mem::size_of::<f32>();
+            let offset =
+                ((seq - 1) as usize) * (config.hidden as usize) * std::mem::size_of::<f32>();
             nn(b.cont(b.view_1d(hidden, config.hidden, offset)))?
         } else {
             hidden
@@ -996,10 +1131,23 @@ fn lm_layer(
 ) -> Result<Tensor, RuntimeError> {
     let p = format!("model.layers.{layer}");
     let head = config.head_dim;
-    let normed = rms(b, hidden, wt(weights, &format!("{p}.input_layernorm.weight"))?)?;
-    let q = nn(b.project(wt(weights, &format!("{p}.self_attn.q_proj.weight"))?, normed))?;
-    let k = nn(b.project(wt(weights, &format!("{p}.self_attn.k_proj.weight"))?, normed))?;
-    let v = nn(b.project(wt(weights, &format!("{p}.self_attn.v_proj.weight"))?, normed))?;
+    let normed = rms(
+        b,
+        hidden,
+        wt(weights, &format!("{p}.input_layernorm.weight"))?,
+    )?;
+    let q = nn(b.project(
+        wt(weights, &format!("{p}.self_attn.q_proj.weight"))?,
+        normed,
+    ))?;
+    let k = nn(b.project(
+        wt(weights, &format!("{p}.self_attn.k_proj.weight"))?,
+        normed,
+    ))?;
+    let v = nn(b.project(
+        wt(weights, &format!("{p}.self_attn.v_proj.weight"))?,
+        normed,
+    ))?;
     let q = nn(b.reshape_3d(q, head, config.heads, seq))?;
     let k = nn(b.reshape_3d(k, head, config.kv_heads, seq))?;
     let v = nn(b.reshape_3d(v, head, config.kv_heads, seq))?;
@@ -1022,10 +1170,9 @@ fn lm_layer(
         hidden,
         wt(weights, &format!("{p}.post_attention_layernorm.weight"))?,
     )?;
-    let gate = nn(b.silu(nn(b.project(
-        wt(weights, &format!("{p}.mlp.gate_proj.weight"))?,
-        normed,
-    ))?))?;
+    let gate = nn(b.silu(nn(
+        b.project(wt(weights, &format!("{p}.mlp.gate_proj.weight"))?, normed)
+    )?))?;
     let up = nn(b.project(wt(weights, &format!("{p}.mlp.up_proj.weight"))?, normed))?;
     let ff = nn(b.mul(gate, up))?;
     let ff = nn(b.project(wt(weights, &format!("{p}.mlp.down_proj.weight"))?, ff))?;
@@ -1117,6 +1264,24 @@ mod tests {
         let out = greedy_generate(&ctx, &weights, config, &prompt, 4, &[0]).unwrap();
         assert!(out.len() >= prompt.len());
         assert!(out.len() <= prompt.len() + 4);
+        let (_, mean_logprob) = super::sample_generate_with_stats(
+            &ctx,
+            &weights,
+            config,
+            &prompt,
+            2,
+            &[0],
+            0.0,
+            1.0,
+            0,
+            0,
+            true,
+            &mut |_, _| (),
+        )
+        .unwrap();
+        assert!(mean_logprob.is_some_and(f32::is_finite));
+        assert!(super::log_probability(&[0.0, 1.0, 2.0], 1).unwrap() < 0.0);
+        assert!(super::log_probability(&[0.0], -1).is_err());
         let via_rows =
             greedy_generate_set_rows(&ctx, &weights, config, &prompt, 4, &[0], 8).unwrap();
         assert_eq!(via_rows.len(), out.len());

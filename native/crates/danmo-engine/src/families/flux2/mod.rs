@@ -1,8 +1,13 @@
+mod edit_session;
 mod graph;
+mod session;
 mod text;
 mod transformer;
 mod vae;
 mod weights;
+
+pub(crate) use edit_session::Flux2EditFamily;
+pub(crate) use session::Flux2Family;
 
 pub use text::{write_chain_bundle, write_qwen3_bundle};
 pub use transformer::Flux2Denoise;
@@ -20,6 +25,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use weights::stored_f32;
 
+#[cfg(test)]
 pub fn execute(
     ctx: &GgmlContext,
     bundle: &Path,
@@ -282,6 +288,112 @@ pub(super) fn rewrite_chain_transformer(
 /// Tiny bf16-tier bundle whose DiT file uses Flux2 parameter names.
 pub fn write_smoke_bundle(dir: &Path, dim: i64) -> Result<(), WeightError> {
     write_config_bundle(dir, Flux2Config::from_dim(dim))
+}
+
+/// Edit smoke bundle: a `from_dim(128)` DiT (the packed channel count the
+/// decoder requires) plus a VAE file with full encoder and decoder towers
+/// (latent 32, blocks 32/32/64/64, 32 groups), the quant convs, and the
+/// batch-norm statistics, so the rewrite img2img path can encode and decode.
+pub fn write_edit_smoke_bundle(dir: &Path) -> Result<(), WeightError> {
+    let config = Flux2Config::from_dim(128);
+    std::fs::create_dir_all(dir).map_err(|err| WeightError::Open {
+        path: dir.display().to_string(),
+        detail: err.to_string(),
+    })?;
+    write_transformer(dir, config, weights::smoke_values)?;
+    let joint = config.joint_attention_dim;
+    let embed = vec![0.1f32; joint as usize];
+    write_f32_tensors(
+        &dir.join("text_encoder.gguf"),
+        &[F32Tensor {
+            name: "token_embed.weight",
+            ne0: joint,
+            ne1: 1,
+            data: &embed,
+        }],
+    )?;
+    let spec = crate::common::vae::VaeSpec {
+        latent_channels: 32,
+        block_out: vec![32, 32, 64, 64],
+        resnets: 3,
+        groups: 32,
+        scaling: 1.0,
+        shift: 0.0,
+        attention: true,
+    };
+    let mut params = crate::common::vae::parameter_list(&spec)?;
+    params.extend(crate::common::vae::encoder_parameter_list(
+        &spec,
+        "encoder.conv_norm_out",
+    )?);
+    let extra: Vec<(String, [i64; 4])> = vec![
+        ("quant_conv.weight".into(), [1, 1, 64, 64]),
+        ("quant_conv.bias".into(), [64, 1, 1, 1]),
+        ("post_quant_conv.weight".into(), [1, 1, 32, 32]),
+        ("post_quant_conv.bias".into(), [32, 1, 1, 1]),
+        ("bn.running_mean".into(), [128, 1, 1, 1]),
+        ("bn.running_var".into(), [128, 1, 1, 1]),
+    ];
+    let fill = |name: &str, n: usize| -> Vec<f32> {
+        if name == "bn.running_mean" {
+            return vec![0.0; n];
+        }
+        if name == "bn.running_var" {
+            return (0..n).map(|i| 0.5 + (i % 3) as f32 * 0.1).collect();
+        }
+        if name.ends_with(".bias") {
+            return vec![0.0; n];
+        }
+        if name.contains("norm") {
+            return vec![1.0; n];
+        }
+        (0..n).map(|i| ((i % 5) as f32 - 2.0) * 0.02).collect()
+    };
+    let mut owned: Vec<(String, [i64; 4], Vec<f32>)> = params
+        .iter()
+        .map(|param| {
+            let mut ne = [1i64; 4];
+            for (index, dim) in param.shape.iter().enumerate() {
+                ne[index] = *dim;
+            }
+            let n = param.shape.iter().map(|dim| *dim as usize).product();
+            (param.name.clone(), ne, fill(&param.name, n))
+        })
+        .collect();
+    for (name, ne) in &extra {
+        let n = ne.iter().map(|dim| *dim as usize).product();
+        owned.push((name.clone(), *ne, fill(name, n)));
+    }
+    let tensors: Vec<crate::weights::F32Nd<'_>> = owned
+        .iter()
+        .map(|(name, ne, data)| crate::weights::F32Nd {
+            name,
+            ne: *ne,
+            data,
+        })
+        .collect();
+    crate::weights::write_f32_nd(&dir.join("vae.gguf"), &tensors)?;
+    std::fs::write(dir.join("tokenizer.json"), "{}\n").map_err(|err| WeightError::Open {
+        path: dir.display().to_string(),
+        detail: err.to_string(),
+    })?;
+    let manifest = r#"{
+  "format": "gguf",
+  "quant": "bf16",
+  "files": {
+    "transformer": "transformer.gguf",
+    "text_encoder": "text_encoder.gguf",
+    "vae": "vae.gguf"
+  }
+}
+"#;
+    std::fs::write(dir.join("bundle.manifest.json"), manifest).map_err(|err| {
+        WeightError::Open {
+            path: dir.display().to_string(),
+            detail: err.to_string(),
+        }
+    })?;
+    Ok(())
 }
 
 /// Same files as [`write_smoke_bundle`], with an explicit head split.

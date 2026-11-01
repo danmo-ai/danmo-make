@@ -125,7 +125,14 @@ pub fn apg_forward_with_threshold(
     Ok(result)
 }
 
-fn apg_project(v0: &[f64], v1: &[f64], out_par: &mut [f64], out_orth: &mut [f64], oc: usize, t_len: usize) {
+fn apg_project(
+    v0: &[f64],
+    v1: &[f64],
+    out_par: &mut [f64],
+    out_orth: &mut [f64],
+    oc: usize,
+    t_len: usize,
+) {
     for c in 0..oc {
         let mut norm2 = 0.0;
         for t in 0..t_len {

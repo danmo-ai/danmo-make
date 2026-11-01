@@ -2,16 +2,23 @@
 //!
 //! The text encoder is the Qwen2.5-VL trunk in `text.rs`, not the shared Qwen3
 //! tower. The VAE is the 3D causal decoder in `vae.rs`, not AutoencoderKL.
-//! Create tokenizes, encodes, steps a packed latent at guidance 1, unpacks to
-//! 16 channels, scales, and decodes frame 0.
+//! Create tokenizes and pads positive and optional negative prompts, steps a
+//! packed latent with masked CFG, unpacks to 16 channels, scales, and decodes frame 0.
 
+mod edit;
+mod edit_session;
 mod graph;
 mod ids;
+mod session;
 mod text;
 mod tokenizer;
 mod transformer;
 mod vae;
+mod vision;
 mod weights;
+
+pub(crate) use edit_session::QwenImageEditFamily;
+pub(crate) use session::QwenImageFamily;
 
 use crate::common::ops::{
     empirical_mu_sigmas, flow_match_shift_sigmas, linear_sigmas, normal_latent,
@@ -19,10 +26,87 @@ use crate::common::ops::{
 use crate::runtime::GgmlContext;
 use crate::weights::{assert_gguf_bundle, GgufWeights, LoraFile, WeightError};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use weights::{check_layout, config_from_weights, weight_layout};
+use weights::{check_layout, config_from_weights, stored_f32, weight_layout, QwenImageConfig};
 
+pub struct TextConditioning {
+    pub txt: Vec<f32>,
+    pub txt_tokens: i64,
+    pub uncond: Option<(Vec<f32>, i64)>,
+}
+
+pub fn encode_conditioning(
+    ctx: &GgmlContext,
+    bundle: &Path,
+    paths: &[PathBuf],
+    joint: i64,
+    prompt: &str,
+    negative: &str,
+    guidance: f32,
+) -> Result<TextConditioning, WeightError> {
+    let text_encoder = GgufWeights::open_parts(paths)?;
+    let text_config = text::config_from_weights(&text_encoder)?;
+    if text_config.hidden != joint {
+        return Err(WeightError::NotBuilt(format!(
+            "text hidden {} is not the DiT joint width {}",
+            text_config.hidden, joint
+        )));
+    }
+    let (txt, txt_tokens) = encode_prompt(ctx, bundle, &text_encoder, text_config, prompt, joint)?;
+    let uncond = if guidance > 1.0 {
+        let negative = if negative.trim().is_empty() {
+            " "
+        } else {
+            negative.trim()
+        };
+        Some(encode_prompt(
+            ctx,
+            bundle,
+            &text_encoder,
+            text_config,
+            negative,
+            joint,
+        )?)
+    } else {
+        None
+    };
+    let seq_txt = txt_tokens.max(uncond.as_ref().map(|(_, tokens)| *tokens).unwrap_or(0));
+    Ok(TextConditioning {
+        txt: pad_text(txt, joint, seq_txt),
+        txt_tokens,
+        uncond: uncond.map(|(values, tokens)| (pad_text(values, joint, seq_txt), tokens)),
+    })
+}
+
+fn encode_prompt(
+    ctx: &GgmlContext,
+    bundle: &Path,
+    text_encoder: &GgufWeights,
+    text_config: text::Qwen25VlConfig,
+    prompt: &str,
+    joint: i64,
+) -> Result<(Vec<f32>, i64), WeightError> {
+    let ids = tokenizer::prompt_ids(bundle, prompt, text_config.vocab)?;
+    let txt = text::encode(ctx, text_encoder, text_config, &ids)?;
+    let seq_txt = (txt.len() as i64) / joint;
+    if seq_txt < 1 || txt.len() as i64 != joint * seq_txt {
+        return Err(WeightError::NotBuilt(format!(
+            "text embedding length {} is not a multiple of hidden {}",
+            txt.len(),
+            joint
+        )));
+    }
+    Ok((txt, seq_txt))
+}
+
+fn pad_text(values: Vec<f32>, joint: i64, seq_txt: i64) -> Vec<f32> {
+    let mut padded = vec![0.0; (joint * seq_txt) as usize];
+    padded[..values.len()].copy_from_slice(&values);
+    padded
+}
+
+#[cfg(test)]
 pub fn execute(
     ctx: &GgmlContext,
     bundle: &Path,
@@ -39,11 +123,6 @@ pub fn execute(
     loras: &[LoraFile],
     on_progress: impl FnMut(u32, u32),
 ) -> Result<crate::families::DitImageRun, WeightError> {
-    if !negative.trim().is_empty() {
-        return Err(WeightError::NotBuilt(
-            "negative prompt is not built for this family".into(),
-        ));
-    }
     if !loras.is_empty() {
         return Err(WeightError::NotBuilt(
             "lora inference graph is not built".into(),
@@ -73,9 +152,9 @@ pub fn execute(
             config.in_channels, config.out_channels, config.patch
         )));
     }
-    if !guidance.is_finite() || (guidance - 1.0).abs() >= f32::EPSILON {
+    if !guidance.is_finite() {
         return Err(WeightError::NotBuilt(
-            "cfg needs the negative embedding path".into(),
+            "qwen-image guidance must be finite".into(),
         ));
     }
     let sigmas = schedule(
@@ -87,24 +166,15 @@ pub fn execute(
         scheduler_shift,
         empirical_mu,
     )?;
-    let text_encoder = GgufWeights::open_parts(&files.text_encoder)?;
-    let text_config = text::config_from_weights(&text_encoder)?;
-    if text_config.hidden != config.joint_attention_dim {
-        return Err(WeightError::NotBuilt(format!(
-            "text hidden {} is not the DiT joint width {}",
-            text_config.hidden, config.joint_attention_dim
-        )));
-    }
-    let ids = tokenizer::prompt_ids(bundle, prompt, text_config.vocab)?;
-    let txt = text::encode(ctx, &text_encoder, text_config, &ids)?;
-    let seq_txt = (txt.len() as i64) / text_config.hidden;
-    if seq_txt < 1 || txt.len() as i64 != text_config.hidden * seq_txt {
-        return Err(WeightError::NotBuilt(format!(
-            "text embedding length {} is not a multiple of hidden {}",
-            txt.len(),
-            text_config.hidden
-        )));
-    }
+    let conditioning = encode_conditioning(
+        ctx,
+        bundle,
+        &files.text_encoder,
+        config.joint_attention_dim,
+        prompt,
+        negative,
+        guidance,
+    )?;
     let grid_w = (width / scale) as i64;
     let grid_h = (height / scale) as i64;
     let layout = weight_layout(config);
@@ -113,6 +183,7 @@ pub fn execute(
         let ggml_type = loaded.ggml_type_of(name)?;
         types.insert(name.clone(), ggml_type);
     }
+    let seq_txt = conditioning.txt.len() as i64 / config.joint_attention_dim;
     let mut denoise =
         transformer::QwenImageForward::build(ctx, config, grid_w, grid_h, seq_txt, &types)?;
     for (name, ne0, ne1) in &layout {
@@ -123,7 +194,19 @@ pub fn execute(
         Some(seed) => normal_latent(seed, denoise.latent_len()),
         None => vec![0.1f32; denoise.latent_len()],
     };
-    let latents = denoise.denoise(&latent, &txt, &sigmas, guidance, on_progress)?;
+    let uncond = conditioning
+        .uncond
+        .as_ref()
+        .map(|(values, tokens)| (values.as_slice(), *tokens));
+    let latents = denoise.denoise(
+        &latent,
+        &conditioning.txt,
+        conditioning.txt_tokens,
+        uncond,
+        &sigmas,
+        guidance,
+        on_progress,
+    )?;
     if let Some(detail) = crate::common::ops::non_finite("qwen-image latent", &latents) {
         return Err(WeightError::NotBuilt(detail));
     }
@@ -133,6 +216,197 @@ pub fn execute(
         graph_computes: denoise.graph_computes(),
         preview_png: png,
     })
+}
+
+/// Edit smoke bundle: smoke DiT, the Qwen2.5-VL text tower with the vision
+/// stack, a VAE holding encoder and decoder tensors, and the byte-level test
+/// tokenizer with the five specials the edit template needs.
+pub fn write_edit_smoke_bundle(dir: &Path) -> Result<(), WeightError> {
+    use crate::weights::{write_f32_nd, write_f32_tensors, F32Nd, F32Tensor};
+
+    std::fs::create_dir_all(dir).map_err(|err| WeightError::Open {
+        path: dir.display().to_string(),
+        detail: err.to_string(),
+    })?;
+    let dit = QwenImageConfig {
+        in_channels: 64,
+        out_channels: 16,
+        inner_dim: 8,
+        num_heads: 1,
+        attn_head_dim: 8,
+        axes: [2, 2, 4],
+        num_layers: 1,
+        joint_attention_dim: 8,
+        freq_dim: 8,
+        patch: 2,
+        rope_theta: 10000.0,
+        vae_scale: 16,
+    };
+    let fill = |name: &str, ne0: i64, ne1: i64| -> Vec<f32> {
+        let n = (ne0 as usize) * (ne1 as usize);
+        if name == "img_in.weight" || name == "txt_in.weight" || name == "proj_out.weight" {
+            let mut data = vec![0f32; n];
+            for i in 0..ne0.min(ne1) as usize {
+                data[i + i * ne0 as usize] = 1.0;
+            }
+            return data;
+        }
+        if stored_f32(name) && !name.ends_with(".bias") {
+            return vec![1.0; n];
+        }
+        vec![0.0; n]
+    };
+    let dit_owned: Vec<(String, i64, i64, Vec<f32>)> = weight_layout(dit)
+        .into_iter()
+        .map(|(name, ne0, ne1)| {
+            let data = fill(&name, ne0, ne1);
+            (name, ne0, ne1, data)
+        })
+        .collect();
+    let dit_tensors: Vec<F32Tensor<'_>> = dit_owned
+        .iter()
+        .map(|(name, ne0, ne1, data)| F32Tensor {
+            name,
+            ne0: *ne0,
+            ne1: *ne1,
+            data,
+        })
+        .collect();
+    write_f32_tensors(&dir.join("transformer.gguf"), &dit_tensors)?;
+
+    let text = text::Qwen25VlConfig::edit_smoke();
+    let mut text_owned: Vec<(String, i64, i64, Vec<f32>)> = text::text_layout(text)
+        .into_iter()
+        .map(|(name, ne0, ne1)| {
+            let n = (ne0 as usize) * (ne1 as usize);
+            let data = if name == "model.embed_tokens.weight" {
+                let mut rows = vec![0f32; n];
+                for token in 0..ne1 as usize {
+                    for h in 0..ne0 as usize {
+                        rows[h + ne0 as usize * token] = ((token + h) % 5) as f32 * 0.01;
+                    }
+                }
+                rows
+            } else if name.ends_with(".weight") && !name.contains("proj") {
+                vec![1.0; n]
+            } else {
+                vec![0.0; n]
+            };
+            (name, ne0, ne1, data)
+        })
+        .collect();
+    let vision = vision::VisionConfig::smoke();
+    text_owned.extend(
+        vision::weight_layout(vision)
+            .into_iter()
+            .map(|(name, ne0, ne1)| {
+                let n = (ne0 as usize) * (ne1 as usize);
+                let data = if name.ends_with("norm1.weight")
+                    || name.ends_with("norm2.weight")
+                    || name == "visual.merger.ln_q.weight"
+                {
+                    vec![1.0; n]
+                } else {
+                    vec![0.0; n]
+                };
+                (name, ne0, ne1, data)
+            }),
+    );
+    let text_tensors: Vec<F32Tensor<'_>> = text_owned
+        .iter()
+        .map(|(name, ne0, ne1, data)| F32Tensor {
+            name,
+            ne0: *ne0,
+            ne1: *ne1,
+            data,
+        })
+        .collect();
+    write_f32_tensors(&dir.join("text_encoder.gguf"), &text_tensors)?;
+
+    let spec = vae::DecoderSpec::create_smoke();
+    let vae_owned: Vec<(String, [i64; 4], u8, Vec<f32>)> = vae::frame0_tensors(spec)
+        .into_iter()
+        .chain(vae::encoder_tensors(spec))
+        .map(|row| {
+            let count = row.ne.iter().product::<i64>() as usize;
+            let data = if row.name.ends_with(".gamma") {
+                vec![1.0; count]
+            } else {
+                vec![0.0; count]
+            };
+            (row.name, row.ne, row.rank, data)
+        })
+        .collect();
+    let vae_tensors: Vec<F32Nd<'_>> = vae_owned
+        .iter()
+        .map(|(name, ne, rank, data)| {
+            let shape = if *rank == 1 { [ne[0], 1, 1, 1] } else { *ne };
+            F32Nd {
+                name,
+                ne: shape,
+                data,
+            }
+        })
+        .collect();
+    write_f32_nd(&dir.join("vae.gguf"), &vae_tensors)?;
+
+    let tok = dir.join("tokenizer");
+    std::fs::create_dir_all(&tok).map_err(|err| WeightError::Open {
+        path: tok.display().to_string(),
+        detail: err.to_string(),
+    })?;
+    let mut vocab = String::from("{");
+    for byte in 0u16..256 {
+        if byte > 0 {
+            vocab.push(',');
+        }
+        let token = crate::common::bpe::byte_token(byte as u8).to_string();
+        vocab.push_str(&serde_json::to_string(&token).unwrap());
+        vocab.push(':');
+        vocab.push_str(&byte.to_string());
+    }
+    vocab.push_str(
+        ",\"<|im_start|>\":256,\"<|im_end|>\":257,\"<|vision_start|>\":258,\"<|vision_end|>\":259,\"<|image_pad|>\":260}",
+    );
+    let config = r#"{
+  "added_tokens_decoder": {
+    "256": {"content": "<|im_start|>", "special": true},
+    "257": {"content": "<|im_end|>", "special": true},
+    "258": {"content": "<|vision_start|>", "special": true},
+    "259": {"content": "<|vision_end|>", "special": true},
+    "260": {"content": "<|image_pad|>", "special": true}
+  }
+}"#;
+    std::fs::write(tok.join("vocab.json"), vocab).map_err(|err| WeightError::Open {
+        path: tok.join("vocab.json").display().to_string(),
+        detail: err.to_string(),
+    })?;
+    std::fs::write(tok.join("merges.txt"), "#version: 0.2\n").map_err(|err| WeightError::Open {
+        path: tok.join("merges.txt").display().to_string(),
+        detail: err.to_string(),
+    })?;
+    std::fs::write(tok.join("tokenizer_config.json"), config).map_err(|err| WeightError::Open {
+        path: tok.join("tokenizer_config.json").display().to_string(),
+        detail: err.to_string(),
+    })?;
+    std::fs::write(
+        dir.join("bundle.manifest.json"),
+        r#"{
+  "format": "gguf",
+  "quant": "q4_k",
+  "files": {
+    "transformer": "transformer.gguf",
+    "text_encoder": "text_encoder.gguf",
+    "vae": "vae.gguf"
+  }
+}
+"#,
+    )
+    .map_err(|err| WeightError::Open {
+        path: dir.join("bundle.manifest.json").display().to_string(),
+        detail: err.to_string(),
+    })?;
+    Ok(())
 }
 
 /// Published card: `requires_sigma_shift` is true and no `scheduler_shift` is
@@ -454,26 +728,6 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("Qwen2.5-VL"), "{message}");
         assert!(!message.contains("step loop"), "{message}");
-        let cfg = must_err(execute(
-            &ctx,
-            &packed,
-            "a red cube",
-            4,
-            16,
-            16,
-            4.0,
-            Some(1),
-            None,
-            None,
-            false,
-            "",
-            &[],
-            |_, _| {},
-        ));
-        assert!(
-            cfg.to_string().contains("cfg needs the negative embedding"),
-            "{cfg}"
-        );
     }
 
     #[test]
@@ -596,12 +850,16 @@ mod tests {
     }
 
     #[test]
-    fn one_euler_step_matches_the_conditional_forward() {
+    fn one_euler_step_matches_conditional_and_cfg_forwards() {
         let config = QwenImageConfig::smoke();
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
         let mut forward = QwenImageForward::build(&ctx, config, 2, 1, 2, &HashMap::new()).unwrap();
+        let mut negative_forward =
+            QwenImageForward::build(&ctx, config, 2, 1, 1, &HashMap::new()).unwrap();
         for (name, ne0, ne1) in weight_layout(config) {
-            forward.load_f32(&name, &fill(&name, ne0, ne1)).unwrap();
+            let data = fill(&name, ne0, ne1);
+            forward.load_f32(&name, &data).unwrap();
+            negative_forward.load_f32(&name, &data).unwrap();
         }
         let latent = vec![
             0.2, -0.4, 0.6, -0.1, 0.3, 0.8, -0.7, 0.5, 1.0, -1.5, 0.25, 0.0, 2.0, -0.2, 0.4, -0.8,
@@ -616,7 +874,9 @@ mod tests {
         }
         let mut steps = 0u32;
         let got = forward
-            .denoise(&latent, &txt, &[sigma, 0.0], 1.0, |done, _| steps = done)
+            .denoise(&latent, &txt, 2, None, &[sigma, 0.0], 1.0, |done, _| {
+                steps = done
+            })
             .unwrap();
         assert_eq!(steps, 1);
         assert_eq!(got.len(), expect.len());
@@ -626,10 +886,35 @@ mod tests {
                 "index {i} got {left} expect {right}"
             );
         }
+
+        let negative = vec![0.25; config.joint_attention_dim as usize];
+        let negative_velocity = negative_forward.forward(&latent, &negative, &freq).unwrap();
+        let mut padded_negative = vec![0.0; txt.len()];
+        padded_negative[..negative.len()].copy_from_slice(&negative);
         let cfg = forward
-            .denoise(&latent, &txt, &[sigma, 0.0], 4.0, |_, _| {})
-            .unwrap_err();
-        assert!(cfg.to_string().contains("negative embedding"), "{cfg}");
+            .denoise(
+                &latent,
+                &txt,
+                2,
+                Some((&padded_negative, 1)),
+                &[sigma, 0.0],
+                4.0,
+                |_, _| {},
+            )
+            .unwrap();
+        for (i, ((left, cond), uncond)) in cfg
+            .iter()
+            .zip(&velocity)
+            .zip(&negative_velocity)
+            .enumerate()
+        {
+            let guided = uncond + 4.0 * (cond - uncond);
+            let expect = latent[i] - sigma * guided;
+            assert!(
+                (left - expect).abs() < 1e-4,
+                "cfg index {i} got {left} expect {expect}"
+            );
+        }
     }
 
     fn create_smoke_config() -> QwenImageConfig {
@@ -806,6 +1091,127 @@ mod tests {
         assert!(out.graph_computes >= 2);
         assert!(out.preview_png.starts_with(b"\x89PNG"));
         assert!(out.preview_png.len() > 100);
+
+        let cfg = execute(
+            &ctx,
+            &dir,
+            "hi",
+            2,
+            16,
+            16,
+            4.0,
+            Some(1),
+            Some("flow_match_euler_discrete"),
+            None,
+            false,
+            "x",
+            &[],
+            |_, _| {},
+        )
+        .expect("qwen smoke cfg create");
+        assert_eq!(cfg.graph_computes, 4);
+        assert!(cfg.latents.iter().all(|value| value.is_finite()));
+        assert!(cfg.preview_png.starts_with(b"\x89PNG"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_denoise_uses_cond_sequence_and_returns_only_target() {
+        let config = QwenImageConfig::smoke();
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let mut forward =
+            QwenImageForward::build_edit(&ctx, config, 2, 1, 1, 1, 2, &HashMap::new()).unwrap();
+        for (name, ne0, ne1) in weight_layout(config) {
+            forward.load_f32(&name, &fill(&name, ne0, ne1)).unwrap();
+        }
+        let latent = vec![0.1; (config.in_channels * 3) as usize];
+        let txt = vec![0.0; (config.joint_attention_dim * 2) as usize];
+        let output = forward
+            .denoise(&latent, &txt, 2, None, &[0.5, 0.0], 1.0, |_, _| {})
+            .unwrap();
+        assert_eq!(output.len(), (config.in_channels * 2) as usize);
+        assert!(output.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn production_session_runs_masked_cfg_and_decodes() {
+        use crate::families::DitImageFamily;
+
+        struct NoResolver;
+        impl crate::ports::ResolvePort for NoResolver {
+            fn resolve(
+                &self,
+                model: &str,
+                _action: crate::contract::Action,
+            ) -> Result<crate::contract::ResolvedRun, crate::error::EngineError> {
+                Err(crate::error::EngineError::Resolve(format!(
+                    "{model} is not resolvable in this test"
+                )))
+            }
+            fn resolve_component(
+                &self,
+                _run: &crate::contract::ResolvedRun,
+                _role: &str,
+                _model: &str,
+            ) -> Result<std::path::PathBuf, crate::error::EngineError> {
+                Err(crate::error::EngineError::Resolve(
+                    "no companion in test".into(),
+                ))
+            }
+            fn read_source_audio(
+                &self,
+                _run: &crate::contract::ResolvedRun,
+                _source: &str,
+            ) -> Result<Vec<u8>, crate::error::EngineError> {
+                Err(crate::error::EngineError::Resolve(
+                    "no audio in test".into(),
+                ))
+            }
+        }
+
+        let dir = scratch("session-cfg");
+        write_create_smoke(&dir);
+        let family = super::session::QwenImageFamily;
+        let request = danmo_contracts::ImageGenerationRequest {
+            model: "qwen-image".into(),
+            title: String::new(),
+            prompt: "hi".into(),
+            negative_prompt: "x".into(),
+            size: "16x16".into(),
+            n: 1,
+            steps: Some(2),
+            guidance: Some(4.0),
+            seed: Some(1),
+            scheduler: None,
+            scheduler_shift: None,
+            use_empirical_mu: false,
+            adapters: Vec::new(),
+            structural_guide: None,
+            priority: "normal".into(),
+        };
+        let run = crate::contract::ResolvedRun {
+            model: request.model.clone(),
+            version: Some("q4_k".into()),
+            family: "qwen_image".into(),
+            action: crate::contract::Action::ImageCreate,
+            bundle: dir.clone(),
+            backend: BackendKind::Cpu,
+        };
+        let mut session = family
+            .load(&run, &request, Vec::new(), &NoResolver)
+            .unwrap();
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        session.encode(&ctx).unwrap();
+        session.schedule().unwrap();
+        let exec = crate::contract::ExecutionContext::new(
+            "qwen-cfg",
+            std::sync::Arc::new(crate::contract::NoopObserver),
+        );
+        let latents = session.infer(&exec).unwrap();
+        assert!(latents.iter().all(|value| value.is_finite()));
+        let decoded = session.decode(&ctx, &latents).unwrap();
+        assert_eq!(decoded.graph_computes, 4);
+        assert!(decoded.preview_png.starts_with(b"\x89PNG"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

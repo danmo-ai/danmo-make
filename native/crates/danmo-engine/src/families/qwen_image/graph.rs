@@ -10,7 +10,7 @@
 //! for a CUDA k-quant NaN. Those scales are not applied.
 //! `zero_cond_t` (a second timestep selected per token) is not in this graph.
 
-use super::ids::position_ids;
+use super::ids::{position_ids, position_ids_edit};
 use super::weights::{weight_layout, QwenImageConfig, LN_EPS};
 use crate::runtime::{flash_attend, rope_nd, GraphBuilder, RuntimeError, Tensor, TYPE_F32};
 use std::collections::HashMap;
@@ -26,6 +26,7 @@ pub fn build_dit(
     grid_h: i64,
     seq_txt: i64,
     types: &HashMap<String, u32>,
+    cond_seq: i64,
 ) -> Result<BuiltDit, RuntimeError> {
     if config.num_heads < 1
         || config.attn_head_dim < 1
@@ -48,7 +49,7 @@ pub fn build_dit(
             "qwen-image image grid or text length is empty".into(),
         ));
     }
-    let seq_img = grid_w * grid_h;
+    let seq_img = grid_w * grid_h + cond_seq;
     let mut weights = HashMap::new();
     for (name, ne0, ne1) in weight_layout(config) {
         let ggml_type = types.get(&name).copied().unwrap_or(TYPE_F32);
@@ -60,7 +61,14 @@ pub fn build_dit(
     }
     let latent = nn(b.f32_2d("latent", config.in_channels, seq_img, true))?;
     let txt = nn(b.f32_2d("txt", config.joint_attention_dim, seq_txt, true))?;
-    let temb_freq = nn(b.f32_2d("temb_freq", config.freq_dim, 1, true))?;
+    let temb_freq = nn(b.f32_2d(
+        "temb_freq",
+        config.freq_dim,
+        if cond_seq > 0 { seq_img } else { 1 },
+        true,
+    ))?;
+    let seq = seq_txt + seq_img;
+    let attn_mask = nn(b.f32_2d("attn_mask", seq, seq, true))?;
     let mut rope_img = [std::ptr::null_mut(); 3];
     let mut rope_txt = [std::ptr::null_mut(); 3];
     for i in 0..3 {
@@ -68,7 +76,8 @@ pub fn build_dit(
         rope_txt[i] = nn(b.i32_1d(&format!("rope_txt_{i}"), seq_txt, true))?;
     }
     let output = forward(
-        b, &weights, config, latent, txt, temb_freq, rope_img, rope_txt, seq_img, seq_txt,
+        b, &weights, config, latent, txt, temb_freq, attn_mask, rope_img, rope_txt, seq_img,
+        seq_txt,
     )?;
     Ok(BuiltDit { output })
 }
@@ -80,6 +89,7 @@ fn forward(
     latent: Tensor,
     context: Tensor,
     temb_freq: Tensor,
+    attn_mask: Tensor,
     rope_img: [Tensor; 3],
     rope_txt: [Tensor; 3],
     seq_img: i64,
@@ -122,6 +132,7 @@ fn forward(
             txt,
             img,
             temb,
+            attn_mask,
             rope_txt,
             rope_img,
             config,
@@ -154,6 +165,7 @@ fn block(
     txt: Tensor,
     img: Tensor,
     temb: Tensor,
+    attn_mask: Tensor,
     rope_txt: [Tensor; 3],
     rope_img: [Tensor; 3],
     config: QwenImageConfig,
@@ -181,7 +193,7 @@ fn block(
     let img_n = scale_shift(b, nn(b.norm(img, LN_EPS))?, img_scale_msa, img_shift_msa)?;
     let txt_n = scale_shift(b, nn(b.norm(txt, LN_EPS))?, txt_scale_msa, txt_shift_msa)?;
     let (img_attn, txt_attn) = attention(
-        b, weights, prefix, img_n, txt_n, rope_img, rope_txt, config, seq_img, seq_txt,
+        b, weights, prefix, img_n, txt_n, attn_mask, rope_img, rope_txt, config, seq_img, seq_txt,
     )?;
     let img = gate_add(b, img, img_gate_msa, img_attn)?;
     let txt = gate_add(b, txt, txt_gate_msa, txt_attn)?;
@@ -209,6 +221,7 @@ fn attention(
     prefix: &str,
     img: Tensor,
     txt: Tensor,
+    attn_mask: Tensor,
     rope_img: [Tensor; 3],
     rope_txt: [Tensor; 3],
     config: QwenImageConfig,
@@ -222,7 +235,7 @@ fn attention(
     let q = nn(b.cont(b.concat(q_txt, q_img, 2)))?;
     let k = nn(b.cont(b.concat(k_txt, k_img, 2)))?;
     let v = nn(b.cont(b.concat(v_txt, v_img, 2)))?;
-    let mixed = nn(b.reshape_2d(flash_attend(b, q, k, v, std::ptr::null_mut())?, dim, seq))?;
+    let mixed = nn(b.reshape_2d(flash_attend(b, q, k, v, attn_mask)?, dim, seq))?;
     let txt_tok = tokens(b, mixed, dim, 0, seq_txt)?;
     let img_tok = tokens(b, mixed, dim, seq_txt, seq_img)?;
     let img_out = biased(
@@ -330,8 +343,12 @@ pub fn bind_rope(
     grid_w: i64,
     grid_h: i64,
     seq_txt: i64,
+    cond: Option<(i64, i64)>,
 ) -> Result<(), RuntimeError> {
-    let ids = position_ids(grid_h, grid_w, seq_txt)?;
+    let ids = match cond {
+        Some((cond_w, cond_h)) => position_ids_edit(grid_h, grid_w, cond_h, cond_w, seq_txt)?,
+        None => position_ids(grid_h, grid_w, seq_txt)?,
+    };
     for axis in 0..3 {
         let image: Vec<i32> = ids.image.iter().map(|row| row[axis]).collect();
         let text: Vec<i32> = ids.text.iter().map(|row| row[axis]).collect();

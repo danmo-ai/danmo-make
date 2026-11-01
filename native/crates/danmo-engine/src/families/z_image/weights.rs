@@ -1,6 +1,5 @@
 //! GGUF names are the unsloth / SD.cpp names. Nothing here renames a key.
 
-#[cfg(test)]
 use super::geom::ffn_hidden;
 use super::geom::{axes_for_head, FREQ_DIM, MID_DIM, PATCH, ROPE_THETA, T_SCALE, VAE_SCALE};
 use crate::weights::{GgufWeights, WeightError};
@@ -32,7 +31,6 @@ impl ZImageConfig {
     }
 
     /// Smoke graph: one refiner pair, one main layer, head 8.
-    #[cfg(test)]
     pub fn smoke() -> Self {
         let dim = 8;
         let head = 8;
@@ -121,6 +119,135 @@ fn push_block(
         ));
         names.push((format!("{prefix}.adaLN_modulation.0.bias"), dim * 4, 1));
     }
+}
+
+/// Fun ControlNet Union branch. Names are the diffusers / SD.cpp names
+/// (`control_all_x_embedder.2-1`, `control_noise_refiner.*`, `control_layers.*`).
+#[derive(Debug, Clone, Copy)]
+pub struct ControlConfig {
+    pub refiner_blocks: i64,
+    pub layer_blocks: i64,
+    /// `2 * in_channels + 1`: control latents, the preserve mask, inpaint latents.
+    pub in_channels: i64,
+}
+
+pub fn control_weight_layout(
+    config: ZImageConfig,
+    control: ControlConfig,
+) -> Vec<(String, i64, i64)> {
+    let mut names = Vec::new();
+    let token = config.patch * config.patch * control.in_channels;
+    names.push((
+        "control_all_x_embedder.2-1.weight".into(),
+        token,
+        config.dim,
+    ));
+    names.push(("control_all_x_embedder.2-1.bias".into(), config.dim, 1));
+    for i in 0..control.refiner_blocks {
+        push_control_block(
+            &mut names,
+            &format!("control_noise_refiner.{i}"),
+            config,
+            i == 0,
+        );
+    }
+    for i in 0..control.layer_blocks {
+        push_control_block(&mut names, &format!("control_layers.{i}"), config, i == 0);
+    }
+    names
+}
+
+fn push_control_block(
+    names: &mut Vec<(String, i64, i64)>,
+    prefix: &str,
+    config: ZImageConfig,
+    first: bool,
+) {
+    let dim = config.dim;
+    let head = config.head_dim;
+    names.push((format!("{prefix}.attention.to_q.weight"), dim, dim));
+    names.push((format!("{prefix}.attention.to_k.weight"), dim, dim));
+    names.push((format!("{prefix}.attention.to_v.weight"), dim, dim));
+    names.push((format!("{prefix}.attention.to_out.0.weight"), dim, dim));
+    names.push((format!("{prefix}.attention.norm_q.weight"), head, 1));
+    names.push((format!("{prefix}.attention.norm_k.weight"), head, 1));
+    names.push((format!("{prefix}.feed_forward.w1.weight"), dim, config.ffn));
+    names.push((format!("{prefix}.feed_forward.w2.weight"), config.ffn, dim));
+    names.push((format!("{prefix}.feed_forward.w3.weight"), dim, config.ffn));
+    for leaf in [
+        "attention_norm1",
+        "attention_norm2",
+        "ffn_norm1",
+        "ffn_norm2",
+    ] {
+        names.push((format!("{prefix}.{leaf}.weight"), dim, 1));
+    }
+    names.push((
+        format!("{prefix}.adaLN_modulation.0.weight"),
+        config.adaln,
+        dim * 4,
+    ));
+    names.push((format!("{prefix}.adaLN_modulation.0.bias"), dim * 4, 1));
+    if first {
+        names.push((format!("{prefix}.before_proj.weight"), dim, dim));
+        names.push((format!("{prefix}.before_proj.bias"), dim, 1));
+    }
+    names.push((format!("{prefix}.after_proj.weight"), dim, dim));
+    names.push((format!("{prefix}.after_proj.bias"), dim, 1));
+}
+
+pub fn control_config_from_weights(
+    config: ZImageConfig,
+    weights: &GgufWeights,
+) -> Result<ControlConfig, WeightError> {
+    let embed = weights.shape("control_all_x_embedder.2-1.weight")?;
+    let token = embed[0];
+    if embed[1] != config.dim || token % (PATCH * PATCH) != 0 {
+        return Err(WeightError::Shape {
+            name: "control_all_x_embedder.2-1.weight".into(),
+            expected: vec![PATCH * PATCH * (config.in_channels * 2 + 1), config.dim],
+            got: embed.to_vec(),
+        });
+    }
+    let in_channels = token / (PATCH * PATCH);
+    if in_channels != config.in_channels * 2 + 1 {
+        return Err(WeightError::NotBuilt(format!(
+            "control embedder in channels {in_channels} is not 2 * {} + 1",
+            config.in_channels
+        )));
+    }
+    let refiner_blocks = count_control_prefix(weights, "control_noise_refiner");
+    let layer_blocks = count_control_prefix(weights, "control_layers");
+    if refiner_blocks != config.refiners || layer_blocks < 1 {
+        return Err(WeightError::NotBuilt(format!(
+            "z-image controlnet has {refiner_blocks} refiner blocks (base has {}) and {layer_blocks} layer blocks",
+            config.refiners
+        )));
+    }
+    if (layer_blocks - 1) * 2 >= config.layers {
+        return Err(WeightError::NotBuilt(format!(
+            "control layer place {} is outside the {} base layers",
+            (layer_blocks - 1) * 2,
+            config.layers
+        )));
+    }
+    Ok(ControlConfig {
+        refiner_blocks,
+        layer_blocks,
+        in_channels,
+    })
+}
+
+fn count_control_prefix(weights: &GgufWeights, prefix: &str) -> i64 {
+    let mut n = 0i64;
+    loop {
+        let name = format!("{prefix}.{n}.attention.to_q.weight");
+        if !weights.contains(&name) {
+            break;
+        }
+        n += 1;
+    }
+    n
 }
 
 pub fn config_from_weights(weights: &GgufWeights) -> Result<ZImageConfig, WeightError> {
@@ -224,7 +351,6 @@ pub fn vector_param(name: &str) -> bool {
         || name == "cap_embedder.0.weight"
 }
 
-#[cfg(test)]
 pub fn smoke_values(name: &str, ne0: i64, ne1: i64) -> Vec<f32> {
     let n = (ne0 * ne1) as usize;
     if name.contains("norm") || name == "cap_embedder.0.weight" {

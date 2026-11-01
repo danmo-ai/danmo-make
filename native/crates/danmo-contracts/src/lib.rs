@@ -1,6 +1,22 @@
 //! Request DTOs aligned with `backend/core/contracts.py`.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+#[derive(Debug, Default, Clone)]
+pub struct CancellationToken(Arc<AtomicBool>);
+
+impl CancellationToken {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -63,8 +79,37 @@ pub struct ImageGenerationRequest {
     pub use_empirical_mu: bool,
     #[serde(default)]
     pub adapters: Vec<ImageAdapter>,
+    #[serde(default)]
+    pub structural_guide: Option<StructuralGuide>,
     #[serde(default = "default_priority")]
     pub priority: String,
+}
+
+/// ControlNet structural guide on an image create, aligned with
+/// `backend/core/contracts.py StructuralGuide`. `asset_id` is the preprocessed
+/// control image. `model_id` is the registry controlnet entry. The inpaint
+/// pair is both-or-neither.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructuralGuide {
+    pub asset_id: String,
+    #[serde(default)]
+    pub model_id: String,
+    #[serde(rename = "type", default = "default_guide_type")]
+    pub guide_type: String,
+    #[serde(default = "default_guide_weight")]
+    pub weight: f32,
+    #[serde(default)]
+    pub inpaint_source_asset_id: Option<String>,
+    #[serde(default)]
+    pub inpaint_mask_asset_id: Option<String>,
+}
+
+fn default_guide_type() -> String {
+    "canny".into()
+}
+
+fn default_guide_weight() -> f32 {
+    0.8
 }
 
 /// One LoRA on an image create. `path` is filled when the request is accepted.
@@ -82,12 +127,30 @@ pub struct ImageEditRequest {
     pub model: String,
     pub operation: String,
     pub source_asset_id: String,
+    #[serde(default)]
+    pub reference_asset_ids: Vec<String>,
+    #[serde(default)]
+    pub title: String,
     pub prompt: String,
     #[serde(default)]
     pub negative_prompt: String,
+    /// Rewrite img2img strength. None is the reference default 0.6: the
+    /// denoise starts at `max(1, int(steps * fidelity))`. Zero is full
+    /// text-to-image at the source size. One leaves no denoising step and
+    /// fails. Only the rewrite img2img families read it.
+    pub source_fidelity: Option<f32>,
+    /// None keeps the source-derived size (Qwen edit).
+    pub size: Option<String>,
+    #[serde(default = "one")]
+    pub n: u32,
     pub steps: Option<u32>,
     pub guidance: Option<f32>,
     pub seed: Option<i64>,
+    pub scheduler: Option<String>,
+    #[serde(default)]
+    pub adapters: Vec<ImageAdapter>,
+    #[serde(default)]
+    pub metadata: Value,
     #[serde(default = "default_priority")]
     pub priority: String,
 }
@@ -96,6 +159,15 @@ pub struct ImageEditRequest {
 pub struct ImageUpscaleRequest {
     pub model: String,
     pub source_asset_id: String,
+    /// Output scale over the source short edge. None is the reference default
+    /// 2. Only 2 and 4 are registered.
+    pub scale: Option<u32>,
+    /// Softness of the bicubic pre-downscale (0 sharp .. 1 strong). None is
+    /// the reference default 0.
+    pub denoise: Option<f32>,
+    pub seed: Option<i64>,
+    #[serde(default)]
+    pub metadata: Value,
     #[serde(default = "default_priority")]
     pub priority: String,
 }
@@ -118,6 +190,18 @@ pub struct VideoGenerationRequest {
 pub struct AudioGenerationRequest {
     pub model: String,
     pub prompt: String,
+    #[serde(default)]
+    pub instrumental: bool,
+    #[serde(default)]
+    pub vocal_type: String,
+    #[serde(default = "default_audio_batch")]
+    pub n: u32,
+    #[serde(default)]
+    pub metadata: Value,
+    #[serde(default = "default_audio_format")]
+    pub audio_format: String,
+    #[serde(default = "default_denoise")]
+    pub denoise: String,
     #[serde(default)]
     pub lyrics: String,
     pub duration: Option<f32>,
@@ -145,10 +229,34 @@ pub struct AudioGenerationRequest {
     /// Optional time-major `[T*64]` latents for the timbre encoder.
     #[serde(default)]
     pub timbre_latents: Option<Vec<f32>>,
+    #[serde(default)]
+    pub dcw_enabled: Option<bool>,
+    #[serde(default)]
+    pub dcw_mode: Option<String>,
+    #[serde(default)]
+    pub dcw_wavelet: Option<String>,
+    #[serde(default)]
+    pub dcw_scaler: Option<f32>,
+    #[serde(default)]
+    pub dcw_high_scaler: Option<f32>,
+    #[serde(default)]
+    pub adapters: Vec<ImageAdapter>,
 }
 
 fn default_lm_expansion() -> String {
     "auto".into()
+}
+
+fn default_audio_batch() -> u32 {
+    2
+}
+
+fn default_audio_format() -> String {
+    "wav".into()
+}
+
+fn default_denoise() -> String {
+    "off".into()
 }
 
 /// ACE-Step cover / cover-nofsq / repaint edit.
@@ -156,6 +264,24 @@ fn default_lm_expansion() -> String {
 pub struct AudioEditRequest {
     pub model: String,
     pub prompt: String,
+    #[serde(default)]
+    pub instrumental: bool,
+    #[serde(default)]
+    pub vocal_type: String,
+    #[serde(default = "one")]
+    pub n: u32,
+    #[serde(default)]
+    pub metadata: Value,
+    #[serde(default = "default_audio_format")]
+    pub audio_format: String,
+    #[serde(default = "default_denoise")]
+    pub denoise: String,
+    pub duration: Option<f32>,
+    pub bpm: Option<i32>,
+    #[serde(default, alias = "keyscale")]
+    pub key_scale: String,
+    #[serde(default, alias = "timesignature")]
+    pub time_signature: String,
     #[serde(default)]
     pub lyrics: String,
     pub seed: Option<i64>,
@@ -192,6 +318,18 @@ pub struct AudioEditRequest {
     /// Track name(s) for lego / extract / complete (`"drums | bass"` for complete).
     #[serde(default)]
     pub track: Option<String>,
+    #[serde(default)]
+    pub dcw_enabled: Option<bool>,
+    #[serde(default)]
+    pub dcw_mode: Option<String>,
+    #[serde(default)]
+    pub dcw_wavelet: Option<String>,
+    #[serde(default)]
+    pub dcw_scaler: Option<f32>,
+    #[serde(default)]
+    pub dcw_high_scaler: Option<f32>,
+    #[serde(default)]
+    pub adapters: Vec<ImageAdapter>,
 }
 
 /// ACE-Step 5Hz LM (inspire / format / generate phase-1).
@@ -288,6 +426,9 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(req.lm_expansion, "auto");
+        assert_eq!(req.n, 2);
+        assert_eq!(req.audio_format, "wav");
+        assert_eq!(req.denoise, "off");
         assert!(req.key_scale.is_empty());
         assert!(req.time_signature.is_empty());
         assert!(req.bpm.is_none());

@@ -2,17 +2,22 @@
 //! Nothing in this module rewrites a key.
 
 mod bundle;
+mod cache;
 mod gguf;
 mod lora;
 
-pub use bundle::assert_gguf_bundle;
+pub use bundle::{assert_gguf_bundle, assert_upscale_bundle, UpscaleBundle};
+pub use cache::{resident_bytes, revision};
+pub(crate) use gguf::f16_to_f32;
 pub use gguf::{
-    matmul_type, quantize_q8_0, type_block, write_f32_gguf, write_f32_tensors, write_typed_tensors,
-    F32Tensor, GgufWeights, TypedTensor,
+    f32_row_to_f16, matmul_type, quantize_q8_0, type_block, write_f32_gguf, write_f32_nd,
+    write_f32_tensors, write_safetensors, write_typed_tensors, F32Nd, F32Tensor, GgufWeights,
+    SafeTensor, TypedTensor,
 };
-#[cfg(test)]
-pub use gguf::{write_f32_nd, write_safetensors, F32Nd, SafeTensor};
-pub use lora::{bind_lora_factors, load_lora_factors, LoraFactor, LoraFile};
+pub use lora::{
+    bind_lora_factors, load_lora_factors, load_lora_factors_with_default_alpha, LoraFactor,
+    LoraFile,
+};
 
 use thiserror::Error;
 

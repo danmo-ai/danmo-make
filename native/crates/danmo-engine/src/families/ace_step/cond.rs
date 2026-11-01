@@ -89,7 +89,11 @@ pub fn encode(
             .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     }
     let packed = graph
-        .compute(text_hidden, lyric_embed, if s_ref > 0 { Some(timbre_slice) } else { None })
+        .compute(
+            text_hidden,
+            lyric_embed,
+            if s_ref > 0 { Some(timbre_slice) } else { None },
+        )
         .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     if let Some(detail) = non_finite("ACE-Step cond hidden", &packed) {
         return Err(WeightError::NotBuilt(detail));
@@ -138,12 +142,7 @@ pub fn sample_timbre_reference_latents(
     let starts = [
         rand_start(&mut state, seg, TIMBRE_SEGMENT_FRAMES),
         seg + rand_start(&mut state, seg, TIMBRE_SEGMENT_FRAMES),
-        2 * seg
-            + rand_start(
-                &mut state,
-                (total - 2 * seg).max(0),
-                TIMBRE_SEGMENT_FRAMES,
-            ),
+        2 * seg + rand_start(&mut state, (total - 2 * seg).max(0), TIMBRE_SEGMENT_FRAMES),
     ];
     let mut out = Vec::with_capacity((TIMBRE_REFERENCE_FRAMES * channels) as usize);
     for s in starts {
@@ -323,10 +322,7 @@ impl CondForward {
         let lyric_in = nn(b.f32_2d("lyric_in", TEXT_HIDDEN, s_lyric, true))?;
         let lyric_pos = nn(b.i32_1d("lyric_pos", s_lyric, true))?;
         let lyric_mask = nn(b.f32_2d("lyric_slide_mask", s_lyric, s_lyric, true))?;
-        let text_proj = nn(b.project(
-            wt(&weights, "encoder.text_projector.weight")?,
-            text_in,
-        ))?;
+        let text_proj = nn(b.project(wt(&weights, "encoder.text_projector.weight")?, text_in))?;
         let mut lyric = add_bias(
             &b,
             nn(b.project(
@@ -485,9 +481,18 @@ fn qwen_layer(
         wt(weights, &format!("{p}.input_layernorm.weight"))?,
         1e-6,
     )?;
-    let q = nn(b.project(wt(weights, &format!("{p}.self_attn.q_proj.weight"))?, normed))?;
-    let k = nn(b.project(wt(weights, &format!("{p}.self_attn.k_proj.weight"))?, normed))?;
-    let v = nn(b.project(wt(weights, &format!("{p}.self_attn.v_proj.weight"))?, normed))?;
+    let q = nn(b.project(
+        wt(weights, &format!("{p}.self_attn.q_proj.weight"))?,
+        normed,
+    ))?;
+    let k = nn(b.project(
+        wt(weights, &format!("{p}.self_attn.k_proj.weight"))?,
+        normed,
+    ))?;
+    let v = nn(b.project(
+        wt(weights, &format!("{p}.self_attn.v_proj.weight"))?,
+        normed,
+    ))?;
     let q = nn(b.reshape_3d(q, head, heads, seq))?;
     let k = nn(b.reshape_3d(k, head, kv, seq))?;
     let v = nn(b.reshape_3d(v, head, kv, seq))?;
@@ -511,10 +516,9 @@ fn qwen_layer(
         wt(weights, &format!("{p}.post_attention_layernorm.weight"))?,
         1e-6,
     )?;
-    let gate = nn(b.silu(nn(b.project(
-        wt(weights, &format!("{p}.mlp.gate_proj.weight"))?,
-        normed,
-    ))?))?;
+    let gate = nn(b.silu(nn(
+        b.project(wt(weights, &format!("{p}.mlp.gate_proj.weight"))?, normed)
+    )?))?;
     let up = nn(b.project(wt(weights, &format!("{p}.mlp.up_proj.weight"))?, normed))?;
     let ff = nn(b.mul(gate, up))?;
     let ff = nn(b.project(wt(weights, &format!("{p}.mlp.down_proj.weight"))?, ff))?;
@@ -560,7 +564,10 @@ mod tests {
         let out = sample_timbre_reference_latents(&lat, frames, TIMBRE_IN, 7).unwrap();
         assert_eq!(out.len() as i64, TIMBRE_REFERENCE_FRAMES * TIMBRE_IN);
         // Three windows of 250 contiguous (post-tile) frames.
-        assert_eq!(out.len() / TIMBRE_IN as usize, (3 * TIMBRE_SEGMENT_FRAMES) as usize);
+        assert_eq!(
+            out.len() / TIMBRE_IN as usize,
+            (3 * TIMBRE_SEGMENT_FRAMES) as usize
+        );
     }
 
     #[test]

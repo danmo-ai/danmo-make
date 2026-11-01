@@ -11,7 +11,7 @@
 //! concatenates caption then image; with full attention the image tokens match.
 
 use super::geom::{TokenGrid, FINAL_EPS, RMS_EPS};
-use super::weights::{weight_layout, ZImageConfig};
+use super::weights::{control_weight_layout, weight_layout, ControlConfig, ZImageConfig};
 use crate::runtime::{flash_attend, rope_nd, GraphBuilder, RuntimeError, Tensor};
 use crate::weights::{bind_lora_factors, LoraFactor};
 use std::collections::HashMap;
@@ -20,12 +20,19 @@ pub struct BuiltDit {
     pub output: Tensor,
 }
 
+/// Fun ControlNet Union branch inputs. `types` covers the control weights.
+pub struct ControlBuild {
+    pub config: ControlConfig,
+    pub types: HashMap<String, u32>,
+}
+
 pub fn build_dit(
     b: &mut GraphBuilder,
     config: ZImageConfig,
     grid: TokenGrid,
     types: &HashMap<String, u32>,
     loras: &[LoraFactor],
+    control: Option<ControlBuild>,
 ) -> Result<BuiltDit, RuntimeError> {
     if config.heads < 1 || config.head_dim < 2 || grid.cap_real < 1 || grid.img_real < 1 {
         return Err(RuntimeError::Message(
@@ -50,6 +57,37 @@ pub fn build_dit(
         weights.insert(name, tensor);
     }
     bind_lora_factors(b, &weights, loras)?;
+    let control = match control {
+        Some(plan) => {
+            for (name, ne0, ne1) in control_weight_layout(config, plan.config) {
+                let ggml_type = plan
+                    .types
+                    .get(&name)
+                    .copied()
+                    .unwrap_or(crate::runtime::TYPE_F32);
+                let tensor = b.tensor_2d(&name, ggml_type, ne0, ne1, true);
+                if tensor.is_null() {
+                    return Err(RuntimeError::Init);
+                }
+                weights.insert(name, tensor);
+            }
+            let context = nn(b.f32_3d(
+                "control_context",
+                grid.latent_w,
+                grid.latent_h,
+                plan.config.in_channels,
+                true,
+            ))?;
+            let scale = nn(b.f32_1d("control_scale", 1, true))?;
+            let rows = nn(b.i32_1d(
+                "control_patch_index",
+                grid.img_real * config.patch * config.patch * plan.config.in_channels,
+                true,
+            ))?;
+            Some((plan.config, context, scale, rows))
+        }
+        None => None,
+    };
     let latent = nn(b.f32_3d(
         "latent",
         grid.latent_w,
@@ -64,7 +102,9 @@ pub fn build_dit(
         *slot = nn(b.i32_1d(&format!("rope_axis_{axis}"), grid.unified, true))?;
     }
     let index = nn(b.i32_1d("patch_index", grid.img_real * config.token_dim(), true))?;
-    let output = forward(b, &weights, config, grid, latent, txt, temb, rope, index)?;
+    let output = forward(
+        b, &weights, config, grid, latent, txt, temb, rope, index, control,
+    )?;
     Ok(BuiltDit { output })
 }
 
@@ -78,12 +118,48 @@ fn forward(
     temb: Tensor,
     rope: [Tensor; 3],
     patch_rows: Tensor,
+    control: Option<(ControlConfig, Tensor, Tensor, Tensor)>,
 ) -> Result<Tensor, RuntimeError> {
     let t_emb = timestep(b, weights, temb)?;
     let image = embed_image(b, weights, config, grid, latent, patch_rows)?;
     let caption = embed_caption(b, weights, config, grid, txt)?;
     let image_rope = span(b, &rope, 0, grid.img_len)?;
     let caption_rope = span(b, &rope, grid.img_len, grid.cap_len)?;
+    // Control noise refiner consumes the pre-refiner image embedding, then its
+    // skips land on the main noise refiner. Diffusers `ZImageControlNetModel`.
+    let mut refiner_hints: Vec<Tensor> = Vec::new();
+    let mut control_stream = std::ptr::null_mut();
+    if let Some((plan, context, scale, control_rows)) = control {
+        let mut c = embed_control(
+            b,
+            weights,
+            config,
+            grid,
+            context,
+            control_rows,
+            plan.in_channels,
+        )?;
+        for i in 0..plan.refiner_blocks {
+            let prefix = format!("control_noise_refiner.{i}");
+            let input = if i == 0 {
+                nn(b.add(before_proj(b, weights, &prefix, c)?, image))?
+            } else {
+                c
+            };
+            c = control_block(
+                b,
+                weights,
+                &prefix,
+                input,
+                &image_rope,
+                t_emb,
+                config,
+                grid.img_len,
+            )?;
+            refiner_hints.push(hint(b, weights, &prefix, c, scale)?);
+        }
+        control_stream = c;
+    }
     let mut image = image;
     for i in 0..config.refiners {
         image = block(
@@ -97,6 +173,9 @@ fn forward(
             grid.img_len,
             true,
         )?;
+        if let Some(hint) = refiner_hints.get(i as usize) {
+            image = nn(b.add(image, *hint))?;
+        }
     }
     let mut caption = caption;
     for i in 0..config.refiners {
@@ -113,6 +192,29 @@ fn forward(
         )?;
     }
     let mut unified = nn(b.cont(b.concat(image, caption, 1)))?;
+    let mut layer_hints: Vec<Tensor> = Vec::new();
+    if let Some((plan, _, scale, _)) = control {
+        let mut c = nn(b.cont(b.concat(control_stream, caption, 1)))?;
+        for j in 0..plan.layer_blocks {
+            let prefix = format!("control_layers.{j}");
+            let input = if j == 0 {
+                nn(b.add(before_proj(b, weights, &prefix, c)?, unified))?
+            } else {
+                c
+            };
+            c = control_block(
+                b,
+                weights,
+                &prefix,
+                input,
+                &rope,
+                t_emb,
+                config,
+                grid.unified,
+            )?;
+            layer_hints.push(hint(b, weights, &prefix, c, scale)?);
+        }
+    }
     for i in 0..config.layers {
         unified = block(
             b,
@@ -125,6 +227,11 @@ fn forward(
             grid.unified,
             true,
         )?;
+        if i % 2 == 0 {
+            if let Some(hint) = layer_hints.get((i / 2) as usize) {
+                unified = nn(b.add(unified, *hint))?;
+            }
+        }
     }
     let tokens = final_layer(b, weights, unified, t_emb)?;
     let real = rows(b, tokens, 0, grid.img_real, config.token_dim())?;
@@ -135,7 +242,9 @@ fn forward(
         1,
         grid.latent_w * grid.latent_h * config.in_channels,
     ))?;
-    let scattered = nn(b.get_rows_back(flat_tokens, patch_rows, flat_latent))?;
+    // Metal lacks GET_ROWS_BACK; use SET_ROWS with a zeroed destination instead.
+    let scattered = b.blank_f32_2d(1, grid.latent_w * grid.latent_h * config.in_channels);
+    let scattered = nn(b.set_rows(scattered, flat_tokens, patch_rows))?;
     nn(b.reshape_3d(scattered, grid.latent_w, grid.latent_h, config.in_channels))
 }
 
@@ -224,6 +333,187 @@ fn pad_tokens(
     let canvas = b.blank_f32_2d(dim, pad_len);
     let repeated = nn(b.repeat(pad, canvas))?;
     nn(b.cont(b.concat(tokens, repeated, 1)))
+}
+
+/// Control context patch embed, then the image pad token. Diffusers
+/// `control_all_x_embedder.2-1` over the 33-channel control context.
+fn embed_control(
+    b: &GraphBuilder,
+    weights: &HashMap<String, Tensor>,
+    config: ZImageConfig,
+    grid: TokenGrid,
+    context: Tensor,
+    patch_rows: Tensor,
+    in_channels: i64,
+) -> Result<Tensor, RuntimeError> {
+    let flat = nn(b.reshape_2d(context, 1, grid.latent_w * grid.latent_h * in_channels))?;
+    let gathered = nn(b.get_rows(flat, patch_rows))?;
+    let tokens = nn(b.reshape_2d(
+        gathered,
+        config.patch * config.patch * in_channels,
+        grid.img_real,
+    ))?;
+    let embedded = add_bias(
+        b,
+        nn(linear(
+            b,
+            tokens,
+            wt(weights, "control_all_x_embedder.2-1.weight")?,
+        ))?,
+        wt(weights, "control_all_x_embedder.2-1.bias")?,
+    )?;
+    pad_tokens(
+        b,
+        embedded,
+        wt(weights, "x_pad_token")?,
+        config.dim,
+        grid.img_pad,
+    )
+}
+
+/// `before_proj(c) + x`, the control block 0 entry. Diffusers zero_module.
+fn before_proj(
+    b: &GraphBuilder,
+    weights: &HashMap<String, Tensor>,
+    prefix: &str,
+    c: Tensor,
+) -> Result<Tensor, RuntimeError> {
+    add_bias(
+        b,
+        nn(linear(
+            b,
+            c,
+            wt(weights, &format!("{prefix}.before_proj.weight"))?,
+        ))?,
+        wt(weights, &format!("{prefix}.before_proj.bias"))?,
+    )
+}
+
+/// `after_proj(c) * scale`, the hint added to the main stream.
+fn hint(
+    b: &GraphBuilder,
+    weights: &HashMap<String, Tensor>,
+    prefix: &str,
+    c: Tensor,
+    scale: Tensor,
+) -> Result<Tensor, RuntimeError> {
+    let skip = add_bias(
+        b,
+        nn(linear(
+            b,
+            c,
+            wt(weights, &format!("{prefix}.after_proj.weight"))?,
+        ))?,
+        wt(weights, &format!("{prefix}.after_proj.bias"))?,
+    )?;
+    nn(b.mul(skip, nn(b.repeat(scale, skip))?))
+}
+
+/// Same math as `block` with modulation, but the attention is the diffusers
+/// separate `to_q` / `to_k` / `to_v` / `to_out.0` stack with `norm_q` / `norm_k`.
+fn control_block(
+    b: &GraphBuilder,
+    weights: &HashMap<String, Tensor>,
+    prefix: &str,
+    x: Tensor,
+    rope: &[Tensor; 3],
+    t_emb: Tensor,
+    config: ZImageConfig,
+    seq: i64,
+) -> Result<Tensor, RuntimeError> {
+    let dim = config.dim;
+    let packed = add_bias(
+        b,
+        nn(linear(
+            b,
+            t_emb,
+            wt(weights, &format!("{prefix}.adaLN_modulation.0.weight"))?,
+        ))?,
+        wt(weights, &format!("{prefix}.adaLN_modulation.0.bias"))?,
+    )?;
+    let scale_msa = chunk(b, packed, 0, dim)?;
+    let gate_msa = nn(b.tanh(chunk(b, packed, dim, dim)?))?;
+    let scale_mlp = chunk(b, packed, dim * 2, dim)?;
+    let gate_mlp = nn(b.tanh(chunk(b, packed, dim * 3, dim)?))?;
+    let normed = rms(
+        b,
+        x,
+        wt(weights, &format!("{prefix}.attention_norm1.weight"))?,
+        RMS_EPS,
+    )?;
+    let normed = modulate(b, normed, scale_msa)?;
+    let attn = control_attention(b, weights, prefix, normed, rope, config, seq)?;
+    let attn = rms(
+        b,
+        attn,
+        wt(weights, &format!("{prefix}.attention_norm2.weight"))?,
+        RMS_EPS,
+    )?;
+    let x = gate_add(b, x, gate_msa, attn)?;
+    let normed = rms(
+        b,
+        x,
+        wt(weights, &format!("{prefix}.ffn_norm1.weight"))?,
+        RMS_EPS,
+    )?;
+    let normed = modulate(b, normed, scale_mlp)?;
+    let ffn = feed_forward(b, weights, prefix, normed)?;
+    let ffn = rms(
+        b,
+        ffn,
+        wt(weights, &format!("{prefix}.ffn_norm2.weight"))?,
+        RMS_EPS,
+    )?;
+    gate_add(b, x, gate_mlp, ffn)
+}
+
+fn control_attention(
+    b: &GraphBuilder,
+    weights: &HashMap<String, Tensor>,
+    prefix: &str,
+    x: Tensor,
+    rope: &[Tensor; 3],
+    config: ZImageConfig,
+    seq: i64,
+) -> Result<Tensor, RuntimeError> {
+    let dim = config.dim;
+    let head = config.head_dim;
+    let heads = config.heads;
+    let q = nn(linear(
+        b,
+        x,
+        wt(weights, &format!("{prefix}.attention.to_q.weight"))?,
+    ))?;
+    let k = nn(linear(
+        b,
+        x,
+        wt(weights, &format!("{prefix}.attention.to_k.weight"))?,
+    ))?;
+    let v = nn(linear(
+        b,
+        x,
+        wt(weights, &format!("{prefix}.attention.to_v.weight"))?,
+    ))?;
+    let q = nn(b.reshape_3d(q, head, heads, seq))?;
+    let k = nn(b.reshape_3d(k, head, heads, seq))?;
+    let v = nn(b.reshape_3d(v, head, heads, seq))?;
+    let q = nn(b.mul(
+        nn(b.rms_norm(q, RMS_EPS))?,
+        wt(weights, &format!("{prefix}.attention.norm_q.weight"))?,
+    ))?;
+    let k = nn(b.mul(
+        nn(b.rms_norm(k, RMS_EPS))?,
+        wt(weights, &format!("{prefix}.attention.norm_k.weight"))?,
+    ))?;
+    let q = rope_nd(b, q, rope, &config.axes, config.rope_theta)?;
+    let k = rope_nd(b, k, rope, &config.axes, config.rope_theta)?;
+    let out = flash_attend(b, q, k, v, std::ptr::null_mut())?;
+    let mixed = nn(b.reshape_2d(out, dim, seq))?;
+    nn(linear(
+        b,
+        mixed,
+        wt(weights, &format!("{prefix}.attention.to_out.0.weight"))?,
+    ))
 }
 
 fn block(

@@ -1,12 +1,15 @@
 //! Single worker queue. Image tasks dequeue first when `queue_image_first` is set.
 
+use danmo_contracts::CancellationToken;
 use danmo_store::{AssetRow, CanvasRow, LogRow, StoreError, TaskRow, TaskStore};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 pub struct Scheduler {
     store: Arc<Mutex<TaskStore>>,
+    cancellations: Arc<Mutex<HashMap<String, CancellationToken>>>,
     pub queue_image_first: bool,
 }
 
@@ -14,6 +17,7 @@ impl Scheduler {
     pub fn open(db: &Path, queue_image_first: bool) -> Result<Self, StoreError> {
         Ok(Self {
             store: Arc::new(Mutex::new(TaskStore::open(db)?)),
+            cancellations: Arc::new(Mutex::new(HashMap::new())),
             queue_image_first,
         })
     }
@@ -21,8 +25,25 @@ impl Scheduler {
     pub fn with_store(store: TaskStore, queue_image_first: bool) -> Self {
         Self {
             store: Arc::new(Mutex::new(store)),
+            cancellations: Arc::new(Mutex::new(HashMap::new())),
             queue_image_first,
         }
+    }
+
+    pub fn start_cancellable(&self, id: &str) -> CancellationToken {
+        let token = CancellationToken::default();
+        self.cancellations
+            .lock()
+            .expect("cancellation registry")
+            .insert(id.into(), token.clone());
+        token
+    }
+
+    pub fn finish_cancellable(&self, id: &str) {
+        self.cancellations
+            .lock()
+            .expect("cancellation registry")
+            .remove(id);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, TaskStore> {
@@ -63,7 +84,22 @@ impl Scheduler {
         Ok(())
     }
 
+    pub fn finish_cancelled(&self, id: &str) -> Result<(), StoreError> {
+        self.lock()
+            .finish(id, "cancelled", 1.0, None, Some("cancelled"))?;
+        Ok(())
+    }
+
     pub fn cancel(&self, id: &str) -> Result<&'static str, StoreError> {
+        if let Some(token) = self
+            .cancellations
+            .lock()
+            .expect("cancellation registry")
+            .get(id)
+            .cloned()
+        {
+            token.cancel();
+        }
         let store = self.lock();
         let Some(row) = store.get(id)? else {
             return Ok("missing");
@@ -93,6 +129,16 @@ impl Scheduler {
         let store = self.lock();
         store.set_progress(id, progress)?;
         store.log(id, "info", message)
+    }
+
+    /// Append one line to a task's log without moving its progress bar.
+    pub fn log(&self, id: &str, level: &str, message: &str) -> Result<(), StoreError> {
+        self.lock().log(id, level, message)
+    }
+
+    /// Move the progress bar only; no log row.
+    pub fn set_progress(&self, id: &str, progress: f64) -> Result<(), StoreError> {
+        self.lock().set_progress(id, progress)
     }
 
     pub fn get(&self, id: &str) -> Result<Option<TaskRow>, StoreError> {

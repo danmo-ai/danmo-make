@@ -5,8 +5,10 @@
 //! the load-time 2D ranks from `dit_load_proj_*_w`. SwiGLU is `silu(gate)*up`.
 
 use super::weights::{AceStepConfig, TIME_FREQ_DIM};
-use crate::runtime::{flash_attend, shape, GraphBuilder, RuntimeError, Tensor, TYPE_F32};
-use danmo_ggml_sys as g;
+use crate::runtime::{
+    element_size, flash_attend, shape, GraphBuilder, RuntimeError, Tensor, TYPE_F32,
+};
+use crate::weights::{bind_lora_factors, LoraFactor};
 use std::collections::HashMap;
 
 pub struct BuiltDit {
@@ -25,7 +27,12 @@ pub fn graph_weight_layout(config: AceStepConfig) -> Vec<(String, i64, i64)> {
         out.push((name, ne0, ne1));
     };
     for stem in ["decoder.time_embed", "decoder.time_embed_r"] {
-        push(&mut out, format!("{stem}.linear_1.weight"), TIME_FREQ_DIM, h);
+        push(
+            &mut out,
+            format!("{stem}.linear_1.weight"),
+            TIME_FREQ_DIM,
+            h,
+        );
         push(&mut out, format!("{stem}.linear_1.bias"), h, 1);
         push(&mut out, format!("{stem}.linear_2.weight"), h, h);
         push(&mut out, format!("{stem}.linear_2.bias"), h, 1);
@@ -111,6 +118,7 @@ pub fn build_dit(
     frames: i64,
     enc_seq: i64,
     types: &HashMap<String, u32>,
+    loras: &[LoraFactor],
 ) -> Result<BuiltDit, RuntimeError> {
     if frames < 1 || frames % config.patch != 0 {
         return Err(RuntimeError::Message(format!(
@@ -142,18 +150,9 @@ pub fn build_dit(
         }
         weights.insert(name, tensor);
     }
-    let input = nn(b.f32_2d(
-        "input_latents",
-        config.in_channels,
-        frames,
-        true,
-    ))?;
-    let enc_hidden = nn(b.f32_2d(
-        "enc_hidden",
-        config.condition_dim,
-        enc_seq,
-        true,
-    ))?;
+    bind_lora_factors(b, &weights, loras)?;
+    let input = nn(b.f32_2d("input_latents", config.in_channels, frames, true))?;
+    let enc_hidden = nn(b.f32_2d("enc_hidden", config.condition_dim, enc_seq, true))?;
     let temb_freq_t = nn(b.f32_2d("temb_freq_t", TIME_FREQ_DIM, 1, true))?;
     let temb_freq_r = nn(b.f32_2d("temb_freq_r", TIME_FREQ_DIM, 1, true))?;
     let positions = nn(b.i32_1d("positions", seq, true))?;
@@ -191,11 +190,7 @@ fn forward(
     let (temb_r, tproj_r) = temb(b, weights, "decoder.time_embed_r", temb_freq_r)?;
     let temb = nn(b.add(temb_t, temb_r))?;
     let tproj = nn(b.add(tproj_t, tproj_r))?;
-    let patched = nn(b.reshape_2d(
-        input,
-        config.in_channels * config.patch,
-        seq,
-    ))?;
+    let patched = nn(b.reshape_2d(input, config.in_channels * config.patch, seq))?;
     let mut hidden = add_bias(
         b,
         nn(linear(b, patched, wt(weights, "decoder.proj_in.1.weight")?))?,
@@ -212,16 +207,7 @@ fn forward(
     )?;
     for layer in 0..config.layers {
         hidden = layer_block(
-            b,
-            weights,
-            config,
-            layer,
-            hidden,
-            tproj,
-            enc,
-            positions,
-            seq,
-            enc_seq,
+            b, weights, config, layer, hidden, tproj, enc, positions, seq, enc_seq,
         )?;
     }
     let oss = nn(b.reshape_2d(wt(weights, "decoder.scale_shift_table")?, h * 2, 1))?;
@@ -456,7 +442,12 @@ fn mlp(
     ))
 }
 
-fn adaln(b: &GraphBuilder, norm: Tensor, scale: Tensor, shift: Tensor) -> Result<Tensor, RuntimeError> {
+fn adaln(
+    b: &GraphBuilder,
+    norm: Tensor,
+    scale: Tensor,
+    shift: Tensor,
+) -> Result<Tensor, RuntimeError> {
     let scale = nn(b.repeat(scale, norm))?;
     let shift = nn(b.repeat(shift, norm))?;
     let scaled = nn(b.add(norm, nn(b.mul(norm, scale))?))?;
@@ -477,7 +468,7 @@ fn chunk(b: &GraphBuilder, packed: Tensor, offset: i64, rows: i64) -> Result<Ten
     let dims = shape(packed);
     let total = dims[0];
     // Use the tensor's real element size (BF16 scale_shift is 2 bytes, not F32).
-    let elem = unsafe { g::ggml_element_size(packed) };
+    let elem = element_size(packed);
     let view = b.view_2d(
         packed,
         rows,

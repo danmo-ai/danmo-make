@@ -5,7 +5,7 @@
 
 use super::lm;
 use super::lm_prompt::LmMode;
-use super::{run_lm, LmRequest};
+use super::LmRequest;
 use crate::weights::WeightError;
 use std::path::{Path, PathBuf};
 
@@ -62,6 +62,7 @@ pub struct LmExpandOutput {
     pub language: String,
     pub audio_code_indices: Vec<i32>,
     pub did_expand: bool,
+    pub pmi: Option<super::quality::PmiAssessment>,
 }
 
 /// Resolve LM weights for create: DiT companions → explicit override → sibling card.
@@ -161,9 +162,23 @@ fn find_sibling_lm_card(dit_bundle: &Path) -> Result<PathBuf, WeightError> {
 }
 
 /// Run format_sample when `lm_expansion` is auto/format; skip when off.
+#[cfg(test)]
 pub fn maybe_expand_for_create(
     dit_bundle: &Path,
     request: &LmExpandRequest<'_>,
+    backend: crate::runtime::BackendKind,
+    on_token: impl FnMut(usize, usize),
+) -> Result<LmExpandOutput, WeightError> {
+    let ctx = crate::runtime::GgmlContext::new(backend)
+        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    maybe_expand_for_create_with_context(dit_bundle, request, &ctx, on_token)
+}
+
+pub fn maybe_expand_for_create_with_context(
+    dit_bundle: &Path,
+    request: &LmExpandRequest<'_>,
+    ctx: &crate::runtime::GgmlContext,
+    mut on_token: impl FnMut(usize, usize),
 ) -> Result<LmExpandOutput, WeightError> {
     let mode = LmExpansionMode::parse(request.mode)?;
     let passthrough = || LmExpandOutput {
@@ -183,6 +198,7 @@ pub fn maybe_expand_for_create(
             .map(|c| c.to_vec())
             .unwrap_or_default(),
         did_expand: false,
+        pmi: None,
     };
     if mode.is_off() {
         return Ok(passthrough());
@@ -200,7 +216,7 @@ pub fn maybe_expand_for_create(
     };
 
     let use_fsm = super::text::load_tokenizer_json(&lm_root).is_ok();
-    let out = run_lm(
+    let out = super::run_lm_with_context(
         &lm_root,
         &LmRequest {
             mode: LmMode::Format,
@@ -221,6 +237,8 @@ pub fn maybe_expand_for_create(
             cfg_scale: 1.0,
             negative_prompt: "",
         },
+        ctx,
+        &mut on_token,
     )?;
 
     let mut codes = out.audio_code_indices;
@@ -258,6 +276,7 @@ pub fn maybe_expand_for_create(
         },
         audio_code_indices: codes,
         did_expand: true,
+        pmi: out.pmi,
     })
 }
 
@@ -267,7 +286,8 @@ mod tests {
     use crate::families::ace_step::{write_smoke_lm, AceLmConfig};
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("danmo-lm-expand-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("danmo-lm-expand-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -276,8 +296,14 @@ mod tests {
     #[test]
     fn parse_modes() {
         assert_eq!(LmExpansionMode::parse("").unwrap(), LmExpansionMode::Auto);
-        assert_eq!(LmExpansionMode::parse("AUTO").unwrap(), LmExpansionMode::Auto);
-        assert_eq!(LmExpansionMode::parse("format").unwrap(), LmExpansionMode::Format);
+        assert_eq!(
+            LmExpansionMode::parse("AUTO").unwrap(),
+            LmExpansionMode::Auto
+        );
+        assert_eq!(
+            LmExpansionMode::parse("format").unwrap(),
+            LmExpansionMode::Format
+        );
         assert_eq!(LmExpansionMode::parse("off").unwrap(), LmExpansionMode::Off);
         assert!(LmExpansionMode::parse("inspire").is_err());
     }
@@ -300,6 +326,8 @@ mod tests {
                 lm_bundle: None,
                 existing_codes: None,
             },
+            crate::runtime::BackendKind::Cpu,
+            |_, _| (),
         )
         .unwrap();
         assert!(!out.did_expand);
@@ -326,6 +354,8 @@ mod tests {
                 lm_bundle: None,
                 existing_codes: None,
             },
+            crate::runtime::BackendKind::Cpu,
+            |_, _| (),
         )
         .unwrap_err();
         assert!(
@@ -356,6 +386,8 @@ mod tests {
                 lm_bundle: None,
                 existing_codes: Some(&[1, 2, 3]),
             },
+            crate::runtime::BackendKind::Cpu,
+            |_, _| (),
         )
         .unwrap();
         assert!(out.did_expand);

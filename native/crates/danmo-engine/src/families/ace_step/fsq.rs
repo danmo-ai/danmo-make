@@ -55,7 +55,8 @@ pub fn tokenize(
     for (name, _, _) in tok_weight_layout() {
         types.insert(name.clone(), dit.ggml_type_of(&name).unwrap_or(TYPE_F32));
     }
-    let mut session = TokSession::build(ctx, &types).map_err(|e| WeightError::NotBuilt(e.to_string()))?;
+    let mut session =
+        TokSession::build(ctx, &types).map_err(|e| WeightError::NotBuilt(e.to_string()))?;
     for (name, ne0, ne1) in tok_weight_layout() {
         let data = dit.f32_widened(&name, &[ne0, ne1])?;
         session
@@ -228,7 +229,11 @@ fn detok_weight_layout() -> Vec<(String, i64, i64)> {
     out.push(("detokenizer.special_tokens".into(), HIDDEN, POOL_WINDOW));
     out.push(("detokenizer.norm.weight".into(), HIDDEN, 1));
     push_qwen_layers(&mut out, "detokenizer");
-    out.push(("detokenizer.proj_out.weight".into(), HIDDEN, LATENT_CHANNELS));
+    out.push((
+        "detokenizer.proj_out.weight".into(),
+        HIDDEN,
+        LATENT_CHANNELS,
+    ));
     out.push(("detokenizer.proj_out.bias".into(), LATENT_CHANNELS, 1));
     out
 }
@@ -413,10 +418,23 @@ fn qwen_layer(
     seq: i64,
 ) -> Result<Tensor, RuntimeError> {
     let p = format!("{prefix}.layers.{layer}");
-    let normed = rms(b, hidden, wt(weights, &format!("{p}.input_layernorm.weight"))?)?;
-    let q = nn(b.project(wt(weights, &format!("{p}.self_attn.q_proj.weight"))?, normed))?;
-    let k = nn(b.project(wt(weights, &format!("{p}.self_attn.k_proj.weight"))?, normed))?;
-    let v = nn(b.project(wt(weights, &format!("{p}.self_attn.v_proj.weight"))?, normed))?;
+    let normed = rms(
+        b,
+        hidden,
+        wt(weights, &format!("{p}.input_layernorm.weight"))?,
+    )?;
+    let q = nn(b.project(
+        wt(weights, &format!("{p}.self_attn.q_proj.weight"))?,
+        normed,
+    ))?;
+    let k = nn(b.project(
+        wt(weights, &format!("{p}.self_attn.k_proj.weight"))?,
+        normed,
+    ))?;
+    let v = nn(b.project(
+        wt(weights, &format!("{p}.self_attn.v_proj.weight"))?,
+        normed,
+    ))?;
     let q = nn(b.reshape_3d(q, HEAD_DIM, HEADS, seq))?;
     let k = nn(b.reshape_3d(k, HEAD_DIM, KV_HEADS, seq))?;
     let v = nn(b.reshape_3d(v, HEAD_DIM, KV_HEADS, seq))?;
@@ -439,10 +457,9 @@ fn qwen_layer(
         hidden,
         wt(weights, &format!("{p}.post_attention_layernorm.weight"))?,
     )?;
-    let gate = nn(b.silu(nn(b.project(
-        wt(weights, &format!("{p}.mlp.gate_proj.weight"))?,
-        normed,
-    ))?))?;
+    let gate = nn(b.silu(nn(
+        b.project(wt(weights, &format!("{p}.mlp.gate_proj.weight"))?, normed)
+    )?))?;
     let up = nn(b.project(wt(weights, &format!("{p}.mlp.up_proj.weight"))?, normed))?;
     let ff = nn(b.mul(gate, up))?;
     let ff = nn(b.project(wt(weights, &format!("{p}.mlp.down_proj.weight"))?, ff))?;
@@ -477,7 +494,7 @@ fn nn(tensor: Tensor) -> Result<Tensor, RuntimeError> {
 mod tests {
     use super::{
         check_detok_layout, check_tok_layout, detok_weight_layout, detokenize, tok_weight_layout,
-        tokenize, TokSession, DetokSession,
+        tokenize, DetokSession, TokSession,
     };
     use crate::runtime::{BackendKind, GgmlContext};
     use crate::weights::{write_f32_nd, F32Nd, GgufWeights};
@@ -500,10 +517,7 @@ mod tests {
 
     fn write_fsq_bundle(dir: &Path) {
         let mut owned = Vec::new();
-        for (name, ne0, ne1) in tok_weight_layout()
-            .into_iter()
-            .chain(detok_weight_layout())
-        {
+        for (name, ne0, ne1) in tok_weight_layout().into_iter().chain(detok_weight_layout()) {
             let n = (ne0 * ne1) as usize;
             let data = if name.contains("norm") {
                 vec![1.0f32; n]

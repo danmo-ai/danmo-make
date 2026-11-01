@@ -1,20 +1,43 @@
+#[cfg(test)]
+mod architecture;
 mod common;
+mod contract;
+mod engine;
+mod error;
 mod families;
 mod pipeline;
+mod ports;
 pub mod runtime;
+mod session;
 mod weights;
 
+pub use common::png;
+pub use contract::{
+    Action, Artifact, AudioCreateRequest as EngineAudioCreateRequest,
+    AudioEditRequest as EngineAudioEditRequest, AudioLmRequest as EngineAudioLmRequest,
+    CancellationToken, EngineOutput, EngineRequest, EngineResult, ExecutionContext, NoopObserver,
+    ResolvedRun, RunObserver, Sidecar,
+};
+pub use engine::Engine;
+pub use error::EngineError;
 pub use families::{
-    all_specs, spec, weight_layout, write_chain_bundle, write_config_bundle, write_q8_bundle,
-    write_qwen3_bundle, write_smoke_bundle, FamilySpec, Flux2Config, Flux2Denoise, Media, Shape,
+    all_specs, spec, weight_layout, write_chain_bundle, write_config_bundle,
+    write_edit_smoke_bundle, write_flux2_edit_smoke_bundle, write_q8_bundle, write_qwen3_bundle,
+    write_seedvr2_smoke_bundle, write_smoke_bundle, write_z_image_control_smoke_bundle,
+    write_z_image_edit_smoke_bundle, FamilySpec, Flux2Config, Flux2Denoise, Media, Shape,
 };
-pub use pipeline::{
+#[cfg(test)]
+pub use pipeline::legacy::{
     audio_create, audio_edit, audio_lm, image_create, read_audio_wav_pcm16, upscale, video_create,
-    AudioCreateRequest, AudioEditRequest, AudioLmOutput, AudioLmRequest, AudioRunOutput,
-    EngineError, RunOutput,
+    AudioCreateRequest, AudioEditRequest, AudioLmOutput, AudioLmRequest, AudioRunOutput, RunOutput,
 };
-pub use runtime::{identity_probe, BackendKind, GgmlContext};
-pub use weights::{assert_gguf_bundle, lora_base_name, write_f32_gguf, GgufWeights, WeightError};
+pub use ports::{ArtifactSink, PersistedAsset, ResolvePort};
+pub use runtime::{identity_probe, select_from_env, BackendKind, BackendSelection, GgmlContext};
+pub use session::ensure_available;
+pub use weights::{
+    assert_gguf_bundle, assert_upscale_bundle, lora_base_name, write_f32_gguf, GgufWeights,
+    UpscaleBundle, WeightError,
+};
 
 #[cfg(test)]
 mod tests {
@@ -39,6 +62,7 @@ mod tests {
             scheduler_shift: None,
             use_empirical_mu: false,
             adapters: Vec::new(),
+            structural_guide: None,
             priority: "normal".into(),
         }
     }
@@ -450,10 +474,16 @@ mod tests {
                 audio_code_indices: None,
                 timbre_latents: None,
             },
+            BackendKind::Cpu,
+            |_, _, _| (),
         )
         .unwrap_err();
         assert!(ace.to_string().contains("ACE-Step"), "{ace}");
         assert!(upscale("esrgan", &dir).is_err());
+        let err = ensure_available("esrgan", crate::contract::Action::ImageUpscale).unwrap_err();
+        assert!(matches!(err, EngineError::GraphNotBuilt { .. }), "{err}");
+        let err = ensure_available("diffrhythm", crate::contract::Action::AudioCreate).unwrap_err();
+        assert!(matches!(err, EngineError::GraphNotBuilt { .. }), "{err}");
         let missing = dir.join("missing");
         let err = match image_create(&req, "flux2", &missing, BackendKind::Cpu, |_, _| ()) {
             Err(err) => err,
@@ -474,11 +504,8 @@ mod tests {
     fn metal_diffusion_uses_the_ggml_device_or_fails_loud() {
         match crate::runtime::measure_diffusion_steps(BackendKind::Metal, 2) {
             Ok(timing) => {
-                assert!(
-                    timing.device.to_lowercase().contains("metal"),
-                    "device {}",
-                    timing.device
-                );
+                assert_eq!(timing.backend, "metal");
+                assert!(!timing.device.is_empty());
                 assert_eq!(timing.forward_readbacks, 0);
                 assert_eq!(timing.steps, 2);
             }

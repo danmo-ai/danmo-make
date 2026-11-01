@@ -6,8 +6,10 @@
 use super::apg::broadcast_null_enc;
 use super::ca_capture;
 use super::cond;
+use super::dcw::DcwSettings;
 use super::lyrics::{self, LyricsAlignment};
 use super::lyrics_dtw;
+use super::quality::{self, QualityAssessment};
 use super::schedule::{shift_schedule, TURBO_SHIFT, TURBO_TIMESTEPS};
 use super::text::{
     build_prompt_strings, embed_lyrics_with_ids, encode_caption, load_tokenizer_json,
@@ -19,7 +21,9 @@ use super::wav::{self, SAMPLE_RATE};
 use super::weights::{check_layout, config_from_weights};
 use crate::common::ops::normal_latent;
 use crate::runtime::{BackendKind, GgmlContext};
-use crate::weights::{self, GgufWeights, WeightError};
+use crate::weights::{
+    self, load_lora_factors_with_default_alpha, GgufWeights, LoraFile, WeightError,
+};
 use std::path::Path;
 
 /// Latent hop: 48 kHz / 1920 upsample = 25 Hz.
@@ -43,6 +47,10 @@ pub struct CreateRequest<'a> {
     /// Optional time-major `[T, 64]` latents for the timbre encoder. When
     /// absent, a single silence frame is used (acestep.cpp `ops_encode_timbre`).
     pub timbre_latents: Option<&'a [f32]>,
+    pub loras: &'a [LoraFile],
+    pub dcw: DcwSettings,
+    pub lm_expanded: bool,
+    pub pmi_bonus: f32,
 }
 
 #[derive(Debug)]
@@ -53,6 +61,11 @@ pub struct CreateOutput {
     pub steps: u32,
     pub enc_seq: i64,
     pub graph_computes: u32,
+    pub dcw: DcwSettings,
+    pub dcw_active: bool,
+    pub quality: QualityAssessment,
+    /// Wall-clock seconds per phase (`text`, `dit_load`, `denoise`, `vae`).
+    pub timings: Vec<(&'static str, f64)>,
     /// Effective lyrics fed to DiT (after normalize).
     pub lyrics_effective: String,
     /// Main-compatible structure_estimate timeline (LRC when non-empty).
@@ -88,10 +101,25 @@ pub fn snap_latent_frames(frames: i64) -> i64 {
     }
 }
 
+#[cfg(test)]
 pub fn run_full_create(
     bundle: &Path,
     request: &CreateRequest<'_>,
+    backend: BackendKind,
+    on_step: impl FnMut(u32, u32),
 ) -> Result<CreateOutput, WeightError> {
+    let ctx = GgmlContext::new(backend).map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    run_full_create_with_context(bundle, request, &ctx, on_step)
+}
+
+pub fn run_full_create_with_context(
+    bundle: &Path,
+    request: &CreateRequest<'_>,
+    ctx: &GgmlContext,
+    mut on_step: impl FnMut(u32, u32),
+) -> Result<CreateOutput, WeightError> {
+    let mut timings = Vec::new();
+    let mut phase_started = std::time::Instant::now();
     if !request.guidance.is_finite() || request.guidance < 1.0 {
         return Err(WeightError::NotBuilt(format!(
             "ACE-Step guidance {} must be >= 1",
@@ -138,10 +166,7 @@ pub fn run_full_create(
         request.vocal_language,
     );
 
-    let ctx = GgmlContext::new(BackendKind::Cpu)
-        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-    let (text_hidden, s_text) =
-        encode_caption(&ctx, &gguf.text_encoder, &tokenizer, &pair.text)?;
+    let (text_hidden, s_text) = encode_caption(&ctx, &gguf.text_encoder, &tokenizer, &pair.text)?;
     let (lyric_embed, lyric_ids) =
         embed_lyrics_with_ids(&gguf.text_encoder, &tokenizer, &pair.lyric)?;
     let s_lyric = lyric_ids.len() as i64;
@@ -170,6 +195,8 @@ pub fn run_full_create(
         s_lyric,
         Some(timbre_feats),
     )?;
+    timings.push(("text", phase_started.elapsed().as_secs_f64()));
+    phase_started = std::time::Instant::now();
 
     let context = if let Some(codes) = request.audio_code_indices.filter(|c| !c.is_empty()) {
         codes_context(
@@ -183,36 +210,62 @@ pub fn run_full_create(
     } else {
         silence_context(&dit, frames, config.out_channels, config.in_channels)?
     };
+    let factors = load_lora_factors_with_default_alpha(
+        request.loras,
+        &super::graph::graph_weight_layout(config),
+        Some(128.0),
+    )?;
     let types = dit_graph_types(&dit, config);
-    let mut model = AceStepDit::build_typed(&ctx, config, frames, enc_seq, &types)
-        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    let mut model =
+        AceStepDit::build_typed_with_loras(&ctx, config, frames, enc_seq, &types, &factors)
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
     load_weights(&mut model, &dit, config)?;
+    for (index, factor) in factors.iter().enumerate() {
+        model
+            .load_f32(&format!("lora.{index}.a"), &factor.a)
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        model
+            .load_f32(&format!("lora.{index}.b"), &factor.b)
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    }
+    timings.push(("dit_load", phase_started.elapsed().as_secs_f64()));
+    phase_started = std::time::Instant::now();
 
     let null_enc = if request.guidance > 1.0 + f32::EPSILON {
         let emb = load_null_condition(&dit, config.condition_dim)?;
-        Some(
-            broadcast_null_enc(&emb, enc_seq)
-                .map_err(WeightError::NotBuilt)?,
-        )
+        Some(broadcast_null_enc(&emb, enc_seq).map_err(WeightError::NotBuilt)?)
     } else {
         None
     };
 
     let seed = request.seed.unwrap_or(0);
-    let xt = normal_latent(seed, model.xt_len());
-    let latents = model
-        .denoise(
-            &xt,
-            &context,
-            &enc_hidden,
-            &schedule,
-            request.guidance,
-            null_enc.as_deref(),
-            None,
-            None,
-            |_, _| (),
-        )
-        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    let max_attempts = if request.lm_expanded { 6 } else { 3 };
+    let mut attempt = 0;
+    let (latents, _near_silence, attempts) = loop {
+        let run_seed = quality::diffusion_retry_seed(seed, attempt);
+        let xt = normal_latent(run_seed, model.xt_len());
+        let latents = model
+            .denoise(
+                &xt,
+                &context,
+                &enc_hidden,
+                &schedule,
+                request.guidance,
+                null_enc.as_deref(),
+                None,
+                None,
+                Some(request.dcw),
+                |step, total| on_step(step, total),
+            )
+            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+        let (near_silence, _, _) = quality::latents_collapsed_to_silence(&latents, &context)?;
+        attempt += 1;
+        if !near_silence || attempt >= max_attempts {
+            break (latents, near_silence, attempt);
+        }
+    };
+    timings.push(("denoise", phase_started.elapsed().as_secs_f64()));
+    phase_started = std::time::Instant::now();
 
     let (lyrics_alignment, lyrics_lrc) = maybe_upgrade_dit_alignment(
         &ctx,
@@ -233,6 +286,8 @@ pub fn run_full_create(
         lyrics_alignment,
         lyrics_lrc,
     )?;
+    timings.push(("alignment", phase_started.elapsed().as_secs_f64()));
+    phase_started = std::time::Instant::now();
 
     let vae_path = gguf
         .vae
@@ -240,6 +295,17 @@ pub fn run_full_create(
         .ok_or_else(|| WeightError::NotBuilt("ACE-Step VAE GGUF is missing".into()))?;
     let vae = GgufWeights::open(vae_path)?;
     let audio = super::vae::decode(&ctx, &vae, &latents, frames)?;
+    timings.push(("vae", phase_started.elapsed().as_secs_f64()));
+    let audio = quality::normalize_planar_stereo(&audio, frames)?;
+    let quality = quality::assess_output(
+        &latents,
+        &context,
+        &audio,
+        SAMPLE_RATE,
+        request.lm_expanded,
+        request.pmi_bonus,
+        attempts,
+    )?;
     let wav = wav::write_planar_stereo_pcm16(&audio, SAMPLE_RATE)?;
 
     Ok(CreateOutput {
@@ -249,6 +315,10 @@ pub fn run_full_create(
         steps,
         enc_seq,
         graph_computes: model.graph_computes(),
+        dcw: request.dcw,
+        dcw_active: request.dcw.active(is_turbo),
+        quality,
+        timings,
         lyrics_effective: lyrics_effective.into_owned(),
         lyrics_alignment,
         lyrics_txt,

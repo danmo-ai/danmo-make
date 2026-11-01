@@ -1,6 +1,6 @@
 # Danmo Make Engine Architecture
 
-The engine is Rust on ggml, under `native/`. Product code is `danqing-api`. Weights are GGUF. Tensor names in the file are graph parameter names.
+The engine is Rust on ggml, under `native/`. The server binary is `danqing-api`. DiT weights are GGUF; text encoders and VAEs are GGUF or published safetensors. Tensor names in weight files are graph parameter names.
 
 Operational rules: [`AGENTS.md`](../AGENTS.md).
 
@@ -8,120 +8,137 @@ Operational rules: [`AGENTS.md`](../AGENTS.md).
 
 ## 1. Principles
 
-1. **Fail loud.** A missing tensor, a wrong shape, an unknown scheduler, or a graph that is not built returns an error. Nothing is filled in, truncated, or swapped for a smaller path.
-2. **One device for the whole graph.** `GgmlContext` is that device (`cpu`, `cuda`, `vulkan`, or `metal`). The binary must be built with the matching cargo feature. Choosing CPU as the device is valid. A missing operator is an error. It is not run on a second CPU backend beside the chosen device.
-3. **Families add models.** A new chip backend is another `GgmlContext` backend. It is not a new family and not a second engine tree.
-4. **Families are isolated.** A family module does not import another family. The factory in `families/mod.rs` is the only match on a family id.
-5. **Shared code does not know family ids.** It reads weight-file tensor names and the parameters the caller passes. `layers.*` and `decoder.*` are file formats, not family names.
-6. **Keep shared code small.** A real difference is a neutral parameter (a layer list, a `bool`, a `VaeSpec`). When the difference needs a pile of callbacks or mode switches, each family implements that piece itself.
-7. **Phases stay in order.** resolve → load → encode → schedule → infer → decode → persist. Families do not reorder them.
-8. **No key remap.** The name in the file is the graph parameter name. The DiT is GGUF. The text encoder and VAE are GGUF or the published safetensors. A missing tensor fails the task. MLX packs are not loaded. Safetensors dimensions are the PyTorch order reversed into ggml; the bytes are not moved.
+1. **Fail loud.** Missing tensors, wrong shapes, unknown actions/schedulers/options, unavailable backends, unbuilt graphs, and persistence failures return errors. Nothing is silently replaced, truncated, or moved to a fallback device.
+2. **One device for the whole task.** Engine creates a `GgmlContext` for the selected backend (`cpu`, `cuda`, `vulkan`, or `metal`) and injects it into every family session. Text encoding, companion LMs, DiT, FSQ, and VAE do not open another device.
+3. **Families add models.** A new chip is a `GgmlContext` backend, not a family or another engine tree.
+4. **Families are isolated.** A family does not import another family. `families/mod.rs` is the only family-ID dispatch point.
+5. **Shared code is family-neutral.** `pipeline`, `session`, `common`, and `runtime` do not match on family IDs or contain family implementation types.
+6. **Keep shared code small.** Neutral parameters belong in shared code. Different tensor ranks, CFG formulas, denoise loops, DiT graphs, and readout policies stay in the family.
+7. **Phases are explicit.** Standard DiT runs resolve → load → encode → schedule → infer → decode → persist. Job and facade shapes keep their own documented phase order.
+8. **No key remap.** Missing or duplicated tensors fail. GGUF names bind directly to graph parameters. Safetensors dimensions are reversed into ggml order without moving bytes.
 
----
+Architecture tests in `architecture.rs` check registry/factory synchronization, family-neutral shared layers, and the prohibition on direct ggml calls from production family code.
 
 ## 2. Dependency direction
 
-```
-Vue
-  → danqing-api
-  → pipeline          phases, no family match
-  → families/mod.rs   the one factory match
-  → one family        DiT, weight table, readout policy, denoise loop
-  → common            Qwen3, AutoencoderKL, PNG, schedules
-  → runtime           GgmlContext, GraphBuilder, ggml operators
+```text
+Vue / desktop
+  → danmo-server HTTP + DTO adapters
+  → Engine
+  → Session + ResolvedRun + ExecutionContext
+  → shared Dit / Job / Facade pipeline
+  → families/mod.rs
+  → family driver + family-owned session
+  → common components and algorithms
+  → runtime (GgmlContext, GraphBuilder, ggml operators)
   → danmo-ggml-sys
 ```
 
-`common` and `runtime` do not import `families`. A family does not import another family.
+Server integrations are ports, not engine dependencies:
 
----
+```text
+ResolvePort   → Catalog / workspace / downloads / source assets
+ArtifactSink  → atomic output writes + Scheduler / AssetStore + lineage
+RunObserver   → task logs, progress, SSE, and phase events
+```
 
-## 3. Layout
+`pipeline`, `session`, `common`, and `runtime` never import server or store crates. Production uses only the new Engine facade. The old free-function pipeline remains solely as a `cfg(test)` numerical reference in `pipeline/legacy.rs`.
 
-| Path | Role |
-|------|------|
-| `native/crates/danmo-server` | Axum API, `danqing-api` |
-| `native/crates/danmo-engine` | Engine |
-| `native/crates/danmo-engine/src/pipeline/` | Phase order. `denoise.rs` is the Flux2 step loop |
-| `native/crates/danmo-engine/src/families/mod.rs` | `FamilySpec` rows and `run_dit_image` |
-| `native/crates/danmo-engine/src/families/<id>/` | That model's graph, weights, and policies |
-| `native/crates/danmo-engine/src/common/qwen3/` | Qwen3 tokenizer and tower |
-| `native/crates/danmo-engine/src/common/vae.rs` | AutoencoderKL decoder |
-| `native/crates/danmo-engine/src/common/png.rs` | Uncompressed RGB PNG |
-| `native/crates/danmo-engine/src/common/ops.rs` | Sigma schedules, normal noise |
-| `native/crates/danmo-engine/src/runtime/` | `GgmlContext`, `GraphBuilder`, flash attention, RoPE, group norm, nearest ×2, preview conv |
-| `native/crates/danmo-ggml-sys` | ggml bindings. The only place that calls ggml |
+## 3. Execution contracts
 
----
+- `ResolvedRun`: model, version, family, action, bundle, and backend.
+- `ExecutionContext`: task ID, cancellation token, observer, and start time. Every phase and inference progress callback uses it.
+- `EngineRequest`: strongly typed common request fields plus opaque `family_options` at the boundary. A family parses its own options with unknown fields denied.
+- `Artifact`: primary bytes, MIME/type, metadata, lineage, dimensions/duration, and nested sidecars. PNG, WAV, LRC, and lyric text use one persistence path.
+- `EngineOutput` / `EngineResult`: neutral metrics, timings, metadata, artifacts, asset IDs, and output paths. Public pipeline types do not contain ACE-Step output structures.
+- `EngineError`: invalid requests, unsupported actions/options, unknown families, unbuilt graphs, backend failures, cancellation, observer, resolution, weight, runtime, and persistence errors.
 
-## 4. Shared code and family code
+## 4. Family shapes and extension
 
-Shared modules take parameters. They do not branch on `flux2` or `z_image`.
+`FamilySpec` contains stable metadata: ID, media, shape, LoRA support, and scheduler names. `families/mod.rs` maps a family/action to a driver.
 
-| Piece | Where | What the caller passes |
-|-------|--------|------------------------|
-| Qwen3 tokenizer and tower | `common/qwen3` | 1-based layer indices, `thinking: bool`, output width |
-| AutoencoderKL decode | `common/vae` | `VaeSpec` (channels, block widths, groups, scaling, shift, mid attention) |
-| PNG | `common/png` | width, height, RGB bytes |
-| Linear, static-shift, and empirical-mu sigmas; sinusoidal timestep; N(0, 1) noise | `common/ops` | steps, shift, image sequence length, `t`, seed, length |
-| ggml operators | `runtime` | tensor shapes |
+| Shape | Shared phase order | Family owns |
+|---|---|---|
+| `DitPipeline` | resolve → load → encode → schedule → infer → decode → persist | DiT graph, weights, text policy, scheduler policy, denoise, VAE/readout |
+| `JobPipeline` | resolve → load → infer(job) → persist | Non-standard upscale/job execution |
+| `GenerationFacade` | resolve → prepare → infer → persist | Preparation, companion models, internal encode/schedule/decode substeps |
 
-The caller owns the policy:
+`DitImageFamily::load` returns a `DitImageSession`. The shared pipeline calls `encode`, `schedule`, `infer`, and `decode` in order. `FacadeFamily::prepare` returns a `FacadeSession`; ACE-Step create/edit/LM uses this interface. The facade test adds a second audio implementation without changing pipeline code.
 
-| Policy | Who decides |
-|--------|-------------|
-| Which Qwen layers, and whether thinking is on | The family. Flux2 passes layers 9, 18, and 27 with thinking off. A short tower whose `hidden * layers` equals the joint width passes every layer. Z-Image passes the penultimate layer with thinking on. |
-| VAE numbers | The family. Z-Image passes 16 channels, blocks 128/256/512/512, 32 groups, scaling 0.3611, shift 0.1159. Flux2 passes the same blocks after its own unpack, with 32 channels, scaling 1, shift 0. |
-| Scheduler name | The family accepts the names its registry lists and calls the matching function in `common/ops`. Flux2 runs empirical mu for both `flow_match_euler` and `flow_match_euler_discrete`, and embeds `sigma * 1000` as cosine then sine. Z-Image uses those two names as one scheduler: static shift unless `use_empirical_mu` is set. `linear` keeps the resolution shift. |
-| Negative prompt | The family. Z-Image requires the same token count and a guidance other than 0. Flux2 rejects a non-empty negative. |
+A new family changes only:
 
-These stay in the family because one shared function would be a pile of switches:
+1. Its registry entry in `default_config/models_registry.json`.
+2. `families/<id>/` and its tests.
+3. One factory registration in `families/mod.rs`.
 
-- **Denoise.** Flux2 uses `pipeline/denoise.rs`: velocity is `[channels, seq]`, the step is `x + dt * (u + g * (c - u))`, and guidance near 1 skips the second pass. Z-Image steps `x + dt * (c + g * (c - u))` on `[W, H, C]`, and guidance 0 is one pass. The Euler child graph is built by the family that owns that rank.
-- **1×1 preview.** Both families can decode a file whose only tensor is `decoder.conv.weight`. The latent layout differs, so each family keeps its own preview. Both call `common/png`.
-- **Flux2 packed latents.** The DiT latent is 128 channels. The family applies `bn.running_mean` / `bn.running_var`, unpatches groups of 4 channels into a 2×2 block, applies scaling 1 and shift 0, then `post_quant_conv`. The shared decoder then sees 32 channels. That front end stays in `families/flux2` because it is not an AutoencoderKL parameter.
-- **DiT graph and weight table.** Each family.
+It does not change pipeline, session, common, server, or public DTOs. Registry-declared capabilities and implemented drivers are checked before a task is queued. Unbuilt families remain visible but fail with `GraphNotBuilt`; they never return placeholder success.
 
-A later model that needs the Qwen3 tower calls `common/qwen3` with its own layer list. It does not import `families/flux2`. A later model that needs this AutoencoderKL calls `common/vae` with its own `VaeSpec`. A different VAE topology stays in that family and still uses the runtime conv, group norm, and nearest-upsample operators.
+## 5. Shared components and algorithms
 
----
+- `common/qwen3`: Qwen3 tokenizer and tower. Callers pass 1-based layer indices, a thinking flag, and output width.
+- `common/vae`: AutoencoderKL decoder configured by `VaeSpec`.
+- `common/png`: RGB PNG output.
+- `common/ops`: sigma schedules, deterministic normal noise, sinusoidal embeddings, and non-finite checks.
+- `runtime`: device session, graph construction/replay, attention probes, small-head padding, capacity snapshots, RoPE, group norm, nearest upsample, preview convolution, Euler/CFG primitives, and element-size access.
+- `common/conditioning`: a four-entry LRU for Qwen3 embeddings, keyed by backend, layer selection, width, token IDs, and weight-file revision.
+- `weights`: GGUF/safetensors loading, LoRA binding, FP16 conversion, and mmap cache.
 
-## 5. What runs today
+Flux2 and Z-Image share Qwen3 and AutoencoderKL with different parameters. Qwen-Image keeps its Qwen2.5-VL trunk and 3D causal VAE in its family because their topology differs. Flux2, Z-Image, Qwen-Image, and ACE-Step keep their own denoise loops where layout or guidance formulas differ.
 
-Shape on `FamilySpec`:
+Reusable components must move to `common` before another family consumes them. A family must not import an encoder, VAE, scheduler, or other implementation from another family.
 
-| Shape | Entry | Built graphs |
-|-------|--------|----------------|
-| **A — `DitPipeline`** | `pipeline::image_create` → `run_dit_image` | `flux2` (MM-DiT), `z_image` (DiT), `qwen_image` (joint DiT, Qwen2.5-VL trunk, packed unpack, first-frame 3D decoder) |
-| **B — `JobPipeline`** | `pipeline::upscale` | none; fails after the bundle check |
-| **C — `GenerationFacade`** | video / audio routes | `ace_step` text2music create (acestep.cpp): Qwen3-Embedding → cond pack → silence context → DiT Euler (APG CFG via `null_condition_emb`) → VAE → WAV + lyrics timeline (`structure_estimate` LRC / `_lyrics.txt` sidecars; DiT cross-attn DTW not wired yet); cover / FSQ / 5Hz LM still fail loud; other facades fail after the bundle check |
+## 6. ACE-Step boundary
 
-Any other registered family passes the bundle check and then fails with `has no ggml graph yet`. LoRA inference is a residual on `flux2` and `z_image`. Qwen-Image LoRA, edit, upscale, ControlNet, and LoRA training are not built.
+All ACE-specific behavior lives in `families/ace_step/`:
 
-`flux2` text is the Qwen3 tower. `flux2` pixels use the packed-latent front end and then the shared AutoencoderKL graph when the file contains `decoder.conv_in.weight`. `z_image` pixels use that same decoder when `decoder.conv_in.weight` is present. Either family keeps the 1×1 preview when the VAE file is only `decoder.conv.weight`. Any other VAE file fails.
+- Create/edit/LM option schemas and mode parsing.
+- 5Hz LM expansion and companion-model selection through `ResolvePort`.
+- Source WAV decoding, 48 kHz validation, source latents, cover/repaint policies.
+- WAV, lyric text, LRC, alignment metadata, and phase timings converted to generic artifacts/results.
 
-`qwen_image` reads the bare diffusers DiT names (`img_in`, `txt_in`, `txt_norm`, `time_text_embed.timestep_embedder.linear_*`, `transformer_blocks.*.img_mlp.net.0.proj`, `attn.to_q`, `norm_out.linear`, `proj_out`). It does not add `model.diffusion_model.` and it does not apply the MLX remap (`mlp_in`, `img_mod_linear`). RoPE positions follow `QwenEmbedRope(scale_rope=True)`: spatial ids are centered, text ids start at `max(height / 2, width / 2)` on all three axes, and attention scale is `1/sqrt(head_dim)`. Create at guidance 1 tokenizes, runs the Qwen2.5-VL trunk (`model.*`, final hidden state, drop the 34-token system prefix, `rope_neox` because create broadcasts one index onto all three axes), steps the packed DiT, unpacks to 16 channels on a grid twice as wide and tall, scales, and decodes frame 0 of the 3D causal VAE. The decoder uses channel L2 norm, a causal conv with left time pad `2 * padding`, and `upsample3d` leaves `time_conv` unread on that frame. Later frames are not built. `flow_match_euler` and `flow_match_euler_discrete` use empirical mu on `(width / 16) * (height / 16)` when the request has no static shift. `linear` uses the resolution shift from `requires_sigma_shift`. Guidance other than 1 fails until the negative embedding path is built. Create reads `tokenizer/vocab.json` and `tokenizer/merges.txt`, fills the image prompt template, and truncates to 1058 tokens. Bundle check accepts that vocab pair as well as a Hugging Face `tokenizer.json`.
+The server only maps DTO fields mechanically and supplies source bytes. It does not know `CoverMode`, `LmMode`, `CreateOutput`, or ACE persistence rules. ACE receives the same `GgmlContext` as the rest of the task.
 
-One graph is reserved and replayed. Steps replace inputs. The host reads the latent after the last step.
+## 7. Weights and cache
 
----
+A bundle contains a GGUF DiT, GGUF or published safetensors text encoder and VAE, tokenizer files, and `bundle.manifest.json`. Shards are mmap'd per file. Duplicate tensor names across shards fail.
 
-## 6. New model
+Version keys are `bf16`, `q8_0`, and `q4_k`. Norm scales remain F32 inside quantized DiTs. Matmul accepts F32, F16, BF16, Q8_0, Q4_K, Q5_K, and Q6_K where supported by the runtime. VAE inputs are widened at the load boundary when required.
 
-1. Add the registry row in `default_config/models_registry.json` (`family`, `engine`, `actions`, `backends`, bilingual `name` / `description`, GGUF version keys). Do not invent a download URL.
-2. Add a `FamilySpec` row. Wire `execute` only from `families/mod.rs`.
-3. Put the DiT, the weight-name table, and the readout policy in `families/<id>/`. Do not import another family.
-4. Call `common/qwen3`, `common/vae`, `common/png`, or `common/ops` when the algorithm is the same and the difference is a parameter list. Do not add a family name inside those modules.
-5. Keep the denoise loop in the family when the tensor rank or the CFG formula differs from the loop that already exists.
-6. Missing tensors, unknown schedulers, and actions with no graph fail the task.
-7. `cargo test --manifest-path native/Cargo.toml --offline -p danmo-engine --lib`
+`weights/cache.rs` provides a single-slot LRU + 30-minute TTL cache for immutable mmap weights. Cache keys include paths, file lengths, and modification times. A changed file is reopened rather than reused. Every run owns its graph inputs, latent state, schedule, cancellation, progress, and outputs; mutable denoise sessions are not shared. Graph reserve or memory-budget failure is an error, never a reason to select another model, quant, or backend.
 
----
+`common/conditioning.rs` is a separate four-entry LRU for Qwen3 embeddings. Its key includes the same file revision plus backend, selected layers, output width, and token IDs. It never shares entries across model or backend revisions.
 
-## 7. Weights and backends
+`runtime/capacity.rs` registers actual gallocr graph buffer sizes and subtracts them on graph drop. Engine logs and returns weight, conditioning, graph, managed, available, and total device bytes in the capacity metadata. `runtime/probe.rs` validates flash attention against an independent host implementation and records host/backend timings on the first Metal task. Small head dimensions are padded to 64 and sliced back on the same device; unsupported paths fail instead of falling back to CPU.
 
-A bundle directory holds a GGUF DiT, a GGUF or safetensors text encoder, a GGUF or safetensors VAE, a tokenizer (`tokenizer.json` or Qwen2.5-VL `tokenizer/vocab.json` + `merges.txt`), and `bundle.manifest.json`. Shards are mmap'd per file. Duplicate tensor names across shards fail. FLUX.2 Klein 4B and Z-Image version installs download the published text encoder, VAE, and tokenizer into that version directory. When that install lists `components`, the downloader writes `bundle.manifest.json` after the last file lands: `quant` is the version key, `transformer` is the GGUF, and `text_encoder` / `vae` are the planned weight files. The text encoder uses the `model.` prefix when `model.embed_tokens.weight` is in the file. `blk.*` names fail. The Flux2 DiT graph reads the published fused names (`double_blocks.*`, `single_blocks.*`, `img_in`, `txt_in`, `time_in`, `final_layer`). The Z-Image DiT graph reads the published unfused names already in its weight table. The Qwen-Image DiT graph reads the bare diffusers names in its weight table. A tensor that is not in that table fails. The Qwen2.5-VL trunk reads `model.*` and does not open the vision tower. The 3D decoder reads diffusers names (`decoder.conv_in.weight`, `*.norm1.gamma`, `upsamplers.0.resample.1.weight`, and `time_conv` on the first two upsample blocks). Frame 0 does not execute `time_conv`. The tokenizer reads `tokenizer/vocab.json`, `tokenizer/merges.txt`, and `added_tokens_decoder`. It does not apply the chat template stored in that config.
+## 8. Server, queue, and failure behavior
 
-Version keys are `bf16`, `q8_0`, and `q4_k`. Inside a quantized DiT, norm scales stay F32. Matmul accepts F32, F16, BF16, Q8_0, and Q4_K. The VAE graph is F32, so BF16 and F16 VAE tensors are widened at the load boundary. A published 4B forward reserves one ggml compute buffer for the whole graph; a machine that cannot hold that buffer fails at reserve.
+`danmo-server` maps HTTP DTOs to `EngineRequest`, implements engine ports, and translates results into task JSON. A single worker owns execution. Cancellation is registered in `danmo-schedule`, delivered through `ExecutionContext`, and recorded as `cancelled` rather than `failed`.
 
-`DANQING_GGML_BACKEND=cpu|cuda|vulkan|metal`. The cargo feature has to be on. Context init fails when the feature is missing.
+Invalid `DANQING_HTTP_PORT`, invalid `DANQING_GGML_BACKEND`, missing backend features, registry errors, and DB initialization errors fail startup. `DANQING_GGML_BACKEND` also accepts `auto` and defaults to it. Auto tries only compiled backends, using Metal → CUDA → Vulkan → CPU on macOS and CUDA → Vulkan → Metal → CPU elsewhere. Every candidate must initialize and pass the attention probe; CPU is the final fallback. Selection is fixed for the process and never changes during a task. Health returns the selected backend, reason, and probe summary, the System Info UI displays them, and every task log has a `[backend]` prefix. Dequeue and task-finish failures are logged and surfaced instead of being converted into an empty queue or ignored.
+
+The assistant routes (`/v1/llm/model`, `/v1/vision/model`, `/api/chat/enhance-prompt`, `/v1/chat/completions`) mirror the legacy OpenAI-compatible surface. Model info reports the resolved registry id, provider, availability, and think flags. Generation requires `llm_inference_provider=openai_compatible` with a base URL and API key in settings: requests are proxied to `{base_url}/chat/completions` with the configured cloud model, including streaming SSE passthrough, and remote failures return 502. Without that configuration the routes answer 503 fail loud; builtin local LLM inference is not built.
+
+## 9. Current graphs and migration status
+
+| Family | Implemented GGML actions |
+|---|---|
+| `flux2` | Image create, applicable LoRA, rewrite img2img edit (VAE encode + sigma blend at `init_timestep`) |
+| `z_image` | Image create, applicable LoRA, rewrite img2img edit (VAE encode + sigma blend at `init_timestep`), union controlnet structural guide (33-channel VAE-encoded context, diffusers control refiner/layer hints into the main branch, optional inpaint pair) |
+| `qwen_image` | Image create, masked positive/negative CFG, single-reference edit (rewrite) |
+| `seedvr2` | Image upscale: bicubic preprocess (softness down→up, even align, pad 16), tiled 3D VAE encode, one MM-DiT windowed-attention Euler step at t=1000, tiled decode, wavelet + LAB color correction |
+| `ace_step` | Audio create/edit batches, vocal/instrumental conditioning, applicable LoRA, Haar DCW, normalized wav/flac/mp3/opus/aac + denoise and quality metadata, 5Hz LM with optional PMI |
+| Other registered families | No graph yet; explicit `GraphNotBuilt` |
+
+The `main` MLX implementation is a source of phase fixtures and model behavior, not a runtime dependency. A family/action becomes available only after its real graph, persistence, and end-to-end verification are complete.
+
+## 10. Verification
+
+```bash
+cargo test --manifest-path native/Cargo.toml --offline --workspace
+make test
+make frontend-build
+```
+
+Verification covers architecture boundaries, a second facade family, invalid configurations, missing weights/tensors, cancellation, cache reuse/eviction, real HTTP task execution, artifact persistence, and CPU generation. CUDA, Vulkan, and Metal require matching cargo features and runtime verification on their respective platforms; build-only verification does not imply runtime support.
+
+Metal verification uses `DANQING_GGML_BACKEND=metal cargo test --manifest-path native/Cargo.toml --offline -p danmo-engine --features metal --lib`. On Apple M5 Max, the attention probe reported max abs error 0.000008, about 2.284 ms for the host reference and 0.253 ms for Metal flash. The small-head fallback also matches the host reference, and a real Metal HTTP image task completes with persisted assets.

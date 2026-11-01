@@ -61,7 +61,10 @@ pub fn is_instrumental_lyrics(text: &str) -> bool {
     if t.is_empty() {
         return true;
     }
-    matches!(t.as_str(), "[instrumental]" | "instrumental" | "[inst]" | "inst")
+    matches!(
+        t.as_str(),
+        "[instrumental]" | "instrumental" | "[inst]" | "inst"
+    )
 }
 
 #[allow(dead_code)] // used when 5Hz LM expansion refuses empty vocal lyrics
@@ -187,7 +190,15 @@ pub fn lyrics_txt_sidecar(lyrics: &str) -> Option<String> {
 pub fn prepare_create_lyrics<'a>(
     lyrics: &'a str,
     duration_sec: f32,
-) -> Result<(Cow<'a, str>, LyricsAlignment, Option<String>, Option<String>), String> {
+) -> Result<
+    (
+        Cow<'a, str>,
+        LyricsAlignment,
+        Option<String>,
+        Option<String>,
+    ),
+    String,
+> {
     let body = normalize_lyrics_body(lyrics);
     let instrumental = is_instrumental_lyrics(&body);
     // Empty after normalize with a non-empty raw request that is not instrumental

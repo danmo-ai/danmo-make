@@ -1,32 +1,25 @@
 //! One factory row per registry family. Shape A/B/C matches `docs/engine_architecture.md`.
 
 pub(crate) mod ace_step;
+mod driver;
 mod flux2;
 mod qwen_image;
+pub mod seedvr2;
 mod z_image;
 
+pub use crate::contract::{Media, Shape};
+pub use driver::{
+    DitDecode, DitImageFamily, DitImageSession, FacadeFamily, FacadeSession, FamilyDriver,
+};
+pub use flux2::write_edit_smoke_bundle as write_flux2_edit_smoke_bundle;
 pub use flux2::{
     weight_layout, write_chain_bundle, write_config_bundle, write_q8_bundle, write_qwen3_bundle,
     write_smoke_bundle, Flux2Config, Flux2Denoise,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Media {
-    Image,
-    Video,
-    Audio,
-    Assistant,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Shape {
-    /// Standard denoise. Entry: ImagePipeline / VideoPipeline.
-    DitPipeline,
-    /// Upscale / non-standard job. Entry: UpscalePipeline.
-    JobPipeline,
-    /// End-to-end generator. Entry: MusicPipeline or a family generator.
-    GenerationFacade,
-}
+pub use qwen_image::write_edit_smoke_bundle;
+pub use seedvr2::write_smoke_bundle as write_seedvr2_smoke_bundle;
+pub use z_image::write_control_smoke_bundle as write_z_image_control_smoke_bundle;
+pub use z_image::write_edit_smoke_bundle as write_z_image_edit_smoke_bundle;
 
 #[derive(Debug, Clone, Copy)]
 pub struct FamilySpec {
@@ -186,7 +179,7 @@ const FAMILIES: &[FamilySpec] = &[
         id: "ace_step",
         media: Media::Audio,
         shape: Shape::GenerationFacade,
-        lora_inference: false,
+        lora_inference: true,
         schedulers: &[],
     },
     FamilySpec {
@@ -220,6 +213,38 @@ pub fn all_specs() -> &'static [FamilySpec] {
     FAMILIES
 }
 
+static FLUX2_FAMILY: flux2::Flux2Family = flux2::Flux2Family;
+static FLUX2_EDIT_FAMILY: flux2::Flux2EditFamily = flux2::Flux2EditFamily;
+static QWEN_IMAGE_FAMILY: qwen_image::QwenImageFamily = qwen_image::QwenImageFamily;
+static QWEN_IMAGE_EDIT_FAMILY: qwen_image::QwenImageEditFamily = qwen_image::QwenImageEditFamily;
+static Z_IMAGE_FAMILY: z_image::ZImageFamily = z_image::ZImageFamily;
+static Z_IMAGE_EDIT_FAMILY: z_image::ZImageEditFamily = z_image::ZImageEditFamily;
+static SEEDVR2_UPSCALE_FAMILY: seedvr2::SeedVr2UpscaleFamily = seedvr2::SeedVr2UpscaleFamily;
+static ACE_STEP_FAMILY: ace_step::AceStepFamily = ace_step::AceStepFamily;
+
+pub fn driver(family: &str, action: crate::contract::Action) -> FamilyDriver {
+    use crate::contract::Action;
+    match (family, action) {
+        ("flux2", Action::ImageCreate) => FamilyDriver::DitImage(&FLUX2_FAMILY),
+        ("flux2", Action::ImageEdit) => FamilyDriver::Facade(&FLUX2_EDIT_FAMILY),
+        ("qwen_image", Action::ImageCreate) => FamilyDriver::DitImage(&QWEN_IMAGE_FAMILY),
+        ("qwen_image", Action::ImageEdit) => FamilyDriver::Facade(&QWEN_IMAGE_EDIT_FAMILY),
+        ("z_image", Action::ImageCreate) => FamilyDriver::DitImage(&Z_IMAGE_FAMILY),
+        ("z_image", Action::ImageEdit) => FamilyDriver::Facade(&Z_IMAGE_EDIT_FAMILY),
+        ("seedvr2", Action::ImageUpscale) => FamilyDriver::Facade(&SEEDVR2_UPSCALE_FAMILY),
+        ("ace_step", Action::AudioCreate | Action::AudioEdit | Action::AudioLm) => {
+            FamilyDriver::Facade(&ACE_STEP_FAMILY)
+        }
+        _ => match spec(family).map(|row| row.shape) {
+            Some(Shape::JobPipeline) => FamilyDriver::Job,
+            _ => FamilyDriver::Unavailable {
+                reason: format!("{family} has no ggml graph for {}", action.as_str()),
+            },
+        },
+    }
+}
+
+#[cfg(test)]
 pub struct DitImageRun {
     pub latents: Vec<f32>,
     pub graph_computes: u32,
@@ -227,6 +252,7 @@ pub struct DitImageRun {
 }
 
 /// Factory row for Shape A image families. The pipeline does not match on family ids.
+#[cfg(test)]
 pub fn run_dit_image(
     family: &str,
     ctx: &crate::runtime::GgmlContext,
@@ -297,41 +323,56 @@ pub fn run_dit_image(
 
 /// Shape C audio entry. `Ok(None)` leaves the generic bundle check to the
 /// pipeline. ACE-Step proves the smoke DiT then refuses product create.
+#[cfg(test)]
 pub fn run_audio_facade(
     family: &str,
     bundle: &std::path::Path,
     request: &ace_step::CreateRequest<'_>,
+    backend: crate::runtime::BackendKind,
+    on_step: impl FnMut(u32, u32),
 ) -> Result<Option<ace_step::CreateOutput>, crate::weights::WeightError> {
     match family {
-        "ace_step" => Ok(Some(ace_step::run_create(bundle, request)?)),
+        "ace_step" => Ok(Some(ace_step::run_create(
+            bundle, request, backend, on_step,
+        )?)),
         _ => Ok(None),
     }
 }
 
 /// Shape C audio edit (cover / cover-nofsq / repaint). `Ok(None)` for families without an edit path.
+#[cfg(test)]
 pub fn run_audio_edit_facade(
     family: &str,
     bundle: &std::path::Path,
     request: &ace_step::CoverRequest<'_>,
+    backend: crate::runtime::BackendKind,
 ) -> Result<Option<ace_step::CreateOutput>, crate::weights::WeightError> {
     match family {
-        "ace_step" => Ok(Some(ace_step::run_cover_edit(bundle, request)?)),
+        "ace_step" => Ok(Some(ace_step::run_cover_edit(bundle, request, backend)?)),
         _ => Ok(None),
     }
 }
 
 /// Shape C audio 5Hz LM (inspire / format / generate phase-1).
+#[cfg(test)]
 pub fn run_audio_lm_facade(
     family: &str,
     bundle: &std::path::Path,
     request: &ace_step::LmRequest<'_>,
+    backend: crate::runtime::BackendKind,
 ) -> Result<Option<ace_step::LmOutput>, crate::weights::WeightError> {
     match family {
-        "ace_step" => Ok(Some(ace_step::run_lm(bundle, request)?)),
+        "ace_step" => Ok(Some(ace_step::run_lm(
+            bundle,
+            request,
+            backend,
+            &mut |_, _| (),
+        )?)),
         _ => Ok(None),
     }
 }
 
+#[cfg(test)]
 pub(crate) fn ace_step_read_wav(
     bytes: &[u8],
 ) -> Result<(Vec<f32>, u32), crate::weights::WeightError> {

@@ -6,7 +6,7 @@
 //! The result is truncated to [`MAX_LENGTH`]. The 34-token prefix drop happens
 //! after the text tower, on the hidden states.
 
-use super::text::{MAX_LENGTH, PROMPT_TEMPLATE};
+use super::text::{EDIT_TEMPLATE, MAX_LENGTH, PROMPT_TEMPLATE};
 use crate::common::bpe::{self, byte_token};
 use crate::weights::WeightError;
 use serde_json::Value;
@@ -14,6 +14,65 @@ use std::collections::HashMap;
 use std::path::Path;
 
 pub fn prompt_ids(bundle: &Path, prompt: &str, vocab_size: i64) -> Result<Vec<i32>, WeightError> {
+    let (vocab, ranks, specials) = load_tokenizer(bundle)?;
+    let filled = PROMPT_TEMPLATE.replacen("{}", prompt, 1);
+    let mut ids = bpe::encode(&filled, &vocab, &ranks, &specials, vocab_size)?;
+    if ids.len() > MAX_LENGTH {
+        ids.truncate(MAX_LENGTH);
+    }
+    Ok(ids)
+}
+
+/// Edit prompt (main `QwenVisionLanguageTokenizer`, single picture). The
+/// `<|image_pad|>` marker is repeated `image_tokens` times inside
+/// `Picture 1: <|vision_start|>…<|vision_end|>`. Returns the token ids and the
+/// indices of the pad run, where vision embeddings are injected.
+pub fn edit_prompt_ids(
+    bundle: &Path,
+    prompt: &str,
+    image_tokens: usize,
+    vocab_size: i64,
+) -> Result<(Vec<i32>, Vec<i64>), WeightError> {
+    if image_tokens == 0 {
+        return Err(WeightError::NotBuilt(
+            "qwen edit vision grid has no image tokens".into(),
+        ));
+    }
+    let (vocab, ranks, specials) = load_tokenizer(bundle)?;
+    let pad_id = specials
+        .iter()
+        .find(|(token, _)| token == "<|image_pad|>")
+        .map(|(_, id)| *id)
+        .ok_or_else(|| {
+            WeightError::NotBuilt("Qwen2.5-VL tokenizer is missing <|image_pad|>".into())
+        })?;
+    let user = format!(
+        "Picture 1: <|vision_start|>{pads}<|vision_end|>{prompt}",
+        pads = "<|image_pad|>".repeat(image_tokens),
+    );
+    let filled = EDIT_TEMPLATE.replacen("{}", &user, 1);
+    let ids = bpe::encode(&filled, &vocab, &ranks, &specials, vocab_size)?;
+    let positions: Vec<i64> = ids
+        .iter()
+        .enumerate()
+        .filter(|(_, id)| **id == pad_id)
+        .map(|(index, _)| index as i64)
+        .collect();
+    if positions.len() != image_tokens {
+        return Err(WeightError::NotBuilt(format!(
+            "qwen edit expected {image_tokens} <|image_pad|> tokens, tokenized {}",
+            positions.len()
+        )));
+    }
+    Ok((ids, positions))
+}
+
+type MergeRanks = HashMap<(String, String), usize>;
+type Specials = Vec<(String, i32)>;
+
+fn load_tokenizer(
+    bundle: &Path,
+) -> Result<(HashMap<String, i32>, MergeRanks, Specials), WeightError> {
     let root = bundle.join("tokenizer");
     let vocab_path = root.join("vocab.json");
     let merges_path = root.join("merges.txt");
@@ -42,12 +101,7 @@ pub fn prompt_ids(bundle: &Path, prompt: &str, vocab_size: i64) -> Result<Vec<i3
             )));
         }
     }
-    let filled = PROMPT_TEMPLATE.replacen("{}", prompt, 1);
-    let mut ids = bpe::encode(&filled, &vocab, &ranks, &specials, vocab_size)?;
-    if ids.len() > MAX_LENGTH {
-        ids.truncate(MAX_LENGTH);
-    }
-    Ok(ids)
+    Ok((vocab, ranks, specials))
 }
 
 fn vocab_map(value: &Value) -> Result<HashMap<String, i32>, WeightError> {

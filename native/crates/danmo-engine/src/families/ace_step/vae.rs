@@ -12,9 +12,8 @@
 //! load fuses to graph inputs. Smoke / layout-only bundles may ship pre-fused
 //! `*.weight` tensors (F32 or F16) plus raw snake `alpha` / `beta` (exp applied at load).
 
-use crate::runtime::{shape, GraphBuilder, GgmlContext, ReusedGraph, Tensor, TYPE_F16, TYPE_F32};
+use crate::runtime::{shape, GgmlContext, GraphBuilder, ReusedGraph, Tensor, TYPE_F16, TYPE_F32};
 use crate::weights::{GgufWeights, WeightError};
-use danmo_ggml_sys as g;
 
 pub const LATENT_CHANNELS: i64 = 64;
 pub const AUDIO_UPSAMPLE: i64 = 1920;
@@ -268,7 +267,11 @@ pub(crate) struct AceVaeSession {
 }
 
 impl AceVaeSession {
-    pub(crate) fn build(ctx: &GgmlContext, config: AceVaeConfig, frames: i64) -> Result<Self, WeightError> {
+    pub(crate) fn build(
+        ctx: &GgmlContext,
+        config: AceVaeConfig,
+        frames: i64,
+    ) -> Result<Self, WeightError> {
         let mut builder = ctx
             .builder(GRAPH_MEM)
             .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
@@ -380,7 +383,11 @@ fn declare_weights(b: &mut GraphBuilder, config: AceVaeConfig) -> Result<VaeWeig
             true,
         );
         let ctb = b.tensor_1d(&format!("{p}.conv_t1.bias"), TYPE_F32, oc, true);
-        let mut ru = [res_unit_placeholder(), res_unit_placeholder(), res_unit_placeholder()];
+        let mut ru = [
+            res_unit_placeholder(),
+            res_unit_placeholder(),
+            res_unit_placeholder(),
+        ];
         for (r_idx, dil) in RES_DILATIONS.iter().enumerate() {
             let r = r_idx + 1;
             let ru_p = format!("{p}.res_unit{r}");
@@ -567,7 +574,12 @@ pub fn load_weights(
     Ok(())
 }
 
-fn load_bias(session: &mut AceVaeSession, weights: &GgufWeights, name: &str, len: i64) -> Result<(), WeightError> {
+fn load_bias(
+    session: &mut AceVaeSession,
+    weights: &GgufWeights,
+    name: &str,
+    len: i64,
+) -> Result<(), WeightError> {
     let data = weights.f32_widened(name, &[len])?;
     session.set_f32(name, &data)
 }
@@ -719,15 +731,7 @@ pub(crate) fn fuse_weight_norm(
 }
 
 pub(crate) fn f32_row_to_f16(src: &[f32], dst_bytes: &mut [u8]) {
-    debug_assert_eq!(src.len() * 2, dst_bytes.len());
-    let mut f16 = vec![0u16; src.len()];
-    unsafe {
-        g::ggml_fp32_to_fp16_row(src.as_ptr(), f16.as_mut_ptr(), src.len() as i64);
-    }
-    for (i, v) in f16.iter().enumerate() {
-        dst_bytes[i * 2] = (v & 0xff) as u8;
-        dst_bytes[i * 2 + 1] = (v >> 8) as u8;
-    }
+    crate::weights::f32_row_to_f16(src, dst_bytes)
 }
 
 /// Zero fused weights + neutral snake for layout-only smoke runs (no GGUF file).
@@ -777,7 +781,9 @@ mod tests {
     fn published_layout_lists_decoder_blocks() {
         let rows = weight_layout(AceVaeConfig::published());
         assert!(rows.iter().any(|r| r.name == "decoder.conv1.weight_v"));
-        assert!(rows.iter().any(|r| r.name == "decoder.block.4.res_unit3.conv2.weight_v"));
+        assert!(rows
+            .iter()
+            .any(|r| r.name == "decoder.block.4.res_unit3.conv2.weight_v"));
         assert_eq!(
             rows.iter()
                 .find(|r| r.name == "decoder.conv1.weight_g")
@@ -845,7 +851,11 @@ mod tests {
             .collect();
         let tensors: Vec<F32Nd<'_>> = owned
             .iter()
-            .map(|(name, ne, data)| F32Nd { name, ne: *ne, data })
+            .map(|(name, ne, data)| F32Nd {
+                name,
+                ne: *ne,
+                data,
+            })
             .collect();
         write_f32_nd(&dir.join("vae-smoke.gguf"), &tensors).unwrap();
         let weights = GgufWeights::open(&dir.join("vae-smoke.gguf")).unwrap();

@@ -25,7 +25,6 @@ pub fn pad_len(len: i64, multiple: i64) -> i64 {
 }
 
 /// Tongyi `int(dim / 3 * 8)`. At dim 3840 this is 10240.
-#[cfg(test)]
 pub fn ffn_hidden(dim: i64) -> i64 {
     (dim as f64 / 3.0 * 8.0) as i64
 }

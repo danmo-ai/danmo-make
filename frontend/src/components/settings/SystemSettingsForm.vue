@@ -171,9 +171,29 @@ function closeRevealDialog() {
   revealOpen.value = false;
 }
 
+type BackendHealth = {
+  backend: string;
+  backend_selection: string;
+  backend_probe?: string | null;
+};
+
+const backendHealth = ref<BackendHealth | null>(null);
+
+async function loadBackendHealth() {
+  backendHealth.value = (await api.system.health()) as BackendHealth;
+}
+
 onMounted(() => {
   void registryStore.load();
+  if (props.activeSection === 'systeminfo') void loadBackendHealth();
 });
+
+watch(
+  () => props.activeSection,
+  (section) => {
+    if (section === 'systeminfo') void loadBackendHealth();
+  },
+);
 
 function hasLlmChatAction(actions: unknown): boolean {
   if (!actions || typeof actions !== 'object') return false;
@@ -624,6 +644,24 @@ watch(
           <DqButton type="primary" @click="closeRevealDialog">{{ $t('settings.accessKeyDone') }}</DqButton>
         </template>
       </DqDialog>
+    </template>
+
+    <!-- System info -->
+    <template v-if="props.activeSection === 'systeminfo'">
+      <section class="settings-group-block">
+        <h2 class="settings-section-title">{{ $t('settings.systeminfo') }}</h2>
+        <DqPrefPane class="settings-grouped-form settings-pref-pane-form settings-pref-pane-form--system">
+          <DqPrefRow :label="$t('settings.backend')">
+            <DqText>{{ backendHealth?.backend || '—' }}</DqText>
+          </DqPrefRow>
+          <DqPrefRow :label="$t('settings.backendSelection')">
+            <DqText>{{ backendHealth?.backend_selection || '—' }}</DqText>
+          </DqPrefRow>
+          <DqPrefRow v-if="backendHealth?.backend_probe" :label="$t('settings.backendProbe')">
+            <DqText>{{ backendHealth.backend_probe }}</DqText>
+          </DqPrefRow>
+        </DqPrefPane>
+      </section>
     </template>
 
     <!-- Maintenance -->

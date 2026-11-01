@@ -22,6 +22,13 @@ const RMS_EPS: f32 = 1e-6;
 /// Hardcoded Qwen-Image create template from main `QwenImageTextEncoder`.
 pub const PROMPT_TEMPLATE: &str = "<|im_start|>system\nDescribe the image by detailing the color, shape, size, texture, quantity, text, spatial relationships of the objects and background:<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n";
 
+/// Edit template from main `QwenVisionLanguageTokenizer` with
+/// `use_picture_prefix=True`. The `{}` is
+/// `Picture 1: <|vision_start|><|image_pad|><|vision_end|>` plus the prompt.
+/// The hidden-state trim drops [`EDIT_DROP_IDX`] tokens.
+pub const EDIT_TEMPLATE: &str = "<|im_start|>system\nDescribe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n";
+pub const EDIT_DROP_IDX: usize = 64;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Qwen25VlConfig {
     pub vocab: i64,
@@ -78,6 +85,14 @@ impl Qwen25VlConfig {
             intermediate: 8,
             rope_theta: 1_000_000.0,
             mrope: [1, 0, 0],
+        }
+    }
+
+    /// Create smoke plus the three vision specials the edit prompt needs.
+    pub fn edit_smoke() -> Self {
+        Self {
+            vocab: 261,
+            ..Self::create_smoke()
         }
     }
 }
@@ -138,6 +153,15 @@ pub fn trim_system_prefix(
     width: usize,
     valid: usize,
 ) -> Result<Vec<f32>, RuntimeError> {
+    trim_prefix(hidden, width, valid, DROP_IDX)
+}
+
+pub fn trim_prefix(
+    hidden: &[f32],
+    width: usize,
+    valid: usize,
+    drop_idx: usize,
+) -> Result<Vec<f32>, RuntimeError> {
     if width == 0 || hidden.len() % width != 0 {
         return Err(RuntimeError::Message(
             "text hidden width does not divide the buffer".into(),
@@ -149,13 +173,13 @@ pub fn trim_system_prefix(
             "text valid length {valid} is past the sequence {seq}"
         )));
     }
-    if valid <= DROP_IDX {
+    if valid <= drop_idx {
         return Err(RuntimeError::Message(format!(
-            "prompt is shorter than the {DROP_IDX}-token system prefix"
+            "prompt is shorter than the {drop_idx}-token system prefix"
         )));
     }
-    let mut out = Vec::with_capacity(width * (valid - DROP_IDX));
-    for token in DROP_IDX..valid {
+    let mut out = Vec::with_capacity(width * (valid - drop_idx));
+    for token in drop_idx..valid {
         let start = token * width;
         out.extend_from_slice(&hidden[start..start + width]);
     }
@@ -226,6 +250,15 @@ impl TextForward {
         config: Qwen25VlConfig,
         seq: i64,
     ) -> Result<Self, RuntimeError> {
+        Self::build_with_vision(ctx, config, seq, None)
+    }
+
+    pub fn build_with_vision(
+        ctx: &crate::runtime::GgmlContext,
+        config: Qwen25VlConfig,
+        seq: i64,
+        vision: Option<(i64, i64)>,
+    ) -> Result<Self, RuntimeError> {
         if seq < 1 {
             return Err(RuntimeError::Message("text sequence is empty".into()));
         }
@@ -241,7 +274,7 @@ impl TextForward {
             ));
         }
         let mut builder = ctx.builder(32 * 1024 * 1024)?;
-        let output = build_tower(&mut builder, config, seq)?;
+        let output = build_tower(&mut builder, config, seq, vision)?;
         let graph = builder.finish(output)?;
         Ok(Self {
             graph,
@@ -279,12 +312,33 @@ impl TextForward {
         }
         Ok(out)
     }
+
+    pub fn compute_with_vision(
+        &mut self,
+        ids: &[i32],
+        mask: &[f32],
+        vision: &[f32],
+        positions: &[i64],
+    ) -> Result<Vec<f32>, RuntimeError> {
+        if vision.len() != positions.len() * self.hidden as usize {
+            return Err(RuntimeError::Message(format!(
+                "vision embedding length {} is not positions {} × hidden {}",
+                vision.len(),
+                positions.len(),
+                self.hidden
+            )));
+        }
+        self.graph.set_f32("vision", vision)?;
+        self.graph.set_i64("vision_positions", positions)?;
+        self.compute(ids, mask)
+    }
 }
 
 fn build_tower(
     b: &mut GraphBuilder,
     config: Qwen25VlConfig,
     seq: i64,
+    vision: Option<(i64, i64)>,
 ) -> Result<Tensor, RuntimeError> {
     let mut weights = HashMap::new();
     for (name, ne0, ne1) in text_layout(config) {
@@ -298,6 +352,11 @@ fn build_tower(
     let pos = nn(b.i32_1d("positions", seq, true))?;
     let mask = nn(b.f32_2d("attn_mask", seq, seq, true))?;
     let mut hidden = nn(b.get_rows(wt(&weights, "model.embed_tokens.weight")?, token_ids))?;
+    if let Some((tokens, positions)) = vision {
+        let embeddings = nn(b.f32_2d("vision", config.hidden, tokens, true))?;
+        let positions = nn(b.i64_1d("vision_positions", positions, true))?;
+        hidden = nn(b.set_rows(hidden, embeddings, positions))?;
+    }
     for layer in 0..config.layers {
         hidden = block(b, &weights, config, layer, hidden, pos, mask, seq)?;
     }
@@ -444,6 +503,7 @@ pub fn config_from_weights(
     for candidate in [
         Qwen25VlConfig::published(),
         Qwen25VlConfig::create_smoke(),
+        Qwen25VlConfig::edit_smoke(),
         Qwen25VlConfig::smoke(),
     ] {
         if layout_matches(weights, candidate) {
@@ -492,6 +552,52 @@ pub fn encode(
         &hidden,
         config.hidden as usize,
         ids.len(),
+    )?)
+}
+
+pub fn encode_with_vision(
+    ctx: &crate::runtime::GgmlContext,
+    weights: &crate::weights::GgufWeights,
+    config: Qwen25VlConfig,
+    ids: &[i32],
+    vision: &[f32],
+    positions: &[i64],
+) -> Result<Vec<f32>, crate::weights::WeightError> {
+    if ids.is_empty() || positions.is_empty() {
+        return Err(crate::weights::WeightError::NotBuilt(
+            "qwen edit prompt or vision positions are empty".into(),
+        ));
+    }
+    if !layout_matches(weights, config) {
+        return Err(crate::weights::WeightError::NotBuilt(
+            "Qwen2.5-VL text encoder layout does not match the tower config".into(),
+        ));
+    }
+    let seq = ids.len() as i64;
+    let mut tower = TextForward::build_with_vision(
+        ctx,
+        config,
+        seq,
+        Some((positions.len() as i64, positions.len() as i64)),
+    )?;
+    for (name, ne0, ne1) in text_layout(config) {
+        let data = weights.f32_widened(&name, &[ne0, ne1])?;
+        tower.load_f32(&name, &data)?;
+    }
+    let mut mask = vec![0f32; (seq * seq) as usize];
+    for q in 0..seq {
+        for k in 0..seq {
+            if k > q {
+                mask[(k + q * seq) as usize] = f32::NEG_INFINITY;
+            }
+        }
+    }
+    let hidden = tower.compute_with_vision(ids, &mask, vision, positions)?;
+    Ok(trim_prefix(
+        &hidden,
+        config.hidden as usize,
+        ids.len(),
+        EDIT_DROP_IDX,
     )?)
 }
 
@@ -778,6 +884,28 @@ mod tests {
             seq,
             None,
         )
+    }
+
+    #[test]
+    fn vision_is_injected_before_the_text_layers() {
+        let config = Qwen25VlConfig::smoke();
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let mut tower = TextForward::build_with_vision(&ctx, config, 2, Some((1, 1))).unwrap();
+        for (name, ne0, ne1) in text_layout(config) {
+            let data = if name == "model.norm.weight" {
+                vec![1.0; (ne0 * ne1) as usize]
+            } else {
+                vec![0.0; (ne0 * ne1) as usize]
+            };
+            tower.load_f32(&name, &data).unwrap();
+        }
+        let got = tower
+            .compute_with_vision(&[0, 0], &[0.0; 4], &[1.0; 8], &[0])
+            .unwrap();
+        for (index, value) in got.iter().enumerate() {
+            let expected = if index < 8 { 1.0 } else { 0.0 };
+            assert!((value - expected).abs() < 1e-5, "index {index}: {value}");
+        }
     }
 
     fn host_rope(x: &[f32], head: usize, heads: usize, seq: usize, theta: f32) -> Vec<f32> {

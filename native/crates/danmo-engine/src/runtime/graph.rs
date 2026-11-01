@@ -1,9 +1,9 @@
 //! Graph construction. Raw ggml operators are called from this file.
 
-use super::{RuntimeError, Tensor, TYPE_F16};
+use super::{BackendKind, RuntimeError, Tensor, TYPE_F16};
 use danmo_ggml_sys as g;
 use std::collections::HashMap;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 
 struct SideResidual {
     a: Tensor,
@@ -17,6 +17,7 @@ const GRAPH_NODES: usize = 20480;
 pub struct GraphBuilder {
     backend: g::ggml_backend_t,
     buft: g::ggml_backend_buffer_type_t,
+    kind: BackendKind,
     ctx: *mut g::ggml_context,
     inputs: Vec<NamedTensor>,
     sides: HashMap<usize, Vec<SideResidual>>,
@@ -31,6 +32,7 @@ impl GraphBuilder {
     pub(crate) fn new(
         backend: g::ggml_backend_t,
         buft: g::ggml_backend_buffer_type_t,
+        kind: BackendKind,
         mem_size: usize,
     ) -> Result<Self, RuntimeError> {
         let params = g::ggml_init_params {
@@ -45,6 +47,7 @@ impl GraphBuilder {
         Ok(Self {
             backend,
             buft,
+            kind,
             ctx,
             inputs: Vec::new(),
             sides: HashMap::new(),
@@ -127,6 +130,10 @@ impl GraphBuilder {
 
     pub fn mul_mat(&self, a: *mut g::ggml_tensor, b: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
         unsafe { g::ggml_mul_mat(self.ctx, a, b) }
+    }
+
+    pub fn supports(&self, tensor: *mut g::ggml_tensor) -> bool {
+        unsafe { g::ggml_backend_supports_op(self.backend, tensor) }
     }
 
     /// `Wx`, plus `scale * B(Ax)` for every factor attached to `weight`.
@@ -340,6 +347,56 @@ impl GraphBuilder {
         unsafe { g::ggml_view_1d(self.ctx, a, ne0, offset) }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn view_4d(
+        &self,
+        a: *mut g::ggml_tensor,
+        ne0: i64,
+        ne1: i64,
+        ne2: i64,
+        ne3: i64,
+        nb1: usize,
+        nb2: usize,
+        nb3: usize,
+        offset: usize,
+    ) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_view_4d(self.ctx, a, ne0, ne1, ne2, ne3, nb1, nb2, nb3, offset) }
+    }
+
+    /// `ggml_set`: copy `b` into a strided view of `a`. Returns `a`.
+    pub fn set(
+        &self,
+        a: *mut g::ggml_tensor,
+        b: *mut g::ggml_tensor,
+        nb1: usize,
+        nb2: usize,
+        nb3: usize,
+        offset: usize,
+    ) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_set(self.ctx, a, b, nb1, nb2, nb3, offset) }
+    }
+
+    pub fn repeat_4d(
+        &self,
+        a: *mut g::ggml_tensor,
+        ne0: i64,
+        ne1: i64,
+        ne2: i64,
+        ne3: i64,
+    ) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_repeat_4d(self.ctx, a, ne0, ne1, ne2, ne3) }
+    }
+
+    /// Shape carrier for `ggml_set` chains. Not an input; fully overwritten.
+    pub fn blank_f32_3d(&self, ne0: i64, ne1: i64, ne2: i64) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_new_tensor_3d(self.ctx, g::ggml_type_GGML_TYPE_F32, ne0, ne1, ne2) }
+    }
+
+    /// Shape carrier. Not an input; its values are never read.
+    pub fn blank_f32_4d(&self, ne0: i64, ne1: i64, ne2: i64, ne3: i64) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_new_tensor_4d(self.ctx, g::ggml_type_GGML_TYPE_F32, ne0, ne1, ne2, ne3) }
+    }
+
     /// Shape carrier for `ggml_repeat`. Not an input; its values are never read.
     pub fn blank_f32_2d(&self, ne0: i64, ne1: i64) -> *mut g::ggml_tensor {
         unsafe { g::ggml_new_tensor_2d(self.ctx, g::ggml_type_GGML_TYPE_F32, ne0, ne1) }
@@ -472,7 +529,13 @@ impl GraphBuilder {
     }
 
     /// Scatter-add GEMM columns to a 1D signal. `a` is `[K*OC, T_in]`.
-    pub fn col2im_1d(&self, columns: Tensor, stride: i32, out_channels: i32, padding: i32) -> Tensor {
+    pub fn col2im_1d(
+        &self,
+        columns: Tensor,
+        stride: i32,
+        out_channels: i32,
+        padding: i32,
+    ) -> Tensor {
         unsafe { g::ggml_col2im_1d(self.ctx, columns, stride, out_channels, padding) }
     }
 
@@ -623,6 +686,28 @@ impl GraphBuilder {
                 return Err(RuntimeError::Init);
             }
             g::ggml_build_forward_expand(graph, output);
+            // Check every node is supported by this backend before we commit to it.
+            // Metal aborts on unsupported ops; fail loud here instead.
+            let n = g::ggml_graph_n_nodes(graph);
+            for i in 0..n {
+                let node = g::ggml_graph_node(graph, i);
+                if node.is_null() {
+                    continue;
+                }
+                if !g::ggml_backend_supports_op(self.backend, node) {
+                    let op = (*node).op;
+                    let name_ptr = (*node).name.as_ptr();
+                    let name = if name_ptr.is_null() {
+                        "unnamed".to_string()
+                    } else {
+                        CStr::from_ptr(name_ptr).to_string_lossy().into_owned()
+                    };
+                    g::ggml_free(self.ctx);
+                    return Err(RuntimeError::Message(format!(
+                        "backend does not support op {op} ({name})"
+                    )));
+                }
+            }
             // Gallocr reuses an input after its last reader. The next compute
             // would then see activations where the weights were. Inputs stay
             // in their own buffer for every replay.
@@ -657,18 +742,21 @@ impl GraphBuilder {
                 g::ggml_free(self.ctx);
                 return Err(RuntimeError::Reserve);
             }
-            Ok(ReusedGraph {
+            let graph = ReusedGraph {
                 ctx: self.ctx,
                 graph,
                 galloc,
                 inputs_buffer,
                 backend: self.backend,
+                kind: self.kind,
                 buft: self.buft,
                 inputs: self.inputs,
                 output,
                 computes: 0,
                 readbacks: 0,
-            })
+            };
+            super::capacity::register(graph.graph as usize, graph.kind, graph.compute_bytes());
+            Ok(graph)
         }
     }
 }
@@ -679,6 +767,7 @@ pub struct ReusedGraph {
     galloc: g::ggml_gallocr_t,
     inputs_buffer: g::ggml_backend_buffer_t,
     backend: g::ggml_backend_t,
+    kind: BackendKind,
     buft: g::ggml_backend_buffer_type_t,
     inputs: Vec<NamedTensor>,
     output: *mut g::ggml_tensor,
@@ -736,6 +825,17 @@ fn align_up(value: usize, align: usize) -> usize {
 }
 
 impl ReusedGraph {
+    pub fn compute_bytes(&self) -> usize {
+        unsafe {
+            g::ggml_gallocr_get_buffer_size(self.galloc, 0)
+                + if self.inputs_buffer.is_null() {
+                    0
+                } else {
+                    g::ggml_backend_buffer_get_size(self.inputs_buffer)
+                }
+        }
+    }
+
     pub fn compute_count(&self) -> u32 {
         self.computes
     }
@@ -762,7 +862,7 @@ impl ReusedGraph {
 
     /// Another graph on the same ggml device. Used for the step that stays resident.
     pub fn child(&self, mem_size: usize) -> Result<GraphBuilder, RuntimeError> {
-        GraphBuilder::new(self.backend, self.buft, mem_size)
+        GraphBuilder::new(self.backend, self.buft, self.kind, mem_size)
     }
 
     pub fn set_bytes(&self, name: &str, data: &[u8]) -> Result<(), RuntimeError> {
@@ -932,6 +1032,7 @@ pub fn shape(tensor: Tensor) -> [i64; 4] {
 
 impl Drop for ReusedGraph {
     fn drop(&mut self) {
+        super::capacity::unregister(self.graph as usize);
         unsafe {
             g::ggml_gallocr_free(self.galloc);
             if !self.inputs_buffer.is_null() {

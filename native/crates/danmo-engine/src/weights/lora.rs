@@ -43,12 +43,15 @@ pub(crate) fn resolve_lora_key(
 ) -> Result<(String, Part), WeightError> {
     let (module, part) = split_lora_suffix(key)?;
     let module = strip_wrappers(&module);
-    if names.contains(&module) {
-        return Ok((module, part));
-    }
-    let weighted = format!("{module}.weight");
-    if names.contains(&weighted) {
-        return Ok((weighted, part));
+    for candidate in [
+        module.clone(),
+        format!("{module}.weight"),
+        format!("decoder.{module}"),
+        format!("decoder.{module}.weight"),
+    ] {
+        if names.contains(&candidate) {
+            return Ok((candidate, part));
+        }
     }
     Err(WeightError::NotBuilt(format!(
         "lora {key} targets {module}, which is not a graph parameter"
@@ -59,6 +62,19 @@ pub fn load_lora_factors(
     files: &[LoraFile],
     layout: &[(String, i64, i64)],
 ) -> Result<Vec<LoraFactor>, WeightError> {
+    load_lora_factors_with_default_alpha(files, layout, None)
+}
+
+pub fn load_lora_factors_with_default_alpha(
+    files: &[LoraFile],
+    layout: &[(String, i64, i64)],
+    default_alpha: Option<f32>,
+) -> Result<Vec<LoraFactor>, WeightError> {
+    if default_alpha.is_some_and(|alpha| !alpha.is_finite()) {
+        return Err(WeightError::NotBuilt(
+            "lora default alpha is not a finite number".into(),
+        ));
+    }
     let names: HashSet<String> = layout.iter().map(|(name, _, _)| name.clone()).collect();
     let shapes: HashMap<&str, (i64, i64)> = layout
         .iter()
@@ -72,7 +88,7 @@ pub fn load_lora_factors(
                 file.id
             )));
         }
-        factors.extend(load_file(file, &names, &shapes)?);
+        factors.extend(load_file(file, &names, &shapes, default_alpha)?);
     }
     Ok(factors)
 }
@@ -109,6 +125,7 @@ fn load_file(
     file: &LoraFile,
     names: &HashSet<String>,
     shapes: &HashMap<&str, (i64, i64)>,
+    default_alpha: Option<f32>,
 ) -> Result<Vec<LoraFactor>, WeightError> {
     let weights = GgufWeights::open(&file.path)
         .map_err(|err| WeightError::NotBuilt(format!("lora {}: {err}", file.id)))?;
@@ -173,7 +190,7 @@ fn load_file(
             });
         }
         let rank = down.ne1;
-        let alpha = group.alpha.unwrap_or(rank as f32);
+        let alpha = group.alpha.or(default_alpha).unwrap_or(rank as f32);
         if !alpha.is_finite() {
             return Err(WeightError::NotBuilt(format!(
                 "lora {target} alpha is not a finite number"
@@ -274,9 +291,11 @@ fn strip_wrappers(module: &str) -> String {
     }
     for prefix in [
         "pipe.transformer.",
+        "pipe.dit.",
         "z_image_transformer.",
         "diffusion_model.",
         "transformer.",
+        "dit.",
         "model.",
         "base_model.model.",
     ] {
@@ -294,7 +313,9 @@ fn strip_wrappers(module: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_lora_factors, resolve_lora_key, LoraFile, Part};
+    use super::{
+        load_lora_factors, load_lora_factors_with_default_alpha, resolve_lora_key, LoraFile, Part,
+    };
     use crate::weights::{write_safetensors, SafeTensor};
     use std::collections::HashSet;
 
@@ -323,6 +344,48 @@ mod tests {
         assert_eq!(part, Part::Up);
         let (target, _) = resolve_lora_key("base_model.model.img_in.lora_A", &names()).unwrap();
         assert_eq!(target, "img_in.weight");
+    }
+
+    #[test]
+    fn ace_prefixes_and_default_alpha_match_main() {
+        let dir = std::env::temp_dir().join(format!("danmo-ace-lora-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ace.safetensors");
+        let down = f32_bytes(&[1.0, 0.0, 0.0, 1.0]);
+        write_safetensors(
+            &path,
+            &[
+                SafeTensor {
+                    name: "pipe.dit.layers.0.self_attn.q_proj.lora_A.weight",
+                    dtype: "F32",
+                    shape: &[1, 4],
+                    data: &down,
+                },
+                SafeTensor {
+                    name: "pipe.dit.layers.0.self_attn.q_proj.lora_B.weight",
+                    dtype: "F32",
+                    shape: &[4, 1],
+                    data: &down,
+                },
+            ],
+        )
+        .unwrap();
+        let layout = [("decoder.layers.0.self_attn.q_proj.weight".into(), 4, 4)];
+        let factors = load_lora_factors_with_default_alpha(
+            &[LoraFile {
+                id: "ace".into(),
+                path,
+                weight: 0.5,
+            }],
+            &layout,
+            Some(128.0),
+        )
+        .unwrap();
+        assert_eq!(factors.len(), 1);
+        assert_eq!(factors[0].target, layout[0].0);
+        assert_eq!(factors[0].scale, 64.0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -129,18 +129,35 @@ fn merge_chat_template(
 
 /// Encode `prompt` as raw BPE text (no ChatML wrap). Used by ACE-Step
 /// Embedding prompts that already contain `<|endoftext|>`.
+///
+/// Parses `json` on every call. Callers that encode many strings should
+/// [`parse_tokenizer_json`] once and use [`tokenize_plain_parsed`].
 pub(crate) fn tokenize_plain(
     json: &str,
     prompt: &str,
     vocab_size: i64,
 ) -> Result<Vec<i32>, WeightError> {
-    let value: Value = serde_json::from_str(json)
-        .map_err(|err| WeightError::NotBuilt(format!("tokenizer.json is not json: {err}")))?;
+    let value = parse_tokenizer_json(json)?;
+    tokenize_plain_parsed(&value, prompt, vocab_size)
+}
+
+/// Parse `tokenizer.json` once so repeated encodes do not re-read the file.
+pub(crate) fn parse_tokenizer_json(json: &str) -> Result<Value, WeightError> {
+    serde_json::from_str(json)
+        .map_err(|err| WeightError::NotBuilt(format!("tokenizer.json is not json: {err}")))
+}
+
+/// [`tokenize_plain`] without the JSON parse.
+pub(crate) fn tokenize_plain_parsed(
+    value: &Value,
+    prompt: &str,
+    vocab_size: i64,
+) -> Result<Vec<i32>, WeightError> {
     if value.get("encoding").and_then(|item| item.as_str()) == Some("bytes") {
         return tokenize_bytes(prompt, vocab_size);
     }
     if value.get("model").is_some() {
-        return tokenize_bpe(&value, prompt, vocab_size, false, false, 2048);
+        return tokenize_bpe(value, prompt, vocab_size, false, false, 2048);
     }
     Err(WeightError::NotBuilt(
         "plain tokenize needs a BPE tokenizer.json".into(),
@@ -733,7 +750,7 @@ mod tests {
     #[test]
     fn published_klein_tokenizer_wraps_a_prompt() {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../models/flux2-klein-4b/q4_k");
+            .join("../../../models/Image/flux2-klein-4b/q4_k");
         if !root.join("tokenizer/tokenizer.json").is_file() {
             return;
         }
