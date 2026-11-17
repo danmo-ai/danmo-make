@@ -10,17 +10,25 @@ use crate::stream::Stream;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dtype {
     Float32,
-    Int32,
+    Float16,
     BFloat16,
+    Int32,
+    UInt32,
 }
 
 impl Dtype {
     pub(crate) fn raw(self) -> sys::mlx_dtype {
         match self {
             Self::Float32 => sys::mlx_dtype__MLX_FLOAT32,
-            Self::Int32 => sys::mlx_dtype__MLX_INT32,
+            Self::Float16 => sys::mlx_dtype__MLX_FLOAT16,
             Self::BFloat16 => sys::mlx_dtype__MLX_BFLOAT16,
+            Self::Int32 => sys::mlx_dtype__MLX_INT32,
+            Self::UInt32 => sys::mlx_dtype__MLX_UINT32,
         }
+    }
+
+    pub fn is_floating(self) -> bool {
+        matches!(self, Self::Float32 | Self::Float16 | Self::BFloat16)
     }
 }
 
@@ -110,15 +118,20 @@ impl Array {
 
     pub fn dtype(&self) -> Dtype {
         let raw = unsafe { sys::mlx_array_dtype(self.raw) };
-        if raw == sys::mlx_dtype__MLX_FLOAT32 {
-            Dtype::Float32
-        } else if raw == sys::mlx_dtype__MLX_INT32 {
-            Dtype::Int32
-        } else if raw == sys::mlx_dtype__MLX_BFLOAT16 {
-            Dtype::BFloat16
-        } else {
-            panic!("unsupported probe dtype {raw}")
-        }
+        [
+            Dtype::Float32,
+            Dtype::Float16,
+            Dtype::BFloat16,
+            Dtype::Int32,
+            Dtype::UInt32,
+        ]
+        .into_iter()
+        .find(|dtype| dtype.raw() == raw)
+        .unwrap_or_else(|| panic!("unsupported MLX dtype {raw}"))
+    }
+
+    pub fn nbytes(&self) -> usize {
+        unsafe { sys::mlx_array_nbytes(self.raw) }
     }
 
     pub fn eval(&self) -> Result<()> {
@@ -794,10 +807,56 @@ impl Array {
     }
 }
 
+#[derive(Clone)]
 pub struct QuantizedArray {
     pub weight: Array,
     pub scales: Array,
     pub biases: Array,
+}
+
+impl QuantizedArray {
+    pub fn nbytes(&self) -> usize {
+        self.weight.nbytes() + self.scales.nbytes() + self.biases.nbytes()
+    }
+
+    /// Materializes the dense matrix. Inference must use
+    /// `Array::quantized_matmul`; this exists for parity references.
+    pub fn dequantize(&self, group_size: i32, bits: i32, stream: &Stream) -> Result<Array> {
+        let mut output = Array::empty()?;
+        let mode = CString::new("affine").unwrap();
+        let global_scale = sys::mlx_array {
+            ctx: std::ptr::null_mut(),
+        };
+        let dtype = sys::mlx_optional_dtype {
+            value: self.scales.dtype().raw(),
+            has_value: false,
+        };
+        clear_error();
+        check(
+            unsafe {
+                sys::mlx_dequantize(
+                    &mut output.raw,
+                    self.weight.raw,
+                    self.scales.raw,
+                    self.biases.raw,
+                    sys::mlx_optional_int {
+                        value: group_size,
+                        has_value: true,
+                    },
+                    sys::mlx_optional_int {
+                        value: bits,
+                        has_value: true,
+                    },
+                    mode.as_ptr(),
+                    global_scale,
+                    dtype,
+                    stream.raw,
+                )
+            },
+            "mlx_dequantize",
+        )?;
+        Ok(output)
+    }
 }
 
 pub(crate) struct VectorArray {
