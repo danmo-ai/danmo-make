@@ -79,6 +79,31 @@ fn production_families_do_not_call_ggml_directly() {
     }
 }
 
+/// Families and shared layers get MLX weights only from `weights::load_mlx_directory`
+/// and run linears only through `LinearWeight::apply`, so a packed bundle cannot
+/// be re-read or dequantized into a dense resident copy.
+#[test]
+fn mlx_consumers_cannot_bypass_packed_linears() {
+    for directory in ["families", "common", "pipeline", "session", "runtime"] {
+        for path in rust_files(&source_root().join(directory)) {
+            let source = production_source(&path);
+            for forbidden in [
+                "SafeTensors::load",
+                ".dequantize(",
+                "quantize_affine(",
+                "quantized_matmul(",
+                "QuantizedArray",
+            ] {
+                assert!(
+                    !source.contains(forbidden),
+                    "{} uses `{forbidden}`; load through weights::load_mlx_directory and call LinearWeight::apply",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn server_adapter_has_no_family_implementation_types() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../danmo-server/src/engine_host.rs");

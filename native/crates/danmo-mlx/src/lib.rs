@@ -4,6 +4,7 @@ mod device;
 mod error;
 mod executor;
 mod io;
+mod linear;
 mod random;
 mod stream;
 
@@ -14,7 +15,8 @@ pub use compile::{Closure, UnaryClosure};
 pub use device::{Device, DeviceType};
 pub use error::{Error, Result};
 pub use executor::Executor;
-pub use io::SafeTensors;
+pub use io::{save_safetensors, SafeTensors};
+pub use linear::{AffineQuantization, LinearWeight};
 pub use random::RandomKey;
 pub use stream::Stream;
 

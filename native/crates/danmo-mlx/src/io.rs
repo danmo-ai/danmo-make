@@ -66,6 +66,31 @@ impl SafeTensors {
         }
     }
 
+    pub fn metadata(&self, key: &str) -> Result<Option<String>> {
+        let key = CString::new(key)
+            .map_err(|_| Error::new("mlx_map_string_to_string_get", "key contains a null byte"))?;
+        let mut value = std::ptr::null();
+        clear_error();
+        let status =
+            unsafe { sys::mlx_map_string_to_string_get(&mut value, self.metadata, key.as_ptr()) };
+        match status {
+            0 if value.is_null() => Err(Error::new(
+                "mlx_map_string_to_string_get",
+                "returned a null metadata value",
+            )),
+            0 => Ok(Some(
+                unsafe { CStr::from_ptr(value) }
+                    .to_string_lossy()
+                    .into_owned(),
+            )),
+            2 => Ok(None),
+            _ => {
+                check(status, "mlx_map_string_to_string_get")?;
+                unreachable!()
+            }
+        }
+    }
+
     pub fn names(&self) -> Result<Vec<String>> {
         clear_error();
         let iterator = unsafe { sys::mlx_map_string_to_array_iterator_new(self.arrays) };
@@ -112,6 +137,71 @@ impl SafeTensors {
         names.sort();
         Ok(names)
     }
+}
+
+pub fn save_safetensors(
+    path: &Path,
+    tensors: &[(&str, &Array)],
+    metadata: &[(&str, &str)],
+) -> Result<()> {
+    initialize();
+    let path_text = path
+        .to_str()
+        .ok_or_else(|| Error::new("mlx_save_safetensors", "path is not valid UTF-8"))?;
+    let path_c = CString::new(path_text)
+        .map_err(|_| Error::new("mlx_save_safetensors", "path contains a null byte"))?;
+    clear_error();
+    let arrays = check_infallible("mlx_map_string_to_array_new", unsafe {
+        sys::mlx_map_string_to_array_new()
+    })?;
+    clear_error();
+    let strings = match check_infallible("mlx_map_string_to_string_new", unsafe {
+        sys::mlx_map_string_to_string_new()
+    }) {
+        Ok(strings) => strings,
+        Err(error) => {
+            unsafe {
+                let _ = sys::mlx_map_string_to_array_free(arrays);
+            }
+            return Err(error);
+        }
+    };
+    let result = (|| {
+        for (name, tensor) in tensors {
+            let name = CString::new(*name)
+                .map_err(|_| Error::new("mlx_save_safetensors", "name contains a null byte"))?;
+            clear_error();
+            check(
+                unsafe { sys::mlx_map_string_to_array_insert(arrays, name.as_ptr(), tensor.raw) },
+                "mlx_map_string_to_array_insert",
+            )?;
+        }
+        for (key, value) in metadata {
+            let key = CString::new(*key)
+                .map_err(|_| Error::new("mlx_save_safetensors", "key contains a null byte"))?;
+            let value = CString::new(*value)
+                .map_err(|_| Error::new("mlx_save_safetensors", "value contains a null byte"))?;
+            clear_error();
+            check(
+                unsafe {
+                    sys::mlx_map_string_to_string_insert(strings, key.as_ptr(), value.as_ptr())
+                },
+                "mlx_map_string_to_string_insert",
+            )?;
+        }
+        clear_error();
+        check(
+            unsafe { sys::mlx_save_safetensors(path_c.as_ptr(), arrays, strings) },
+            "mlx_save_safetensors",
+        )
+    })();
+    clear_error();
+    unsafe {
+        let _ = sys::mlx_map_string_to_array_free(arrays);
+        let _ = sys::mlx_map_string_to_string_free(strings);
+    }
+    clear_error();
+    result
 }
 
 impl Drop for SafeTensors {

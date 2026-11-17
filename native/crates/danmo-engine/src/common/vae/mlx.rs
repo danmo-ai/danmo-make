@@ -4,12 +4,11 @@ use danmo_mlx::{Array, Error, Result, Stream};
 
 use super::VaeSpec;
 
-pub fn load_dense(directory: &std::path::Path) -> Result<BTreeMap<String, Array>> {
-    let stream = Stream::cpu()?;
-    crate::weights::load_mlx_directory(directory)?
-        .into_iter()
-        .map(|(name, weight)| Ok((name, weight.astype(danmo_mlx::Dtype::Float32, &stream)?)))
-        .collect()
+pub fn load_dense(
+    directory: &std::path::Path,
+    dtype: crate::weights::WeightDtype,
+) -> Result<BTreeMap<String, Array>> {
+    crate::weights::load_mlx_directory(directory, dtype, None)?.into_dense()
 }
 
 pub fn decode(
@@ -326,7 +325,7 @@ mod tests {
         let stream = Stream::gpu().unwrap();
         #[cfg(not(feature = "mlx-metal"))]
         let stream = Stream::cpu().unwrap();
-        let weights = super::load_dense(&root).unwrap();
+        let weights = super::load_dense(&root, crate::weights::WeightDtype::F32).unwrap();
         let spec = VaeSpec {
             latent_channels: payload["latent_channels"].as_i64().unwrap(),
             block_out: payload["block_out"]
@@ -389,7 +388,7 @@ mod tests {
         #[cfg(not(feature = "mlx-metal"))]
         let stream = Stream::cpu().unwrap();
         let started = std::time::Instant::now();
-        let weights = super::load_dense(&vae).unwrap();
+        let weights = super::load_dense(&vae, crate::weights::WeightDtype::F32).unwrap();
         let spec = VaeSpec {
             latent_channels: payload["latent_channels"].as_i64().unwrap(),
             block_out: payload["block_out"]

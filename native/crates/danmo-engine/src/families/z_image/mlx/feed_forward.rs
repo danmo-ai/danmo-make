@@ -1,23 +1,23 @@
-use danmo_mlx::{Array, Result, Stream};
+use danmo_mlx::{Array, LinearWeight, Result, Stream};
 
 pub fn forward(
     input: &Array,
-    w1: &Array,
-    w2: &Array,
-    w3: &Array,
+    w1: &LinearWeight,
+    w2: &LinearWeight,
+    w3: &LinearWeight,
     stream: &Stream,
 ) -> Result<Array> {
-    let gate = Array::linear(input, w1, None, stream)?.silu(stream)?;
-    let projection = Array::linear(input, w3, None, stream)?;
+    let gate = w1.apply(input, None, stream)?.silu(stream)?;
+    let projection = w3.apply(input, None, stream)?;
     let hidden = Array::multiply(&gate, &projection, stream)?;
-    Array::linear(&hidden, w2, None, stream)
+    w2.apply(&hidden, None, stream)
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::host::linear;
     use super::forward;
-    use danmo_mlx::{Array, DeviceType, Result, Stream};
+    use danmo_mlx::{Array, DeviceType, LinearWeight, Result, Stream};
 
     fn probe(device_type: DeviceType) -> Result<()> {
         let stream = match device_type {
@@ -31,9 +31,9 @@ mod tests {
             .collect();
         let w2_values: Vec<f32> = (0..8).map(|index| (index % 3) as f32 * 0.1 - 0.1).collect();
         let input = Array::from_f32_slice(&input_values, &[1, 2, 2])?;
-        let w1 = Array::from_f32_slice(&w1_values, &[4, 2])?;
-        let w2 = Array::from_f32_slice(&w2_values, &[2, 4])?;
-        let w3 = Array::from_f32_slice(&w3_values, &[4, 2])?;
+        let w1 = LinearWeight::dense(Array::from_f32_slice(&w1_values, &[4, 2])?);
+        let w2 = LinearWeight::dense(Array::from_f32_slice(&w2_values, &[2, 4])?);
+        let w3 = LinearWeight::dense(Array::from_f32_slice(&w3_values, &[4, 2])?);
         let output = forward(&input, &w1, &w2, &w3, &stream)?.to_vec_f32(&stream)?;
 
         let gate = linear(&input_values, &w1_values, None, 2, 2, 4);

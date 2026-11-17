@@ -46,6 +46,42 @@ fn safetensors_loads_names_shapes_and_values() {
 }
 
 #[test]
+fn safetensors_round_trip_keeps_packed_dtypes_and_metadata() {
+    let path = scratch_file();
+    let stream = Stream::cpu().unwrap();
+    let values: Vec<f32> = (0..2 * 64).map(|index| index as f32 * 0.01 - 0.5).collect();
+    let dense = danmo_mlx::Array::from_f32_slice(&values, &[2, 64])
+        .unwrap()
+        .astype(danmo_mlx::Dtype::BFloat16, &stream)
+        .unwrap();
+    let packed = dense.quantize_affine(64, 4, &stream).unwrap();
+    danmo_mlx::save_safetensors(
+        &path,
+        &[
+            ("layer.weight", &packed.weight),
+            ("layer.scales", &packed.scales),
+            ("layer.biases", &packed.biases),
+        ],
+        &[("quantization_level", "4")],
+    )
+    .unwrap();
+    let tensors = SafeTensors::load(&path, &stream).unwrap();
+    assert_eq!(
+        tensors.metadata("quantization_level").unwrap().as_deref(),
+        Some("4")
+    );
+    assert!(tensors.metadata("missing").unwrap().is_none());
+    let weight = tensors.get("layer.weight").unwrap().unwrap();
+    assert_eq!(weight.dtype(), danmo_mlx::Dtype::UInt32);
+    assert_eq!(weight.shape(), vec![2, 8]);
+    let scales = tensors.get("layer.scales").unwrap().unwrap();
+    assert_eq!(scales.dtype(), danmo_mlx::Dtype::BFloat16);
+    assert_eq!(scales.shape(), vec![2, 1]);
+    drop(tensors);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn missing_safetensors_fails_loud() {
     let stream = Stream::cpu().unwrap();
     let path = scratch_file();

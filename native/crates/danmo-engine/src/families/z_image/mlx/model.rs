@@ -1,45 +1,29 @@
-use std::collections::BTreeMap;
-
-use danmo_mlx::{Array, Error, Result, Stream};
+use danmo_mlx::{AffineQuantization, Array, Error, LinearWeight, Result, Stream};
 
 use super::super::geom::{self, TokenGrid};
 use super::attention::AttentionWeights;
 use super::blocks::{self, BlockWeights};
 use super::{modulation, timestep, MlxZImageConfig};
+use crate::weights::{MlxWeights, WeightDtype};
 
+/// `quantization` is the registry's declared affine quantization, if any.
 pub fn load_directory(
     directory: &std::path::Path,
     config: MlxZImageConfig,
-    _stream: &Stream,
-) -> Result<BTreeMap<String, Array>> {
-    let io = Stream::cpu()?;
-    let tensors = crate::weights::load_mlx_directory(directory)?
-        .into_iter()
-        .map(|(name, tensor)| Ok((name, tensor.astype(danmo_mlx::Dtype::Float32, &io)?)))
-        .collect::<Result<BTreeMap<_, _>>>()?;
+    dtype: WeightDtype,
+    quantization: Option<AffineQuantization>,
+) -> Result<MlxWeights> {
+    let weights = crate::weights::load_mlx_directory(directory, dtype, quantization)?;
     let names = super::weights::remap_weight_names(
-        tensors.keys().cloned().collect::<Vec<_>>(),
+        weights.names().map(str::to_string).collect::<Vec<_>>(),
         config.patch,
     )
     .map_err(|error| Error::new("Z-Image remap", error.to_string()))?;
-    let mut output = BTreeMap::new();
-    for (source, target) in names {
-        let tensor = tensors
-            .get(&source)
-            .cloned()
-            .ok_or_else(|| Error::new("Z-Image safetensors", format!("missing {source}")))?;
-        if output.insert(target.clone(), tensor).is_some() {
-            return Err(Error::new(
-                "Z-Image safetensors",
-                format!("duplicate remapped tensor {target}"),
-            ));
-        }
-    }
-    Ok(output)
+    weights.rename(&names)
 }
 
 fn embed_image(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     config: MlxZImageConfig,
     grid: TokenGrid,
     latent: &Array,
@@ -55,18 +39,10 @@ fn embed_image(
         .reshape(&[latent_size as i32], stream)?
         .take_axis(&indices, 0, stream)?;
     let patches = gathered.reshape(&[1, grid.img_real as i32, token_dim as i32], stream)?;
-    let embedding_weight = weight(weights, "x_embedder.weight")?;
-    let patches = if patches.dtype() == embedding_weight.dtype() {
-        patches
-    } else {
-        patches.astype(embedding_weight.dtype(), stream)?
-    };
-    let mut embedded = Array::linear(
-        &patches,
-        embedding_weight,
-        Some(weight(weights, "x_embedder.bias")?),
-        stream,
-    )?;
+    let embedding_weight = linear(weights, "x_embedder.weight")?;
+    let patches = cast_to(&patches, embedding_weight.compute_dtype(), stream)?;
+    let mut embedded =
+        embedding_weight.apply(&patches, Some(weight(weights, "x_embedder.bias")?), stream)?;
     if grid.img_pad > 0 {
         let pad = weight(weights, "x_pad_token")?
             .broadcast_to(&[1, grid.img_pad as i32, config.dim as i32], stream)?;
@@ -77,7 +53,7 @@ fn embed_image(
 }
 
 fn embed_caption(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     config: MlxZImageConfig,
     grid: TokenGrid,
     caption: &Array,
@@ -97,13 +73,13 @@ fn embed_caption(
     let cap_norm = weight(weights, "cap_norm.weight")?;
     let caption = cast_to(caption, cap_norm.dtype(), stream)?;
     let normalized = caption.rms_norm(Some(cap_norm), config.norm_eps, stream)?;
-    let mut embedded = Array::linear(
-        &normalized,
-        weight(weights, "cap_embedder.weight")?,
-        Some(weight(weights, "cap_embedder.bias")?),
-        stream,
-    )?
-    .reshape(&[1, grid.cap_real as i32, config.dim as i32], stream)?;
+    let mut embedded = linear(weights, "cap_embedder.weight")?
+        .apply(
+            &normalized,
+            Some(weight(weights, "cap_embedder.bias")?),
+            stream,
+        )?
+        .reshape(&[1, grid.cap_real as i32, config.dim as i32], stream)?;
     if grid.cap_pad > 0 {
         let pad = weight(weights, "cap_pad_token")?
             .broadcast_to(&[1, grid.cap_pad as i32, config.dim as i32], stream)?;
@@ -114,7 +90,7 @@ fn embed_caption(
 }
 
 fn run_block(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     config: MlxZImageConfig,
     prefix: &str,
     input: &Array,
@@ -127,10 +103,10 @@ fn run_block(
         input,
         BlockWeights {
             attention: AttentionWeights {
-                to_q: weight(weights, &format!("{prefix}.attention.to_q.weight"))?,
-                to_k: weight(weights, &format!("{prefix}.attention.to_k.weight"))?,
-                to_v: weight(weights, &format!("{prefix}.attention.to_v.weight"))?,
-                to_out: weight(weights, &format!("{prefix}.attention.to_out.weight"))?,
+                to_q: linear(weights, &format!("{prefix}.attention.to_q.weight"))?,
+                to_k: linear(weights, &format!("{prefix}.attention.to_k.weight"))?,
+                to_v: linear(weights, &format!("{prefix}.attention.to_v.weight"))?,
+                to_out: linear(weights, &format!("{prefix}.attention.to_out.weight"))?,
                 norm_q: weight(weights, &format!("{prefix}.attention.norm_q.weight"))?,
                 norm_k: weight(weights, &format!("{prefix}.attention.norm_k.weight"))?,
             },
@@ -138,12 +114,12 @@ fn run_block(
             attention_norm2: weight(weights, &format!("{prefix}.attn_norm2.weight"))?,
             ffn_norm1: weight(weights, &format!("{prefix}.ffn_norm1.weight"))?,
             ffn_norm2: weight(weights, &format!("{prefix}.ffn_norm2.weight"))?,
-            w1: weight(weights, &format!("{prefix}.feed_forward.w1.weight"))?,
-            w2: weight(weights, &format!("{prefix}.feed_forward.w2.weight"))?,
-            w3: weight(weights, &format!("{prefix}.feed_forward.w3.weight"))?,
+            w1: linear(weights, &format!("{prefix}.feed_forward.w1.weight"))?,
+            w2: linear(weights, &format!("{prefix}.feed_forward.w2.weight"))?,
+            w3: linear(weights, &format!("{prefix}.feed_forward.w3.weight"))?,
             adaln: if modulated {
                 Some((
-                    weight(weights, &format!("{prefix}.adaLN_modulation.0.weight"))?,
+                    linear(weights, &format!("{prefix}.adaLN_modulation.0.weight"))?,
                     weight(weights, &format!("{prefix}.adaLN_modulation.0.bias"))?,
                 ))
             } else {
@@ -177,7 +153,7 @@ pub struct CompiledForward {
 
 impl CompiledForward {
     pub fn new(
-        weights: &BTreeMap<String, Array>,
+        weights: &MlxWeights,
         config: MlxZImageConfig,
         grid: TokenGrid,
         caption: &Array,
@@ -214,7 +190,7 @@ impl CompiledForward {
 /// Embed the scalar flow-match timestep once per denoise step; the compiled
 /// forward and the eager forward share this exact embedding.
 pub fn embed_timestep(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     config: MlxZImageConfig,
     sigma: f32,
     stream: &Stream,
@@ -223,16 +199,16 @@ pub fn embed_timestep(
     timestep::embed(
         t,
         config.frequency_dim as usize,
-        weight(weights, "t_embedder.linear1.weight")?,
+        linear(weights, "t_embedder.linear1.weight")?,
         weight(weights, "t_embedder.linear1.bias")?,
-        weight(weights, "t_embedder.linear2.weight")?,
+        linear(weights, "t_embedder.linear2.weight")?,
         weight(weights, "t_embedder.linear2.bias")?,
         stream,
     )
 }
 
 pub fn forward(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     config: MlxZImageConfig,
     grid: TokenGrid,
     latent: &Array,
@@ -245,7 +221,7 @@ pub fn forward(
 }
 
 fn forward_with_timestep(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     config: MlxZImageConfig,
     grid: TokenGrid,
     latent: &Array,
@@ -293,9 +269,8 @@ fn forward_with_timestep(
         )?;
     }
     let activated = timestep.silu(stream)?;
-    let scale = Array::linear(
+    let scale = linear(weights, "final_layer.adaLN_modulation.0.weight")?.apply(
         &activated,
-        weight(weights, "final_layer.adaLN_modulation.0.weight")?,
         Some(weight(weights, "final_layer.adaLN_modulation.0.bias")?),
         stream,
     )?;
@@ -303,9 +278,8 @@ fn forward_with_timestep(
     let scale = Array::add(&scale, &one, stream)?;
     let normalized = unified.layer_norm(1e-6, stream)?;
     let normalized = modulation::modulate(&normalized, &scale, stream)?;
-    let tokens = Array::linear(
+    let tokens = linear(weights, "final_layer.linear.weight")?.apply(
         &normalized,
-        weight(weights, "final_layer.linear.weight")?,
         Some(weight(weights, "final_layer.linear.bias")?),
         stream,
     )?;
@@ -345,10 +319,12 @@ fn cast_to(input: &Array, dtype: danmo_mlx::Dtype, stream: &Stream) -> Result<Ar
     }
 }
 
-fn weight<'a>(weights: &'a BTreeMap<String, Array>, name: &str) -> Result<&'a Array> {
-    weights
-        .get(name)
-        .ok_or_else(|| Error::new("Z-Image weights", format!("missing tensor {name}")))
+fn weight<'a>(weights: &'a MlxWeights, name: &str) -> Result<&'a Array> {
+    weights.tensor(name)
+}
+
+fn linear<'a>(weights: &'a MlxWeights, name: &str) -> Result<&'a LinearWeight> {
+    weights.linear(name)
 }
 
 #[cfg(test)]
@@ -357,7 +333,10 @@ mod tests {
     use super::{forward, load_directory};
     use crate::families::z_image::geom;
     use crate::families::z_image::weights::ZImageConfig;
-    use danmo_mlx::{Array, DeviceType, Result, Stream};
+    use crate::weights::{MlxWeights, WeightDtype};
+    use danmo_mlx::{
+        save_safetensors, AffineQuantization, Array, DeviceType, Dtype, Result, Stream,
+    };
     use std::collections::BTreeMap;
 
     fn add_tensor(tensors: &mut BTreeMap<String, (Vec<f32>, Vec<i32>)>, name: &str, shape: &[i64]) {
@@ -450,6 +429,13 @@ mod tests {
         config.timestep_mid = 1024;
         config.adaln_dim = 6;
         config.axes = [2, 2, 2];
+        let tensors = fixture_tensors(&config);
+        let latent = (0..8).map(|index| index as f32 * 0.1 - 0.2).collect();
+        let caption = (0..8).map(|index| index as f32 * 0.07 - 0.15).collect();
+        (config, tensors, latent, caption)
+    }
+
+    fn fixture_tensors(config: &MlxZImageConfig) -> BTreeMap<String, (Vec<f32>, Vec<i32>)> {
         let token = config.patch * config.patch * config.in_channels;
         let mut tensors = BTreeMap::new();
         add_tensor(&mut tensors, "x_embedder.weight", &[config.dim, token]);
@@ -477,9 +463,9 @@ mod tests {
             &[config.dim, config.cap_dim],
         );
         add_tensor(&mut tensors, "cap_embedder.bias", &[config.dim]);
-        add_block(&mut tensors, "noise_refiner.0", &config, true);
-        add_block(&mut tensors, "context_refiner.0", &config, false);
-        add_block(&mut tensors, "layers.0", &config, true);
+        add_block(&mut tensors, "noise_refiner.0", config, true);
+        add_block(&mut tensors, "context_refiner.0", config, false);
+        add_block(&mut tensors, "layers.0", config, true);
         add_tensor(
             &mut tensors,
             "final_layer.adaLN_modulation.0.weight",
@@ -504,9 +490,7 @@ mod tests {
             "cap_pad_token".into(),
             (vec![0.0; config.dim as usize], vec![1, config.dim as i32]),
         );
-        let latent = (0..8).map(|index| index as f32 * 0.1 - 0.2).collect();
-        let caption = (0..8).map(|index| index as f32 * 0.07 - 0.15).collect();
-        (config, tensors, latent, caption)
+        tensors
     }
 
     fn host_name(name: &str) -> Option<String> {
@@ -546,6 +530,7 @@ mod tests {
             let array = Array::from_f32_slice(values, shape)?;
             weights.insert(name.clone(), array);
         }
+        let weights = MlxWeights::from_dense(weights);
 
         let mut host_weights = BTreeMap::new();
         for (name, (values, _)) in &tensors {
@@ -624,6 +609,7 @@ mod tests {
         for (name, (values, shape)) in &tensors {
             weights.insert(name.clone(), Array::from_f32_slice(values, shape)?);
         }
+        let weights = MlxWeights::from_dense(weights);
         let caption = Array::from_f32_slice(&caption_values, &[2, 4])?;
         let compiled =
             super::CompiledForward::new(&weights, config, grid, &caption, false, &stream)?;
@@ -632,9 +618,7 @@ mod tests {
             let eager = forward(&weights, config, grid, &latent, &caption, sigma, &stream)?
                 .to_vec_f32(&stream)?;
             let timestep = super::embed_timestep(&weights, config, sigma, &stream)?;
-            let actual = compiled
-                .apply(&latent, &timestep)?
-                .to_vec_f32(&stream)?;
+            let actual = compiled.apply(&latent, &timestep)?.to_vec_f32(&stream)?;
             assert_eq!(actual.len(), eager.len());
             for (actual, expected) in actual.iter().zip(&eager) {
                 assert!(
@@ -649,6 +633,137 @@ mod tests {
     #[test]
     fn cpu_compiled_tiny_dit_matches_eager_across_steps() {
         compiled_probe(DeviceType::Cpu).unwrap();
+    }
+
+    fn quantized_probe(device_type: DeviceType) -> Result<()> {
+        let mut config = MlxZImageConfig::published();
+        config.in_channels = 2;
+        config.dim = 64;
+        config.heads = 1;
+        config.layers = 1;
+        config.refiners = 1;
+        config.cap_dim = 64;
+        config.adaln_dim = 64;
+        config.axes = [16, 24, 24];
+        let tensors = fixture_tensors(&config);
+        let grid = geom::token_grid(16, 16, 2, config.vae_scale).unwrap();
+        // MLX's scalar CPU qmm accumulates in the activation dtype, so bf16 parity is
+        // only meaningful on GPU kernels, which accumulate in f32.
+        let (stream, dtype) = match device_type {
+            DeviceType::Cpu => (Stream::cpu()?, Dtype::Float32),
+            DeviceType::Gpu => (Stream::gpu()?, Dtype::BFloat16),
+        };
+        let quantization = AffineQuantization::new(4, 64)?;
+        let mut saved: Vec<(String, Array)> = Vec::new();
+        let mut dequantized = BTreeMap::new();
+        let mut packed_names = Vec::new();
+        for (name, (values, shape)) in &tensors {
+            let array = Array::from_f32_slice(values, shape)?.astype(dtype, &stream)?;
+            let base = name.strip_suffix(".weight");
+            match base {
+                Some(base) if shape.len() == 2 && shape[1] % 64 == 0 => {
+                    let packed = array.quantize_affine(64, 4, &stream)?;
+                    dequantized.insert(name.clone(), packed.dequantize(64, 4, &stream)?);
+                    saved.push((format!("{base}.scales"), packed.scales));
+                    saved.push((format!("{base}.biases"), packed.biases));
+                    saved.push((name.clone(), packed.weight));
+                    packed_names.push(name.clone());
+                }
+                _ => {
+                    dequantized.insert(name.clone(), array.clone());
+                    saved.push((name.clone(), array));
+                }
+            }
+        }
+        let scratch = std::env::temp_dir().join(format!(
+            "danmo-zimage-quant-{}-{:?}-{}",
+            std::process::id(),
+            device_type,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let entries: Vec<(&str, &Array)> = saved
+            .iter()
+            .map(|(name, array)| (name.as_str(), array))
+            .collect();
+        save_safetensors(
+            &scratch.join("model.safetensors"),
+            &entries,
+            &[("quantization_level", "4")],
+        )?;
+        let loaded =
+            crate::weights::load_mlx_directory(&scratch, WeightDtype::Native, Some(quantization));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let weights = loaded?;
+        let reference = MlxWeights::from_dense(dequantized);
+
+        assert_eq!(weights.quantization(), Some(quantization));
+        assert!(packed_names.len() > 10, "{packed_names:?}");
+        assert_eq!(weights.packed_names().collect::<Vec<_>>(), packed_names);
+        let packed_bytes: usize = saved.iter().map(|(_, array)| array.nbytes()).sum();
+        assert_eq!(weights.nbytes(), packed_bytes);
+        assert!(weights.nbytes() * 2 < reference.nbytes());
+
+        let latent = Array::from_f32_slice(
+            &(0..8)
+                .map(|index| index as f32 * 0.1 - 0.2)
+                .collect::<Vec<_>>(),
+            &[2, 2, 2],
+        )?
+        .astype(dtype, &stream)?;
+        let caption = Array::from_f32_slice(
+            &(0..128)
+                .map(|index| (index % 17) as f32 * 0.03 - 0.2)
+                .collect::<Vec<_>>(),
+            &[2, 64],
+        )?
+        .astype(dtype, &stream)?;
+        let compiled =
+            super::CompiledForward::new(&weights, config, grid, &caption, false, &stream)?;
+        for sigma in [0.9f32, 0.25] {
+            let expected = forward(&reference, config, grid, &latent, &caption, sigma, &stream)?
+                .astype(Dtype::Float32, &stream)?
+                .to_vec_f32(&stream)?;
+            let actual = forward(&weights, config, grid, &latent, &caption, sigma, &stream)?
+                .astype(Dtype::Float32, &stream)?
+                .to_vec_f32(&stream)?;
+            let timestep = super::embed_timestep(&weights, config, sigma, &stream)?;
+            let fused = compiled
+                .apply(&latent, &timestep)?
+                .astype(Dtype::Float32, &stream)?
+                .to_vec_f32(&stream)?;
+            assert_eq!(actual.len(), expected.len());
+            let scale = expected
+                .iter()
+                .fold(0.0f32, |peak, value| peak.max(value.abs()));
+            assert!(scale > 0.0);
+            let tolerance = if dtype == Dtype::Float32 { 1e-4 } else { 2e-2 } * scale;
+            for ((actual, fused), expected) in actual.iter().zip(&fused).zip(&expected) {
+                assert!(
+                    (actual - expected).abs() <= tolerance,
+                    "packed {actual} != dequantized {expected} at sigma {sigma}"
+                );
+                assert!(
+                    (fused - actual).abs() <= tolerance,
+                    "compiled {fused} != eager {actual} at sigma {sigma}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cpu_packed_affine_dit_matches_dequantized_weights() {
+        quantized_probe(DeviceType::Cpu).unwrap();
+    }
+
+    #[cfg(feature = "mlx-metal")]
+    #[test]
+    fn metal_packed_affine_dit_matches_dequantized_weights() {
+        quantized_probe(DeviceType::Gpu).unwrap();
     }
 
     #[cfg(feature = "mlx-metal")]
@@ -671,7 +786,7 @@ mod tests {
         let stream = Stream::gpu().unwrap();
         #[cfg(not(feature = "mlx-metal"))]
         let stream = Stream::cpu().unwrap();
-        let weights = load_directory(&root, config, &stream).unwrap();
+        let weights = load_directory(&root, config, WeightDtype::F32, None).unwrap();
         let latent_values: Vec<f32> = payload["latent"]
             .as_array()
             .unwrap()
@@ -721,8 +836,8 @@ mod tests {
         let stream = Stream::gpu().unwrap();
         let config = MlxZImageConfig::published();
         let started = std::time::Instant::now();
-        let weights = load_directory(&root, config, &stream).unwrap();
-        println!("loaded {} remapped tensors", weights.len());
+        let weights = load_directory(&root, config, WeightDtype::F32, None).unwrap();
+        println!("loaded {} remapped tensors", weights.names().count());
         let grid = geom::token_grid(16, 16, 2, config.vae_scale).unwrap();
         let latent = Array::from_f32_slice(&vec![0.01; 64], &[16, 2, 2]).unwrap();
         let caption = Array::from_f32_slice(&vec![0.01; 5120], &[2, 2560]).unwrap();
@@ -785,9 +900,11 @@ mod tests {
             .iter()
             .map(|value| value.as_i64().unwrap() as i32)
             .collect();
-        let text_weights =
-            crate::common::qwen3::mlx::load_directory(&bundle.join("text_encoder"), &stream)
-                .unwrap();
+        let text_weights = crate::common::qwen3::mlx::load_directory(
+            &bundle.join("text_encoder"),
+            WeightDtype::Native,
+        )
+        .unwrap();
         let text_config = crate::common::qwen3::Qwen3Config {
             vocab: 151_936,
             hidden: 2560,
@@ -826,12 +943,17 @@ mod tests {
         );
         let dit_started = std::time::Instant::now();
         let config = MlxZImageConfig::published();
-        let weights = load_directory(&bundle.join("transformer"), config, &stream).unwrap();
+        let weights =
+            load_directory(&bundle.join("transformer"), config, WeightDtype::F32, None).unwrap();
         let grid = geom::token_grid(width, height, ids.len() as i64, config.vae_scale).unwrap();
         let latent = if let Some(seed) = payload["seed"].as_u64() {
             let noise = danmo_mlx::RandomKey::new(seed)
                 .unwrap()
-                .normal(&[1, 16, latent_h, latent_w], danmo_mlx::Dtype::Float32, &stream)
+                .normal(
+                    &[1, 16, latent_h, latent_w],
+                    danmo_mlx::Dtype::Float32,
+                    &stream,
+                )
                 .unwrap();
             assert_eq!(noise.to_vec_f32(&stream).unwrap(), values("latent"));
             noise
@@ -879,7 +1001,8 @@ mod tests {
 
         let vae_started = std::time::Instant::now();
         let vae_stream = Stream::gpu().unwrap();
-        let vae_weights = crate::common::vae::mlx::load_dense(&bundle.join("vae")).unwrap();
+        let vae_weights =
+            crate::common::vae::mlx::load_dense(&bundle.join("vae"), WeightDtype::F32).unwrap();
         let spec = crate::common::vae::VaeSpec {
             latent_channels: 16,
             block_out: vec![128, 256, 512, 512],
@@ -984,7 +1107,8 @@ mod tests {
         };
         let stream = Stream::gpu().unwrap();
         let config = MlxZImageConfig::published();
-        let weights = load_directory(&bundle.join("transformer"), config, &stream).unwrap();
+        let weights =
+            load_directory(&bundle.join("transformer"), config, WeightDtype::F32, None).unwrap();
         let ids: Vec<i64> = payload["ids"]
             .as_array()
             .unwrap()
@@ -1019,7 +1143,15 @@ mod tests {
                     let timestep = super::embed_timestep(&weights, config, sigmas[step], &stream)?;
                     compiled.apply(&latent, &timestep)?
                 } else {
-                    forward(&weights, config, grid, &latent, &caption, sigmas[step], &stream)?
+                    forward(
+                        &weights,
+                        config,
+                        grid,
+                        &latent,
+                        &caption,
+                        sigmas[step],
+                        &stream,
+                    )?
                 };
                 velocity.eval().unwrap();
                 timings.push(started.elapsed().as_secs_f64());
@@ -1050,8 +1182,7 @@ mod tests {
                 .iter()
                 .zip(payload["velocities"][step].as_array().unwrap())
             {
-                main_error =
-                    main_error.max((actual - expected.as_f64().unwrap() as f32).abs());
+                main_error = main_error.max((actual - expected.as_f64().unwrap() as f32).abs());
             }
         }
         // First compiled call traces and builds; later calls are warm replays.
