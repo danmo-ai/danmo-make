@@ -43,9 +43,9 @@
 | `pipeline/dit.rs` | A/B | 保留 resolve/load/encode/schedule/infer/decode/persist 形状；将 ggml session trait 换成 MLX 中立 trait |
 | `pipeline/facade.rs` | A/B | 保留 prepare/infer/persist；用于 audio/video 和非标准流程 |
 | Job shape | A/B | 保留独立 job 流程，不强套 DiT |
-| `pipeline/denoise.rs` | C | 只复用真正通用的 Euler/CFG 组织；布局或公式不同则归 family |
+| `pipeline/denoise.rs` | C | 只复用真正通用的 Euler/CFG 组织；布局或公式不同则归 family。MLX Euler 目前在 `families/z_image/mlx/denoise.rs`（家族私有），出现第二个使用方时按 §7 模板迁入 common |
 | `pipeline/legacy.rs` | D/C | ggml 生产路径不保留；数值测试有选择的转录，不做永久双实现 |
-| `families/driver.rs` | A/B | 保留 family trait/session 抽象，去除 ggml 类型 |
+| `families/driver.rs` | A/B | 保留 family trait/session 抽象，去除 ggml 类型；P2 改为后端中立 trait，MLX 路径接入 driver（目前 MLX 实现仅在测试中使用） |
 | `families/mod.rs` | A | 保留唯一 family/action match 和 FamilySpec 组织，增加细粒度能力关联 |
 
 ### 形状使用规则
@@ -83,6 +83,17 @@ P3 按真实使用方建立，而不是预先创建空目录：
 - `common::media`：图片、音频、ffmpeg、色彩与容器。
 - `common::cache`：只放 family-neutral key/revision 算法；MLX 值的所有权仍归 runtime executor。
 
+### 稠密权重 dtype（共享层，纠正 main 的错误设计）
+
+**`main` 把稠密 BF16/FP16 权重加载成 F32 是错误设计，不迁移。** 原因是共享加载器 `common/model/base.py::_assign_param_tensor` 的 `param[:] = tensor`：参数初始化为 F32，切片赋值不改变目标 dtype，发布的 BF16 权重被静默放大。Z-Image DiT 因此从约 12 GB 变成约 24 GB，Qwen3 文本编码器与 VAE 同样放大；带宽受限的 DiT 推理也因此变慢，且精度无收益。`main` 内部也不一致（H3、LTX VAE 按参数 dtype 处理）。
+
+Rust 落点：`weights/mlx.rs` 提供共享 `WeightDtype::Native | F32`。
+
+- `Native` 为生产默认，保留 checkpoint 原生 dtype；精度敏感的小张量在算子内按需转 F32。
+- `F32` 只在 parity 测试中复现 `main` 现状。P0 中 `common::vae::mlx::load_dense` 与 `families/z_image/mlx` DiT 的 `astype(F32)` 必须迁入该策略，不得作为生产默认。
+- family 内禁止写 dtype 分支；显存门以原生 dtype 为准。
+- `main` 侧在 P0H 修复后，BF16 输出成为生产层 parity 基线。详见计划 §1.5.1。
+
 ### 量化权重加载（共享层，非家族分支）
 
 main 的 `common/model/base.py::load_weights` **不区分家族/版本处理量化**：检测 `*.scales` 键即自动识别 MLX affine 打包（uint32 codes + scales + biases，4/8-bit 按形状与 shard metadata `quantization_level` 推断）；`inference_mode=quantized` 走 `QuantizedLinear` 不解量化（低显存），否则默认解量化回稠密 Linear（legacy/debug）。家族代码零量化分支。Rust 侧对应落点是 `weights/mlx.rs` 共享加载层 + `danmo-mlx` QMM（已有 >32K 行探针），**禁止**在 family 内写 `quant == ...` 分支。执行顺序按用户指示：**fp16 完整验证（真实分辨率/热性能/会话生命周期）收口后再做量化切片**；量化 parity 以 main 同一 checkpoint 的 QuantizedLinear 路径为基线。
@@ -101,6 +112,9 @@ main 的 `common/model/base.py::load_weights` **不区分家族/版本处理量�
 | edit/latent refine/LEMICA/TeaCache | scheduler/cache 原语中立化，策略和系数留 family config |
 
 验收不能只做 turbo create：base/turbo、所有发布 quant、rewrite、LoRA、control、inpaint、latent refine 分开记录。
+
+- turbo 默认路径是 9 步、768×1280、`linear` scheduler，步数大于 8 时 `main` 在 Apple Silicon 自动开 compile；8 步只对应加载 Base LoRA 时自动附加 `z-image-turbo-distillpatch-lora`（Scheme 4）的场景。两条路径分别验收。
+- DistillPatch、starface、awportrait 等 LoRA card 无 action，目前不在能力矩阵中，需以组件条目登记。
 
 ### 5.2 flux2
 
@@ -196,9 +210,11 @@ main 的 `common/model/base.py::load_weights` **不区分家族/版本处理量�
 | GGUF parser/bundle/quant folding | 不迁移 |
 | ggml attention probe | 保留独立 host-reference 思路，改 MLX Metal/CUDA probe |
 | capacity | 保留接口思路，改 MLX active/cache/peak/limit/device bytes |
-| mmap weight cache | 不直接复用；MLX Array/model cache 归 executor |
-| cache revision | 复用并扩展到所有 shard/config/tokenizer/manifest/LoRA |
-| safetensors 辅助代码 | 可复用严格解析思路，但与 `danmo-mlx` IO 统一，避免两套加载器 |
+| mmap weight cache | 不直接复用；MLX Array/model cache 归 executor（executor 目前无缓存位置，P2 前定状态模型） |
+| cache revision | 复用并扩展到所有 shard/config/tokenizer/manifest/LoRA，以及 `WeightDtype` 策略 |
+| safetensors 辅助代码 | 可复用严格解析思路，但与 `danmo-mlx` IO 统一，避免两套加载器；`weights/mlx.rs::load_directory` 的 `entry.unwrap()` 改为返回错误 |
+| 稠密权重 F32 放大（main 行为） | **不迁移**：生产保持原生 dtype，F32 仅限 parity 模式（见 §4「稠密权重 dtype」） |
+| `danmo-ggml-sys`、`third_party/ggml`、各 family ggml 实现 | 不迁移；family 的 MLX 版点亮时同一 commit 删除其 ggml 实现，P10 清点并删除 ggml 栈 |
 
 ## 7. 共享算法分析模板
 
@@ -234,3 +250,5 @@ CUDA 算子路径：
 - registry、能力矩阵和唯一 driver 同步。
 - 新增后端只改 runtime/build，不改 family 数学。
 - 新增同拓扑 model 通常只需 registry/config 和 fixture；新增 family 不需要改其他 family。
+- 生产路径权重保持原生 dtype，峰值显存已记录进矩阵；没有 F32 放大。
+- 该 family 的 ggml 实现已删除。

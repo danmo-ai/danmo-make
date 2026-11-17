@@ -10,8 +10,9 @@
 
 - ggml Rust 基线 commit：`67495d3353d64f1ffd605e3586d0eea74837aebe`。
 - `main` 行为基线 commit：`ab4456cb1a712b9e8a56a0629862170c967bef52`。
-- 创建迁移分支时工作树已有未提交的 ggml Rust 修改，全部保留；不得把已有修改误记为本迁移新增成果。
-- `main` registry 基线：92 个 model card，23 个 runtime family，其中 21 个生成 family，另有 `qwen3`、`qwen3_vl` 两个 assistant family。
+- 创建迁移分支时工作树已有未提交的 ggml Rust 修改（Hunyuan/LTX/Wan/SeedVR2、server 等），已与 MLX P0 切片一并提交在 `dbcfaff`。该 commit 内 ggml 在途工作与 MLX 切片混合：MLX 新增成果限于 `danmo-mlx*`、`common/qwen3/mlx.rs`、`common/vae/mlx.rs`、`weights/mlx.rs`、`families/z_image/mlx/`、`tests/parity/` 与本组文档；其余不得记为本迁移成果。
+- `main` registry 基线：92 个 model card，23 个 runtime family，其中 21 个生成 family，另有 `qwen3`、`qwen3_vl` 两个 assistant family。92 个 card 中 **54 个有 action**（展开为矩阵 227 个 model/version/action 条目），**38 个无 action 的组件 card**（各家族 LoRA、`z-image-turbo-distillpatch-lora`、`flux-canny/depth-controlnet`、`flux-redux`、`depth-pro`、`minimax-h3-veda`、`minimax-h3-turbo-lora`、Wan/Qwen lightning LoRA 等）**尚未进入能力矩阵**，见 §4。
+- **已知偏差**：当前分支 `default_config/models_registry.json` 是 ggml 时期的 GGUF 布局（93 个 model，多出 `ace-step-5hz-lm`；如 `z-image-turbo` 版本为 `bf16`/`q8_0`，来自 `unsloth/Z-Image-Turbo-GGUF`，但 `backends` 仍写 `["mlx"]`）。矩阵版本键（`fp16`/`int4`/`int8`/`mlx-q4`/`mlx-q8`）来自 `main`，在分支 registry 中不存在，违反 §1.5 与 §3 第 8 条。P1 前必须把分支 registry 恢复为 `main` 的 MLX safetensors 版本键（保留 `ace-step-5hz-lm` 需单独决策），之后再做 registry/矩阵/路由同源校验。
 - `main` 是迁移行为基线，不是不可质疑的数学真相。与上游参考实现冲突时记录差异、增加回归，再决定兼容或修复。
 - 后续更新行为基线必须显式记录新 commit、registry diff、contract diff 和受影响能力，禁止无声跟随移动分支。
 
@@ -103,6 +104,10 @@ families/common/runtime → danmo-mlx → danmo-mlx-sys → mlx-c → MLX C++
 - 在 step、token、tile、chunk 和 eval 边界检查取消；无法中断的长算子必须记录。
 - panic、OOM、心跳超时和 worker 崩溃使当前任务失败，不触发跨引擎重试。
 
+现状（2026-11-17 复核）：`danmo-mlx/src/executor.rs` 目前只是「专用线程 + channel + panic 捕获」，闭包要求 `Send + 'static`，没有模型/条件缓存的存放位置、取消 token、进度回调和心跳。P2 前必须先确定 executor 状态模型：executor 线程内类型化 `ModelCache`（revision key、字节预算、unload）、step 边界取消 token、进度/日志事件通道；禁止各 family 自建 `thread_local` 缓存。
+
+assistant 不与生成 DiT 共用同一串行 executor，否则聊天会排在分钟级视频任务后面。assistant 使用独立 worker（与 `main` 的 `backend_llm` sidecar 相同的隔离方式），显存预算由控制面统一分配并显式记录。
+
 ### 1.4 Rust server 核心先行
 
 当前分支已有大量 server 资产，不采用“Python server 保持到最后”的临时路线。
@@ -120,12 +125,36 @@ P0 技术决策门
 
 P1 是核心控制面先行，不要求所有外围占位路由一次完成后才能开始 P2。外围按 family 依赖和 P9 清单持续补齐。
 
+**推理与控制面进程隔离（复核建议，待确认）**：Metal/CUDA 命令缓冲失败、驱动 abort 和部分 OOM 不会变成 C API 错误，而是直接终止进程；长时间不返回的 kernel 也只能靠杀进程可靠取消。若 MLX 推理与 SQLite 唯一写者、SSE、队列、鉴权同进程，一次推理崩溃会拖垮整个控制面。建议 Rust 推理同样以独立 worker 子进程运行，复用 §5.2 的协议（版本化请求、心跳、文件 manifest、不写正式 DB）；控制面只负责调度与持久化。这样 §5 的双引擎桥成为长期架构而非过渡代码，并同时覆盖强制取消、Metal/CUDA 构建并存和训练/推理隔离。采纳前，§0.2 中「进程内 Rust engine」的表述保持不变但视为待决策。
+
 ### 1.5 权重格式不变
 
 - 保留 MLX safetensors、fp16/bf16/fp32、int8/int4、mlx-q4/mlx-q8 及 scales/biases 布局。
 - 保留 main 的 `remap_*`、sanitize、LoRA 和 bundle 语义，在 Rust 权重层实现。
 - 不引入 GGUF、repack 或 ggml 权重布局。
 - ggml 分支只借鉴架构、共享组件、tokenizer、测试语料和治理，不继承其计算后端和权重格式。
+
+### 1.5.1 稠密权重保持原生 dtype —— 纠正 main 的 F32 放大（错误设计）
+
+**结论：`main` 把稠密 BF16/FP16 权重加载成 F32 是错误设计，不是要迁移的行为。** Rust 生产路径不得照搬。
+
+来源：`main` 共享加载器 `backend/engine/common/model/base.py::_assign_param_tensor` 最终执行 `param[:] = tensor`。`nn.Linear` 等参数初始化为 F32，原地切片赋值只拷贝数值、不改变目标 dtype，于是发布的 BF16 权重被**静默放大为 F32**。加载器、`ZImageConfig` 均无「保持 F32」的意图或开关；`main` 内部也不一致——MiniMax H3、LTX VAE 按参数自身 dtype 处理，只有走默认加载器的 family 被放大。Z-Image 激活本身是 BF16（`latent_noise_dtype="bfloat16"`），与 F32 权重相乘被类型提升为 F32 计算。
+
+代价：
+
+- **显存翻倍**：Z-Image DiT 约 6B 参数，BF16 约 12 GB，F32 约 24 GB；Qwen3 文本编码器与 VAE 同路径同样放大。32/36 GB Mac 上可能直接决定 fp16 版本能否运行。
+- **速度更慢**：DiT 推理受内存带宽限制，F32 权重每步读取字节翻倍，且用不上 BF16 快速 matmul 路径（含 M5 NAX）。
+- **精度无收益**：权重本就以 BF16 发布，放大不会恢复精度；MLX BF16 matmul 内部已用 F32 累加。
+
+决策：
+
+1. 权重 dtype 是 `weights/mlx.rs` 共享加载层的显式策略（例如 `WeightDtype::Native | F32`），**不是** family 分支。
+2. `Native` 为生产默认：按 checkpoint 原样保留 BF16/FP16；norm、RoPE、timestep 等精度敏感小张量在算子内部按需转 F32。
+3. `F32` **只用于** parity 测试复现 `main` 现状数值。P0 已落地的 `common::vae::mlx::load_dense` 与 `families/z_image/mlx` DiT 的 `astype(F32)` 属于此 parity 模式，必须迁入该共享策略，不得作为生产默认保留。
+4. parity 分两层：机制层 F32 模式对 `main` 逐 ULP（证明拓扑、remap、调度正确，现有 16×16 门继续有效）；生产层 BF16 模式单独设门，按 BF16 误差特性设容差，对照 `main` 修复后的 BF16 输出或官方 diffusers BF16 参考，并加 `make bench-eval` PickScore 质量门。
+5. 性能门与显存门**以 BF16 原生路径为准**；F32 对 F32 的热性能对比不构成性能结论。
+6. `main` 同步修复（P0H）：参数按 checkpoint dtype 赋值（或整体替换数组而非切片拷贝），Python 用户立即节省一半显存，Rust 生产 parity 基线随之回到 BF16。
+7. 这是对 `main` 行为基线的有意偏差（§0.1「main 不是不可质疑的数学真相」），矩阵中每个条目必须记录峰值显存。
 
 ### 1.6 训练最终迁移 Rust
 
@@ -143,6 +172,8 @@ Python trainer 仅是过渡行为基线。最终需要实现：
 - 现有 checkpoint 的完全恢复或明确区分的权重恢复。
 - candidate evaluation 直接复用 Rust inference。
 - Metal/CUDA 训练按后端分别验收；不得因推理支持 CUDA 自动宣称训练支持。
+
+复核建议（待确认）：Rust 训练需自建 optimizer、checkpoint、数据增强、梯度检查点，并按两后端分别验收，投入大、收益不确定。推理全部迁移后，Python trainer 可作为不写正式 DB、只产出 LoRA 文件的独立 worker 长期存在。建议将「退役 Python 训练」从 P10 必选降为可选，推理稳定后按收益评估再定。
 
 ## 2. 现有资产的直接复用与前置优化
 
@@ -229,6 +260,7 @@ P0/P1 建立并持续执行：
 7. server adapter 不含 family session/output 类型。
 8. registry、family specs、driver、路由能力矩阵保持同步。
 9. 不存在 Python 自动 fallback、设备自动 fallback 或占位成功结果。
+9a. 生产加载路径不得把稠密权重放大到 F32（§1.5.1）；F32 仅允许出现在显式 parity 模式。
 10. 新 family 的默认修改面仅为 registry/config、`families/<id>/`、工厂行和能力矩阵；公共组件复用不得要求修改其他 family。
 
 优先使用 Cargo metadata 和 Rust AST/结构化检查；现有 substring 测试可保留为补充，但不作为唯一防线。
@@ -245,24 +277,38 @@ media
 action
 architecture_variant
 quant
-adapters/options
+adapters_options
 python_baseline_status
 rust_driver_status
 metal_parity
 cuda_parity
 metal_performance
 cuda_performance
+metal_peak_memory   # 待补字段：原生 dtype 路径峰值显存及对照
+cuda_peak_memory    # 待补字段
 e2e
 route
 evidence
 notes
 ```
 
-状态只能使用受控值，例如：
+状态只能使用矩阵 `status_values` 中的受控值：
 
 ```text
-unstarted / in_progress / blocked / parity_failed / ready / routed / unavailable
+work:         unstarted / in_progress / blocked / parity_failed / ready / routed / unavailable
+verification: pending / in_progress / passed / failed / blocked / not_applicable
+route:        pending / python / rust / unavailable
 ```
+
+本文 §11 阶段表使用独立的阶段状态：`pending / in_progress / done / existing_failure`，不与矩阵状态混用。
+
+矩阵待修正项（2026-11-17 复核）：
+
+- `python_baseline_status` 全部为 `registry_declared`，不在 `status_values` 中；需补入受控值或改为 verification 值。
+- 227 条 `architecture_variant` 全部为 `unclassified`；Flux1 Fill/Redux/Depth/Kontext 等结构变体需按 model card 归类。
+- 38 个无 action 的组件 card（LoRA/ControlNet/Redux/depth-pro/VEDA 等）未登记。它们是 structural guide、Z-Image Scheme 4（DistillPatch 自动附加）、H3 turbo、lightning 等生产行为的依赖，需以组件条目或 `adapters_options` 维度登记验收。
+- `z-image-turbo/fp16/create` 的 `metal_parity=passed` 仅覆盖 16×16 切片，1024×1024 已 `parity_failed`；需拆为小图切片与真实分辨率两条，或改为 `in_progress`，不得以 `passed` 概括。
+- 证据中的 `out/parity-zimage-*` 位于被 `.gitignore`（`/out/`）忽略的目录，无法从仓库复现；关键 fixture 需把 SHA、shape、误差摘要写入矩阵，或存放到可提交位置。
 
 执行规则：
 
@@ -313,7 +359,8 @@ model_id × version × action → rust | python | unavailable
 
 - safetensors 单文件/分片。
 - tensor 名、shape、dtype、重复和缺失严格校验。
-- BF16/FP16/F32 widen 按 main 家族约定。
+- 稠密权重默认保持 checkpoint 原生 dtype（BF16/FP16）；`main` 的 F32 放大是错误设计（§1.5.1），只在显式 parity 模式复现。
+- 加载错误一律返回错误，不 panic（现 `weights/mlx.rs::load_directory` 的 `entry.unwrap()` 需修正）。
 - affine int4/int8 与实际发布的量化模式。
 - LoRA、多 LoRA、系数、量化和非量化绑定。
 - 未完成安装的 bundle 不得进入缓存。
@@ -325,7 +372,7 @@ model_id × version × action → rust | python | unavailable
 - 所有 shard 的 canonical path、长度和 mtime nanos。
 - manifest install generation 或内容摘要。
 - tokenizer/config/preprocessor revision。
-- backend/device/dtype/quant。
+- backend/device/dtype/quant，以及权重 dtype 策略（Native / F32 parity）。
 - LoRA 集合及各自 revision。
 
 安装后的 bundle 不可变，最后发布 manifest。
@@ -344,34 +391,35 @@ model_id × version × action → rust | python | unavailable
 
 状态：`in_progress`
 
-当前执行记录：macOS 源码 Metal 构建最初因本机缺少 Apple Metal Toolchain 组件而失败，P0 runtime probe 曾使用 PyPI 官方 `mlx-metal 0.32.4` macOS 14 wheel（SHA-256 `8019b2db622599267d66cc168b2f0dbf5af929790a6c3b3913e00eabc42a7947`）配合源码 `mlx-c`。2026-11-17 经用户确认安装 `xcodebuild -downloadComponent MetalToolchain`（Build 27B47）后，**源码 Metal 构建门通过**：`cargo clean -p danmo-mlx-sys` 后从 pin 的 MLX/mlx-c/fmt/json 源码完整构建（本机 Apple M5 Max / macOS 27.2，deployment target 27.2，NAX kernels 已编入），`danmo-mlx --features metal` 16 单测 + 2 守卫 + 2 safetensors、engine `mlx::` 31 项（含全部真实 fixture 与端到端）全部通过，且不需要 `DANQING_MLX_PREBUILT`。源码构建热性能与 wheel 一致（compiled 8 步 0.640s）。干净打包验证仍未完成，保留在 S0/S4 门中。
+当前执行记录：macOS 源码 Metal 构建最初因本机缺少 Apple Metal Toolchain 组件而失败，P0 runtime probe 曾使用 PyPI 官方 `mlx-metal 0.32.4` macOS 14 wheel（SHA-256 `8019b2db622599267d66cc168b2f0dbf5af929790a6c3b3913e00eabc42a7947`）配合源码 `mlx-c`。2026-11-17 经用户确认安装 `xcodebuild -downloadComponent MetalToolchain`（Build 27B47）后，**源码 Metal 构建门通过**：`cargo clean -p danmo-mlx-sys` 后从 pin 的 MLX/mlx-c/fmt/json 源码完整构建（本机 Apple M5 Max / macOS 27.2，deployment target 27.2，NAX kernels 已编入），`danmo-mlx --features metal` 16 单测 + 2 守卫 + 3 safetensors、engine `mlx::` 31 项（含全部真实 fixture 与端到端）全部通过，且不需要 `DANQING_MLX_PREBUILT`。源码构建热性能与 wheel 一致（compiled 8 步 0.640s）。干净打包验证仍未完成，保留在 S0/S4 门中。
 
 **构建环境 gotcha（已踩坑并记录）**：在 prebuilt 与源码两种链接模式间切换后，若不重新链接测试二进制，`@rpath/libmlx.dylib` 可能解析到旧产物，出现「同一测试时过时不过」的假数值分叉（曾表现为 SDPA 8e-4、Qwen3 caption 误差 4 的假失败）。切换后必须 `cargo clean -p danmo-mlx-sys`（或触发重链接）再跑；确认失败前先做单测隔离 + A/B 两种链接各跑一遍。另外 MLX 0.32.4 默认 `MLX_ENABLE_TF32=1`，NAX 芯片（M5 系）上 F32 matmul/SDPA 可能走 TF32；host 参考微探针在 TF32 开启时可能超 F32 容差，可用 `MLX_ENABLE_TF32=0` 做精确对照（真实 BF16 模型路径不受影响，main 与 Rust 同为 MLX 默认策略）。
 
-Z-Image 资产检查：最初本机安装只有 GGUF DiT；经用户明确授权，已按 main registry 的 `Tongyi-MAI/Z-Image-Turbo` 下载 3 个官方 safetensors DiT shard 到 `/Users/nil.luo/Workspace/studio-workspace/models/Image/z-image-turbo-fp16/transformer`。Rust `SafeTensors` 已验证 521 个 tensors、关键 shape、跨 shard 唯一性和 remap 无冲突。
+Z-Image 资产检查：最初本机安装只有 GGUF DiT；经用户明确授权，已按 main registry 的 `Tongyi-MAI/Z-Image-Turbo` 下载 3 个官方 safetensors DiT shard 到用户工作区 `models/Image/z-image-turbo-fp16/transformer`（`main` 的 `local_path` 布局）。Rust `SafeTensors` 已验证 521 个 tensors、关键 shape、跨 shard 唯一性和 remap 无冲突。
 
-Z-Image Metal 固定注入噪声垂直切片已在当前未提交工作树通过：`tests/parity/zimage_real_mlx.py` 从固定 main 基线生成 16×16、8 步真实权重的 caption/latent/RGB fixture，`real_zimage_create_matches_main_latents_and_pixels` 使用同一 token IDs、初始 latent 和 sigmas 串联 Rust Qwen3、完整 DiT、Euler 与 AutoencoderKL。2026-11-17 复跑结果为 caption 最大误差 0、最终 latent 最大误差 `0.015625`（逐元素四个 BF16 ULP 门）、VAE 输出最大误差 `0.0030458868`；768 个 8-bit RGB 通道中 34 个不同，最大通道差 1。使用 main 最终 latent 单独解码时 VAE 最大误差为 `0.0000015497208`，确认残差来自逐步 DiT 数值累积。产物为 `out/parity-zimage-rust.png`，测试位于 `native/crates/danmo-engine/src/families/z_image/mlx/model.rs`。
+Z-Image Metal 固定注入噪声垂直切片已通过（提交于 `dbcfaff`）：`tests/parity/zimage_real_mlx.py` 从固定 main 基线生成 16×16、8 步真实权重的 caption/latent/RGB fixture，`real_zimage_create_matches_main_latents_and_pixels` 使用同一 token IDs、初始 latent 和 sigmas 串联 Rust Qwen3、完整 DiT、Euler 与 AutoencoderKL。2026-11-17 复跑结果为 caption 最大误差 0、最终 latent 最大误差 `0.015625`（逐元素四个 BF16 ULP 门）、VAE 输出最大误差 `0.0030458868`；768 个 8-bit RGB 通道中 34 个不同，最大通道差 1。使用 main 最终 latent 单独解码时 VAE 最大误差为 `0.0000015497208`，确认残差来自逐步 DiT 数值累积。产物为 `out/parity-zimage-rust.png`，测试位于 `native/crates/danmo-engine/src/families/z_image/mlx/model.rs`。
 
 垂直切片过程中确认并修复了三处与 main 的加载/调度语义差异（不是放宽容差）：
 
-1. **稠密权重 F32 加载**：main 的 MLX `Module` 加载会把发布的 BF16 VAE/DiT 参数写成 F32（自定义 `_param_map` 切片赋值）。Rust 此前保留 BF16，导致真实 VAE 首个分叉出现在 `conv_in`（误差 0.0054 超门）。现 `common::vae::mlx::load_dense` 与 `families/z_image/mlx` DiT 加载统一 `astype(F32)`。独立真实 VAE 解码对 main 的最大误差降至 `0.0000014305115`，分阶段 trace（conv_in/mid/up blocks）最大 `0.00019836426`。
+1. **稠密权重 F32 加载（仅 parity 模式，生产需纠正）**：main 的 MLX `Module` 加载会把发布的 BF16 VAE/DiT 参数写成 F32（`_param_map` 切片赋值 `param[:] = tensor` 的副作用）。**这是 main 的错误设计，显存翻倍且无精度收益，见 §1.5.1。** Rust 此前保留 BF16，导致真实 VAE 首个分叉出现在 `conv_in`（误差 0.0054 超门）。为对齐 main 数值，现 `common::vae::mlx::load_dense` 与 `families/z_image/mlx` DiT 加载 `astype(F32)`；该行为必须迁入共享 `WeightDtype` 策略并仅在 parity 模式启用，生产默认保持 BF16。独立真实 VAE 解码对 main 的最大误差降至 `0.0000014305115`，分阶段 trace（conv_in/mid/up blocks）最大 `0.00019836426`。
 2. **真实 pad token**：DiT 图像/文本尾部 padding 必须读 checkpoint 的 `x_pad_token` / `cap_pad_token`，不能写零。修复后首轮 velocity 误差从 `1.496` 降到 `0.000932`。
-3. **Euler BF16 语义**：main 每步把 velocity 与 `dt` 转回 latent 的 BF16 再更新；共享 `denoise::euler` 已对齐（输出与 delta 均 cast 到当前 latent dtype），CPU/Metal 单测覆盖 F32 与 BF16 两条路径。
+3. **Euler BF16 语义**：main 每步把 velocity 与 `dt` 转回 latent 的 BF16 再更新；`families/z_image/mlx/denoise.rs::euler` 已对齐（输出与 delta 均 cast 到当前 latent dtype），CPU/Metal 单测覆盖 F32 与 BF16 两条路径。该实现目前是 **Z-Image 家族私有**（错误文案和测试名均为 Z-Image），出现第二个使用方时按共享资产清单 §7 模板迁入 common。
 
 组合测试的 VAE 拓扑必须取真实配置（该 VAE `layers_per_block=2`，不是默认 3）；此前硬编码 3 造成的 `0.305` 输出差已排除，与跨组件 MLX 状态无关。
 
 固定 seed 切片同样通过：`out/parity-zimage-seeded.json`（seed 42）由同一 main 基线脚本生成，Rust `RandomKey::new(42).normal` 产生的初始噪声与 main **逐位一致**（测试内 `assert_eq`），2026-11-17 运行最终 latent 最大误差 `0.0078125`（四个 BF16 ULP 门内）、VAE 输出最大误差 `0.0027973056`、26/768 RGB 通道差且最大通道差 1，产物 `out/parity-zimage-seeded-rust.png`。`danmo-mlx` 的 seeded normal/split 在 CPU/Metal 均有对 main 的固定值单测。
 
-该结果只点亮 fp16 turbo create 的 Metal 数值 parity（固定注入噪声与固定 seed 两类均通过），不代表生产路由或完整 E2E 已开放。至少一个已发布量化版本、连续任务/切换/取消/缓存、CUDA 和 encode/VAE 热性能门仍待完成。
+该结果只点亮 fp16 turbo create 在 16×16、8 步、F32 parity 模式下的 Metal 数值 parity（固定注入噪声与固定 seed 两类均通过），不代表 9 步默认路径、BF16 原生生产路径、生产路由或完整 E2E 已开放。至少一个已发布量化版本、连续任务/切换/取消/缓存、CUDA 和 encode/VAE 热性能门仍待完成。
 
 #### compile 实测与热性能观察（2026-11-17，16×16 / 8 步 / 官方 fp16 权重 / Metal）
 
 - `danmo-mlx` 新增多输入 `Closure`（`Fn(&[Array], &Stream)`，与 `UnaryClosure` 同一 FFI/panic 边界），CPU/Metal 各有「captured 常量 + 多输入 + shapeless 重放 + 形状变化重编译」与「闭包 panic 变错误不崩进程」单测；`Stream` 实现 `Clone`（共享同一 MLX stream handle）。
 - `families/z_image/mlx/model.rs` 拆出 `embed_timestep` + `forward_with_timestep`，新增 `CompiledForward`：weights/geometry/caption 捕获为常量，仅 latent 与 timestep embedding 是 traced 输入。**pinned MLX 0.32.4 上 `Split`（AdaLN 分段）与 `Slice`（RoPE 分量、FinalLayer 裁剪）都没有 `output_shapes`，shapeless compile 对完整 DiT 显式失败**；使用 shape 特化 compile（形状变化自动重编译），这是已验证路径而非静默降级。
 - tiny DiT compiled vs eager：CPU/Metal 跨 3 个 sigma 均 < 1e-5。真实权重 `real_compiled_dit_matches_eager_and_reports_warm_timings`：**8 步 velocity compiled vs eager 逐位一致（max error 0）**，eager 对 main 的 parity 与既有门一致。
-- main 热基线（`tests/parity/zimage_warm_mlx.py`，同进程 3 passes，权重常驻）：eager 热 denoise `0.671s/0.669s`，encode `0.022s/0.018s`，VAE `0.005s`；`--compile`（`use_mlx_compile=True`）热 denoise 同为 `0.671s/0.673s`——main 的 compile 在该小图热态无额外收益。main 生产策略本来就是 8 步 turbo 不开 compile（`compile_policy.resolve_use_mlx_compile`，无 step_distill 时 `num_steps<=8` 返回 False），fixture 的 eager 基线即生产路径。
-- Rust 热观察（warm-up pass 后）：eager 8 步 `0.706s`，compiled `0.662s`（eager 的 93.7%；对 main 热基线约 **101%**）。证据：`out/parity-zimage-warm.json`、`out/parity-zimage-warm-compile.json`、`out/parity-zimage-rust-warm.json`。
-- **边界**：以上是 16×16 小图单 run 观察，encode/VAE 的正式热对比与真实分辨率（如 1024×1024）性能门未测；不得据此宣称 S4 全量热性能门通过。
+- main 热基线（`tests/parity/zimage_warm_mlx.py`，同进程 3 passes，权重常驻）：eager 热 denoise `0.671s/0.669s`，encode `0.022s/0.018s`，VAE `0.005s`；`--compile`（`use_mlx_compile=True`）热 denoise 同为 `0.671s/0.673s`——main 的 compile 在该小图热态无额外收益。
+- **更正（2026-11-17 复核）**：此前写「main 生产策略是 8 步 turbo 不开 compile，fixture 的 eager 基线即生产路径」，不成立。`main` registry 中 `z-image-turbo` 默认 **9 步**、默认分辨率 **768×1280**、默认 scheduler `linear`；8 步只出现在加载 Base 训练 LoRA 时自动附加 DistillPatch（Scheme 4）的场景。`ZImageConfig.use_mlx_compile_auto=True`，`resolve_use_mlx_compile` 在 `num_steps>8` 时于 Apple Silicon 自动开启 compile（TeaCache step cache 启用时关闭）。因此 8 步 eager fixture 对应的是 DistillPatch 场景，**不是默认生产路径**；默认路径的 parity 与性能门须按 9 步、默认 scheduler、768×1280 及 `main` 实际决定的 compile 状态另立。
+- Rust 热观察（warm-up pass 后）：eager 8 步 `0.706s`，compiled `0.662s`（eager 的 93.7%；对 main 8 步 eager 热基线约 **101%**）。证据：`out/parity-zimage-warm.json`、`out/parity-zimage-warm-compile.json`、`out/parity-zimage-rust-warm.json`（本地产物，未入库）。
+- **边界**：以上是 16×16 小图单 run、双方均为 F32 稠密权重的观察；F32 对 F32 不构成性能结论（§1.5.1），encode/VAE 的正式热对比、BF16 原生路径与真实分辨率性能门均未测；不得据此宣称 S4 全量热性能门通过。
 
 #### 真实分辨率 1024×1024：当前未解决分叉（2026-11-17，parity_failed 切片）
 
@@ -402,9 +450,10 @@ Z-Image Metal 固定注入噪声垂直切片已在当前未提交工作树通过
 
 #### S2 Z-Image turbo 垂直切片
 
-- 8 步 create。
+- 9 步默认 create（768×1280、默认 scheduler、`main` 实际 compile 状态）与 8 步 DistillPatch 场景分别验收。
 - tokenizer/text encoder、DiT、VAE。
 - fp16 和至少一个已发布量化版本。
+- fp16 以 BF16 原生权重为生产路径（§1.5.1），记录峰值显存；F32 parity 模式仅用于机制层对齐。
 - 固定注入噪声与固定 seed 两类测试。
 - Metal/CUDA parity。
 - 连续任务、模型切换、取消、缓存命中和 unload。
@@ -425,6 +474,7 @@ token IDs → text embeddings → initial noise → sigmas/timesteps
 - 一个 Metal custom kernel 和对应 CUDA kernel。
 - DiT/FFN/norm/elementwise compile 实测。
 - 长序列峰值内存。
+- 在真实 CUDA 机器上尽早用一个视频 family（SeedVR2 或 Wan）跑通 conv3d、QMM、attention 算子探针，再决定 Linux 是否承诺全量。
 
 #### S4 决策门
 
@@ -448,6 +498,7 @@ token IDs → text embeddings → initial noise → sigmas/timesteps
 - submit gate、structural guide、capacity。
 - tokenizer 和前端小件。
 - fixture 转录。
+- **修复 `main` 稠密权重 F32 放大**（§1.5.1）：`_assign_param_tensor` 按 checkpoint dtype 赋值，修复后重新生成 BF16 parity fixture，作为 Rust 生产层 parity 基线。
 - ACE 新编辑模式作为独立产品特性，不阻塞 spike。
 
 ### P1 — Rust server 核心控制面与双引擎桥
@@ -474,9 +525,10 @@ P1 出口后，家族迁移只改 engine/common/family/能力路由，不再改�
 
 状态：`pending`
 
-- executor/compile/shapeless/stream/memory。
+- executor/compile/shapeless/stream/memory；先定 executor 状态模型（§1.3：类型化 ModelCache、取消 token、进度事件）。
+- pipeline/session trait 去 ggml 类型，改为后端中立；MLX 路径接入 driver（目前 `families/z_image/mlx` 仅在测试中使用）。
 - attention 统一请求和原生/通用/custom/unavailable 分派。
-- 权重、remap、量化、LoRA、revision cache。
+- 权重、remap、量化、LoRA、revision cache；共享 `WeightDtype` 策略（生产 Native，F32 仅 parity）。
 - conditioning/capacity/probe。
 - TeaCache/step-cache 原语。
 - Metal/CUDA custom kernel 管理。
@@ -577,7 +629,8 @@ Assistant：
 - 23 个 runtime family 和训练能力矩阵全部达到发布要求。
 - 默认 Rust server/engine/assistant/training。
 - 保留明确观察期和显式回滚，不做自动 fallback。
-- 删除 Python serving/inference/training 和 `backend_llm`。
+- 删除 Python serving/inference/training 和 `backend_llm`（Python training 是否删除见 §1.6 待确认建议）。
+- 删除 ggml 计算栈：`danmo-ggml-sys`、`native/third_party/ggml`、各 family 的 ggml 实现、GGUF 解析/bundle/下载逻辑。规则：每个 family 的 MLX 版点亮时，在同一 commit 删除其 ggml 实现，P10 只做最终清点，不允许长期维护 Python/ggml/MLX 三套实现。
 - 更新 AGENTS、engine architecture、Cursor rules、打包和 CI。
 - 干净 macOS Metal 与 Linux CUDA 安装、生成、训练和升级测试。
 - 全量回归通过后才结束目标。
@@ -598,7 +651,7 @@ Assistant：
 - 同硬件、MLX core、权重和缓存状态。
 - 热运行 p50 延迟不超过 Python 105%，或吞吐不低于 95%。
 - p95 无未解释异常退化。
-- 峰值内存原则上不超过 Python 105%，超限必须复核。
+- 峰值内存原则上不超过 Python 105%，超限必须复核。对照对象是 **原生 dtype 路径**：`main` 未修复 F32 放大前，其显存数字不能作为上限（否则 Rust 照搬 F32 也能「通过」）；以 BF16 原生权重的理论占用加实测激活为基线。
 - 冷启动、首次 compile、加载单独报告。
 - 不得测试失败后事后放宽阈值。
 
@@ -653,6 +706,10 @@ Assistant：
 | 训练长期双栈 | 核心推理稳定后启动训练波次，最终删除 Python trainer |
 | 分发失败 | P0 最小包装，P10 全量干净环境验证 |
 | 执行遗漏 | 每阶段更新本文、矩阵、证据和架构文档 |
+| 照搬 main 的 F32 权重放大 | 共享 `WeightDtype`，生产 Native；F32 仅 parity；显存门以原生 dtype 为准（§1.5.1） |
+| 推理崩溃拖垮控制面 | 推理 worker 与控制面进程隔离（§1.4，待确认） |
+| Python/ggml/MLX 三套实现并存 | family 点亮即删 ggml 实现；P10 删除 ggml 栈 |
+| 分支 registry 与矩阵基线漂移 | P1 前恢复 MLX 版本键并做同源校验（§0.1） |
 
 ## 11. 阶段执行日志
 
@@ -660,10 +717,11 @@ Assistant：
 |---|---|---|
 | 分支与基线 | done | `feat/rust-mlx-c-migration`；保留已有未提交 ggml 工作 |
 | 方案落盘 | done | `docs/rust_mlx_migration_plan.md` |
-| 能力矩阵 | done | 从固定 main registry 生成 92 model、23 family、227 个 model/version/action 条目：`docs/rust_mlx_migration_matrix.json` |
+| 能力矩阵 | in_progress | 从固定 main registry 生成：92 个 card 中 54 个有 action 的 model、23 family、227 个 model/version/action 条目：`docs/rust_mlx_migration_matrix.json`。38 个组件 card 未登记、`architecture_variant` 未分类、峰值显存字段未建、Z-Image 条目状态需拆分，见 §4 |
+| 文档复核 | done | 2026-11-17：纠正 Euler 归属、Z-Image 默认 9 步与 compile 策略、`dbcfaff` 提交边界、分支 registry 偏差；确立稠密权重原生 dtype 决策（§1.5.1，main F32 放大为错误设计）；增补 executor 状态模型、assistant 独立 worker、ggml 退役；推理进程隔离与 Python 训练去留标记为待确认 |
 | 共享资产盘点 | done | 复用/重写/算法归属与 family 扩展边界：`docs/rust_mlx_shared_asset_inventory.md` |
-| 全量 workspace 回归 | existing_failure | 373 项 engine 测试：370 通过、2 忽略、1 个既有未提交 Hunyuan smoke 因缺少 `txt_in.individual_token_refiner.blocks.0.self_attn.qkv.weight` 失败；新增 MLX crate 的 CPU/Metal 测试均单独通过，不在 P0 修改该 ggml family |
-| P0 | in_progress | **源码 Metal 构建通过**（MetalToolchain 27B47 已装，M5 Max/NAX，无需 prebuilt）；runtime、safetensors、>32K QMM、compile/eager、executor、seeded RNG 探针通过；官方 DiT/text/VAE/tokenizer 已下载；tiny/full DiT、真实 8 步 denoise 与 main tiny DiT BF16 parity 通过；真实 Qwen3 在 layer 1/2/10/20/30/35 与 main 输出均零误差；真实 VAE decode 最大误差 1.4e-6（F32 加载对齐）；16×16 完整图片端到端（固定注入 + 固定 seed 42）latent/RGB parity 通过，最大 8-bit 通道差 1；真实 DiT shape 特化 compile 8 步逐位一致，源码构建热 8 步 0.640s ≈ main 热基线 0.67s（shapeless 在 0.32.4 因 Split/Slice 缺 output_shapes 显式失败，已记录）。**1024×1024 端到端当前 parity_failed**（step0 velocity 0.024 → step7 1.08，latent 超 ULP 门；TF32/构建差异已排除，待分阶段定位）。剩余（按用户指示 fp16 验证优先，量化押后）：1024 分叉定位与修复、正式热性能门、连续任务/切换/取消/缓存、已发布量化版本（共享加载层自动识别，非家族分支）、custom kernel、干净打包和 CUDA runtime |
+| 全量 workspace 回归 | existing_failure | 373 项 engine 测试：370 通过、2 忽略、1 个既有 ggml Hunyuan smoke（随 `dbcfaff` 一并提交） 因缺少 `txt_in.individual_token_refiner.blocks.0.self_attn.qkv.weight` 失败；新增 MLX crate 的 CPU/Metal 测试均单独通过，不在 P0 修改该 ggml family |
+| P0 | in_progress | **源码 Metal 构建通过**（MetalToolchain 27B47 已装，M5 Max/NAX，无需 prebuilt）；runtime、safetensors、>32K QMM、compile/eager、executor、seeded RNG 探针通过；官方 DiT/text/VAE/tokenizer 已下载；tiny/full DiT、真实 8 步 denoise 与 main tiny DiT BF16 parity 通过；真实 Qwen3 在 layer 1/2/10/20/30/35 与 main 输出均零误差；真实 VAE decode 最大误差 1.4e-6（F32 加载对齐）；16×16 完整图片端到端（固定注入 + 固定 seed 42）latent/RGB parity 通过，最大 8-bit 通道差 1；真实 DiT shape 特化 compile 8 步逐位一致，源码构建热 8 步 0.640s ≈ main 热基线 0.67s（shapeless 在 0.32.4 因 Split/Slice 缺 output_shapes 显式失败，已记录）。**1024×1024 端到端当前 parity_failed**（step0 velocity 0.024 → step7 1.08，latent 超 ULP 门；TF32/构建差异已排除，待分阶段定位）。注意：以上数值与热性能均在 F32 稠密权重（复现 main 错误设计）下取得，BF16 原生生产路径尚未验证（§1.5.1）。剩余（按用户指示 fp16 验证优先，量化押后）：1024 分叉定位与修复（可继续在 F32 parity 模式定位）、共享 `WeightDtype` 与 BF16 生产层 parity/显存门、9 步默认路径门、正式热性能门、连续任务/切换/取消/缓存、已发布量化版本（共享加载层自动识别，非家族分支）、custom kernel、干净打包和 CUDA runtime |
 | P0H | pending | main 收割独立进行 |
 | P1 | pending | Rust server 核心先行 |
 | P2 | pending | MLX runtime |
