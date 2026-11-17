@@ -3,6 +3,7 @@ use danmo_mlx::{AffineQuantization, Array, Error, LinearWeight, Result, Stream};
 use super::super::geom::{self, TokenGrid};
 use super::attention::AttentionWeights;
 use super::blocks::{self, BlockWeights};
+use super::step_cache::StepCache;
 use super::{modulation, timestep, MlxZImageConfig};
 use crate::weights::{MlxWeights, WeightDtype};
 
@@ -43,6 +44,7 @@ fn embed_image(
     let patches = cast_to(&patches, embedding_weight.compute_dtype(), stream)?;
     let mut embedded =
         embedding_weight.apply(&patches, Some(weight(weights, "x_embedder.bias")?), stream)?;
+    embedded = cast_to(&embedded, latent.dtype(), stream)?;
     if grid.img_pad > 0 {
         let pad = weight(weights, "x_pad_token")?
             .broadcast_to(&[1, grid.img_pad as i32, config.dim as i32], stream)?;
@@ -97,9 +99,10 @@ fn run_block(
     ids: &[[i32; 3]],
     modulated: bool,
     timestep: Option<&Array>,
+    rope: Option<&Array>,
     stream: &Stream,
 ) -> Result<Array> {
-    blocks::forward(
+    blocks::forward_with_table(
         input,
         BlockWeights {
             attention: AttentionWeights {
@@ -133,8 +136,35 @@ fn run_block(
         config.norm_eps,
         timestep,
         None,
+        rope,
         stream,
     )
+}
+
+#[derive(Clone)]
+struct ForwardRope {
+    image: Array,
+    caption: Array,
+    unified: Array,
+}
+
+impl ForwardRope {
+    fn new(config: MlxZImageConfig, grid: TokenGrid, stream: &Stream) -> Result<Self> {
+        let ids = geom::positions_image_first(grid);
+        let (image_ids, caption_ids) = ids.split_at(grid.img_len as usize);
+        let axes = config.axes.map(|value| value as i32);
+        let image = super::attention::rope_table(image_ids, axes, config.rope_theta, stream)?;
+        let caption = super::attention::rope_table(caption_ids, axes, config.rope_theta, stream)?;
+        let unified = super::attention::rope_table(&ids, axes, config.rope_theta, stream)?;
+        image.eval()?;
+        caption.eval()?;
+        unified.eval()?;
+        Ok(Self {
+            image,
+            caption,
+            unified,
+        })
+    }
 }
 
 /// A full DiT forward compiled with `mx.compile`. Weights, token geometry, and
@@ -162,6 +192,7 @@ impl CompiledForward {
     ) -> Result<Self> {
         let weights = weights.clone();
         let caption = caption.clone();
+        let rope = ForwardRope::new(config, grid, stream)?;
         let stream = stream.clone();
         let closure = danmo_mlx::Closure::new(stream, move |inputs, stream| {
             if inputs.len() != 2 {
@@ -170,8 +201,18 @@ impl CompiledForward {
                     format!("expected [latent, timestep], got {} inputs", inputs.len()),
                 ));
             }
-            forward_with_timestep(
-                &weights, config, grid, &inputs[0], &caption, &inputs[1], stream,
+            forward_with_timestep_observed(
+                &weights,
+                config,
+                grid,
+                &inputs[0],
+                &caption,
+                &inputs[1],
+                Some(&rope),
+                None,
+                None,
+                stream,
+                |_, _| {},
             )
         })?
         .compile(shapeless)?;
@@ -187,6 +228,163 @@ impl CompiledForward {
     }
 }
 
+/// The TeaCache compute path compiled with `mx.compile`: the 30 unified
+/// blocks plus the final layer, traced on `[unified_before, timestep]` with
+/// weights/geometry/RoPE captured as constants. The eager prefix (image
+/// embed + noise refiner + gate) and the unpatchify stay outside, mirroring
+/// main's gate-outside-compile boundary. The closure returns
+/// `[post_layers_unified, final_tokens]` so the caller derives both the
+/// stored residual and the velocity without a second model implementation.
+pub struct CompiledCompute {
+    closure: danmo_mlx::MultiClosure,
+    final_closure: danmo_mlx::Closure,
+    rope: ForwardRope,
+    grid: TokenGrid,
+}
+
+impl CompiledCompute {
+    pub fn new(
+        weights: &MlxWeights,
+        config: MlxZImageConfig,
+        grid: TokenGrid,
+        stream: &Stream,
+    ) -> Result<Self> {
+        let weights = weights.clone();
+        let rope = ForwardRope::new(config, grid, stream)?;
+        let closure_rope = rope.clone();
+        let final_weights = weights.clone();
+        let stream = stream.clone();
+        let final_stream = stream.clone();
+        let closure = danmo_mlx::MultiClosure::new(stream, move |inputs, stream| {
+            if inputs.len() != 2 {
+                return Err(Error::new(
+                    "Z-Image compiled compute",
+                    format!("expected [unified, timestep], got {} inputs", inputs.len()),
+                ));
+            }
+            let unified = unified_layers_and_final(
+                &weights,
+                config,
+                grid,
+                &inputs[0],
+                &inputs[1],
+                &closure_rope,
+                stream,
+                &mut |_, _: &Array| {},
+            )?;
+            let tokens = final_layer_tokens(&weights, &unified, &inputs[1], stream)?;
+            Ok(vec![unified, tokens])
+        })?
+        .compile(false)?;
+        let final_closure = danmo_mlx::Closure::new(final_stream, move |inputs, stream| {
+            if inputs.len() != 2 {
+                return Err(Error::new(
+                    "Z-Image compiled final",
+                    format!("expected [unified, timestep], got {} inputs", inputs.len()),
+                ));
+            }
+            final_layer_tokens(&final_weights, &inputs[0], &inputs[1], stream)
+        })?
+        .compile(false)?;
+        Ok(Self {
+            closure,
+            final_closure,
+            rope,
+            grid,
+        })
+    }
+
+    /// Eager prefix: the gate signal for this step.
+    pub fn unified_before(
+        &self,
+        weights: &MlxWeights,
+        config: MlxZImageConfig,
+        latent: &Array,
+        caption: &CaptionCache,
+        timestep: &Array,
+        stream: &Stream,
+    ) -> Result<Array> {
+        unified_before(
+            weights,
+            config,
+            self.grid,
+            latent,
+            caption.embedded(),
+            timestep,
+            &self.rope,
+            stream,
+            &mut |_, _| {},
+        )
+    }
+
+    /// Compiled final layer only (the TeaCache skip path).
+    pub fn apply_final(&self, unified: &Array, timestep: &Array) -> Result<Array> {
+        self.final_closure.apply(&[unified.clone(), timestep.clone()])
+    }
+
+    /// Compiled compute; returns `(post_layers_unified, final_tokens)`.
+    pub fn apply(&self, unified: &Array, timestep: &Array) -> Result<(Array, Array)> {
+        let mut outputs = self.closure.apply(&[unified.clone(), timestep.clone()])?;
+        if outputs.len() != 2 {
+            return Err(Error::new(
+                "Z-Image compiled compute",
+                format!("expected [unified, tokens], got {} outputs", outputs.len()),
+            ));
+        }
+        let tokens = outputs.pop().unwrap();
+        let post = outputs.pop().unwrap();
+        Ok((post, tokens))
+    }
+
+    pub fn grid(&self) -> TokenGrid {
+        self.grid
+    }
+}
+
+/// TeaCache step forward whose 30-block compute runs through
+/// `CompiledCompute`. The gate, residual reuse, and cache updates stay eager
+/// and share the exact `StepCache` state machine with the eager path; the
+/// unpatchify is the same `final_velocity` tail. On compute steps the stored
+/// residual is returned for the caller's joint eval, matching main.
+pub fn forward_compiled_with_step_cache(
+    weights: &MlxWeights,
+    config: MlxZImageConfig,
+    compiled: &CompiledCompute,
+    latent: &Array,
+    caption: &CaptionCache,
+    sigma: f32,
+    cache: &mut StepCache,
+    step_idx: usize,
+    stream: &Stream,
+) -> Result<(Array, Option<Array>)> {
+    let grid = compiled.grid();
+    let timestep = embed_timestep(weights, config, sigma, stream)?;
+    let unified_before =
+        compiled.unified_before(weights, config, latent, caption, &timestep, stream)?;
+    let decision = cache.gate(&unified_before, step_idx, stream)?;
+    let skip = !decision.should_compute && cache.cached_residual().is_some();
+    let mut residual = None;
+    let unified = if skip {
+        Array::add(&unified_before, cache.cached_residual().unwrap(), stream)?
+    } else {
+        let (post, tokens) = compiled.apply(&unified_before, &timestep)?;
+        let stored = Array::subtract(&post, &unified_before, stream)?;
+        cache.store_computed(&decision, &unified_before, &stored);
+        let velocity = unpatchify_velocity(config, grid, &tokens, stream)?;
+        return Ok((velocity, Some(stored)));
+    };
+    let tokens = if skip {
+        compiled.apply_final(&unified, &timestep)?
+    } else {
+        // The compute closure already produced the final tokens; re-reading
+        // them from a second apply would rerun the blocks, so keep the first
+        // apply's tokens instead.
+        unreachable!("compute branch returns early with its tokens")
+    };
+    let velocity = unpatchify_velocity(config, grid, &tokens, stream)?;
+    Ok((velocity, residual))
+}
+
 /// Embed the scalar flow-match timestep once per denoise step; the compiled
 /// forward and the eager forward share this exact embedding.
 pub fn embed_timestep(
@@ -195,9 +393,12 @@ pub fn embed_timestep(
     sigma: f32,
     stream: &Stream,
 ) -> Result<Array> {
-    let t = (1.0 - sigma) * config.t_scale;
+    let sigma = Array::from_f32_slice(&[sigma], &[1])?;
+    let one = Array::from_f32_slice(&[1.0], &[1])?;
+    let scale = Array::from_f32_slice(&[config.t_scale], &[])?;
+    let t = Array::multiply(&Array::subtract(&one, &sigma, stream)?, &scale, stream)?;
     timestep::embed(
-        t,
+        &t,
         config.frequency_dim as usize,
         linear(weights, "t_embedder.linear1.weight")?,
         weight(weights, "t_embedder.linear1.bias")?,
@@ -220,6 +421,116 @@ pub fn forward(
     forward_with_timestep(weights, config, grid, latent, caption, &timestep, stream)
 }
 
+/// The caption branch (`cap_norm` → `cap_embedder` → pad token → context
+/// refiner) is constant across denoise steps. Main precomputes and evaluates
+/// it once in `before_denoise` whenever the optimization plan enables compile
+/// or the step cache (`needs_precompute_cap`); this is the same boundary.
+pub struct CaptionCache {
+    embedded: Array,
+}
+
+impl CaptionCache {
+    pub fn new(
+        weights: &MlxWeights,
+        config: MlxZImageConfig,
+        grid: TokenGrid,
+        caption: &Array,
+        stream: &Stream,
+    ) -> Result<Self> {
+        let caption_ids = &geom::positions_image_first(grid)[grid.img_len as usize..];
+        let table = super::attention::rope_table(
+            caption_ids,
+            config.axes.map(|value| value as i32),
+            config.rope_theta,
+            stream,
+        )?;
+        table.eval()?;
+        let mut embedded = embed_caption(weights, config, grid, caption, stream)?;
+        for index in 0..config.refiners {
+            embedded = run_block(
+                weights,
+                config,
+                &format!("context_refiner.{index}"),
+                &embedded,
+                caption_ids,
+                false,
+                None,
+                Some(&table),
+                stream,
+            )?;
+        }
+        embedded.eval()?;
+        Ok(Self { embedded })
+    }
+
+    pub fn embedded(&self) -> &Array {
+        &self.embedded
+    }
+}
+
+pub fn forward_with_step_cache(
+    weights: &MlxWeights,
+    config: MlxZImageConfig,
+    grid: TokenGrid,
+    latent: &Array,
+    caption: &Array,
+    sigma: f32,
+    cache: &mut StepCache,
+    step_idx: usize,
+    stream: &Stream,
+) -> Result<Array> {
+    let timestep = embed_timestep(weights, config, sigma, stream)?;
+    forward_with_timestep_observed(
+        weights,
+        config,
+        grid,
+        latent,
+        caption,
+        &timestep,
+        None,
+        None,
+        Some((cache, step_idx)),
+        stream,
+        |_, _| {},
+    )
+}
+
+/// TeaCache step forward on top of a precomputed caption branch, matching
+/// main's `_forward_cached_compute`: the compute path evaluates the stored
+/// residual in the same call as the velocity and the updated latent.
+pub fn forward_cached_with_step_cache(
+    weights: &MlxWeights,
+    config: MlxZImageConfig,
+    grid: TokenGrid,
+    latent: &Array,
+    caption: &CaptionCache,
+    sigma: f32,
+    cache: &mut StepCache,
+    step_idx: usize,
+    stream: &Stream,
+) -> Result<(Array, Option<Array>)> {
+    let timestep = embed_timestep(weights, config, sigma, stream)?;
+    let mut residual = None;
+    let velocity = forward_with_timestep_observed(
+        weights,
+        config,
+        grid,
+        latent,
+        caption.embedded(),
+        &timestep,
+        None,
+        Some(caption),
+        Some((cache, step_idx)),
+        stream,
+        |name, array| {
+            if name == "teacache_residual" {
+                residual = Some(array.clone());
+            }
+        },
+    )?;
+    Ok((velocity, residual))
+}
+
 fn forward_with_timestep(
     weights: &MlxWeights,
     config: MlxZImageConfig,
@@ -229,10 +540,116 @@ fn forward_with_timestep(
     timestep: &Array,
     stream: &Stream,
 ) -> Result<Array> {
+    forward_with_timestep_observed(
+        weights,
+        config,
+        grid,
+        latent,
+        caption,
+        timestep,
+        None,
+        None,
+        None,
+        stream,
+        |_, _| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn forward_with_timestep_observed(
+    weights: &MlxWeights,
+    config: MlxZImageConfig,
+    grid: TokenGrid,
+    latent: &Array,
+    caption: &Array,
+    timestep: &Array,
+    rope: Option<&ForwardRope>,
+    caption_cache: Option<&CaptionCache>,
+    mut step_cache: Option<(&mut StepCache, usize)>,
+    stream: &Stream,
+    mut observe: impl FnMut(&str, &Array),
+) -> Result<Array> {
+    let owned_rope;
+    let rope = match rope {
+        Some(rope) => rope,
+        None => {
+            owned_rope = ForwardRope::new(config, grid, stream)?;
+            &owned_rope
+        }
+    };
+    let refined_caption;
+    let caption = match caption_cache {
+        Some(cache) => cache.embedded(),
+        None => {
+            let caption_ids = &geom::positions_image_first(grid)[grid.img_len as usize..];
+            let mut caption = embed_caption(weights, config, grid, caption, stream)?;
+            for index in 0..config.refiners {
+                caption = run_block(
+                    weights,
+                    config,
+                    &format!("context_refiner.{index}"),
+                    &caption,
+                    caption_ids,
+                    false,
+                    None,
+                    Some(&rope.caption),
+                    stream,
+                )?;
+                observe(&format!("context_refiner.{index}"), &caption);
+            }
+            refined_caption = caption;
+            &refined_caption
+        }
+    };
+    let unified_before = unified_before(weights, config, grid, latent, caption, timestep, rope, stream, &mut observe)?;
+    let decision = match &mut step_cache {
+        Some((cache, step_idx)) => Some(cache.gate(&unified_before, *step_idx, stream)?),
+        None => None,
+    };
+    let skip = decision.as_ref().is_some_and(|decision| {
+        !decision.should_compute
+            && matches!(
+                &step_cache,
+                Some((cache, _)) if cache.cached_residual().is_some()
+            )
+    });
+    let unified;
+    if skip {
+        let residual = match &step_cache {
+            Some((cache, _)) => cache.cached_residual().unwrap(),
+            None => unreachable!(),
+        };
+        unified = Array::add(&unified_before, residual, stream)?;
+    } else {
+        unified = unified_layers_and_final(weights, config, grid, &unified_before, timestep, rope, stream, &mut observe)?;
+        if let Some((cache, _)) = step_cache {
+            let residual = Array::subtract(&unified, &unified_before, stream)?;
+            cache.store_computed(decision.as_ref().unwrap(), &unified_before, &residual);
+            observe("teacache_residual", &residual);
+        }
+    }
+    final_velocity(weights, config, grid, &unified, timestep, stream, &mut observe)
+}
+
+/// Image embed + noise refiner + concat with the (precomputed) caption
+/// branch: the TeaCache gate signal. Kept separate so the compiled compute
+/// closure can capture it as a constant input, exactly like main's
+/// `_forward_cached_compute` boundary.
+fn unified_before(
+    weights: &MlxWeights,
+    config: MlxZImageConfig,
+    grid: TokenGrid,
+    latent: &Array,
+    caption: &Array,
+    timestep: &Array,
+    rope: &ForwardRope,
+    stream: &Stream,
+    observe: &mut impl FnMut(&str, &Array),
+) -> Result<Array> {
+    observe("t_embedder", timestep);
     let ids = geom::positions_image_first(grid);
-    let (image_ids, caption_ids) = ids.split_at(grid.img_len as usize);
+    let image_ids = &ids[..grid.img_len as usize];
     let mut image = embed_image(weights, config, grid, latent, stream)?;
-    let mut caption = embed_caption(weights, config, grid, caption, stream)?;
     for index in 0..config.refiners {
         image = run_block(
             weights,
@@ -242,20 +659,28 @@ fn forward_with_timestep(
             image_ids,
             true,
             Some(timestep),
+            Some(&rope.image),
             stream,
         )?;
-        caption = run_block(
-            weights,
-            config,
-            &format!("context_refiner.{index}"),
-            &caption,
-            caption_ids,
-            false,
-            None,
-            stream,
-        )?;
+        observe(&format!("noise_refiner.{index}"), &image);
     }
-    let mut unified = Array::concatenate_axis(&[image, caption], 1, stream)?;
+    Array::concatenate_axis(&[image, caption.clone()], 1, stream)
+}
+
+/// The 30 unified blocks; returns the post-layers unified stream (before the
+/// final layer), matching main's residual boundary `unified - unified_before`.
+fn unified_layers_and_final(
+    weights: &MlxWeights,
+    config: MlxZImageConfig,
+    grid: TokenGrid,
+    unified_before: &Array,
+    timestep: &Array,
+    rope: &ForwardRope,
+    stream: &Stream,
+    observe: &mut impl FnMut(&str, &Array),
+) -> Result<Array> {
+    let ids = geom::positions_image_first(grid);
+    let mut unified = unified_before.clone();
     for index in 0..config.layers {
         unified = run_block(
             weights,
@@ -265,9 +690,22 @@ fn forward_with_timestep(
             &ids,
             true,
             Some(timestep),
+            Some(&rope.unified),
             stream,
         )?;
+        observe(&format!("layers.{index}"), &unified);
     }
+    Ok(unified)
+}
+
+/// FinalLayer (weightless LayerNorm + adaLN scale + linear); shared by the
+/// eager forward and both compiled closures.
+fn final_layer_tokens(
+    weights: &MlxWeights,
+    unified: &Array,
+    timestep: &Array,
+    stream: &Stream,
+) -> Result<Array> {
     let activated = timestep.silu(stream)?;
     let scale = linear(weights, "final_layer.adaLN_modulation.0.weight")?.apply(
         &activated,
@@ -278,11 +716,20 @@ fn forward_with_timestep(
     let scale = Array::add(&scale, &one, stream)?;
     let normalized = unified.layer_norm(1e-6, stream)?;
     let normalized = modulation::modulate(&normalized, &scale, stream)?;
-    let tokens = linear(weights, "final_layer.linear.weight")?.apply(
+    linear(weights, "final_layer.linear.weight")?.apply(
         &normalized,
         Some(weight(weights, "final_layer.linear.bias")?),
         stream,
-    )?;
+    )
+}
+
+/// Unpatchify + sign; shared by the eager and compiled paths.
+fn unpatchify_velocity(
+    config: MlxZImageConfig,
+    grid: TokenGrid,
+    tokens: &Array,
+    stream: &Stream,
+) -> Result<Array> {
     let token_dim = config.patch * config.patch * config.in_channels;
     let real = tokens.slice(
         &[0, 0, 0],
@@ -301,14 +748,32 @@ fn forward_with_timestep(
     )?;
     let zeros = cast_to(&zeros, values.dtype(), stream)?;
     let output = zeros.scatter_add_axis(&indices, &values, 0, stream)?;
-    output.negative(stream)?.reshape(
+    let output = output.negative(stream)?.reshape(
         &[
             config.in_channels as i32,
             grid.latent_h as i32,
             grid.latent_w as i32,
         ],
         stream,
-    )
+    )?;
+    Ok(output)
+}
+
+/// FinalLayer + unpatchify + sign, shared by the eager and compiled paths.
+fn final_velocity(
+    weights: &MlxWeights,
+    config: MlxZImageConfig,
+    grid: TokenGrid,
+    unified: &Array,
+    timestep: &Array,
+    stream: &Stream,
+    observe: &mut impl FnMut(&str, &Array),
+) -> Result<Array> {
+    let tokens = final_layer_tokens(weights, unified, timestep, stream)?;
+    observe("final_layer", &tokens);
+    let output = unpatchify_velocity(config, grid, &tokens, stream)?;
+    observe("velocity", &output);
+    Ok(output)
 }
 
 fn cast_to(input: &Array, dtype: danmo_mlx::Dtype, stream: &Stream) -> Result<Array> {
@@ -329,8 +794,12 @@ fn linear<'a>(weights: &'a MlxWeights, name: &str) -> Result<&'a LinearWeight> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::step_cache::StepCache;
     use super::MlxZImageConfig;
-    use super::{forward, load_directory};
+    use super::{
+        forward, forward_compiled_with_step_cache, forward_with_step_cache, load_directory,
+        CaptionCache, CompiledCompute,
+    };
     use crate::families::z_image::geom;
     use crate::families::z_image::weights::ZImageConfig;
     use crate::weights::{MlxWeights, WeightDtype};
@@ -872,6 +1341,89 @@ mod tests {
     #[cfg(feature = "mlx-metal")]
     #[test]
     #[ignore]
+    fn real_dit_stage_fixtures_localize_production_resolution_divergence() {
+        let root =
+            std::path::PathBuf::from(std::env::var("DANQING_TEST_ZIMAGE_STAGES_DIR").unwrap());
+        let dit = std::path::PathBuf::from(std::env::var("DANQING_TEST_ZIMAGE_DIT_DIR").unwrap());
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("expected.json")).unwrap())
+                .unwrap();
+        let values = |name: &str| -> Vec<f32> {
+            payload[name]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_f64().unwrap() as f32)
+                .collect()
+        };
+        let stream = Stream::gpu().unwrap();
+        let io = Stream::cpu().unwrap();
+        let stages = danmo_mlx::SafeTensors::load(&root.join("stages.safetensors"), &io).unwrap();
+        let config = MlxZImageConfig::published();
+        let weights = load_directory(&dit, config, WeightDtype::F32, None).unwrap();
+        let width = payload["width"].as_u64().unwrap() as u32;
+        let height = payload["height"].as_u64().unwrap() as u32;
+        let ids = payload["ids"].as_array().unwrap();
+        let grid = geom::token_grid(width, height, ids.len() as i64, config.vae_scale).unwrap();
+        let latent = Array::from_f32_slice(
+            &values("latent"),
+            &[16, (height / 8) as i32, (width / 8) as i32],
+        )
+        .unwrap()
+        .astype(Dtype::BFloat16, &stream)
+        .unwrap();
+        let caption = Array::from_f32_slice(&values("caption"), &[ids.len() as i32, 2560])
+            .unwrap()
+            .astype(Dtype::BFloat16, &stream)
+            .unwrap();
+        let step = payload["step"].as_u64().unwrap_or(0) as usize;
+        let timestep = super::embed_timestep(
+            &weights,
+            config,
+            payload["sigmas"][step].as_f64().unwrap() as f32,
+            &stream,
+        )
+        .unwrap();
+        let mut errors = BTreeMap::new();
+        super::forward_with_timestep_observed(
+            &weights,
+            config,
+            grid,
+            &latent,
+            &caption,
+            &timestep,
+            None,
+            None,
+            None,
+            &stream,
+            |name, actual| {
+                let expected = stages.get(name).unwrap().unwrap();
+                let actual = if actual.shape() == expected.shape() {
+                    actual.clone()
+                } else {
+                    actual.reshape(&expected.shape(), &stream).unwrap()
+                };
+                let actual = actual.to_vec_f32(&stream).unwrap();
+                let expected = expected.to_vec_f32(&io).unwrap();
+                let error = actual
+                    .iter()
+                    .zip(&expected)
+                    .map(|(actual, expected)| (actual - expected).abs())
+                    .fold(0.0f32, f32::max);
+                println!("Z-Image stage {name}: max abs error {error}");
+                errors.insert(name.to_string(), error);
+            },
+        )
+        .unwrap();
+        assert!(
+            errors["velocity"] <= 0.002,
+            "production-resolution velocity diverged: {errors:?}"
+        );
+    }
+
+    #[cfg(feature = "mlx-metal")]
+    #[test]
+    #[ignore]
     fn real_zimage_create_matches_main_latents_and_pixels() {
         let bundle = std::path::PathBuf::from(std::env::var("DANQING_TEST_ZIMAGE_BUNDLE").unwrap());
         let payload: serde_json::Value = serde_json::from_str(
@@ -893,6 +1445,16 @@ mod tests {
         let latent_h = (height / 8) as i32;
         let latent_w = (width / 8) as i32;
         let expected_denoised = values("denoised");
+        let quantization = payload["quantization_bits"]
+            .as_i64()
+            .map(|bits| AffineQuantization::new(bits as i32, 64).unwrap());
+        let weight_dtype =
+            if payload["native_dtype"].as_str() == Some("checkpoint") || quantization.is_some() {
+                danmo_mlx::reset_peak_memory().unwrap();
+                WeightDtype::Native
+            } else {
+                WeightDtype::F32
+            };
         let started = std::time::Instant::now();
         let ids: Vec<i32> = payload["ids"]
             .as_array()
@@ -943,8 +1505,25 @@ mod tests {
         );
         let dit_started = std::time::Instant::now();
         let config = MlxZImageConfig::published();
-        let weights =
-            load_directory(&bundle.join("transformer"), config, WeightDtype::F32, None).unwrap();
+        let weights = load_directory(
+            &bundle.join("transformer"),
+            config,
+            weight_dtype,
+            quantization,
+        )
+        .unwrap();
+        let dit_weight_bytes = weights.nbytes();
+        let packed_linear_count = weights.packed_names().count();
+        if quantization.is_some() {
+            assert!(packed_linear_count > 100, "DiT did not stay packed");
+            assert!(
+                dit_weight_bytes < 5_000_000_000,
+                "packed DiT is unexpectedly large: {dit_weight_bytes}"
+            );
+        }
+        println!(
+            "Z-Image DiT resident weights: {dit_weight_bytes} bytes ({weight_dtype:?}), packed linears {packed_linear_count}"
+        );
         let grid = geom::token_grid(width, height, ids.len() as i64, config.vae_scale).unwrap();
         let latent = if let Some(seed) = payload["seed"].as_u64() {
             let noise = danmo_mlx::RandomKey::new(seed)
@@ -965,13 +1544,41 @@ mod tests {
         .astype(danmo_mlx::Dtype::BFloat16, &stream)
         .unwrap();
         let sigmas = values("sigmas");
+        let mut step_cache = payload["teacache"].as_bool().unwrap_or(false).then(|| {
+            payload["teacache_thresh"].as_f64().map_or_else(
+                || StepCache::z_image(sigmas.len() - 1),
+                |threshold| StepCache::new(sigmas.len() - 1, threshold),
+            )
+        });
         let mut step = 0usize;
         let denoised = crate::families::z_image::mlx::denoise::euler(
             &latent,
             &sigmas,
             &stream,
             |current, sigma| {
-                let velocity = forward(&weights, config, grid, current, &caption, sigma, &stream)?;
+                if step > 0 {
+                    let expected_current = &payload["step_latents"][step - 1];
+                    let current_values = current.to_vec_f32(&stream)?;
+                    let mut current_error = 0.0f32;
+                    let mut current_differences = 0usize;
+                    for (actual, expected) in
+                        current_values.iter().zip(expected_current.as_array().unwrap())
+                    {
+                        let expected = expected.as_f64().unwrap() as f32;
+                        current_error = current_error.max((actual - expected).abs());
+                        current_differences += usize::from(*actual != expected);
+                    }
+                    println!(
+                        "Z-Image step {step}: input latent max abs error {current_error}, {current_differences}/{} values differ",
+                        current_values.len()
+                    );
+                }
+                let velocity = match &mut step_cache {
+                    Some(cache) => forward_with_step_cache(
+                        &weights, config, grid, current, &caption, sigma, cache, step, &stream,
+                    )?,
+                    None => forward(&weights, config, grid, current, &caption, sigma, &stream)?,
+                };
                 let actual = velocity.to_vec_f32(&stream)?;
                 let error = actual
                     .iter()
@@ -997,12 +1604,47 @@ mod tests {
             "real Z-Image denoise: {:.3}s, max abs error {latent_error}",
             dit_started.elapsed().as_secs_f64()
         );
+        if let Some(cache) = &step_cache {
+            let expected = payload["cache_decisions"].as_array().unwrap();
+            assert_eq!(cache.history.len(), expected.len());
+            for (index, (actual, expected)) in cache.history.iter().zip(expected).enumerate() {
+                assert_eq!(actual.kind, expected["kind"].as_str().unwrap());
+                for (actual, expected) in [
+                    (actual.rel_l1, expected["rel_l1"].as_f64()),
+                    (
+                        actual.predicted_distance,
+                        expected["predicted_distance"].as_f64(),
+                    ),
+                    (
+                        Some(actual.accumulated_distance),
+                        expected["accumulated_distance"].as_f64(),
+                    ),
+                ] {
+                    if let Some(expected) = expected {
+                        let error = (actual.unwrap() - expected).abs();
+                        assert!(error <= 1e-5, "TeaCache step {index} error {error}");
+                    }
+                }
+                println!("TeaCache step {index}: {}", actual.kind);
+            }
+            assert_eq!(
+                cache.computed_count,
+                payload["cache_counts"]["computed"].as_u64().unwrap() as usize
+            );
+            assert_eq!(
+                cache.skipped_count,
+                payload["cache_counts"]["skipped"].as_u64().unwrap() as usize
+            );
+        }
         drop(weights);
 
         let vae_started = std::time::Instant::now();
         let vae_stream = Stream::gpu().unwrap();
-        let vae_weights =
-            crate::common::vae::mlx::load_dense(&bundle.join("vae"), WeightDtype::F32).unwrap();
+        let vae_weights = if quantization.is_some() {
+            crate::common::vae::mlx::load_dequantized(&bundle.join("vae")).unwrap()
+        } else {
+            crate::common::vae::mlx::load_dense(&bundle.join("vae"), weight_dtype).unwrap()
+        };
         let spec = crate::common::vae::VaeSpec {
             latent_channels: 16,
             block_out: vec![128, 256, 512, 512],
@@ -1039,7 +1681,19 @@ mod tests {
             .zip(&expected_output)
             .map(|(actual, expected)| (actual - expected).abs())
             .fold(0.0f32, f32::max);
-        assert!(output_error <= 0.004, "decoded error {output_error}");
+        if weight_dtype == WeightDtype::Native {
+            for (actual, expected) in decoded.iter().zip(&expected_output) {
+                let error = (actual - expected).abs();
+                let exponent = expected.abs().max(f32::MIN_POSITIVE).log2().floor();
+                let allowed = 4.0 * 2f32.powf(exponent - 7.0) + 1e-3;
+                assert!(
+                    error <= allowed,
+                    "native decoded error {error} exceeds BF16 tolerance ({allowed})"
+                );
+            }
+        } else {
+            assert!(output_error <= 0.004, "decoded error {output_error}");
+        }
         let plane = (width * height) as usize;
         let actual_pixels: Vec<u8> = (0..plane * 3)
             .map(|index| {
@@ -1082,6 +1736,22 @@ mod tests {
             "real Z-Image VAE: {:.3}s, max abs error {output_error}, RGB parity passed",
             vae_started.elapsed().as_secs_f64()
         );
+        if weight_dtype == WeightDtype::Native {
+            let peak = danmo_mlx::peak_memory().unwrap();
+            let active = danmo_mlx::active_memory().unwrap();
+            println!("native Z-Image memory: peak {peak} bytes, active {active} bytes");
+            if let Ok(path) = std::env::var("DANQING_TEST_ZIMAGE_NATIVE_REPORT") {
+                let report = serde_json::json!({
+                    "weight_dtype": "checkpoint",
+                    "dit_weight_bytes": dit_weight_bytes,
+                    "peak_memory": peak,
+                    "active_memory": active,
+                    "main_peak_memory": payload["memory"]["peak"].as_u64().unwrap(),
+                    "main_active_memory": payload["memory"]["active"].as_u64().unwrap(),
+                });
+                std::fs::write(path, serde_json::to_string(&report).unwrap()).unwrap();
+            }
+        }
     }
 
     /// Real-weight `mx.compile` gate: the compiled full DiT must reproduce the
@@ -1115,7 +1785,11 @@ mod tests {
             .iter()
             .map(|value| value.as_i64().unwrap())
             .collect();
-        let grid = geom::token_grid(16, 16, ids.len() as i64, config.vae_scale).unwrap();
+        let width = payload["width"].as_u64().unwrap_or(16) as u32;
+        let height = payload["height"].as_u64().unwrap_or(16) as u32;
+        let latent_h = (height / 8) as i32;
+        let latent_w = (width / 8) as i32;
+        let grid = geom::token_grid(width, height, ids.len() as i64, config.vae_scale).unwrap();
         let caption = Array::from_f32_slice(
             &values("caption"),
             &[
@@ -1125,11 +1799,16 @@ mod tests {
         )
         .unwrap();
         let sigmas = values("sigmas");
+        let run_steps = std::env::var("DANQING_TEST_ZIMAGE_COMPILE_STEPS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(sigmas.len() - 1)
+            .min(sigmas.len() - 1);
         let compiled =
             super::CompiledForward::new(&weights, config, grid, &caption, false, &stream).unwrap();
 
         let run = |compiled_mode: bool| -> Result<(Vec<Vec<f32>>, Vec<f64>)> {
-            let mut latent = Array::from_f32_slice(&values("latent"), &[1, 16, 2, 2])
+            let mut latent = Array::from_f32_slice(&values("latent"), &[1, 16, latent_h, latent_w])
                 .unwrap()
                 .squeeze_axis(0, &stream)
                 .unwrap()
@@ -1137,7 +1816,7 @@ mod tests {
                 .unwrap();
             let mut velocities = Vec::new();
             let mut timings = Vec::new();
-            for step in 0..sigmas.len() - 1 {
+            for step in 0..run_steps {
                 let started = std::time::Instant::now();
                 let velocity = if compiled_mode {
                     let timestep = super::embed_timestep(&weights, config, sigmas[step], &stream)?;
@@ -1216,7 +1895,8 @@ mod tests {
             eager_timings, compiled_timings
         );
         println!(
-            "warm 8-step totals: eager {eager_total:.3}s, compiled {compiled_total:.3}s ({:.1}%)",
+            "warm {}-step totals: eager {eager_total:.3}s, compiled {compiled_total:.3}s ({:.1}%)",
+            sigmas.len() - 1,
             100.0 * compiled_total / eager_total
         );
         if let Ok(path) = std::env::var("DANQING_TEST_ZIMAGE_WARM_JSON") {
@@ -1230,5 +1910,639 @@ mod tests {
             });
             std::fs::write(path, serde_json::to_string(&payload).unwrap()).unwrap();
         }
+    }
+
+    /// The compiled TeaCache compute path must reproduce the eager cached
+    /// path step by step (velocities, gate decisions, residual reuse) on the
+    /// real checkpoint at production resolution, including forced skips.
+    #[cfg(feature = "mlx-metal")]
+    #[test]
+    #[ignore]
+    fn real_compiled_teacache_matches_eager_cache_semantics() {
+        let bundle = std::path::PathBuf::from(std::env::var("DANQING_TEST_ZIMAGE_BUNDLE").unwrap());
+        let payload: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(std::env::var("DANQING_TEST_ZIMAGE_REAL_JSON").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let values = |name: &str| -> Vec<f32> {
+            payload[name]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_f64().unwrap() as f32)
+                .collect()
+        };
+        let stream = Stream::gpu().unwrap();
+        let width = payload["width"].as_u64().unwrap() as u32;
+        let height = payload["height"].as_u64().unwrap() as u32;
+        let config = MlxZImageConfig::published();
+        let weights = load_directory(
+            &bundle.join("transformer"),
+            config,
+            WeightDtype::Native,
+            None,
+        )
+        .unwrap();
+        let ids: Vec<i64> = payload["ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_i64().unwrap())
+            .collect();
+        let grid = geom::token_grid(width, height, ids.len() as i64, config.vae_scale).unwrap();
+        let caption = Array::from_f32_slice(
+            &values("caption"),
+            &[
+                payload["caption_shape"][0].as_i64().unwrap() as i32,
+                payload["caption_shape"][1].as_i64().unwrap() as i32,
+            ],
+        )
+        .unwrap()
+        .astype(Dtype::BFloat16, &stream)
+        .unwrap();
+        let sigmas = values("sigmas");
+        let steps = sigmas.len() - 1;
+        let threshold = payload["teacache_thresh"].as_f64();
+        let caption_cache = CaptionCache::new(&weights, config, grid, &caption, &stream).unwrap();
+        let compiled = CompiledCompute::new(&weights, config, grid, &stream).unwrap();
+        let run = |compiled_mode: bool| -> Result<(Vec<Vec<f32>>, Vec<String>, usize, usize)> {
+            let mut cache = threshold.map_or_else(
+                || StepCache::z_image(steps),
+                |threshold| StepCache::new(steps, threshold),
+            );
+            let mut latent = Array::from_f32_slice(
+                &values("latent"),
+                &[1, 16, (height / 8) as i32, (width / 8) as i32],
+            )?
+            .squeeze_axis(0, &stream)?
+            .astype(Dtype::BFloat16, &stream)?;
+            let mut velocities = Vec::new();
+            for step in 0..steps {
+                let (velocity, residual) = if compiled_mode {
+                    forward_compiled_with_step_cache(
+                        &weights, config, &compiled, &latent, &caption_cache,
+                        sigmas[step], &mut cache, step, &stream,
+                    )?
+                } else {
+                    forward_with_step_cache(
+                        &weights, config, grid, &latent, &caption,
+                        sigmas[step], &mut cache, step, &stream,
+                    )
+                    .map(|velocity| (velocity, None))?
+                };
+                let cast = velocity.astype(latent.dtype(), &stream)?;
+                let delta = Array::from_f32_slice(&[sigmas[step + 1] - sigmas[step]], &[])?
+                    .astype(latent.dtype(), &stream)?;
+                let next = Array::add(
+                    &latent,
+                    &Array::multiply(&cast, &delta, &stream)?,
+                    &stream,
+                )?;
+                let mut targets = vec![&velocity, &next];
+                if let Some(residual) = &residual {
+                    targets.push(residual);
+                }
+                Array::eval_all(&targets)?;
+                velocities.push(velocity.to_vec_f32(&stream)?);
+                latent = next;
+            }
+            let kinds = cache.history.iter().map(|d| d.kind.to_string()).collect();
+            Ok((velocities, kinds, cache.computed_count, cache.skipped_count))
+        };
+        let (eager, eager_kinds, eager_computed, eager_skipped) = run(false).unwrap();
+        let (compiled, compiled_kinds, compiled_computed, compiled_skipped) = run(true).unwrap();
+        assert_eq!(eager_kinds, compiled_kinds);
+        assert_eq!(eager_computed, compiled_computed);
+        assert_eq!(eager_skipped, compiled_skipped);
+        // Cross-check against the main fixture when it carries gate history.
+        if let Some(expected) = payload["cache_decisions"].as_array() {
+            assert_eq!(eager_kinds.len(), expected.len());
+            for (actual, expected) in eager_kinds.iter().zip(expected) {
+                assert_eq!(actual, expected["kind"].as_str().unwrap());
+            }
+            assert_eq!(
+                eager_computed,
+                payload["cache_counts"]["computed"].as_u64().unwrap() as usize
+            );
+            assert_eq!(
+                eager_skipped,
+                payload["cache_counts"]["skipped"].as_u64().unwrap() as usize
+            );
+        }
+        for (step, (eager_velocity, compiled_velocity)) in
+            eager.iter().zip(&compiled).enumerate()
+        {
+            let mut error = 0.0f32;
+            for (actual, expected) in compiled_velocity.iter().zip(eager_velocity) {
+                error = error.max((actual - expected).abs());
+            }
+            println!("compiled TeaCache step {step}: max abs error vs eager {error}");
+            assert_eq!(compiled_velocity, eager_velocity, "step {step} diverged");
+        }
+        println!(
+            "compiled TeaCache parity: {} compute / {} skip, all steps bit-exact",
+            eager_computed, eager_skipped
+        );
+    }
+
+    /// One-off micro benchmark: a single real unified block at production
+    /// token geometry, eager with per-call eval, to compare against main's
+    /// per-block timing (not a parity fixture).
+    #[cfg(feature = "mlx-metal")]
+    #[test]
+    #[ignore]
+    fn real_block_micro_benchmark() {
+        let bundle = std::path::PathBuf::from(std::env::var("DANQING_TEST_ZIMAGE_BUNDLE").unwrap());
+        let stream = Stream::gpu().unwrap();
+        let config = MlxZImageConfig::published();
+        let weights = load_directory(&bundle.join("transformer"), config, WeightDtype::Native, None).unwrap();
+        let grid = geom::token_grid(768, 1280, 11, config.vae_scale).unwrap();
+        let ids = geom::positions_image_first(grid);
+        let axes = config.axes.map(|value| value as i32);
+        let table = crate::families::z_image::mlx::attention::rope_table(&ids, axes, config.rope_theta, &stream).unwrap();
+        table.eval().unwrap();
+        let tokens = (grid.img_len + grid.cap_len) as i32;
+        let values: Vec<f32> = (0..(tokens as usize * config.dim as usize))
+            .map(|index| ((index % 31) as f32) * 0.01 - 0.15)
+            .collect();
+        let input = Array::from_f32_slice(&values, &[1, tokens, config.dim as i32])
+            .unwrap()
+            .astype(Dtype::BFloat16, &stream)
+            .unwrap();
+        let timestep = super::embed_timestep(&weights, config, 0.5, &stream).unwrap();
+        input.eval().unwrap();
+        timestep.eval().unwrap();
+        for run in 0..3 {
+            let started = std::time::Instant::now();
+            let count = 30;
+            let mut x = input.clone();
+            for _ in 0..count {
+                x = super::run_block(&weights, config, "layers.0", &x, &ids, true, Some(&timestep), Some(&table), &stream).unwrap();
+                x.eval().unwrap();
+            }
+            let per = started.elapsed().as_secs_f64() / count as f64;
+            println!("block micro run {run}: {:.1}ms per block+eval", per * 1000.0);
+        }
+    }
+
+    /// Formal warm performance gate (plan §8.2) on the checkpoint-Native
+    /// production path: the same fixed slice runs several passes with all
+    /// weights resident, every pass must stay bit-exact with the main warm
+    /// baseline (`tests/parity/zimage_warm_mlx.py`), and the warm p50 latency
+    /// must not exceed 105% of main's warm p50 for encode/denoise/VAE.
+    /// TeaCache fixtures exercise main's default optimization: the caption
+    /// branch is precomputed once per run and the compute steps evaluate the
+    /// stored residual together with velocity + latent, exactly like main.
+    #[cfg(feature = "mlx-metal")]
+    #[test]
+    #[ignore]
+    fn real_native_warm_passes_match_main_and_report_performance() {
+        let bundle = std::path::PathBuf::from(std::env::var("DANQING_TEST_ZIMAGE_BUNDLE").unwrap());
+        let payload: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(std::env::var("DANQING_TEST_ZIMAGE_WARM_MAIN_JSON").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            payload["native_dtype"].as_str(),
+            Some("checkpoint"),
+            "the performance gate requires the checkpoint-Native baseline"
+        );
+        let passes_requested = std::env::var("DANQING_TEST_ZIMAGE_WARM_PASSES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(3);
+        assert!(passes_requested >= 2, "need at least one warm pass");
+        let values = |name: &str| -> Vec<f32> {
+            payload[name]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_f64().unwrap() as f32)
+                .collect()
+        };
+        let stream = Stream::gpu().unwrap();
+        let width = payload["width"].as_u64().unwrap() as u32;
+        let height = payload["height"].as_u64().unwrap() as u32;
+        let latent_h = (height / 8) as i32;
+        let latent_w = (width / 8) as i32;
+        let ids: Vec<i32> = payload["ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_i64().unwrap() as i32)
+            .collect();
+        let sigmas = values("sigmas");
+        let steps = sigmas.len() - 1;
+        let teacache = payload["teacache"].as_bool().unwrap_or(false);
+        let config = MlxZImageConfig::published();
+        let grid = geom::token_grid(width, height, ids.len() as i64, config.vae_scale).unwrap();
+
+        danmo_mlx::reset_peak_memory().unwrap();
+        let load_started = std::time::Instant::now();
+        let text_weights = crate::common::qwen3::mlx::load_directory(
+            &bundle.join("text_encoder"),
+            WeightDtype::Native,
+        )
+        .unwrap();
+        let text_config = crate::common::qwen3::Qwen3Config {
+            vocab: 151_936,
+            hidden: 2560,
+            layers: 36,
+            heads: 32,
+            kv_heads: 8,
+            head_dim: 128,
+            intermediate: 9728,
+            rope_theta: 1_000_000.0,
+        };
+        let weights = load_directory(
+            &bundle.join("transformer"),
+            config,
+            WeightDtype::Native,
+            None,
+        )
+        .unwrap();
+        let dit_weight_bytes = weights.nbytes();
+        let vae_weights =
+            crate::common::vae::mlx::load_dense(&bundle.join("vae"), WeightDtype::Native).unwrap();
+        let spec = crate::common::vae::VaeSpec {
+            latent_channels: 16,
+            block_out: vec![128, 256, 512, 512],
+            resnets: 2,
+            groups: 32,
+            scaling: 0.3611,
+            shift: 0.1159,
+            attention: true,
+        };
+        let load_seconds = load_started.elapsed().as_secs_f64();
+
+        let expected_caption = values("caption");
+        let expected_velocities: Vec<Vec<f32>> = payload["velocities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|step| {
+                step.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.as_f64().unwrap() as f32)
+                    .collect()
+            })
+            .collect();
+        let expected_step_latents: Vec<Vec<f32>> = payload["step_latents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|step| {
+                step.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.as_f64().unwrap() as f32)
+                    .collect()
+            })
+            .collect();
+        let expected_denoised = values("denoised");
+        let expected_pixels: Vec<u8> = payload["pixels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_u64().unwrap() as u8)
+            .collect();
+        // Latents are BF16 on both sides: compare raw bytes exactly, with the
+        // expected f32 values widened back on the host (lossless). Velocities
+        // leave main's final layer in F32 (F32 DiT weights), so they are
+        // compared as exact f32 bit patterns after the readback cast.
+        let bf16_bytes = |values: &[f32]| -> Vec<u8> {
+            values
+                .iter()
+                .enumerate()
+                .flat_map(|(index, value)| {
+                    let bits = value.to_bits();
+                    assert_eq!(
+                        bits & 0xFFFF,
+                        0,
+                        "expected value {value} at {index} is not exact BF16"
+                    );
+                    [(bits >> 16) as u8, (bits >> 24) as u8]
+                })
+                .collect()
+        };
+        let expected_latent_bytes: Vec<Vec<u8>> = expected_step_latents
+            .iter()
+            .map(|step| bf16_bytes(step))
+            .collect();
+        let expected_velocity_bytes: Vec<Vec<u8>> = expected_velocities
+            .iter()
+            .map(|step| {
+                step.iter()
+                    .flat_map(|value| value.to_bits().to_le_bytes())
+                    .collect()
+            })
+            .collect();
+
+        let initial_latent =
+            Array::from_f32_slice(&values("latent"), &[1, 16, latent_h, latent_w])
+                .unwrap()
+                .squeeze_axis(0, &stream)
+                .unwrap()
+                .astype(Dtype::BFloat16, &stream)
+                .unwrap();
+        let mut step_cache = teacache.then(|| {
+            payload["teacache_thresh"].as_f64().map_or_else(
+                || StepCache::z_image(steps),
+                |threshold| StepCache::new(steps, threshold),
+            )
+        });
+        // The checkpoint-Native production optimization for the default 9-step
+        // schedule is TeaCache with the 30-block compute compiled; the gate,
+        // residual reuse, and caption precompute stay eager (main's boundary).
+        // DANQING_TEST_ZIMAGE_WARM_EAGER=1 selects the uncompiled cached path.
+        let eager_mode = std::env::var("DANQING_TEST_ZIMAGE_WARM_EAGER").is_ok();
+        let compile_trace = std::env::var("DANQING_TEST_ZIMAGE_WARM_COMPILE_TRACE").is_ok();
+        let compiled_compute = (teacache && !eager_mode)
+            .then(|| super::CompiledCompute::new(&weights, config, grid, &stream).unwrap());
+        let mut trace_seconds = Vec::new();
+
+        let mut passes = Vec::new();
+        for pass_index in 0..passes_requested {
+            let started = std::time::Instant::now();
+            let caption = crate::common::qwen3::mlx::encode_ids(
+                &text_weights,
+                text_config,
+                "model.",
+                &ids,
+                &vec![true; ids.len()],
+                &[35],
+                &stream,
+            )
+            .unwrap()
+            .squeeze_axis(0, &stream)
+            .unwrap();
+            caption.eval().unwrap();
+            let encode_seconds = started.elapsed().as_secs_f64();
+            let caption_values = caption.to_vec_f32(&stream).unwrap();
+
+            let dit_started = std::time::Instant::now();
+            let mut latent = initial_latent.clone();
+            let mut step_seconds = Vec::new();
+            let mut pass_velocity_bytes: Vec<Vec<u8>> = Vec::new();
+            let mut pass_latent_bytes: Vec<Vec<u8>> = Vec::new();
+            let caption_cache = step_cache
+                .as_ref()
+                .map(|_| super::CaptionCache::new(&weights, config, grid, &caption, &stream).unwrap());
+            let compiled = std::env::var("DANQING_TEST_ZIMAGE_WARM_COMPILE")
+                .ok()
+                .map(|_| super::CompiledForward::new(&weights, config, grid, &caption, false, &stream).unwrap());
+            if let Some(cache) = &mut step_cache {
+                cache.reset();
+            }
+            for step in 0..steps {
+                let step_started = std::time::Instant::now();
+                let delta = Array::from_f32_slice(&[sigmas[step + 1] - sigmas[step]], &[])
+                    .unwrap()
+                    .astype(latent.dtype(), &stream)
+                    .unwrap();
+                let velocity;
+                let mut eval_targets: Vec<&Array>;
+                match (&mut step_cache, &caption_cache, &compiled, &compiled_compute) {
+                    (Some(_), _, Some(_), _) => {
+                        panic!("the full-compile probe does not wire the TeaCache gate; use an eager fixture");
+                    }
+                    (Some(cache), Some(caption_cache), None, compiled_compute) => {
+                        let (output, residual) = match compiled_compute {
+                            Some(compiled) => {
+                                let trace_started = std::time::Instant::now();
+                                let result = super::forward_compiled_with_step_cache(
+                                    &weights,
+                                    config,
+                                    compiled,
+                                    &latent,
+                                    caption_cache,
+                                    sigmas[step],
+                                    cache,
+                                    step,
+                                    &stream,
+                                )
+                                .unwrap();
+                                if compile_trace && pass_index == 0 {
+                                    result.0.eval().unwrap();
+                                    trace_seconds.push(trace_started.elapsed().as_secs_f64());
+                                }
+                                result
+                            }
+                            None => super::forward_cached_with_step_cache(
+                                &weights,
+                                config,
+                                grid,
+                                &latent,
+                                caption_cache,
+                                sigmas[step],
+                                cache,
+                                step,
+                                &stream,
+                            )
+                            .unwrap(),
+                        };
+                        velocity = output;
+                        // LinearScheduler.step casts the velocity to the
+                        // latent dtype before the multiply (main semantics).
+                        let cast = velocity.astype(latent.dtype(), &stream).unwrap();
+                        let next = Array::add(
+                            &latent,
+                            &Array::multiply(&cast, &delta, &stream).unwrap(),
+                            &stream,
+                        )
+                        .unwrap();
+                        // main evaluates velocity + latent (+ residual on
+                        // compute steps) in one call inside the step loop.
+                        eval_targets = vec![&velocity, &next];
+                        if let Some(residual) = &residual {
+                            eval_targets.push(residual);
+                        }
+                        Array::eval_all(&eval_targets).unwrap();
+                        latent = next;
+                    }
+                    (None, None, Some(compiled), _) => {
+                        let timestep =
+                            super::embed_timestep(&weights, config, sigmas[step], &stream).unwrap();
+                        velocity = compiled.apply(&latent, &timestep).unwrap();
+                        let cast = velocity.astype(latent.dtype(), &stream).unwrap();
+                        let next = Array::add(
+                            &latent,
+                            &Array::multiply(&cast, &delta, &stream).unwrap(),
+                            &stream,
+                        )
+                        .unwrap();
+                        eval_targets = vec![&velocity, &next];
+                        Array::eval_all(&eval_targets).unwrap();
+                        latent = next;
+                    }
+                    (None, None, None, _) => {
+                        velocity = forward(
+                            &weights,
+                            config,
+                            grid,
+                            &latent,
+                            &caption,
+                            sigmas[step],
+                            &stream,
+                        )
+                        .unwrap();
+                        let cast = velocity.astype(latent.dtype(), &stream).unwrap();
+                        let next = Array::add(
+                            &latent,
+                            &Array::multiply(&cast, &delta, &stream).unwrap(),
+                            &stream,
+                        )
+                        .unwrap();
+                        eval_targets = vec![&velocity, &next];
+                        Array::eval_all(&eval_targets).unwrap();
+                        latent = next;
+                    }
+                    _ => unreachable!("cache and caption branch are enabled together"),
+                }
+                pass_velocity_bytes.push(velocity.to_raw_bytes(&stream).unwrap());
+                pass_latent_bytes.push(latent.to_raw_bytes(&stream).unwrap());
+                step_seconds.push(step_started.elapsed().as_secs_f64());
+            }
+            let denoise_seconds = dit_started.elapsed().as_secs_f64();
+            if compile_trace && pass_index == 0 {
+                println!("compiled trace per-step: {trace_seconds:?}");
+            }
+            assert_eq!(
+                latent.to_raw_bytes(&stream).unwrap(),
+                bf16_bytes(&expected_denoised),
+                "pass {pass_index}: final latent diverged"
+            );
+            if let Some(cache) = &step_cache {
+                assert_eq!(
+                    cache.computed_count,
+                    payload["cache_counts"]["computed"].as_u64().unwrap() as usize
+                );
+                assert_eq!(
+                    cache.skipped_count,
+                    payload["cache_counts"]["skipped"].as_u64().unwrap() as usize
+                );
+            }
+
+            let vae_started = std::time::Instant::now();
+            let denoised_nchw = latent.expand_dims(0, &stream).unwrap();
+            let decoded = crate::common::vae::mlx::decode(
+                &vae_weights,
+                &spec,
+                &denoised_nchw,
+                &stream,
+            )
+            .unwrap();
+            decoded.eval().unwrap();
+            let decoded_values = decoded.to_vec_f32(&stream).unwrap();
+            let plane = (width * height) as usize;
+            let pixels: Vec<u8> = (0..plane * 3)
+                .map(|index| {
+                    let channel = index % 3;
+                    let pixel = index / 3;
+                    let value = decoded_values[channel * plane + pixel];
+                    ((value + 1.0) * 127.5).clamp(0.0, 255.0).round_ties_even() as u8
+                })
+                .collect();
+            let vae_seconds = vae_started.elapsed().as_secs_f64();
+            let total = started.elapsed().as_secs_f64();
+            // Parity verification runs after all three phase clocks stop, so
+            // host-side readbacks never pollute the measured phases (main's
+            // baseline likewise keeps its array exports outside the clocks).
+            assert_eq!(
+                caption_values, expected_caption,
+                "pass {pass_index}: caption diverged from main"
+            );
+            for step in 0..steps {
+                assert_eq!(
+                    pass_velocity_bytes[step], expected_velocity_bytes[step],
+                    "pass {pass_index} step {step}: velocity is not bit-exact with main"
+                );
+                assert_eq!(
+                    pass_latent_bytes[step], expected_latent_bytes[step],
+                    "pass {pass_index} step {step}: latent is not bit-exact with main"
+                );
+            }
+            assert_eq!(pixels, expected_pixels, "pass {pass_index}: RGB diverged");
+            println!(
+                "warm pass {pass_index}: encode={encode_seconds:.3}s denoise={denoise_seconds:.3}s vae={vae_seconds:.3}s total={total:.3}s"
+            );
+            passes.push(serde_json::json!({
+                "encode": encode_seconds,
+                "denoise": denoise_seconds,
+                "steps": step_seconds,
+                "vae": vae_seconds,
+                "total": total,
+            }));
+        }
+
+        let median = |key: &str, entries: &[serde_json::Value]| -> f64 {
+            let mut values: Vec<f64> = entries
+                .iter()
+                .map(|entry| entry[key].as_f64().unwrap())
+                .collect();
+            values.sort_by(f64::total_cmp);
+            values[values.len() / 2]
+        };
+        let warm = &passes[1..];
+        let main_p50 = &payload["warm_p50"];
+        let mut ratios = serde_json::Map::new();
+        let mut failures = Vec::new();
+        for key in ["encode", "denoise", "vae", "total"] {
+            let rust = median(key, warm);
+            let main = main_p50[key].as_f64().unwrap();
+            let ratio = rust / main;
+            println!("warm p50 {key}: rust {rust:.3}s vs main {main:.3}s ({:.1}%)", ratio * 100.0);
+            ratios.insert(key.to_string(), serde_json::json!(ratio));
+            if ratio > 1.05 {
+                failures.push(format!(
+                    "warm p50 {key} exceeded 105% of main: rust {rust:.3}s vs main {main:.3}s"
+                ));
+            }
+        }
+        let peak = danmo_mlx::peak_memory().unwrap();
+        let active = danmo_mlx::active_memory().unwrap();
+        println!("native warm memory: peak {peak} bytes, active {active} bytes");
+        // Steady-state resident footprint with the reusable buffer pool
+        // emptied; the pool itself grows with pass count on both sides and
+        // is not a resident-weight difference.
+        danmo_mlx::clear_cache().unwrap();
+        let steady_active = danmo_mlx::active_memory().unwrap();
+        println!("native warm steady memory (pool cleared): active {steady_active} bytes");
+        if let Some(main_steady) = payload["memory"]["steady_active"].as_u64() {
+            assert!(
+                (steady_active as f64) <= 1.05 * main_steady as f64,
+                "steady resident memory exceeded 105% of main: {steady_active} vs {main_steady}"
+            );
+        }
+        if let Ok(path) = std::env::var("DANQING_TEST_ZIMAGE_WARM_RUST_JSON") {
+            let report = serde_json::json!({
+                "weight_dtype": "checkpoint",
+                "width": width,
+                "height": height,
+                "steps": steps,
+                "teacache": teacache,
+                "load_seconds": load_seconds,
+                "dit_weight_bytes": dit_weight_bytes,
+                "passes": passes,
+                "warm_p50": {
+                    "encode": median("encode", warm),
+                    "denoise": median("denoise", warm),
+                    "vae": median("vae", warm),
+                    "total": median("total", warm),
+                },
+                "main_warm_p50": main_p50,
+                "rust_to_main_ratio": ratios,
+                "peak_memory": peak,
+                "active_memory": active,
+                "steady_active_memory": steady_active,
+                "main_peak_memory": payload["memory"]["peak"].as_u64().unwrap(),
+                "main_steady_active_memory": payload["memory"]["steady_active"].as_u64(),
+            });
+            std::fs::write(path, serde_json::to_string(&report).unwrap()).unwrap();
+        }
+        assert!(failures.is_empty(), "{}", failures.join("; "));
     }
 }

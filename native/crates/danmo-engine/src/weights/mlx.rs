@@ -73,6 +73,14 @@ impl MlxWeights {
         }
     }
 
+    pub fn embedding(&self, name: &str, stream: &Stream) -> Result<Array> {
+        match self.tensors.get(name) {
+            Some(Entry::Dense { tensor, .. }) => Ok(tensor.clone()),
+            Some(Entry::Packed(linear)) => linear.dequantize_embedding(stream),
+            None => Err(Error::new("MLX weights", format!("missing tensor {name}"))),
+        }
+    }
+
     /// A `[out, in]` linear weight, dense or packed.
     pub fn linear(&self, name: &str) -> Result<&LinearWeight> {
         match self.tensors.get(name) {
@@ -127,6 +135,20 @@ impl MlxWeights {
             tensors: output,
             quantization: self.quantization,
         })
+    }
+
+    #[cfg(test)]
+    pub fn into_dequantized(self, stream: &Stream) -> Result<BTreeMap<String, Array>> {
+        self.tensors
+            .into_iter()
+            .map(|(name, entry)| {
+                let tensor = match entry {
+                    Entry::Dense { tensor, .. } => tensor,
+                    Entry::Packed(linear) => linear.dequantize_embedding(stream)?,
+                };
+                Ok((name, tensor))
+            })
+            .collect()
     }
 
     /// Dense map for consumers that have no linear layers to quantize.
@@ -399,8 +421,14 @@ mod tests {
 
     impl Scratch {
         fn new() -> Self {
+            // Parallel tests on macOS can observe identical coarse clock
+            // readings, so the directory name needs a process-wide counter:
+            // a shared scratch dir made shards from different tests collide
+            // ("duplicate tensor") and one test's Drop deleted another's files.
+            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "danmo-mlx-weights-{}-{}",
+                "danmo-mlx-weights-{}-{}-{unique}",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)

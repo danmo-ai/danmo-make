@@ -20,12 +20,37 @@ pub fn forward(
     mask: Option<&Array>,
     stream: &Stream,
 ) -> Result<Array> {
+    let table = rope_table(ids, axes, theta, stream)?;
+    forward_with_table(
+        input,
+        weights,
+        heads,
+        ids.len(),
+        axes,
+        &table,
+        eps,
+        mask,
+        stream,
+    )
+}
+
+pub fn forward_with_table(
+    input: &Array,
+    weights: AttentionWeights<'_>,
+    heads: i32,
+    sequence_positions: usize,
+    axes: [i32; 3],
+    table: &Array,
+    eps: f32,
+    mask: Option<&Array>,
+    stream: &Stream,
+) -> Result<Array> {
     let shape = input.shape();
     if shape.len() != 3 {
         return Err(Error::new("Z-Image attention", "expected [B, S, D] input"));
     }
     let (batch, sequence, dim) = (shape[0], shape[1], shape[2]);
-    if heads <= 0 || dim % heads != 0 || ids.len() != sequence as usize {
+    if heads <= 0 || dim % heads != 0 || sequence_positions != sequence as usize {
         return Err(Error::new(
             "Z-Image attention",
             "invalid heads or position count",
@@ -55,8 +80,8 @@ pub fn forward(
         .reshape(&[batch, sequence, heads, head_dim], stream)?;
     q = q.rms_norm(Some(weights.norm_q), eps, stream)?;
     k = k.rms_norm(Some(weights.norm_k), eps, stream)?;
-    q = apply_rope(&q, ids, axes, theta, stream)?;
-    k = apply_rope(&k, ids, axes, theta, stream)?;
+    q = apply_rope(&q, table, stream)?;
+    k = apply_rope(&k, table, stream)?;
 
     let q = q.transpose_axes(&[0, 2, 1, 3], stream)?;
     let k = k.transpose_axes(&[0, 2, 1, 3], stream)?;
@@ -68,17 +93,11 @@ pub fn forward(
     weights.to_out.apply(&output, None, stream)
 }
 
-fn apply_rope(
-    input: &Array,
-    ids: &[[i32; 3]],
-    axes: [i32; 3],
-    theta: f32,
-    stream: &Stream,
-) -> Result<Array> {
+fn apply_rope(input: &Array, table: &Array, stream: &Stream) -> Result<Array> {
     let shape = input.shape();
     let (batch, sequence, heads, dim) = (shape[0], shape[1], shape[2], shape[3]);
     let pairs = dim / 2;
-    let table = rope_table(ids, axes, theta)?.reshape(&[1, sequence, 1, pairs, 2], stream)?;
+    let table = table.reshape(&[1, sequence, 1, pairs, 2], stream)?;
     let input = input.reshape(&[batch, sequence, heads, pairs, 2], stream)?;
     let input_real = component(&input, 0, stream)?;
     let input_imag = component(&input, 1, stream)?;
@@ -110,28 +129,33 @@ fn component(input: &Array, index: i32, stream: &Stream) -> Result<Array> {
         .squeeze_axis(axis as i32, stream)
 }
 
-fn rope_table(ids: &[[i32; 3]], axes: [i32; 3], theta: f32) -> Result<Array> {
-    let head_dim = axes.iter().sum::<i32>();
-    let pairs = head_dim / 2;
-    let mut values = vec![0.0; ids.len() * pairs as usize * 2];
-    for (sequence, id) in ids.iter().enumerate() {
-        let mut pair_offset = 0i32;
-        for (axis, width) in axes.iter().enumerate() {
-            let axis_pairs = width / 2;
-            // main precomputes freq = theta^(-2k/d) once per pair, then
-            // angle = position * freq. Iterative angle *= step drifts from
-            // that at large positions (1024px grids) and breaks parity.
-            for pair in 0..axis_pairs {
-                let freq = theta.powf(-2.0 * pair as f32 / *width as f32);
-                let angle = id[axis] as f32 * freq;
-                let index = (sequence as i32 * pairs + pair_offset + pair) as usize * 2;
-                values[index] = angle.cos();
-                values[index + 1] = angle.sin();
-            }
-            pair_offset += axis_pairs;
-        }
+pub(super) fn rope_table(
+    ids: &[[i32; 3]],
+    axes: [i32; 3],
+    theta: f32,
+    stream: &Stream,
+) -> Result<Array> {
+    let theta = Array::from_f32_slice(&[theta], &[])?;
+    let one = Array::from_f32_slice(&[1.0], &[])?;
+    let mut tables = Vec::new();
+    for (axis, width) in axes.iter().enumerate() {
+        let positions: Vec<i32> = ids.iter().map(|id| id[axis]).collect();
+        let positions = Array::from_i32_slice(&positions, &[ids.len() as i32])?
+            .astype(danmo_mlx::Dtype::Float32, stream)?
+            .expand_dims(1, stream)?;
+        let width_scalar = Array::from_f32_slice(&[*width as f32], &[])?;
+        let exponents = Array::arange(0.0, *width as f64, 2.0, danmo_mlx::Dtype::Float32, stream)?;
+        let exponents = Array::divide(&exponents, &width_scalar, stream)?;
+        let frequencies = Array::power(&theta, &exponents, stream)?;
+        let frequencies = Array::divide(&one, &frequencies, stream)?.expand_dims(0, stream)?;
+        let angles = Array::multiply(&positions, &frequencies, stream)?;
+        tables.push(Array::stack(
+            &[angles.cos(stream)?, angles.sin(stream)?],
+            -1,
+            stream,
+        )?);
     }
-    Array::from_f32_slice(&values, &[ids.len() as i32, pairs, 2])
+    Array::concatenate_axis(&tables, 1, stream)
 }
 
 #[cfg(test)]

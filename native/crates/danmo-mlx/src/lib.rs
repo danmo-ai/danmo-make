@@ -5,18 +5,20 @@ mod error;
 mod executor;
 mod io;
 mod linear;
+mod memory;
 mod random;
 mod stream;
 
 use std::ffi::CStr;
 
 pub use array::{Array, Dtype, QuantizedArray};
-pub use compile::{Closure, UnaryClosure};
+pub use compile::{Closure, MultiClosure, UnaryClosure};
 pub use device::{Device, DeviceType};
 pub use error::{Error, Result};
 pub use executor::Executor;
 pub use io::{save_safetensors, SafeTensors};
 pub use linear::{AffineQuantization, LinearWeight};
+pub use memory::{active_memory, clear_cache, peak_memory, reset_peak_memory};
 pub use random::RandomKey;
 pub use stream::Stream;
 

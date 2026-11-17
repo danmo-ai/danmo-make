@@ -6,6 +6,7 @@ mod feed_forward;
 mod host;
 mod model;
 mod modulation;
+mod step_cache;
 mod timestep;
 mod weights;
 

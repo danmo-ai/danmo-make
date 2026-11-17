@@ -1,0 +1,113 @@
+{
+ "parity-zimage-native-default-teacache-rust-warm.json": {
+  "width": 768,
+  "height": 1280,
+  "steps": 9,
+  "teacache": true,
+  "warm_p50": {
+   "denoise": 18.299037209,
+   "encode": 0.073481209,
+   "total": 18.640651125,
+   "vae": 0.270680334
+  },
+  "passes": [
+   {
+    "denoise": 14.577359083,
+    "encode": 0.241122834,
+    "total": 15.227443542,
+    "vae": 0.408463458
+   },
+   {
+    "denoise": 15.170161292,
+    "encode": 0.0824165,
+    "total": 15.515188333,
+    "vae": 0.262055583
+   },
+   {
+    "denoise": 16.162981125,
+    "encode": 0.070577542,
+    "total": 16.504632042,
+    "vae": 0.270680334
+   },
+   {
+    "denoise": 18.299037209,
+    "encode": 0.071273083,
+    "total": 18.640651125,
+    "vae": 0.269968833
+   },
+   {
+    "denoise": 19.28954175,
+    "encode": 0.073481209,
+    "total": 19.641554209,
+    "vae": 0.278108666
+   }
+  ],
+  "rust_to_main_ratio": {
+   "denoise": 0.6354318149652762,
+   "encode": 0.9684226719713799,
+   "total": 0.6385121006296856,
+   "vae": 0.8501188340935052
+  },
+  "peak_memory": 39854335370,
+  "steady_active_memory": 32663479666,
+  "dit_weight_bytes": 24619634944,
+  "fixture_sha256": "69ba38dc6d5227216e87037768562c292cde5657bc06a799c2dfde6d016327fe"
+ },
+ "parity-zimage-native-default-teacache-main-warm.json": {
+  "width": 768,
+  "height": 1280,
+  "steps": 9,
+  "teacache": true,
+  "native_dtype": "checkpoint",
+  "warm_p50": {
+   "encode": 0.07587720850278856,
+   "denoise": 28.797798249997868,
+   "vae": 0.3184029375006503,
+   "total": 29.193888583500666
+  },
+  "memory": {
+   "peak": 39714414077,
+   "active": 32907992549,
+   "cache": 20180642950,
+   "steady_active": 32907992549,
+   "steady_cache": 0
+  },
+  "passes": [
+   {
+    "encode": 0.06741537500056438,
+    "denoise": 27.867986167002528,
+    "vae": 0.3956053340007202,
+    "total": 28.331501417000254
+   },
+   {
+    "encode": 0.07545454199862434,
+    "denoise": 28.29293458400207,
+    "vae": 0.3261659579948173,
+    "total": 28.696207041997695
+   },
+   {
+    "encode": 0.0756595000057132,
+    "denoise": 28.63174933299888,
+    "vae": 0.3185525000008056,
+    "total": 29.027623917005258
+   },
+   {
+    "encode": 0.08367158399778418,
+    "denoise": 28.963847166996857,
+    "vae": 0.3110026669965009,
+    "total": 29.360153249996074
+   },
+   {
+    "encode": 0.07609491699986393,
+    "denoise": 29.281875000000582,
+    "vae": 0.318253375000495,
+    "total": 29.6779752500006
+   }
+  ],
+  "cache_counts": {
+   "computed": 9,
+   "skipped": 0
+  },
+  "fixture_sha256": "db0a92bb07a368a11abe9eef3ad3ab06bf93f85192b376e7c05ebf9d509a143d"
+ }
+}

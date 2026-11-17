@@ -11,6 +11,13 @@ pub fn load_dense(
     crate::weights::load_mlx_directory(directory, dtype, None)?.into_dense()
 }
 
+#[cfg(test)]
+pub fn load_dequantized(directory: &std::path::Path) -> Result<BTreeMap<String, Array>> {
+    let stream = Stream::cpu()?;
+    crate::weights::load_mlx_directory(directory, crate::weights::WeightDtype::Native, None)?
+        .into_dequantized(&stream)
+}
+
 pub fn decode(
     weights: &BTreeMap<String, Array>,
     spec: &VaeSpec,
@@ -53,13 +60,27 @@ fn decode_impl(
     let mut x = x.transpose_axes(&[0, 2, 3, 1], stream)?;
     x = conv(weights, "decoder.conv_in", &x, stream)?;
     record_stage(&mut trace, "conv_in", &x, stream)?;
-    x = resnet(weights, spec, "decoder.mid_block.resnets.0", &x, stream)?;
+    x = resnet(
+        weights,
+        spec,
+        "decoder.mid_block.resnets.0",
+        &x,
+        stream,
+        &mut trace,
+    )?;
     record_stage(&mut trace, "mid_resnet1", &x, stream)?;
     if spec.attention {
         x = spatial_attention(weights, spec, "decoder.mid_block.attentions.0", &x, stream)?;
         record_stage(&mut trace, "mid_attention", &x, stream)?;
     }
-    x = resnet(weights, spec, "decoder.mid_block.resnets.1", &x, stream)?;
+    x = resnet(
+        weights,
+        spec,
+        "decoder.mid_block.resnets.1",
+        &x,
+        stream,
+        &mut trace,
+    )?;
     record_stage(&mut trace, "mid_resnet2", &x, stream)?;
     for (index, channels) in spec.block_out.iter().rev().enumerate() {
         for block in 0..spec.resnets {
@@ -67,6 +88,13 @@ fn decode_impl(
                 weights,
                 spec,
                 &format!("decoder.up_blocks.{index}.resnets.{block}"),
+                &x,
+                stream,
+                &mut trace,
+            )?;
+            record_stage(
+                &mut trace,
+                &format!("up_{index}_resnet_{block}"),
                 &x,
                 stream,
             )?;
@@ -78,6 +106,7 @@ fn decode_impl(
                 &x,
                 stream,
             )?;
+            record_stage(&mut trace, &format!("up_{index}_upsample"), &x, stream)?;
         }
         if x.shape()[3] != *channels as i32 {
             return Err(Error::new("VAE MLX decode", "up block channel mismatch"));
@@ -112,16 +141,22 @@ fn resnet(
     prefix: &str,
     input: &Array,
     stream: &Stream,
+    trace: &mut Option<&mut BTreeMap<String, Array>>,
 ) -> Result<Array> {
     let mut x = group_norm(weights, spec, &format!("{prefix}.norm1"), input, stream)?;
+    record_stage(trace, &format!("{prefix}.norm1"), &x, stream)?;
     x = x.silu(stream)?;
     x = conv(weights, &format!("{prefix}.conv1"), &x, stream)?;
+    record_stage(trace, &format!("{prefix}.conv1"), &x, stream)?;
     x = group_norm(weights, spec, &format!("{prefix}.norm2"), &x, stream)?;
+    record_stage(trace, &format!("{prefix}.norm2"), &x, stream)?;
     x = x.silu(stream)?;
     x = conv(weights, &format!("{prefix}.conv2"), &x, stream)?;
+    record_stage(trace, &format!("{prefix}.conv2"), &x, stream)?;
     let shortcut = format!("{prefix}.conv_shortcut");
     if weights.contains_key(&format!("{shortcut}.weight")) {
         let shortcut = conv(weights, &shortcut, input, stream)?;
+        record_stage(trace, &format!("{prefix}.shortcut"), &shortcut, stream)?;
         Array::add(&shortcut, &x, stream)
     } else {
         Array::add(input, &x, stream)
@@ -143,7 +178,7 @@ fn spatial_attention(
         format!("{prefix}.norm")
     };
     let x = group_norm(weights, spec, &norm_name, input, stream)?;
-    let q = Array::linear(
+    let q = linear(
         &x,
         weight(weights, &format!("{prefix}.to_q.weight"))?,
         Some(weight(weights, &format!("{prefix}.to_q.bias"))?),
@@ -151,7 +186,7 @@ fn spatial_attention(
     )?
     .reshape(&[batch, height * width, 1, channels], stream)?
     .transpose_axes(&[0, 2, 1, 3], stream)?;
-    let k = Array::linear(
+    let k = linear(
         &x,
         weight(weights, &format!("{prefix}.to_k.weight"))?,
         Some(weight(weights, &format!("{prefix}.to_k.bias"))?),
@@ -159,7 +194,7 @@ fn spatial_attention(
     )?
     .reshape(&[batch, height * width, 1, channels], stream)?
     .transpose_axes(&[0, 2, 1, 3], stream)?;
-    let v = Array::linear(
+    let v = linear(
         &x,
         weight(weights, &format!("{prefix}.to_v.weight"))?,
         Some(weight(weights, &format!("{prefix}.to_v.bias"))?),
@@ -178,7 +213,7 @@ fn spatial_attention(
     )?
     .transpose_axes(&[0, 2, 1, 3], stream)?
     .reshape(&[batch, height, width, channels], stream)?;
-    let output = Array::linear(
+    let output = linear(
         &output,
         weight_alias(
             weights,
@@ -228,14 +263,16 @@ fn group_norm(
             "channels are not divisible by groups",
         ));
     }
-    let grouped = input.reshape(&[batch, height, width, groups, channels / groups], stream)?;
-    let mean = grouped.mean_axes(&[1, 2, 4], true, stream)?;
-    let centered = Array::subtract(&grouped, &mean, stream)?;
-    let squared = Array::multiply(&centered, &centered, stream)?;
-    let variance = squared.mean_axes(&[1, 2, 4], true, stream)?;
-    let eps = scalar(1e-6, input.dtype(), stream)?;
-    let denominator = Array::add(&variance, &eps, stream)?.sqrt(stream)?;
-    let normalized = Array::divide(&centered, &denominator, stream)?.reshape(&shape, stream)?;
+    let group_size = channels / groups;
+    let grouped = input.reshape(&[batch, height * width, groups, group_size], stream)?;
+    let grouped = grouped
+        .transpose_axes(&[0, 2, 1, 3], stream)?
+        .reshape(&[batch, groups, height * width * group_size], stream)?;
+    let normalized = grouped.layer_norm(1e-6, stream)?;
+    let normalized = normalized
+        .reshape(&[batch, groups, height * width, group_size], stream)?
+        .transpose_axes(&[0, 2, 1, 3], stream)?
+        .reshape(&shape, stream)?;
     let normalized = Array::multiply(
         &normalized,
         weight(weights, &format!("{prefix}.weight"))?,
@@ -248,6 +285,14 @@ fn group_norm(
     )
 }
 
+fn linear(input: &Array, weight: &Array, bias: Option<&Array>, stream: &Stream) -> Result<Array> {
+    let weight = weight.matrix_transpose(stream)?;
+    match bias {
+        Some(bias) => Array::addmm(bias, input, &weight, 1.0, 1.0, stream),
+        None => Array::matmul(input, &weight, stream),
+    }
+}
+
 fn conv(
     weights: &BTreeMap<String, Array>,
     prefix: &str,
@@ -256,21 +301,11 @@ fn conv(
 ) -> Result<Array> {
     let weight = weight(weights, &format!("{prefix}.weight"))?;
     let shape = weight.shape();
-    let padding = if shape.len() == 4 && shape[1] == 1 && shape[2] == 1 {
+    let padding = if shape.len() == 4 && shape[2] == 1 && shape[3] == 1 {
         0
     } else {
         1
     };
-    if prefix.ends_with("conv_shortcut") {
-        let weight = weight.reshape(&[shape[0], shape[1]], stream)?;
-        let output = Array::linear(
-            input,
-            &weight,
-            weights.get(&format!("{prefix}.bias")),
-            stream,
-        )?;
-        return Ok(output);
-    }
     let kernel = weight.transpose_axes(&[0, 2, 3, 1], stream)?;
     let mut output = Array::conv2d(
         input,
@@ -388,7 +423,12 @@ mod tests {
         #[cfg(not(feature = "mlx-metal"))]
         let stream = Stream::cpu().unwrap();
         let started = std::time::Instant::now();
-        let weights = super::load_dense(&vae, crate::weights::WeightDtype::F32).unwrap();
+        let weight_dtype = if payload["native_dtype"].as_str() == Some("checkpoint") {
+            crate::weights::WeightDtype::Native
+        } else {
+            crate::weights::WeightDtype::F32
+        };
+        let weights = super::load_dense(&vae, weight_dtype).unwrap();
         let spec = VaeSpec {
             latent_channels: payload["latent_channels"].as_i64().unwrap(),
             block_out: payload["block_out"]
@@ -409,7 +449,13 @@ mod tests {
             .iter()
             .map(|value| value.as_f64().unwrap() as f32)
             .collect();
-        let latent = Array::from_f32_slice(&latent, &[1, 16, 2, 2])
+        let latent_shape: Vec<i32> = payload["latent_shape"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_i64().unwrap() as i32)
+            .collect();
+        let latent = Array::from_f32_slice(&latent, &latent_shape)
             .unwrap()
             .astype(danmo_mlx::Dtype::BFloat16, &stream)
             .unwrap();

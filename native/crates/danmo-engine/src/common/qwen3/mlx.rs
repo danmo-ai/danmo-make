@@ -31,7 +31,7 @@ pub fn encode_ids(
     }
     let sequence = ids.len() as i32;
     let indices = Array::from_i32_slice(ids, &[sequence])?;
-    let embedding = weight(weights, prefix, "embed_tokens.weight")?;
+    let embedding = weights.embedding(&format!("{prefix}embed_tokens.weight"), stream)?;
     let mut hidden = embedding
         .take_axis(&indices, 0, stream)?
         .reshape(&[1, sequence, config.hidden as i32], stream)?

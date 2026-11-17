@@ -136,24 +136,26 @@ P1 是核心控制面先行，不要求所有外围占位路由一次完成后�
 
 ### 1.5.1 稠密权重保持原生 dtype —— 纠正 main 的 F32 放大（错误设计）
 
-**结论：`main` 把稠密 BF16/FP16 权重加载成 F32 是错误设计，不是要迁移的行为。** Rust 生产路径不得照搬。
+**结论：`main` 把本为 BF16/FP16 的稠密权重加载成 F32 是错误设计，不是要迁移的行为。** Rust 生产路径不得照搬；但 `Native` 不等于强制 BF16，官方 checkpoint 为 F32 的 tensor 必须继续保持 F32。
 
 来源：`main` 共享加载器 `backend/engine/common/model/base.py::_assign_param_tensor` 最终执行 `param[:] = tensor`。`nn.Linear` 等参数初始化为 F32，原地切片赋值只拷贝数值、不改变目标 dtype，于是发布的 BF16 权重被**静默放大为 F32**。加载器、`ZImageConfig` 均无「保持 F32」的意图或开关；`main` 内部也不一致——MiniMax H3、LTX VAE 按参数自身 dtype 处理，只有走默认加载器的 family 被放大。Z-Image 激活本身是 BF16（`latent_noise_dtype="bfloat16"`），与 F32 权重相乘被类型提升为 F32 计算。
 
-代价：
+**2026-11-17 实测纠正**：本机按 registry `Tongyi-MAI/Z-Image-Turbo` 下载的官方 DiT 三个 shard 共 521 个 tensor，**全部为 F32**，总字节 `24,619,634,944`，与官方 index 的 `total_size` 完全一致；不是下载错误或 BF16 被转换。VAE 244 个 tensor 为 BF16（`167,639,366` 字节），Qwen3 文本编码器 398 个 tensor 为 BF16（`8,044,936,192` 字节）。因此 Z-Image 的 F32 DiT 不是 main 放大造成的，不能声称 Native DiT 会从约 24GB 降至约 12GB；registry 的 `fp16` 名称不能作为 tensor dtype 证据。
 
-- **显存翻倍**：Z-Image DiT 约 6B 参数，BF16 约 12 GB，F32 约 24 GB；Qwen3 文本编码器与 VAE 同路径同样放大。32/36 GB Mac 上可能直接决定 fp16 版本能否运行。
-- **速度更慢**：DiT 推理受内存带宽限制，F32 权重每步读取字节翻倍，且用不上 BF16 快速 matmul 路径（含 M5 NAX）。
-- **精度无收益**：权重本就以 BF16 发布，放大不会恢复精度；MLX BF16 matmul 内部已用 F32 累加。
+一般代价（仅针对 checkpoint 本为 BF16/FP16 的 tensor）：
+
+- **显存翻倍**：低精度权重被放大后常驻字节翻倍；Z-Image Qwen3 文本编码器与 VAE 属于此类。DiT 是否节省空间必须以各官方 shard 实测 dtype 为准。
+- **速度更慢**：被放大的权重增加内存带宽，且不能利用 BF16 matmul 路径（含 M5 NAX）。
+- **精度无收益**：BF16 权重放大不会恢复精度；MLX BF16 matmul 内部已用 F32 累加。
 
 决策：
 
-1. 权重 dtype 是 `weights/mlx.rs` 共享加载层的显式策略（例如 `WeightDtype::Native | F32`），**不是** family 分支。
-2. `Native` 为生产默认：按 checkpoint 原样保留 BF16/FP16；norm、RoPE、timestep 等精度敏感小张量在算子内部按需转 F32。
-3. `F32` **只用于** parity 测试复现 `main` 现状数值。P0 已落地的 `common::vae::mlx::load_dense` 与 `families/z_image/mlx` DiT 的 `astype(F32)` 属于此 parity 模式，必须迁入该共享策略，不得作为生产默认保留。
-4. parity 分两层：机制层 F32 模式对 `main` 逐 ULP（证明拓扑、remap、调度正确，现有 16×16 门继续有效）；生产层 BF16 模式单独设门，按 BF16 误差特性设容差，对照 `main` 修复后的 BF16 输出或官方 diffusers BF16 参考，并加 `make bench-eval` PickScore 质量门。
-5. 性能门与显存门**以 BF16 原生路径为准**；F32 对 F32 的热性能对比不构成性能结论。
-6. `main` 同步修复（P0H）：参数按 checkpoint dtype 赋值（或整体替换数组而非切片拷贝），Python 用户立即节省一半显存，Rust 生产 parity 基线随之回到 BF16。
+1. 权重 dtype 是 `weights/mlx.rs` 共享加载层的显式策略（`WeightDtype::Native | F32`），**不是** family 分支。
+2. `Native` 为生产默认：逐 tensor 按 checkpoint 原样保留 BF16/FP16/F32；norm、RoPE、timestep 等精度敏感小张量在算子内部按需转 F32。
+3. `F32` **只用于** parity 测试复现 `main` 现状数值。共享策略已在 `9859706` 落地：`weights/mlx.rs::WeightDtype::{Native,F32}` 统一供 Qwen3、VAE 和 Z-Image DiT 使用，`F32` 仅在 `cfg(test)` 可用，生产加载只能选择 `Native`。
+4. parity 分两层：机制层 F32 模式对 `main` 逐 ULP；生产层 `Native` 按 checkpoint 实际 dtype 单独设门，对照显式恢复原生 dtype 的参考输出，并加 `make bench-eval` PickScore 质量门。
+5. 性能门与显存门**以 checkpoint 原生 dtype 路径为准**；F32 对 F32 的热性能对比不构成生产性能结论。
+6. `main` 同步修复（P0H）：参数按 checkpoint dtype 赋值（或整体替换数组而非切片拷贝），只恢复原本低精度 tensor 的显存收益，不把官方 F32 tensor 强制降级。
 7. 这是对 `main` 行为基线的有意偏差（§0.1「main 不是不可质疑的数学真相」），矩阵中每个条目必须记录峰值显存。
 
 ### 1.6 训练最终迁移 Rust
@@ -307,7 +309,7 @@ route:        pending / python / rust / unavailable
 - `python_baseline_status` 全部为 `registry_declared`，不在 `status_values` 中；需补入受控值或改为 verification 值。
 - 227 条 `architecture_variant` 全部为 `unclassified`；Flux1 Fill/Redux/Depth/Kontext 等结构变体需按 model card 归类。
 - 38 个无 action 的组件 card（LoRA/ControlNet/Redux/depth-pro/VEDA 等）未登记。它们是 structural guide、Z-Image Scheme 4（DistillPatch 自动附加）、H3 turbo、lightning 等生产行为的依赖，需以组件条目或 `adapters_options` 维度登记验收。
-- `z-image-turbo/fp16/create` 的 `metal_parity=passed` 仅覆盖 16×16 切片，1024×1024 已 `parity_failed`；需拆为小图切片与真实分辨率两条，或改为 `in_progress`，不得以 `passed` 概括。
+- `z-image-turbo/fp16/create` 的 `metal_parity=passed`：16×16、1024×1024、768×1280 的 F32 parity，16×16 和 768×1280 的 checkpoint-Native parity/峰值显存，以及默认 9 步 TeaCache 和强制 skip 的 gate/residual 行为均已通过。该状态仅覆盖 Metal 数值与显存；正式性能、生产路由/E2E、CUDA 和其他版本仍为独立待办。
 - 证据中的 `out/parity-zimage-*` 位于被 `.gitignore`（`/out/`）忽略的目录，无法从仓库复现；关键 fixture 需把 SHA、shape、误差摘要写入矩阵，或存放到可提交位置。
 
 执行规则：
@@ -359,8 +361,8 @@ model_id × version × action → rust | python | unavailable
 
 - safetensors 单文件/分片。
 - tensor 名、shape、dtype、重复和缺失严格校验。
-- 稠密权重默认保持 checkpoint 原生 dtype（BF16/FP16）；`main` 的 F32 放大是错误设计（§1.5.1），只在显式 parity 模式复现。
-- 加载错误一律返回错误，不 panic（现 `weights/mlx.rs::load_directory` 的 `entry.unwrap()` 需修正）。
+- 稠密权重默认逐 tensor 保持 checkpoint 原生 dtype（BF16/FP16/F32）；`main` 的低精度权重 F32 放大是错误设计（§1.5.1），只在显式 parity 模式复现。
+- 加载错误一律返回错误，不 panic（`weights/mlx.rs::load_directory` 的目录项 `unwrap()` 已在 `9859706` 修正）。
 - affine int4/int8 与实际发布的量化模式。
 - LoRA、多 LoRA、系数、量化和非量化绑定。
 - 未完成安装的 bundle 不得进入缓存。
@@ -401,35 +403,80 @@ Z-Image Metal 固定注入噪声垂直切片已通过（提交于 `dbcfaff`）�
 
 垂直切片过程中确认并修复了三处与 main 的加载/调度语义差异（不是放宽容差）：
 
-1. **稠密权重 F32 加载（仅 parity 模式，生产需纠正）**：main 的 MLX `Module` 加载会把发布的 BF16 VAE/DiT 参数写成 F32（`_param_map` 切片赋值 `param[:] = tensor` 的副作用）。**这是 main 的错误设计，显存翻倍且无精度收益，见 §1.5.1。** Rust 此前保留 BF16，导致真实 VAE 首个分叉出现在 `conv_in`（误差 0.0054 超门）。为对齐 main 数值，现 `common::vae::mlx::load_dense` 与 `families/z_image/mlx` DiT 加载 `astype(F32)`；该行为必须迁入共享 `WeightDtype` 策略并仅在 parity 模式启用，生产默认保持 BF16。独立真实 VAE 解码对 main 的最大误差降至 `0.0000014305115`，分阶段 trace（conv_in/mid/up blocks）最大 `0.00019836426`。
+1. **稠密权重 F32 加载（仅 parity 模式）**：main 的 MLX `Module` 加载会把发布的 BF16 VAE/DiT 参数写成 F32（`_param_map` 切片赋值 `param[:] = tensor` 的副作用）。**这是 main 的错误设计，显存翻倍且无精度收益，见 §1.5.1。** Rust 此前保留 BF16，导致真实 VAE 首个分叉出现在 `conv_in`（误差 0.0054 超门）。为对齐 main 数值，parity 测试显式使用共享 `WeightDtype::F32`；该策略已在 `9859706` 迁入 `weights/mlx.rs`，生产默认 `Native` 保持 BF16，且 `F32` 只在测试构建可用。独立真实 VAE 解码对 main 的最大误差降至 `0.0000014305115`，分阶段 trace（conv_in/mid/up blocks）最大 `0.00019836426`。
 2. **真实 pad token**：DiT 图像/文本尾部 padding 必须读 checkpoint 的 `x_pad_token` / `cap_pad_token`，不能写零。修复后首轮 velocity 误差从 `1.496` 降到 `0.000932`。
 3. **Euler BF16 语义**：main 每步把 velocity 与 `dt` 转回 latent 的 BF16 再更新；`families/z_image/mlx/denoise.rs::euler` 已对齐（输出与 delta 均 cast 到当前 latent dtype），CPU/Metal 单测覆盖 F32 与 BF16 两条路径。该实现目前是 **Z-Image 家族私有**（错误文案和测试名均为 Z-Image），出现第二个使用方时按共享资产清单 §7 模板迁入 common。
 
 组合测试的 VAE 拓扑必须取真实配置（该 VAE `layers_per_block=2`，不是默认 3）；此前硬编码 3 造成的 `0.305` 输出差已排除，与跨组件 MLX 状态无关。
 
-固定 seed 切片同样通过：`out/parity-zimage-seeded.json`（seed 42）由同一 main 基线脚本生成，Rust `RandomKey::new(42).normal` 产生的初始噪声与 main **逐位一致**（测试内 `assert_eq`），2026-11-17 运行最终 latent 最大误差 `0.0078125`（四个 BF16 ULP 门内）、VAE 输出最大误差 `0.0027973056`、26/768 RGB 通道差且最大通道差 1，产物 `out/parity-zimage-seeded-rust.png`。`danmo-mlx` 的 seeded normal/split 在 CPU/Metal 均有对 main 的固定值单测。
+固定 seed 切片同样通过：`out/parity-zimage-seeded.json`（seed 42）由同一 main 基线脚本生成，Rust `RandomKey::new(42).normal` 产生的初始噪声与 main **逐位一致**（测试内 `assert_eq`）。修复下述 `x_embedder` dtype 后，2026-11-17 复跑固定 seed 与固定注入两条 16×16 路径均为最终 latent、768 个 8-bit RGB 通道**逐位一致**；VAE 用 main 最终 latent 单独解码的最大误差分别为 `0.0000010728836` / `0.0000015497208`。`danmo-mlx` 的 seeded normal/split 在 CPU/Metal 均有对 main 的固定值单测。
 
-该结果只点亮 fp16 turbo create 在 16×16、8 步、F32 parity 模式下的 Metal 数值 parity（固定注入噪声与固定 seed 两类均通过），不代表 9 步默认路径、BF16 原生生产路径、生产路由或完整 E2E 已开放。至少一个已发布量化版本、连续任务/切换/取消/缓存、CUDA 和 encode/VAE 热性能门仍待完成。
+该结果只点亮 fp16 turbo create 在 16×16、8 步、F32 parity 模式下的 Metal 数值 parity（固定注入噪声与固定 seed 两类均通过），不代表 9 步默认 TeaCache、生产路由或完整 E2E 已开放。checkpoint 原生 dtype 验收见下节；至少一个已发布量化版本、连续任务/切换/取消/缓存、CUDA 和 encode/VAE 热性能门仍待完成。
+
+共享权重与量化路径已在 `9859706` 落地：`WeightDtype::Native` 为生产默认，F32 widening 仅限测试；`LinearWeight` 对 dense/affine 提供统一 `apply`，affine uint32 codes + scales + biases 全程保持 packed 并通过 QMM 在 kernel 内解量化，不在加载层或 family 中还原稠密副本。加载器校验 shard `quantization_level`、registry bits/group size、重复/缺失 tensor 和歧义形状；CPU/Metal tiny DiT packed-vs-dequantized、compiled-vs-eager 以及 >32K QMM 均通过。架构守卫禁止绕过 `LinearWeight`。**这尚未替代已发布量化 checkpoint 的真实端到端 parity/显存验收；本机目前只有官方 fp16 Z-Image bundle。**
 
 #### compile 实测与热性能观察（2026-11-17，16×16 / 8 步 / 官方 fp16 权重 / Metal）
 
 - `danmo-mlx` 新增多输入 `Closure`（`Fn(&[Array], &Stream)`，与 `UnaryClosure` 同一 FFI/panic 边界），CPU/Metal 各有「captured 常量 + 多输入 + shapeless 重放 + 形状变化重编译」与「闭包 panic 变错误不崩进程」单测；`Stream` 实现 `Clone`（共享同一 MLX stream handle）。
 - `families/z_image/mlx/model.rs` 拆出 `embed_timestep` + `forward_with_timestep`，新增 `CompiledForward`：weights/geometry/caption 捕获为常量，仅 latent 与 timestep embedding 是 traced 输入。**pinned MLX 0.32.4 上 `Split`（AdaLN 分段）与 `Slice`（RoPE 分量、FinalLayer 裁剪）都没有 `output_shapes`，shapeless compile 对完整 DiT 显式失败**；使用 shape 特化 compile（形状变化自动重编译），这是已验证路径而非静默降级。
 - tiny DiT compiled vs eager：CPU/Metal 跨 3 个 sigma 均 < 1e-5。真实权重 `real_compiled_dit_matches_eager_and_reports_warm_timings`：**8 步 velocity compiled vs eager 逐位一致（max error 0）**，eager 对 main 的 parity 与既有门一致。
-- main 热基线（`tests/parity/zimage_warm_mlx.py`，同进程 3 passes，权重常驻）：eager 热 denoise `0.671s/0.669s`，encode `0.022s/0.018s`，VAE `0.005s`；`--compile`（`use_mlx_compile=True`）热 denoise 同为 `0.671s/0.673s`——main 的 compile 在该小图热态无额外收益。
-- **更正（2026-11-17 复核）**：此前写「main 生产策略是 8 步 turbo 不开 compile，fixture 的 eager 基线即生产路径」，不成立。`main` registry 中 `z-image-turbo` 默认 **9 步**、默认分辨率 **768×1280**、默认 scheduler `linear`；8 步只出现在加载 Base 训练 LoRA 时自动附加 DistillPatch（Scheme 4）的场景。`ZImageConfig.use_mlx_compile_auto=True`，`resolve_use_mlx_compile` 在 `num_steps>8` 时于 Apple Silicon 自动开启 compile（TeaCache step cache 启用时关闭）。因此 8 步 eager fixture 对应的是 DistillPatch 场景，**不是默认生产路径**；默认路径的 parity 与性能门须按 9 步、默认 scheduler、768×1280 及 `main` 实际决定的 compile 状态另立。
+- main 热基线（`tests/parity/zimage_warm_mlx.py`，同进程 3 passes，权重常驻）：eager 热 denoise `0.671s/0.669s`，encode `0.022s/0.018s`，VAE `0.005s`。修正 `--compile` 让其真正经过 `before_denoise` 后，实际 compiled 热 denoise 为 `0.782s/0.783s`，并未加速；证据 `out/parity-zimage-warm-compile-real.json`（SHA `2c4538c0b3928050f453eaa6480d516f6a1dd8a498456420ed1fa336600ce7cb`）。此前未经过 `before_denoise` 的 compile 计时无效。
+- **更正（2026-11-17 复核）**：此前写「main 生产策略是 8 步 turbo 不开 compile，fixture 的 eager 基线即生产路径」，不成立。`main` registry 中 `z-image-turbo` 默认 **9 步**、默认分辨率 **768×1280**、默认 scheduler `linear`；8 步只出现在加载 Base 训练 LoRA 时自动附加 DistillPatch（Scheme 4）的场景。`ZImageConfig.use_mlx_compile_auto=True`，但默认 `teacache_mode="auto"` 在 9 步会启用 step cache，继而关闭 compile；因此 **9 步默认优化路径是 TeaCache，不是单纯 eager，也不是 compile**。`teacache_mode="none"` 且显式 `use_mlx_compile=True` 时才走 compiled forward。8 步 eager、9 步无 TeaCache eager、9 步显式 compile、9 步默认 TeaCache 必须分别验收。
 - Rust 热观察（warm-up pass 后）：eager 8 步 `0.706s`，compiled `0.662s`（eager 的 93.7%；对 main 8 步 eager 热基线约 **101%**）。证据：`out/parity-zimage-warm.json`、`out/parity-zimage-warm-compile.json`、`out/parity-zimage-rust-warm.json`（本地产物，未入库）。
-- **边界**：以上是 16×16 小图单 run、双方均为 F32 稠密权重的观察；F32 对 F32 不构成性能结论（§1.5.1），encode/VAE 的正式热对比、BF16 原生路径与真实分辨率性能门均未测；不得据此宣称 S4 全量热性能门通过。
+- **边界**：以上是 16×16 小图单 run、双方均为 F32 稠密权重的观察；F32 对 F32 不构成性能结论（§1.5.1），encode/VAE 的正式热对比与 checkpoint-Native 真实分辨率性能门仍未完成；不得据此宣称 S4 全量热性能门通过。
 
-#### 真实分辨率 1024×1024：当前未解决分叉（2026-11-17，parity_failed 切片）
+#### 真实分辨率 1024×1024：完整递推 parity 已通过（2026-11-17）
 
-`tests/parity/zimage_real_mlx.py` 已参数化 `--width/--height/--steps`，Rust 端到端测试改为从 payload 读分辨率。1024×1024 / 8 步 / seed 42（4096 image tokens + 32 cap tokens）：
+`tests/parity/zimage_real_mlx.py` 已参数化 `--width/--height/--steps/--compile`，Rust 端到端测试从 payload 读分辨率。1024×1024 / 8 步 / seed 42（4096 image tokens + 32 cap tokens）：
 
-- main 基线：encode 0.26s、denoise 35.3s、VAE 0.84s（冷）；main 自身 TF32 on/off 输出**逐位一致**（排除 TF32 因素）。
-- Rust：encode parity 通过（caption 误差 ≤1e-6）；**step 0 velocity max error 0.024**（16×16 时为 0.00093），逐步放大至 step 7 的 1.08；最终 latent max error 0.0117，在小值元素上超 4 BF16 ULP + 4e-3 门（allowed 0.00595）。**未通过，不得放宽容差宣称完成**。
-- 已排除：TF32（main on/off 逐位一致）；源码 vs wheel 构建（两种链接同误差）；RoPE 迭代乘法漂移（已改为 main 的 `pos * theta^(-2k/d)` 公式，误差不变，该修正保留）；sigma 公式（host 复算与 fixture 最大差 6e-8，仅 1 ULP，不足以解释 velocity 0.024）。
-- 已核对无差异：position ids / patchify 顺序、pad token 应用、modulation unpack、Euler BF16 cast、timestep features 公式。
-- 下一步：main 侧分阶段 fixture（x_embedder 后、noise_refiner 每层后、context_refiner 后、unified 每层后、final_layer 后），同一 1024 输入逐段对比定位首个分叉；重点怀疑长序列 attention kernel 分派（4128 tokens 时 main 与 Rust 的 mask/布局是否触发不同 steel/NAX 路径）与 F32 权重下大 K matmul 的 kernel 选择。16×16 全部门保持通过。
+- main 基线：encode 0.26s、denoise 35.3s、VAE 0.84s（冷）；main 自身 TF32 on/off 输出**逐位一致**。完整 fixture SHA-256：`out/parity-zimage-1024.json` = `ba22df8f6f68659ed6b36753d2c50d8d9672308746158eb190e501878c2b2931`。
+- 新增 `tests/parity/zimage_stages_mlx.py --step` 与 Rust `real_dit_stage_fixtures_localize_production_resolution_divergence`，对 timestep、两层 noise/context refiner、30 个 unified block、final layer 和 velocity 逐点比较。step-0 fixture SHA：`expected.json` = `74d391aa7f1a86e47e7b2a931e3168b640afcf7eb78816db131f9ecf653d0883`、`stages.safetensors` = `5020d5c4bb0ea07aa0cfd4dcebb3ca06119173af217ec2c01546c1034b0d784b`；step-1 fixture SHA 分别为 `5f53dac9585615401dcf8a0142ceb82e1866d2f382092ea8c03c9fdf6a507744`、`fba8816d1f472c421cbd9e58fbd485fa10c7a6af69adb5db3ec3fab8b9ef286a`。
+- **三处数值边界已修复**：`x_embedder` 输出转回 latent BF16；RoPE 的 `arange/power/cos/sin` 改为 MLX 算子而非 Rust 主机数学；timestep 的 `(1-sigma)*t_scale`、频率 `exp` 和 `cos/sin` 同样改为 MLX 算子。修复后 step 0、step 1 的所有 37 个阶段均逐位一致，完整 8 步每个 velocity、每步 latent 与最终 latent 也全部逐位一致。
+- 最终 VAE 输出最大误差 `0.00002604723`，3,145,728 个 8-bit RGB 通道中 1,678 个不同，最大通道差 1，通过原有 `0.004` 输出门和 RGB±1 门；没有放宽任何阈值。产物 `out/parity-zimage-1024-rust.png`。
+- 曾排除的其他因素：TF32、源码 vs wheel 构建、sigma 公式、position ids / patchify 顺序、pad token、modulation unpack、Euler BF16 cast。该通过仍是 F32 parity 权重下的机制层结果；checkpoint-Native parity/显存见下节，正式热性能门仍独立待验收。
+
+#### 768×1280 / 9 步：无 TeaCache eager 与显式 compile parity 已通过
+
+- `out/parity-zimage-default-768x1280.json`（SHA `e6ace0a35d162e28a32fc475fdc74cc2e19aa479a08dcefe5ba1e9667c1074a2`）覆盖无 TeaCache eager；9 个 velocity、全部 latent 与最终 latent 逐位一致，VAE 最大误差 `0.0000141859055`，1,109 / 2,949,120 个 RGB 通道不同且最大差 1。
+- `out/parity-zimage-default-768x1280-compile.json`（SHA `7b856aa0450246d4b988528a93dce227f037103e7119d9de1b21861e6070b1e0`）显式 `use_mlx_compile=True`、`teacache_mode="none"`；main compiled 与 main eager 逐位一致，Rust 9 步 compiled 与 Rust eager/main 也全部逐位一致。
+- compiled 数值修复点：RoPE 表必须在 compiled closure 外预计算并显式 `eval`，否则 lazy 表会被追踪并产生 `4.0e-5` 的 step-0 差，随后递推放大。表现在按 image/caption/unified 三种几何复用，未引入全局或 `thread_local` 缓存。
+- 性能仅作观察：Rust warm eager 9 步 `43.650s`、compiled `47.367s`（compiled/eager 108.5%），证据 `out/parity-zimage-default-rust-warm.json`（SHA `fcc938dd05bf6b07ab1c3c7348f1733883c664f289d68bc162dec63d00485190`）；main fixture 冷 `dit_load_and_denoise` eager `36.484s`、compiled `38.609s`。缓存状态与计时边界不同，且双方均为 F32 parity 权重，**性能门保持 pending**。
+- 默认 `teacache_mode="auto"` 在 9 步启用 step cache并关闭 compile；该默认 TeaCache 路径尚未在 Rust 实现/验收，不能因上述两条路径通过而宣称完整默认优化路径通过。
+
+#### checkpoint 原生 dtype：16×16 与 768×1280 parity / 显存门已通过
+
+- `tests/parity/zimage_real_mlx.py --native-dtype` 显式恢复每个 checkpoint tensor 的原 dtype，生成生产层参考。官方 DiT 为 F32，VAE/Qwen3 为 BF16；没有强制把 DiT 转成 BF16。16×16 fixture `out/parity-zimage-native-16.json` SHA `2147a6118ac72b82d26383f6dad37021373cb1d90cd186f5f383ddfabb4e6f01`，默认分辨率 fixture `out/parity-zimage-native-default-768x1280.json` SHA `3a720fe5ab42813951fa81dc84ed7c7a65c9a7d0488c75c99473dd1f012c0360`。
+- 两条完整切片均通过：DiT velocity 和全部 recurrent latent 逐位一致，VAE 输出和全部 RGB 通道也逐位一致。默认分辨率为 9 步、2,949,120 个 RGB 通道零差异；16×16 为 8 步、768 个通道零差异。
+- 原生 VAE 对齐了四个实现细节：GroupNorm 使用与 main 相同的 reshape + `mx.fast.layer_norm`；dense Linear 使用 `addmm`；1×1 shortcut 保持 `conv2d`；padding 按 `[O,I,kH,kW]` 的最后两维判断。小图所有 norm/conv/shortcut/upsample 阶段均逐位一致。VAE fixture `out/parity-vae-native.json` SHA `fc0a2c61d41f890279863bfe62923ad867f20ce25a6b72127d9c3a5fb4d06f6b`。
+- `danmo-mlx` 新增 active/peak memory 安全读取。默认分辨率 Rust peak `26,151,442,176` bytes，主侧 peak `31,793,682,130` bytes，比例 **82.25%**，通过不超过主侧 105% 的门；DiT 权重常驻 `24,619,634,944` bytes。报告 `out/parity-zimage-native-default-rust-memory.json` SHA `9cc2dab06d2df789ea01fcde06a512dd298fbe6e1d0a292f4a83694e81525139`。
+- 这些结果证明 checkpoint-Native 路径，不代表默认 TeaCache、已发布量化 checkpoint、正式热性能或生产路由已完成。
+
+#### 默认 9 步 TeaCache 与 residual skip 已通过
+
+- `families/z_image/mlx/step_cache.rs` 实现 Z-Image 私有 gate：首尾强制 compute、非有限输入 fail-open、rel-L1、五次多项式 predicted distance、累计距离、compute 后更新输入/residual，以及 skip 时复用 residual 且不覆盖上一输入。主 DiT forward 复用同一路径，没有第二套模型实现或全局缓存。
+- 默认阈值 `0.11` 的 768×1280 / 9 步 fixture `out/parity-zimage-native-default-teacache-768x1280.json`（SHA `aa70a1f117483ff54f8104e27ae61184729dcd6d74d3144721d2fdf7e2732f82`）中，双方均为 9 次 compute、0 次 skip；所有 gate kind、rel-L1、predicted/accumulated distance、latent、VAE 和全部 RGB 通道一致。
+- 显式阈值 `0.5` 的 skip fixture `out/parity-zimage-native-teacache-skip-768x1280.json`（SHA `1aabbbf2918a99ffad8fe2c4468ee3303a2f707c6c8a01edf3ca09c63552925a`）中，双方均为 3 次 compute、6 次 skip，完整覆盖连续 residual 复用；全部数值和 RGB 通道同样一致。该阈值只用于缓存行为验收，不改变默认 0.11 结论。
+- 默认 TeaCache peak：Rust `26,270,390,016` bytes，主侧 `31,915,106,770` bytes（约 82.3%），报告 `out/parity-zimage-native-default-teacache-rust-memory.json`（SHA `07a78f175dff29604e39cce3a9ca1b3649fc9100742a0e6f656e916081387daa`）。
+- 注意：主侧 `DiTRuntimeSession.from_plan` 不传递自定义 threshold，skip fixture 在 runtime 创建后显式覆盖阈值；这是测试专用行为，已保留记录。
+- `z-image-turbo/fp16/create` 的 Metal parity 因此标为 `passed`；正式热性能、已发布量化 checkpoint、连续会话/路由 E2E 和 CUDA 仍独立待办。
+
+#### 正式热性能门已通过（2026-11-18，Metal / release / checkpoint-Native / 默认 TeaCache）
+
+- **生产优化路径落地**：`CaptionCache` 在每次生成开始时预计算 caption 分支（`cap_norm → cap_embedder → context refiner`，对齐 main `before_denoise` 的 `needs_precompute_cap` 边界）；`CompiledCompute` 用 `mx.compile` 编译 30 个 unified blocks + final layer，**TeaCache gate、residual 复用、caption 预计算保持 eager**（对齐 main「gate 在 compile 外」的边界）。skip 步只跑编译后的 final layer closure。`StepCache::reset` 支持常驻模型连续生成。
+- **compiled TeaCache 数值验收**：`real_compiled_teacache_matches_eager_cache_semantics` 在真实权重 768×1280 下，默认阈值 0.11（9 compute / 0 skip）与强制阈值 0.5（3 compute / 6 skip）两条路径，compiled 与 eager cached 的全部 9 步 velocity **逐位一致**，gate kind/compute/skip 计数与 main fixture 一致。
+- **正式热门（§8.2，p50 ≤ main 105%）**：`real_native_warm_passes_match_main_and_report_performance`，5 pass 权重常驻，每 pass 对 main warm 基线逐位校验（caption、全部 velocity、全部递推 latent、全部 RGB）：
+  - encode `0.0735s` vs main `0.0759s`（**96.8%**）
+  - denoise `18.299s` vs main `28.798s`（**63.5%**）
+  - VAE `0.2707s` vs main `0.3184s`（**85.0%**）
+  - total `18.641s` vs main `29.194s`（**63.9%**）
+  - 证据：`out/parity-zimage-native-default-teacache-rust-warm.json`（SHA `69ba38dc6d5227216e87037768562c292cde5657bc06a799c2dfde6d016327fe`）对 `out/parity-zimage-native-default-teacache-main-warm.json`（SHA `db0a92bb07a368a11abe9eef3ad3ab06bf93f85192b376e7c05ebf9d509a143d`）。
+- **稳态显存门**：双方 `clear_cache` 清空可复用 buffer 池后，Rust 常驻 `32,663,479,666` bytes vs main `32,907,992,549` bytes（**99.3%**，低于 105% 门）。多 pass peak（Rust 39.85GB vs main 39.71GB，100.35%）主要是双方 buffer 池随 pass 数累积，不是常驻权重差异；单 run peak 门（82.25%）仍有效。
+- **测量方法学（重要 gotcha）**：M5 Max 持续负载有显著热节流——同一 main 基线在会话内 denoise p50 从 15.2s 漂移到 28.8s（近 2×），Rust 同样漂移。因此**性能门必须 main/Rust 相邻同热态窗口测量**（本次为 Rust 5 pass 后立即跑 main 5 pass），且 parity 读回（`to_vec_f32`/`to_raw_bytes`）全部放在计时段外。此前「Rust 111–124%」的失败读数即热窗错位 + 计时段内读回所致，均已修复而非放宽阈值。eager Native 路径（`DANQING_TEST_ZIMAGE_WARM_EAGER=1` / full-compile 探针）同窗口也达标（denoise 82.0%），但生产默认是 compiled TeaCache。
+- **共享封装新增**：`danmo-mlx` `MultiClosure`（多输出 `mx.compile`，输出向量用 `mlx_vector_array_set` 整体写入——`set_value` 是整体替换不是追加）、`Array::eval_all`（`mx.eval(a,b,…)`）、`Array::to_raw_bytes`（BF16 逐字节精确比较）、`clear_cache`。
+- **测试基建修复**：`weights/mlx.rs` 测试 `Scratch` 临时目录名加入进程内原子计数器——macOS 粗时钟让并行测试拿到相同 pid+nanos 目录名，造成跨测试 shard 串扰（`duplicate tensor`）与文件被删的假失败。
+- **TF32 gotcha 复核**：源码 Metal 构建下，host 参考 F32 微探针（`danmo-mlx` SDPA、z_image attention/blocks）在 M5 NAX 上需 `MLX_ENABLE_TF32=0`；真实 BF16 模型路径不受影响。全套件 TF32-off 绿：`danmo-mlx` 16+2+3+3、engine `mlx::` 32、architecture 5。
+- **fixture SHA 漂移说明**：重新生成的 TeaCache fixture 不再匹配 2026-11-17 记录的 SHA，因为 fixture 脚本新增了 timing/memory 字段；parity 断言均对同轮新生成的 main 输出执行（default SHA `3017444cb4a9f84a76de0bed98ed4ca41564315de2b13e1ca2ef804e172e98bc`，skip SHA `4fc6931b5f457b687b4359cfb2a669db836509fc5db364a5a15e654a8ff4d274`）。
+- `z-image-turbo/fp16/create` 的 `metal_performance` 与 `metal_peak_memory` 标为 `passed`；已发布量化 checkpoint、连续会话/生产路由 E2E、CUDA 仍独立待办。
 
 #### S0 原生构建与最小分发
 
@@ -453,7 +500,7 @@ Z-Image Metal 固定注入噪声垂直切片已通过（提交于 `dbcfaff`）�
 - 9 步默认 create（768×1280、默认 scheduler、`main` 实际 compile 状态）与 8 步 DistillPatch 场景分别验收。
 - tokenizer/text encoder、DiT、VAE。
 - fp16 和至少一个已发布量化版本。
-- fp16 以 BF16 原生权重为生产路径（§1.5.1），记录峰值显存；F32 parity 模式仅用于机制层对齐。
+- fp16 以 checkpoint 原生 dtype 为生产路径（§1.5.1；本官方 DiT 实测为 F32），记录峰值显存；F32 parity 模式仅用于机制层对齐。
 - 固定注入噪声与固定 seed 两类测试。
 - Metal/CUDA parity。
 - 连续任务、模型切换、取消、缓存命中和 unload。
@@ -651,7 +698,7 @@ Assistant：
 - 同硬件、MLX core、权重和缓存状态。
 - 热运行 p50 延迟不超过 Python 105%，或吞吐不低于 95%。
 - p95 无未解释异常退化。
-- 峰值内存原则上不超过 Python 105%，超限必须复核。对照对象是 **原生 dtype 路径**：`main` 未修复 F32 放大前，其显存数字不能作为上限（否则 Rust 照搬 F32 也能「通过」）；以 BF16 原生权重的理论占用加实测激活为基线。
+- 峰值内存原则上不超过 Python 105%，超限必须复核。对照对象是 **checkpoint 原生 dtype 路径**：`main` 未修复低精度权重 F32 放大前，其显存数字不能作为上限（否则 Rust 照搬放大也能「通过」）；以各 shard 实测 dtype 的权重占用加实测激活为基线，不得假设所有 DiT 都是 BF16。
 - 冷启动、首次 compile、加载单独报告。
 - 不得测试失败后事后放宽阈值。
 
@@ -721,7 +768,7 @@ Assistant：
 | 文档复核 | done | 2026-11-17：纠正 Euler 归属、Z-Image 默认 9 步与 compile 策略、`dbcfaff` 提交边界、分支 registry 偏差；确立稠密权重原生 dtype 决策（§1.5.1，main F32 放大为错误设计）；增补 executor 状态模型、assistant 独立 worker、ggml 退役；推理进程隔离与 Python 训练去留标记为待确认 |
 | 共享资产盘点 | done | 复用/重写/算法归属与 family 扩展边界：`docs/rust_mlx_shared_asset_inventory.md` |
 | 全量 workspace 回归 | existing_failure | 373 项 engine 测试：370 通过、2 忽略、1 个既有 ggml Hunyuan smoke（随 `dbcfaff` 一并提交） 因缺少 `txt_in.individual_token_refiner.blocks.0.self_attn.qkv.weight` 失败；新增 MLX crate 的 CPU/Metal 测试均单独通过，不在 P0 修改该 ggml family |
-| P0 | in_progress | **源码 Metal 构建通过**（MetalToolchain 27B47 已装，M5 Max/NAX，无需 prebuilt）；runtime、safetensors、>32K QMM、compile/eager、executor、seeded RNG 探针通过；官方 DiT/text/VAE/tokenizer 已下载；tiny/full DiT、真实 8 步 denoise 与 main tiny DiT BF16 parity 通过；真实 Qwen3 在 layer 1/2/10/20/30/35 与 main 输出均零误差；真实 VAE decode 最大误差 1.4e-6（F32 加载对齐）；16×16 完整图片端到端（固定注入 + 固定 seed 42）latent/RGB parity 通过，最大 8-bit 通道差 1；真实 DiT shape 特化 compile 8 步逐位一致，源码构建热 8 步 0.640s ≈ main 热基线 0.67s（shapeless 在 0.32.4 因 Split/Slice 缺 output_shapes 显式失败，已记录）。**1024×1024 端到端当前 parity_failed**（step0 velocity 0.024 → step7 1.08，latent 超 ULP 门；TF32/构建差异已排除，待分阶段定位）。注意：以上数值与热性能均在 F32 稠密权重（复现 main 错误设计）下取得，BF16 原生生产路径尚未验证（§1.5.1）。剩余（按用户指示 fp16 验证优先，量化押后）：1024 分叉定位与修复（可继续在 F32 parity 模式定位）、共享 `WeightDtype` 与 BF16 生产层 parity/显存门、9 步默认路径门、正式热性能门、连续任务/切换/取消/缓存、已发布量化版本（共享加载层自动识别，非家族分支）、custom kernel、干净打包和 CUDA runtime |
+| P0 | in_progress | **源码 Metal 构建通过**；runtime、safetensors、>32K QMM、compile/eager、executor、seeded RNG 探针通过；官方 DiT/text/VAE/tokenizer 已下载；真实 Qwen3 与 VAE fixture 通过。`9859706` 已落地共享 `WeightDtype` 与全程 packed affine QMM。F32 parity 已通过 16×16、1024×1024、768×1280 9 步 eager/compile。checkpoint-Native 16×16 与 768×1280 完整切片、默认 9 步 TeaCache 及阈值 0.5 的 6 次 residual skip 均通过，latent/VAE/RGB 一致；官方 DiT 实测为 F32，VAE/Qwen3 为 BF16。Native Metal peak 26.15GB vs main 31.79GB（82.25%）。**2026-11-18 正式热性能门通过**：compiled TeaCache 生产路径（CaptionCache + CompiledCompute，gate eager）warm p50 denoise 63.5% / encode 96.8% / VAE 85.0% / total 63.9%，每 pass 逐位一致；稳态显存 99.3%；`metal_performance`/`metal_peak_memory` 标为 passed。剩余：连续任务/切换/取消/缓存、已发布量化 checkpoint 端到端、custom kernel、干净打包和 CUDA runtime |
 | P0H | pending | main 收割独立进行 |
 | P1 | pending | Rust server 核心先行 |
 | P2 | pending | MLX runtime |

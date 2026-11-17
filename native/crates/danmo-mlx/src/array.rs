@@ -139,6 +139,17 @@ impl Array {
         check(unsafe { sys::mlx_array_eval(self.raw) }, "mlx_array_eval")
     }
 
+    /// Evaluate several arrays in one call (`mx.eval(a, b, ...)`), sharing the
+    /// lazy-graph traversal exactly like main's multi-array eval boundaries.
+    pub fn eval_all(arrays: &[&Array]) -> Result<()> {
+        initialize();
+        let values = VectorArray::from_arrays(
+            &arrays.iter().map(|array| (*array).clone()).collect::<Vec<_>>(),
+        )?;
+        clear_error();
+        check(unsafe { sys::mlx_eval(values.raw) }, "mlx_eval")
+    }
+
     pub fn astype(&self, dtype: Dtype, stream: &Stream) -> Result<Self> {
         let mut output = Self::empty()?;
         clear_error();
@@ -159,6 +170,56 @@ impl Array {
         Ok(output)
     }
 
+    pub fn arange(start: f64, stop: f64, step: f64, dtype: Dtype, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_arange(&mut output.raw, start, stop, step, dtype.raw(), stream.raw) },
+            "mlx_arange",
+        )?;
+        Ok(output)
+    }
+
+    pub fn cos(&self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_cos(&mut output.raw, self.raw, stream.raw) },
+            "mlx_cos",
+        )?;
+        Ok(output)
+    }
+
+    pub fn exp(&self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_exp(&mut output.raw, self.raw, stream.raw) },
+            "mlx_exp",
+        )?;
+        Ok(output)
+    }
+
+    pub fn sin(&self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_sin(&mut output.raw, self.raw, stream.raw) },
+            "mlx_sin",
+        )?;
+        Ok(output)
+    }
+
+    pub fn power(lhs: &Self, rhs: &Self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_power(&mut output.raw, lhs.raw, rhs.raw, stream.raw) },
+            "mlx_power",
+        )?;
+        Ok(output)
+    }
+
     pub fn divide(lhs: &Self, rhs: &Self, stream: &Stream) -> Result<Self> {
         let mut output = Self::empty()?;
         clear_error();
@@ -175,6 +236,47 @@ impl Array {
         check(
             unsafe { sys::mlx_sqrt(&mut output.raw, self.raw, stream.raw) },
             "mlx_sqrt",
+        )?;
+        Ok(output)
+    }
+
+    pub fn abs(&self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_abs(&mut output.raw, self.raw, stream.raw) },
+            "mlx_abs",
+        )?;
+        Ok(output)
+    }
+
+    pub fn isfinite_all(&self, stream: &Stream) -> Result<Self> {
+        let finite = Self::empty()?;
+        let mut raw = finite.raw;
+        clear_error();
+        check(
+            unsafe { sys::mlx_isfinite(&mut raw, self.raw, stream.raw) },
+            "mlx_isfinite",
+        )?;
+        let finite = Self {
+            raw,
+            _thread_affine: PhantomData,
+        };
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_all(&mut output.raw, finite.raw, false, stream.raw) },
+            "mlx_all",
+        )?;
+        Ok(output)
+    }
+
+    pub fn mean(&self, keepdims: bool, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_mean(&mut output.raw, self.raw, keepdims, stream.raw) },
+            "mlx_mean",
         )?;
         Ok(output)
     }
@@ -560,6 +662,29 @@ impl Array {
         }
     }
 
+    pub fn addmm(
+        bias: &Self,
+        lhs: &Self,
+        rhs: &Self,
+        alpha: f32,
+        beta: f32,
+        stream: &Stream,
+    ) -> Result<Self> {
+        let mut output = Self::empty()?;
+        let mut raw = output.raw;
+        clear_error();
+        check(
+            unsafe {
+                sys::mlx_addmm(
+                    &mut raw, bias.raw, lhs.raw, rhs.raw, alpha, beta, stream.raw,
+                )
+            },
+            "mlx_addmm",
+        )?;
+        output.raw = raw;
+        Ok(output)
+    }
+
     pub fn matmul(lhs: &Self, rhs: &Self, stream: &Stream) -> Result<Self> {
         let mut output = Self::empty()?;
         let mut raw = output.raw;
@@ -603,6 +728,26 @@ impl Array {
             ));
         }
         Ok(unsafe { std::slice::from_raw_parts(data, size) }.to_vec())
+    }
+
+    /// Read the raw element bytes of an evaluated array without a dtype cast.
+    /// For BF16 arrays each pair of bytes is one bfloat16 value; callers can
+    /// compare these bytes exactly instead of paying a GPU float32 cast.
+    pub fn to_raw_bytes(&self, stream: &Stream) -> Result<Vec<u8>> {
+        let contiguous = self.contiguous(stream)?;
+        contiguous.eval()?;
+        let bytes = contiguous.nbytes();
+        if bytes == 0 {
+            return Ok(Vec::new());
+        }
+        let data = unsafe { sys::mlx_array_data_uint8(contiguous.raw) };
+        if data.is_null() {
+            return Err(crate::Error::new(
+                "mlx_array_data_uint8",
+                "evaluated array returned a null data pointer",
+            ));
+        }
+        Ok(unsafe { std::slice::from_raw_parts(data, bytes) }.to_vec())
     }
 
     pub fn scaled_dot_product_attention(

@@ -97,7 +97,13 @@ impl LinearWeight {
 
     pub fn apply(&self, input: &Array, bias: Option<&Array>, stream: &Stream) -> Result<Array> {
         match &self.0 {
-            Repr::Dense(weight) => Array::linear(input, weight, bias, stream),
+            Repr::Dense(weight) => {
+                let weight = weight.matrix_transpose(stream)?;
+                match bias {
+                    Some(bias) => Array::addmm(bias, input, &weight, 1.0, 1.0, stream),
+                    None => Array::matmul(input, &weight, stream),
+                }
+            }
             Repr::Affine {
                 packed,
                 quantization,
@@ -123,6 +129,19 @@ impl LinearWeight {
         match &self.0 {
             Repr::Dense(weight) => weight.dtype(),
             Repr::Affine { packed, .. } => packed.scales.dtype(),
+        }
+    }
+
+    /// Materialize a dense copy of this weight. Only for components without
+    /// matmul linears (embeddings) and for explicit test/debug dequantized
+    /// references — never for the production quantized matmul path.
+    pub fn dequantize_embedding(&self, stream: &Stream) -> Result<Array> {
+        match &self.0 {
+            Repr::Dense(weight) => Ok(weight.clone()),
+            Repr::Affine {
+                packed,
+                quantization,
+            } => packed.dequantize(quantization.group_size, quantization.bits, stream),
         }
     }
 

@@ -27,6 +27,24 @@ pub fn forward(
     mask: Option<&Array>,
     stream: &Stream,
 ) -> Result<Array> {
+    forward_with_table(
+        input, weights, heads, ids, axes, theta, eps, timestep, mask, None, stream,
+    )
+}
+
+pub fn forward_with_table(
+    input: &Array,
+    weights: BlockWeights<'_>,
+    heads: i32,
+    ids: &[[i32; 3]],
+    axes: [i32; 3],
+    theta: f32,
+    eps: f32,
+    timestep: Option<&Array>,
+    mask: Option<&Array>,
+    rope: Option<&Array>,
+    stream: &Stream,
+) -> Result<Array> {
     let modulation_parts = match weights.adaln {
         Some((weight, bias)) => {
             let timestep = timestep.ok_or_else(|| {
@@ -45,17 +63,30 @@ pub fn forward(
     if let Some(parts) = &modulation_parts {
         x = modulation::modulate(&x, &parts.scale_attention, stream)?;
     }
-    let attended = attention::forward(
-        &x,
-        weights.attention,
-        heads,
-        ids,
-        axes,
-        theta,
-        eps,
-        mask,
-        stream,
-    )?;
+    let attended = match rope {
+        Some(table) => attention::forward_with_table(
+            &x,
+            weights.attention,
+            heads,
+            ids.len(),
+            axes,
+            table,
+            eps,
+            mask,
+            stream,
+        )?,
+        None => attention::forward(
+            &x,
+            weights.attention,
+            heads,
+            ids,
+            axes,
+            theta,
+            eps,
+            mask,
+            stream,
+        )?,
+    };
     let attended = attended.rms_norm(Some(weights.attention_norm2), eps, stream)?;
     let attended = match &modulation_parts {
         Some(parts) => Array::multiply(&attended, &parts.gate_attention, stream)?,

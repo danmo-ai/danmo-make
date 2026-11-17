@@ -85,18 +85,22 @@ P3 按真实使用方建立，而不是预先创建空目录：
 
 ### 稠密权重 dtype（共享层，纠正 main 的错误设计）
 
-**`main` 把稠密 BF16/FP16 权重加载成 F32 是错误设计，不迁移。** 原因是共享加载器 `common/model/base.py::_assign_param_tensor` 的 `param[:] = tensor`：参数初始化为 F32，切片赋值不改变目标 dtype，发布的 BF16 权重被静默放大。Z-Image DiT 因此从约 12 GB 变成约 24 GB，Qwen3 文本编码器与 VAE 同样放大；带宽受限的 DiT 推理也因此变慢，且精度无收益。`main` 内部也不一致（H3、LTX VAE 按参数 dtype 处理）。
+**`main` 把本为 BF16/FP16 的稠密权重加载成 F32 是错误设计，不迁移。** 原因是共享加载器 `common/model/base.py::_assign_param_tensor` 的 `param[:] = tensor`：参数初始化为 F32，切片赋值不改变目标 dtype，低精度权重被静默放大。`main` 内部也不一致（H3、LTX VAE 按参数 dtype 处理）。但 `Native` 不是强制 BF16：2026-11-17 实测官方 Z-Image DiT 521 个 tensor 全部为 F32（24,619,634,944 bytes，与官方 index 一致），VAE/Qwen3 才是 BF16；registry 的 `fp16` 名称不能证明 tensor dtype。
 
-Rust 落点：`weights/mlx.rs` 提供共享 `WeightDtype::Native | F32`。
+Rust 落点：`weights/mlx.rs` 提供共享 `WeightDtype::Native | F32`，已在 `9859706` 落地并被 Qwen3、VAE、Z-Image DiT 使用。
 
-- `Native` 为生产默认，保留 checkpoint 原生 dtype；精度敏感的小张量在算子内按需转 F32。
-- `F32` 只在 parity 测试中复现 `main` 现状。P0 中 `common::vae::mlx::load_dense` 与 `families/z_image/mlx` DiT 的 `astype(F32)` 必须迁入该策略，不得作为生产默认。
-- family 内禁止写 dtype 分支；显存门以原生 dtype 为准。
-- `main` 侧在 P0H 修复后，BF16 输出成为生产层 parity 基线。详见计划 §1.5.1。
+- `Native` 为生产默认，逐 tensor 保留 checkpoint 原生 BF16/FP16/F32；精度敏感的小张量在算子内按需转 F32。
+- `F32` 只在 parity 测试中复现 `main` 现状，并通过 `#[cfg(test)]` 禁止生产构建选择；各 parity fixture 显式传入策略，不再由 family 自行 `astype(F32)`。
+- family 内禁止写 dtype 分支；显存门以 checkpoint 原生 dtype 为准。
+- Z-Image 还需保持主侧激活与编译边界：`x_embedder` 输出即使由 F32 parity 权重计算，也必须转回 latent 的 BF16 后再进入 noise refiner；RoPE 与 timestep 的频率和三角函数使用 MLX 算子，不能用 Rust 主机数学替代；RoPE 表在 compiled closure 外预计算并 `eval`。修复后 16×16、1024×1024 及 768×1280 的 9 步 eager/compile 递推 latent 均与 main 逐位一致。
+- `common::vae::mlx` 的 GroupNorm 必须复用 `mx.fast.layer_norm` 的主侧布局，dense Linear 使用 `addmm`，1×1 shortcut 保持 `conv2d` 且按 `[O,I,kH,kW]` 判断 padding。checkpoint-Native 16×16 与 768×1280 的 VAE/RGB 均已逐位一致；Native Metal peak 26.15GB vs main 31.79GB（82.25%）。
+- `main` 侧在 P0H 修复后，按 checkpoint 原生 dtype 的输出成为生产层 parity 基线。详见计划 §1.5.1。
 
 ### 量化权重加载（共享层，非家族分支）
 
-main 的 `common/model/base.py::load_weights` **不区分家族/版本处理量化**：检测 `*.scales` 键即自动识别 MLX affine 打包（uint32 codes + scales + biases，4/8-bit 按形状与 shard metadata `quantization_level` 推断）；`inference_mode=quantized` 走 `QuantizedLinear` 不解量化（低显存），否则默认解量化回稠密 Linear（legacy/debug）。家族代码零量化分支。Rust 侧对应落点是 `weights/mlx.rs` 共享加载层 + `danmo-mlx` QMM（已有 >32K 行探针），**禁止**在 family 内写 `quant == ...` 分支。执行顺序按用户指示：**fp16 完整验证（真实分辨率/热性能/会话生命周期）收口后再做量化切片**；量化 parity 以 main 同一 checkpoint 的 QuantizedLinear 路径为基线。
+main 的 `common/model/base.py::load_weights` **不区分家族/版本处理量化**：检测 `*.scales` 键即自动识别 MLX affine 打包（uint32 codes + scales + biases，4/8-bit 按形状与 shard metadata `quantization_level` 推断）；`inference_mode=quantized` 走 `QuantizedLinear` 不解量化（低显存），否则默认解量化回稠密 Linear（legacy/debug）。家族代码零量化分支。Rust 侧对应落点是 `weights/mlx.rs` 共享加载层 + `danmo-mlx` QMM（已有 >32K 行探针），**禁止**在 family 内写 `quant == ...` 分支。
+
+当前分支 `9859706` 已实现该共享边界：`LinearWeight` 私有表示统一 dense/affine `apply`，packed codes/scales/biases 不解量化常驻，QMM 在 kernel 内解量化；加载器严格推断并校验 bits/group size，dense 默认保持原生 dtype。CPU/Metal tiny DiT packed-vs-dequantized、compiled-vs-eager 与架构守卫已通过。已发布量化 checkpoint 的真实端到端 parity、显存与性能仍待验收；量化对照不得回退到 main 的非 packed 或错误权重行为。
 
 ## 5. family 资产与算法归属
 
@@ -113,7 +117,8 @@ main 的 `common/model/base.py::load_weights` **不区分家族/版本处理量�
 
 验收不能只做 turbo create：base/turbo、所有发布 quant、rewrite、LoRA、control、inpaint、latent refine 分开记录。
 
-- turbo 默认路径是 9 步、768×1280、`linear` scheduler，步数大于 8 时 `main` 在 Apple Silicon 自动开 compile；8 步只对应加载 Base LoRA 时自动附加 `z-image-turbo-distillpatch-lora`（Scheme 4）的场景。两条路径分别验收。
+- turbo registry 默认是 9 步、768×1280、`linear` scheduler。默认 `teacache_mode="auto"` 在 9 步启用 step cache并关闭 main 的 full-forward compile；显式关闭 TeaCache 且开启 `use_mlx_compile` 才走 compiled forward。`families/z_image/mlx/step_cache.rs` 已实现 gate/residual 复用，默认 0.11 全 compute 与阈值 0.5 的 3 compute/6 skip 均通过；8 步 DistillPatch、9 步无 TeaCache eager、9 步显式 compile、9 步默认 TeaCache 仍分别保留独立 fixture，不能用其中一条替代其他路径。
+- **Rust 生产优化路径（2026-11-18）**：`CaptionCache`（caption 分支每 run 预计算，对齐 main `before_denoise`）+ `CompiledCompute`（30 unified blocks + final layer 走 `mx.compile`，gate/residual/caption 预计算保持 eager，对齐 main gate-outside-compile 边界）。compiled TeaCache 与 eager cached 在默认与强制 skip 两条 fixture 上逐步逐位一致；正式热门 denoise 63.5% / total 63.9%（同热态窗口、release、Native）。性能测量必须 main/Rust 相邻同热态采样（M5 Max 热节流可致 2× 漂移），parity 读回放在计时段外。
 - DistillPatch、starface、awportrait 等 LoRA card 无 action，目前不在能力矩阵中，需以组件条目登记。
 
 ### 5.2 flux2

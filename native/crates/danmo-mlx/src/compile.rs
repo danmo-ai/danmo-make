@@ -233,6 +233,149 @@ impl Drop for Closure {
     }
 }
 
+struct MultiPayload<F> {
+    function: F,
+    stream: Stream,
+}
+
+/// A closure returning several arrays (`mx.compile` of a function with a
+/// tuple output). Same FFI/panic boundary as `Closure`; `apply` returns every
+/// output in order.
+pub struct MultiClosure {
+    raw: sys::mlx_closure,
+    _thread_affine: PhantomData<Rc<()>>,
+}
+
+impl MultiClosure {
+    pub fn new<F>(stream: Stream, function: F) -> Result<Self>
+    where
+        F: Fn(&[Array], &Stream) -> Result<Vec<Array>> + 'static,
+    {
+        initialize();
+        clear_error();
+        let payload = Box::into_raw(Box::new(MultiPayload { function, stream }));
+        let raw = unsafe {
+            sys::mlx_closure_new_func_payload(
+                Some(call_multi::<F>),
+                payload.cast(),
+                Some(drop_multi_payload::<F>),
+            )
+        };
+        check_infallible("mlx_closure_new_func_payload", raw).map(|raw| Self {
+            raw,
+            _thread_affine: PhantomData,
+        })
+    }
+
+    fn empty() -> Result<Self> {
+        initialize();
+        clear_error();
+        let raw = unsafe { sys::mlx_closure_new() };
+        check_infallible("mlx_closure_new", raw).map(|raw| Self {
+            raw,
+            _thread_affine: PhantomData,
+        })
+    }
+
+    pub fn compile(self, shapeless: bool) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_compile(&mut output.raw, self.raw, shapeless) },
+            "mlx_compile",
+        )?;
+        Ok(output)
+    }
+
+    pub fn apply(&self, inputs: &[Array]) -> Result<Vec<Array>> {
+        let input = VectorArray::from_arrays(inputs)?;
+        let mut output = VectorArray::new()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_closure_apply(&mut output.raw, self.raw, input.raw) },
+            "mlx_closure_apply",
+        )?;
+        let size = unsafe { sys::mlx_vector_array_size(output.raw) };
+        let mut arrays = Vec::with_capacity(size);
+        for index in 0..size {
+            arrays.push(output.get(index)?);
+        }
+        Ok(arrays)
+    }
+}
+
+impl Drop for MultiClosure {
+    fn drop(&mut self) {
+        clear_error();
+        unsafe {
+            let _ = sys::mlx_closure_free(self.raw);
+        }
+        clear_error();
+    }
+}
+
+unsafe extern "C" fn call_multi<F>(
+    result: *mut sys::mlx_vector_array,
+    input: sys::mlx_vector_array,
+    payload: *mut c_void,
+) -> i32
+where
+    F: Fn(&[Array], &Stream) -> Result<Vec<Array>> + 'static,
+{
+    if result.is_null() || payload.is_null() {
+        set_error("multi closure received a null argument".into());
+        return 1;
+    }
+    let payload = unsafe { &*(payload.cast::<MultiPayload<F>>()) };
+    let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+        let size = unsafe { sys::mlx_vector_array_size(input) };
+        let mut sources = Vec::with_capacity(size);
+        for index in 0..size {
+            let mut source = Array::empty()?;
+            clear_error();
+            check(
+                unsafe { sys::mlx_vector_array_get(&mut source.raw, input, index) },
+                "mlx_vector_array_get",
+            )?;
+            sources.push(source);
+        }
+        let outputs = (payload.function)(&sources, &payload.stream)?;
+        if outputs.is_empty() {
+            return Err(Error::new("multi closure", "returned no outputs"));
+        }
+        let values = VectorArray::from_arrays(&outputs)?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_vector_array_set(result, values.raw) },
+            "mlx_vector_array_set",
+        )?;
+        Ok(())
+    }));
+    match outcome {
+        Ok(Ok(())) => 0,
+        Ok(Err(error)) => {
+            set_error(error.to_string());
+            1
+        }
+        Err(_) => {
+            set_error("multi closure panicked".into());
+            1
+        }
+    }
+}
+
+unsafe extern "C" fn drop_multi_payload<F>(payload: *mut c_void)
+where
+    F: Fn(&[Array], &Stream) -> Result<Vec<Array>> + 'static,
+{
+    if payload.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        drop(unsafe { Box::from_raw(payload.cast::<MultiPayload<F>>()) });
+    }));
+}
+
 unsafe extern "C" fn call_variadic<F>(
     result: *mut sys::mlx_vector_array,
     input: sys::mlx_vector_array,
