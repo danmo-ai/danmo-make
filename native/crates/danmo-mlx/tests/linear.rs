@@ -20,17 +20,16 @@ fn max_error(lhs: &[f32], rhs: &[f32]) -> f32 {
 
 fn affine_probe(dtype: Dtype, bits: i32, group_size: i32) -> Result<()> {
     let stream = Stream::cpu()?;
-    let dense =
-        Array::from_f32_slice(&values(OUT * IN, 29, 0.013, 0.17), &[OUT, IN])?.astype(dtype, &stream)?;
-    let input =
-        Array::from_f32_slice(&values(ROWS * IN, 23, 0.021, 0.2), &[ROWS, IN])?.astype(dtype, &stream)?;
+    let dense = Array::from_f32_slice(&values(OUT * IN, 29, 0.013, 0.17), &[OUT, IN])?
+        .astype(dtype, &stream)?;
+    let input = Array::from_f32_slice(&values(ROWS * IN, 23, 0.021, 0.2), &[ROWS, IN])?
+        .astype(dtype, &stream)?;
     let bias = Array::from_f32_slice(&values(OUT, 7, 0.05, 0.1), &[OUT])?.astype(dtype, &stream)?;
     let packed = dense.quantize_affine(group_size, bits, &stream)?;
-    let reference = LinearWeight::Dense(packed.dequantize(group_size, bits, &stream)?);
-    let quantized =
-        LinearWeight::affine(packed, AffineQuantization::new(bits, group_size)?)?;
+    let reference = LinearWeight::dense(packed.dequantize(group_size, bits, &stream)?);
+    let quantized = LinearWeight::affine(packed, AffineQuantization::new(bits, group_size)?)?;
     assert_eq!(quantized.compute_dtype(), dtype);
-    assert!(quantized.dense().is_none());
+    assert!(quantized.nbytes() < reference.nbytes());
 
     let actual = quantized
         .apply(&input, Some(&bias), &stream)?
@@ -48,8 +47,8 @@ fn affine_probe(dtype: Dtype, bits: i32, group_size: i32) -> Result<()> {
 
     let dense_bytes = (OUT * IN) as usize * if dtype == Dtype::Float32 { 4 } else { 2 };
     let scale_bytes = if dtype == Dtype::Float32 { 4 } else { 2 };
-    let expected_bytes = (OUT * IN * bits / 8) as usize
-        + 2 * (OUT * IN / group_size) as usize * scale_bytes;
+    let expected_bytes =
+        (OUT * IN * bits / 8) as usize + 2 * (OUT * IN / group_size) as usize * scale_bytes;
     assert_eq!(quantized.nbytes(), expected_bytes);
     assert!(quantized.nbytes() < dense_bytes);
     Ok(())

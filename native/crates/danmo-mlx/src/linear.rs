@@ -28,8 +28,15 @@ impl AffineQuantization {
 
 /// Weight of a linear layer `[out, in]`. Packed affine weights stay packed:
 /// `apply` runs `quantized_matmul`, which dequantizes inside the kernel.
+///
+/// The representation is private on purpose: callers can only `apply` the
+/// layer, so a model cannot branch on the storage format or dequantize the
+/// table back into a dense resident copy.
 #[derive(Clone)]
-pub enum LinearWeight {
+pub struct LinearWeight(Repr);
+
+#[derive(Clone)]
+enum Repr {
     Dense(Array),
     Affine {
         packed: QuantizedArray,
@@ -38,6 +45,10 @@ pub enum LinearWeight {
 }
 
 impl LinearWeight {
+    pub fn dense(weight: Array) -> Self {
+        Self(Repr::Dense(weight))
+    }
+
     pub fn affine(packed: QuantizedArray, quantization: AffineQuantization) -> Result<Self> {
         let weight = packed.weight.shape();
         let scales = packed.scales.shape();
@@ -78,16 +89,16 @@ impl LinearWeight {
                 ),
             ));
         }
-        Ok(Self::Affine {
+        Ok(Self(Repr::Affine {
             packed,
             quantization,
-        })
+        }))
     }
 
     pub fn apply(&self, input: &Array, bias: Option<&Array>, stream: &Stream) -> Result<Array> {
-        match self {
-            Self::Dense(weight) => Array::linear(input, weight, bias, stream),
-            Self::Affine {
+        match &self.0 {
+            Repr::Dense(weight) => Array::linear(input, weight, bias, stream),
+            Repr::Affine {
                 packed,
                 quantization,
             } => {
@@ -109,30 +120,17 @@ impl LinearWeight {
 
     /// Dtype activations should carry into this layer.
     pub fn compute_dtype(&self) -> Dtype {
-        match self {
-            Self::Dense(weight) => weight.dtype(),
-            Self::Affine { packed, .. } => packed.scales.dtype(),
+        match &self.0 {
+            Repr::Dense(weight) => weight.dtype(),
+            Repr::Affine { packed, .. } => packed.scales.dtype(),
         }
     }
 
-    pub fn dense(&self) -> Option<&Array> {
-        match self {
-            Self::Dense(weight) => Some(weight),
-            Self::Affine { .. } => None,
-        }
-    }
-
-    pub fn quantization(&self) -> Option<AffineQuantization> {
-        match self {
-            Self::Dense(_) => None,
-            Self::Affine { quantization, .. } => Some(*quantization),
-        }
-    }
-
+    /// Resident bytes: packed codes plus scales and biases for affine layers.
     pub fn nbytes(&self) -> usize {
-        match self {
-            Self::Dense(weight) => weight.nbytes(),
-            Self::Affine { packed, .. } => packed.nbytes(),
+        match &self.0 {
+            Repr::Dense(weight) => weight.nbytes(),
+            Repr::Affine { packed, .. } => packed.nbytes(),
         }
     }
 }

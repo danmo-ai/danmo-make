@@ -67,9 +67,8 @@ impl SafeTensors {
     }
 
     pub fn metadata(&self, key: &str) -> Result<Option<String>> {
-        let key = CString::new(key).map_err(|_| {
-            Error::new("mlx_map_string_to_string_get", "key contains a null byte")
-        })?;
+        let key = CString::new(key)
+            .map_err(|_| Error::new("mlx_map_string_to_string_get", "key contains a null byte"))?;
         let mut value = std::ptr::null();
         clear_error();
         let status =

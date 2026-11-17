@@ -24,7 +24,7 @@ pub use lora::{
     LoraFile,
 };
 #[cfg(feature = "mlx")]
-pub use mlx::load_directory as load_mlx_directory;
+pub use mlx::{load_directory as load_mlx_directory, MlxWeights, WeightDtype};
 
 use thiserror::Error;
 

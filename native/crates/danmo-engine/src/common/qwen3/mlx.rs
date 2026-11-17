@@ -1,18 +1,14 @@
-use std::collections::BTreeMap;
-
-use danmo_mlx::{Array, Error, Result, Stream};
+use danmo_mlx::{Array, Error, LinearWeight, Result, Stream};
 
 use super::Qwen3Config;
+use crate::weights::{MlxWeights, WeightDtype};
 
-pub fn load_directory(
-    directory: &std::path::Path,
-    _stream: &Stream,
-) -> Result<BTreeMap<String, Array>> {
-    crate::weights::load_mlx_directory(directory)
+pub fn load_directory(directory: &std::path::Path, dtype: WeightDtype) -> Result<MlxWeights> {
+    crate::weights::load_mlx_directory(directory, dtype, None)
 }
 
 pub fn encode_ids(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     config: Qwen3Config,
     prefix: &str,
     ids: &[i32],
@@ -63,7 +59,7 @@ pub fn encode_ids(
 }
 
 fn layer_forward(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     config: Qwen3Config,
     prefix: &str,
     layer: i64,
@@ -86,31 +82,17 @@ fn layer_forward(
         1e-6,
         stream,
     )?;
-    let gate = Array::linear(
-        &normed,
-        weight(weights, &path, "mlp.gate_proj.weight")?,
-        None,
-        stream,
-    )?
-    .silu(stream)?;
-    let up = Array::linear(
-        &normed,
-        weight(weights, &path, "mlp.up_proj.weight")?,
-        None,
-        stream,
-    )?;
+    let gate = linear(weights, &path, "mlp.gate_proj.weight")?
+        .apply(&normed, None, stream)?
+        .silu(stream)?;
+    let up = linear(weights, &path, "mlp.up_proj.weight")?.apply(&normed, None, stream)?;
     let mid = Array::multiply(&gate, &up, stream)?;
-    let mlp = Array::linear(
-        &mid,
-        weight(weights, &path, "mlp.down_proj.weight")?,
-        None,
-        stream,
-    )?;
+    let mlp = linear(weights, &path, "mlp.down_proj.weight")?.apply(&mid, None, stream)?;
     Array::add(&hidden, &mlp, stream)
 }
 
 fn attention(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     config: Qwen3Config,
     prefix: &str,
     hidden: &Array,
@@ -124,37 +106,25 @@ fn attention(
     let head = config.head_dim as i32;
     let heads = config.heads as i32;
     let kv_heads = config.kv_heads as i32;
-    let mut q = Array::linear(
-        hidden,
-        weight(weights, prefix, "self_attn.q_proj.weight")?,
-        None,
-        stream,
-    )?
-    .reshape(&[batch, sequence, heads, head], stream)?
-    .rms_norm(
-        Some(weight(weights, prefix, "self_attn.q_norm.weight")?),
-        1e-6,
-        stream,
-    )?;
-    let mut k = Array::linear(
-        hidden,
-        weight(weights, prefix, "self_attn.k_proj.weight")?,
-        None,
-        stream,
-    )?
-    .reshape(&[batch, sequence, kv_heads, head], stream)?
-    .rms_norm(
-        Some(weight(weights, prefix, "self_attn.k_norm.weight")?),
-        1e-6,
-        stream,
-    )?;
-    let mut v = Array::linear(
-        hidden,
-        weight(weights, prefix, "self_attn.v_proj.weight")?,
-        None,
-        stream,
-    )?
-    .reshape(&[batch, sequence, kv_heads, head], stream)?;
+    let mut q = linear(weights, prefix, "self_attn.q_proj.weight")?
+        .apply(hidden, None, stream)?
+        .reshape(&[batch, sequence, heads, head], stream)?
+        .rms_norm(
+            Some(weight(weights, prefix, "self_attn.q_norm.weight")?),
+            1e-6,
+            stream,
+        )?;
+    let mut k = linear(weights, prefix, "self_attn.k_proj.weight")?
+        .apply(hidden, None, stream)?
+        .reshape(&[batch, sequence, kv_heads, head], stream)?
+        .rms_norm(
+            Some(weight(weights, prefix, "self_attn.k_norm.weight")?),
+            1e-6,
+            stream,
+        )?;
+    let mut v = linear(weights, prefix, "self_attn.v_proj.weight")?
+        .apply(hidden, None, stream)?
+        .reshape(&[batch, sequence, kv_heads, head], stream)?;
     q = apply_rope(&q, cos, sin, stream)?;
     k = apply_rope(&k, cos, sin, stream)?;
     let groups = heads / kv_heads;
@@ -180,12 +150,7 @@ fn attention(
     .astype(q.dtype(), stream)?
     .transpose_axes(&[0, 2, 1, 3], stream)?
     .reshape(&[batch, sequence, heads * head], stream)?;
-    Array::linear(
-        &output,
-        weight(weights, prefix, "self_attn.o_proj.weight")?,
-        None,
-        stream,
-    )
+    linear(weights, prefix, "self_attn.o_proj.weight")?.apply(&output, None, stream)
 }
 
 fn apply_rope(input: &Array, cos: &Array, sin: &Array, stream: &Stream) -> Result<Array> {
@@ -250,21 +215,27 @@ fn causal_padding_mask(valid: &[bool], _stream: &Stream) -> Result<Array> {
     Array::from_f32_slice(&mask, &[1, 1, sequence as i32, sequence as i32])
 }
 
-fn weight<'a>(weights: &'a BTreeMap<String, Array>, prefix: &str, name: &str) -> Result<&'a Array> {
-    let name = if prefix.ends_with('.') {
+fn qualified(prefix: &str, name: &str) -> String {
+    if prefix.ends_with('.') {
         format!("{prefix}{name}")
     } else {
         format!("{prefix}.{name}")
-    };
-    weights
-        .get(&name)
-        .ok_or_else(|| Error::new("Qwen3 MLX weights", format!("missing {name}")))
+    }
+}
+
+fn weight<'a>(weights: &'a MlxWeights, prefix: &str, name: &str) -> Result<&'a Array> {
+    weights.tensor(&qualified(prefix, name))
+}
+
+fn linear<'a>(weights: &'a MlxWeights, prefix: &str, name: &str) -> Result<&'a LinearWeight> {
+    weights.linear(&qualified(prefix, name))
 }
 
 #[cfg(test)]
 mod tests {
     use super::Qwen3Config;
     use super::{encode_ids, load_directory};
+    use crate::weights::{MlxWeights, WeightDtype};
     use danmo_mlx::{SafeTensors, Stream};
     use std::collections::BTreeMap;
 
@@ -304,6 +275,7 @@ mod tests {
         for name in tensors.names().unwrap() {
             weights.insert(name.clone(), tensors.get(&name).unwrap().unwrap());
         }
+        let weights = MlxWeights::from_dense(weights);
         let config = Qwen3Config {
             vocab: 8,
             hidden: 4,
@@ -354,7 +326,7 @@ mod tests {
         #[cfg(not(feature = "mlx-metal"))]
         let stream = Stream::cpu().unwrap();
         let started = std::time::Instant::now();
-        let weights = load_directory(&encoder, &stream).unwrap();
+        let weights = load_directory(&encoder, WeightDtype::Native).unwrap();
         let config = Qwen3Config {
             vocab: 151_936,
             hidden: 2560,

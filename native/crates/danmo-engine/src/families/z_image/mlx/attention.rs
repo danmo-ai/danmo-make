@@ -1,10 +1,10 @@
-use danmo_mlx::{Array, Error, Result, Stream};
+use danmo_mlx::{Array, Error, LinearWeight, Result, Stream};
 
 pub struct AttentionWeights<'a> {
-    pub to_q: &'a Array,
-    pub to_k: &'a Array,
-    pub to_v: &'a Array,
-    pub to_out: &'a Array,
+    pub to_q: &'a LinearWeight,
+    pub to_k: &'a LinearWeight,
+    pub to_v: &'a LinearWeight,
+    pub to_out: &'a LinearWeight,
     pub norm_q: &'a Array,
     pub norm_k: &'a Array,
 }
@@ -41,11 +41,17 @@ pub fn forward(
         ));
     }
 
-    let mut q = Array::linear(input, weights.to_q, None, stream)?
+    let mut q = weights
+        .to_q
+        .apply(input, None, stream)?
         .reshape(&[batch, sequence, heads, head_dim], stream)?;
-    let mut k = Array::linear(input, weights.to_k, None, stream)?
+    let mut k = weights
+        .to_k
+        .apply(input, None, stream)?
         .reshape(&[batch, sequence, heads, head_dim], stream)?;
-    let v = Array::linear(input, weights.to_v, None, stream)?
+    let v = weights
+        .to_v
+        .apply(input, None, stream)?
         .reshape(&[batch, sequence, heads, head_dim], stream)?;
     q = q.rms_norm(Some(weights.norm_q), eps, stream)?;
     k = k.rms_norm(Some(weights.norm_k), eps, stream)?;
@@ -59,7 +65,7 @@ pub fn forward(
     let output = Array::scaled_dot_product_attention(&q, &k, &v, scale, "", mask, stream)?
         .transpose_axes(&[0, 2, 1, 3], stream)?
         .reshape(&[batch, sequence, dim], stream)?;
-    Array::linear(&output, weights.to_out, None, stream)
+    weights.to_out.apply(&output, None, stream)
 }
 
 fn apply_rope(
@@ -132,7 +138,7 @@ fn rope_table(ids: &[[i32; 3]], axes: [i32; 3], theta: f32) -> Result<Array> {
 mod tests {
     use super::{forward, AttentionWeights};
     use crate::families::z_image::weights::ZImageConfig;
-    use danmo_mlx::{Array, DeviceType, Result, Stream};
+    use danmo_mlx::{Array, DeviceType, LinearWeight, Result, Stream};
     use std::collections::HashMap;
 
     fn values(count: usize, modulus: usize, scale: f32, offset: f32) -> Vec<f32> {
@@ -154,10 +160,10 @@ mod tests {
         let out_values = values(36, 13, 0.02, -0.07);
         let norm_q_values = values(6, 5, 0.2, -0.2);
         let norm_k_values = values(6, 7, 0.1, -0.1);
-        let q = Array::from_f32_slice(&q_values, &[6, 6])?;
-        let k = Array::from_f32_slice(&k_values, &[6, 6])?;
-        let v = Array::from_f32_slice(&v_values, &[6, 6])?;
-        let out = Array::from_f32_slice(&out_values, &[6, 6])?;
+        let q = LinearWeight::dense(Array::from_f32_slice(&q_values, &[6, 6])?);
+        let k = LinearWeight::dense(Array::from_f32_slice(&k_values, &[6, 6])?);
+        let v = LinearWeight::dense(Array::from_f32_slice(&v_values, &[6, 6])?);
+        let out = LinearWeight::dense(Array::from_f32_slice(&out_values, &[6, 6])?);
         let norm_q = Array::from_f32_slice(&norm_q_values, &[6])?;
         let norm_k = Array::from_f32_slice(&norm_k_values, &[6])?;
         let ids = [[1, 0, 0], [2, 1, 1]];

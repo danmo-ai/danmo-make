@@ -1,4 +1,4 @@
-use danmo_mlx::{Array, Error, Result, Stream};
+use danmo_mlx::{Array, Error, LinearWeight, Result, Stream};
 
 use super::attention::{self, AttentionWeights};
 use super::{feed_forward, modulation};
@@ -9,10 +9,10 @@ pub struct BlockWeights<'a> {
     pub attention_norm2: &'a Array,
     pub ffn_norm1: &'a Array,
     pub ffn_norm2: &'a Array,
-    pub w1: &'a Array,
-    pub w2: &'a Array,
-    pub w3: &'a Array,
-    pub adaln: Option<(&'a Array, &'a Array)>,
+    pub w1: &'a LinearWeight,
+    pub w2: &'a LinearWeight,
+    pub w3: &'a LinearWeight,
+    pub adaln: Option<(&'a LinearWeight, &'a Array)>,
 }
 
 pub fn forward(
@@ -35,7 +35,7 @@ pub fn forward(
                     "modulated block needs a timestep embedding",
                 )
             })?;
-            let packed = Array::linear(timestep, weight, Some(bias), stream)?;
+            let packed = weight.apply(timestep, Some(bias), stream)?;
             Some(modulation::adaln(&packed, input.shape()[2], stream)?)
         }
         None => None,
@@ -81,7 +81,7 @@ mod tests {
     use super::{forward, BlockWeights};
     use crate::families::z_image::mlx::attention::AttentionWeights;
     use crate::families::z_image::weights::ZImageConfig;
-    use danmo_mlx::{Array, DeviceType, Result, Stream};
+    use danmo_mlx::{Array, DeviceType, LinearWeight, Result, Stream};
     use std::collections::HashMap;
 
     fn values(count: usize, modulus: usize, scale: f32, offset: f32) -> Vec<f32> {
@@ -114,20 +114,21 @@ mod tests {
         let adaln_bias_values = values(24, 19, 0.03, -0.1);
         let timestep_values = values(2, 3, 0.2, -0.1);
 
-        let q = Array::from_f32_slice(&q_values, &[6, 6])?;
-        let k = Array::from_f32_slice(&k_values, &[6, 6])?;
-        let v = Array::from_f32_slice(&v_values, &[6, 6])?;
-        let out = Array::from_f32_slice(&out_values, &[6, 6])?;
+        let q = LinearWeight::dense(Array::from_f32_slice(&q_values, &[6, 6])?);
+        let k = LinearWeight::dense(Array::from_f32_slice(&k_values, &[6, 6])?);
+        let v = LinearWeight::dense(Array::from_f32_slice(&v_values, &[6, 6])?);
+        let out = LinearWeight::dense(Array::from_f32_slice(&out_values, &[6, 6])?);
         let norm_q = Array::from_f32_slice(&norm_q_values, &[6])?;
         let norm_k = Array::from_f32_slice(&norm_k_values, &[6])?;
         let attn_norm1 = Array::from_f32_slice(&attn_norm1_values, &[6])?;
         let attn_norm2 = Array::from_f32_slice(&attn_norm2_values, &[6])?;
         let ffn_norm1 = Array::from_f32_slice(&ffn_norm1_values, &[6])?;
         let ffn_norm2 = Array::from_f32_slice(&ffn_norm2_values, &[6])?;
-        let w1 = Array::from_f32_slice(&w1_values, &[4, 6])?;
-        let w2 = Array::from_f32_slice(&w2_values, &[6, 4])?;
-        let w3 = Array::from_f32_slice(&w3_values, &[4, 6])?;
-        let adaln_weight = Array::from_f32_slice(&adaln_weight_values, &[24, 2])?;
+        let w1 = LinearWeight::dense(Array::from_f32_slice(&w1_values, &[4, 6])?);
+        let w2 = LinearWeight::dense(Array::from_f32_slice(&w2_values, &[6, 4])?);
+        let w3 = LinearWeight::dense(Array::from_f32_slice(&w3_values, &[4, 6])?);
+        let adaln_weight =
+            LinearWeight::dense(Array::from_f32_slice(&adaln_weight_values, &[24, 2])?);
         let adaln_bias = Array::from_f32_slice(&adaln_bias_values, &[24])?;
         let timestep = Array::from_f32_slice(&timestep_values, &[1, 2])?;
         let ids = [[1, 0, 0], [2, 1, 1]];

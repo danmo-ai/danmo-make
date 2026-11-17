@@ -1,23 +1,23 @@
-use danmo_mlx::{Array, Result, Stream};
+use danmo_mlx::{Array, LinearWeight, Result, Stream};
 
 pub fn embed(
     timestep: f32,
     frequency_dim: usize,
-    w1: &Array,
+    w1: &LinearWeight,
     b1: &Array,
-    w2: &Array,
+    w2: &LinearWeight,
     b2: &Array,
     stream: &Stream,
 ) -> Result<Array> {
     let features = super::super::geom::timestep_features(timestep, frequency_dim);
     let input = Array::from_f32_slice(&features, &[1, frequency_dim as i32])?;
-    let input = if input.dtype() == w1.dtype() {
+    let input = if input.dtype() == w1.compute_dtype() {
         input
     } else {
-        input.astype(w1.dtype(), stream)?
+        input.astype(w1.compute_dtype(), stream)?
     };
-    let hidden = Array::linear(&input, w1, Some(b1), stream)?.silu(stream)?;
-    Array::linear(&hidden, w2, Some(b2), stream)
+    let hidden = w1.apply(&input, Some(b1), stream)?.silu(stream)?;
+    w2.apply(&hidden, Some(b2), stream)
 }
 
 #[cfg(test)]
@@ -39,9 +39,11 @@ mod tests {
             .map(|index| (index % 5) as f32 * 0.04 - 0.06)
             .collect();
         let b2_values = vec![0.02, -0.01, 0.03];
-        let w1 = danmo_mlx::Array::from_f32_slice(&w1_values, &[4, 8])?;
+        let w1 =
+            danmo_mlx::LinearWeight::dense(danmo_mlx::Array::from_f32_slice(&w1_values, &[4, 8])?);
         let b1 = danmo_mlx::Array::from_f32_slice(&b1_values, &[4])?;
-        let w2 = danmo_mlx::Array::from_f32_slice(&w2_values, &[3, 4])?;
+        let w2 =
+            danmo_mlx::LinearWeight::dense(danmo_mlx::Array::from_f32_slice(&w2_values, &[3, 4])?);
         let b2 = danmo_mlx::Array::from_f32_slice(&b2_values, &[3])?;
         let output = embed(500.0, 8, &w1, &b1, &w2, &b2, &stream)?.to_vec_f32(&stream)?;
 
