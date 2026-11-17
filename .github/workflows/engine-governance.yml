@@ -19,8 +19,9 @@ jobs:
           path: danmo-make
           submodules: true
 
-      - name: Install libstdc++
-        run: sudo apt-get update && sudo apt-get install -y g++ cmake
+      - name: Install native build deps
+        # MLX's Linux CPU backend links BLAS and LAPACKE.
+        run: sudo apt-get update && sudo apt-get install -y g++ cmake libopenblas-dev liblapacke-dev
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
