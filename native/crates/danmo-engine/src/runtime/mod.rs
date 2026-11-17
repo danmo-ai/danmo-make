@@ -30,6 +30,7 @@ pub fn element_size(tensor: Tensor) -> usize {
 
 pub const TYPE_F32: u32 = g::ggml_type_GGML_TYPE_F32;
 pub const TYPE_F16: u32 = g::ggml_type_GGML_TYPE_F16;
+pub const TYPE_BF16: u32 = g::ggml_type_GGML_TYPE_BF16;
 pub const TYPE_Q8_0: u32 = g::ggml_type_GGML_TYPE_Q8_0;
 
 #[derive(Debug, Error)]

@@ -3,8 +3,11 @@
 pub(crate) mod ace_step;
 mod driver;
 mod flux2;
+mod hunyuan;
+mod ltx;
 mod qwen_image;
 pub mod seedvr2;
+mod wan;
 mod z_image;
 
 pub use crate::contract::{Media, Shape};
@@ -16,8 +19,10 @@ pub use flux2::{
     weight_layout, write_chain_bundle, write_config_bundle, write_q8_bundle, write_qwen3_bundle,
     write_smoke_bundle, Flux2Config, Flux2Denoise,
 };
+pub use ltx::session::write_smoke_bundle as write_ltx_smoke_bundle;
 pub use qwen_image::write_edit_smoke_bundle;
 pub use seedvr2::write_smoke_bundle as write_seedvr2_smoke_bundle;
+pub use wan::write_smoke_bundle as write_wan_smoke_bundle;
 pub use z_image::write_control_smoke_bundle as write_z_image_control_smoke_bundle;
 pub use z_image::write_edit_smoke_bundle as write_z_image_edit_smoke_bundle;
 
@@ -136,14 +141,14 @@ const FAMILIES: &[FamilySpec] = &[
     FamilySpec {
         id: "wan",
         media: Media::Video,
-        shape: Shape::DitPipeline,
+        shape: Shape::GenerationFacade,
         lora_inference: false,
         schedulers: &[],
     },
     FamilySpec {
         id: "ltx",
         media: Media::Video,
-        shape: Shape::DitPipeline,
+        shape: Shape::GenerationFacade,
         lora_inference: false,
         schedulers: &[],
     },
@@ -157,7 +162,7 @@ const FAMILIES: &[FamilySpec] = &[
     FamilySpec {
         id: "hunyuan",
         media: Media::Video,
-        shape: Shape::DitPipeline,
+        shape: Shape::GenerationFacade,
         lora_inference: false,
         schedulers: &[],
     },
@@ -220,6 +225,11 @@ static QWEN_IMAGE_EDIT_FAMILY: qwen_image::QwenImageEditFamily = qwen_image::Qwe
 static Z_IMAGE_FAMILY: z_image::ZImageFamily = z_image::ZImageFamily;
 static Z_IMAGE_EDIT_FAMILY: z_image::ZImageEditFamily = z_image::ZImageEditFamily;
 static SEEDVR2_UPSCALE_FAMILY: seedvr2::SeedVr2UpscaleFamily = seedvr2::SeedVr2UpscaleFamily;
+static SEEDVR2_VIDEO_UPSCALE_FAMILY: seedvr2::SeedVr2VideoUpscaleFamily =
+    seedvr2::SeedVr2VideoUpscaleFamily;
+static LTX_VIDEO_CREATE_FAMILY: ltx::LtxVideoCreateFamily = ltx::LtxVideoCreateFamily;
+static HUNYUAN_VIDEO_EDIT_FAMILY: hunyuan::HunyuanVideoEditFamily = hunyuan::HunyuanVideoEditFamily;
+static WAN_VIDEO_CREATE_FAMILY: wan::WanVideoCreateFamily = wan::WanVideoCreateFamily;
 static ACE_STEP_FAMILY: ace_step::AceStepFamily = ace_step::AceStepFamily;
 
 pub fn driver(family: &str, action: crate::contract::Action) -> FamilyDriver {
@@ -232,6 +242,10 @@ pub fn driver(family: &str, action: crate::contract::Action) -> FamilyDriver {
         ("z_image", Action::ImageCreate) => FamilyDriver::DitImage(&Z_IMAGE_FAMILY),
         ("z_image", Action::ImageEdit) => FamilyDriver::Facade(&Z_IMAGE_EDIT_FAMILY),
         ("seedvr2", Action::ImageUpscale) => FamilyDriver::Facade(&SEEDVR2_UPSCALE_FAMILY),
+        ("seedvr2", Action::VideoUpscale) => FamilyDriver::Facade(&SEEDVR2_VIDEO_UPSCALE_FAMILY),
+        ("wan", Action::VideoCreate) => FamilyDriver::Facade(&WAN_VIDEO_CREATE_FAMILY),
+        ("ltx", Action::VideoCreate) => FamilyDriver::Facade(&LTX_VIDEO_CREATE_FAMILY),
+        ("hunyuan", Action::VideoEdit) => FamilyDriver::Facade(&HUNYUAN_VIDEO_EDIT_FAMILY),
         ("ace_step", Action::AudioCreate | Action::AudioEdit | Action::AudioLm) => {
             FamilyDriver::Facade(&ACE_STEP_FAMILY)
         }

@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/danmo-ggml-sys",
+    "crates/danmo-mlx-sys",
+    "crates/danmo-mlx",
     "crates/danmo-contracts",
     "crates/danmo-catalog",
     "crates/danmo-store",

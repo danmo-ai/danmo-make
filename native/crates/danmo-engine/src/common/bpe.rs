@@ -227,3 +227,163 @@ pub(crate) fn push_id(
     ids.push(id as i32);
     Ok(())
 }
+
+/// Qwen2-style byte-level BPE files: `vocab.json` + `merges.txt` +
+/// `tokenizer_config.json` (`added_tokens_decoder` for the specials).
+pub(crate) struct Qwen2Tokenizer {
+    pub vocab: HashMap<String, i32>,
+    pub ranks: HashMap<(String, String), usize>,
+    pub specials: Vec<(String, i32)>,
+}
+
+impl Qwen2Tokenizer {
+    pub(crate) fn load(root: &std::path::Path) -> Result<Self, WeightError> {
+        let vocab_path = root.join("vocab.json");
+        let merges_path = root.join("merges.txt");
+        if !vocab_path.is_file() || !merges_path.is_file() {
+            return Err(WeightError::NotBuilt(format!(
+                "tokenizer is missing vocab.json or merges.txt under {}",
+                root.display()
+            )));
+        }
+        let vocab_text = std::fs::read_to_string(&vocab_path).map_err(|err| WeightError::Open {
+            path: vocab_path.display().to_string(),
+            detail: err.to_string(),
+        })?;
+        let vocab_json: serde_json::Value = serde_json::from_str(&vocab_text).map_err(|err| {
+            WeightError::NotBuilt(format!("tokenizer vocab.json is not json: {err}"))
+        })?;
+        let vocab = vocab_map(&vocab_json)?;
+        let merges_text =
+            std::fs::read_to_string(&merges_path).map_err(|err| WeightError::Open {
+                path: merges_path.display().to_string(),
+                detail: err.to_string(),
+            })?;
+        let ranks = merge_ranks(&merges_text)?;
+        let specials = added_specials(&root.join("tokenizer_config.json"), &vocab)?;
+        Ok(Self {
+            vocab,
+            ranks,
+            specials,
+        })
+    }
+
+    pub(crate) fn encode(&self, text: &str, vocab_size: i64) -> Result<Vec<i32>, WeightError> {
+        encode(text, &self.vocab, &self.ranks, &self.specials, vocab_size)
+    }
+}
+
+fn vocab_map(value: &serde_json::Value) -> Result<HashMap<String, i32>, WeightError> {
+    let Some(object) = value.as_object() else {
+        return Err(WeightError::NotBuilt(
+            "tokenizer vocab.json is not an object".into(),
+        ));
+    };
+    let mut vocab = HashMap::with_capacity(object.len());
+    for (token, id) in object {
+        let Some(id) = id.as_i64() else {
+            return Err(WeightError::NotBuilt(format!(
+                "tokenizer id for {token} is not an integer"
+            )));
+        };
+        if id < 0 || id > i32::MAX as i64 {
+            return Err(WeightError::NotBuilt(format!(
+                "tokenizer id {id} for {token} does not fit"
+            )));
+        }
+        vocab.insert(token.clone(), id as i32);
+    }
+    Ok(vocab)
+}
+
+fn merge_ranks(text: &str) -> Result<HashMap<(String, String), usize>, WeightError> {
+    let mut ranks = HashMap::new();
+    for line in text.lines() {
+        let line = line.trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.split(' ');
+        let Some(left) = parts.next() else {
+            continue;
+        };
+        let Some(right) = parts.next() else {
+            return Err(WeightError::NotBuilt(format!(
+                "tokenizer merge {line} is not a pair"
+            )));
+        };
+        if parts.next().is_some() || left.is_empty() || right.is_empty() {
+            return Err(WeightError::NotBuilt(format!(
+                "tokenizer merge {line} is not a pair"
+            )));
+        }
+        let rank = ranks.len();
+        if ranks
+            .insert((left.to_string(), right.to_string()), rank)
+            .is_some()
+        {
+            return Err(WeightError::NotBuilt(
+                "tokenizer merge list repeats a pair".into(),
+            ));
+        }
+    }
+    Ok(ranks)
+}
+
+fn added_specials(
+    path: &std::path::Path,
+    vocab: &HashMap<String, i32>,
+) -> Result<Vec<(String, i32)>, WeightError> {
+    if !path.is_file() {
+        return Err(WeightError::NotBuilt(format!(
+            "tokenizer is missing {}",
+            path.display()
+        )));
+    }
+    let text = std::fs::read_to_string(path).map_err(|err| WeightError::Open {
+        path: path.display().to_string(),
+        detail: err.to_string(),
+    })?;
+    let config: serde_json::Value = serde_json::from_str(&text).map_err(|err| {
+        WeightError::NotBuilt(format!("tokenizer_config.json is not json: {err}"))
+    })?;
+    let Some(added) = config
+        .get("added_tokens_decoder")
+        .and_then(|item| item.as_object())
+    else {
+        return Err(WeightError::NotBuilt(
+            "tokenizer_config.json has no added_tokens_decoder".into(),
+        ));
+    };
+    let mut specials = Vec::new();
+    for (key, row) in added {
+        let special = row
+            .get("special")
+            .and_then(|item| item.as_bool())
+            .unwrap_or(true);
+        if !special {
+            continue;
+        }
+        let Some(content) = row.get("content").and_then(|item| item.as_str()) else {
+            return Err(WeightError::NotBuilt(
+                "tokenizer added token has no content".into(),
+            ));
+        };
+        let id = key.parse::<i64>().map_err(|_| {
+            WeightError::NotBuilt(format!("tokenizer added token id {key} is not an integer"))
+        })?;
+        let Some(vocab_id) = vocab.get(content).copied() else {
+            return Err(WeightError::NotBuilt(format!(
+                "tokenizer has no vocab id for {content}"
+            )));
+        };
+        if i64::from(vocab_id) != id {
+            return Err(WeightError::NotBuilt(format!(
+                "tokenizer id for {content} is {vocab_id} in vocab and {id} in added_tokens_decoder"
+            )));
+        }
+        specials.push((content.to_string(), vocab_id));
+    }
+    specials.sort_by_key(|(token, _)| std::cmp::Reverse(token.len()));
+    Ok(specials)
+}

@@ -2,7 +2,8 @@ use crate::app::{gguf_bundle, AppState};
 use crate::product;
 use danmo_contracts::{
     AudioEditRequest, AudioGenerationRequest, AudioLmRequest, ImageEditRequest,
-    ImageGenerationRequest, ImageUpscaleRequest,
+    ImageGenerationRequest, ImageUpscaleRequest, VideoEditRequest, VideoGenerationRequest,
+    VideoUpscaleRequest,
 };
 use danmo_engine::{
     Action, Artifact, ArtifactSink, CancellationToken, Engine, EngineAudioCreateRequest,
@@ -96,6 +97,26 @@ impl ResolvePort for EngineHost<'_> {
             return Ok((rgb, width, height));
         }
         decode_image_with_ffmpeg(&path)
+    }
+
+    fn read_source_video_path(
+        &self,
+        _run: &ResolvedRun,
+        source_asset_id: &str,
+    ) -> Result<PathBuf, EngineError> {
+        let row = self
+            .state
+            .scheduler
+            .get_asset(source_asset_id)
+            .map_err(|error| EngineError::Resolve(error.to_string()))?
+            .ok_or_else(|| {
+                EngineError::Resolve(format!("source asset {source_asset_id} is missing"))
+            })?;
+        Ok(product::resolve_asset_fs_path(
+            &self.state.outputs,
+            &self.state.workspace,
+            &row.file_path,
+        ))
     }
 }
 
@@ -409,9 +430,33 @@ fn engine_request(kind: &str, model: &str, params: &Value) -> Result<EngineReque
         "image.upscale" => serde_json::from_value::<ImageUpscaleRequest>(request)
             .map(EngineRequest::ImageUpscale)
             .map_err(|error| EngineError::bad_request(error.to_string())),
-        "video.generation" => unsupported(model, Action::VideoCreate),
-        "video.edit" => unsupported(model, Action::VideoEdit),
-        "video.upscale" => unsupported(model, Action::VideoUpscale),
+        "video.generation" => {
+            let family = params.get("family").and_then(Value::as_str).unwrap_or("");
+            if !matches!(family, "wan" | "ltx") {
+                return unsupported(model, Action::VideoCreate);
+            }
+            serde_json::from_value::<VideoGenerationRequest>(request)
+                .map(EngineRequest::VideoCreate)
+                .map_err(|error| EngineError::bad_request(error.to_string()))
+        }
+        "video.edit" => {
+            let family = params.get("family").and_then(Value::as_str).unwrap_or("");
+            if family != "hunyuan" {
+                return unsupported(model, Action::VideoEdit);
+            }
+            serde_json::from_value::<VideoEditRequest>(request)
+                .map(EngineRequest::VideoEdit)
+                .map_err(|error| EngineError::bad_request(error.to_string()))
+        }
+        "video.upscale" => {
+            let family = params.get("family").and_then(Value::as_str).unwrap_or("");
+            if family != "seedvr2" {
+                return unsupported(model, Action::VideoUpscale);
+            }
+            serde_json::from_value::<VideoUpscaleRequest>(request)
+                .map(EngineRequest::VideoUpscale)
+                .map_err(|error| EngineError::bad_request(error.to_string()))
+        }
         "video.avatar" => unsupported(model, Action::VideoAvatar),
         other => Err(EngineError::bad_request(format!(
             "unsupported task kind {other}"
@@ -500,5 +545,78 @@ mod tests {
         assert!(metadata_float(&json!({"scale": null}), "scale")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn video_generation_routes_wan_and_ltx() {
+        let params = json!({
+            "family": "wan",
+            "request": {"model": "wan-2.2-ti2v-5b", "prompt": "a cat", "num_frames": 81},
+        });
+        let request = engine_request("video.generation", "wan-2.2-ti2v-5b", &params).unwrap();
+        match request {
+            EngineRequest::VideoCreate(request) => {
+                assert_eq!(request.prompt, "a cat");
+                assert_eq!(request.num_frames, Some(81));
+                assert_eq!(request.size, None);
+                assert_eq!(request.fps, None);
+            }
+            other => panic!("wan video generation routed to {other:?}"),
+        }
+        let params = json!({
+            "family": "ltx",
+            "request": {"model": "ltx-2.3-dev", "prompt": "a cat", "num_frames": 97},
+        });
+        let request = engine_request("video.generation", "ltx-2.3-dev", &params).unwrap();
+        match request {
+            EngineRequest::VideoCreate(request) => {
+                assert_eq!(request.prompt, "a cat");
+                assert_eq!(request.num_frames, Some(97));
+            }
+            other => panic!("ltx video generation routed to {other:?}"),
+        }
+        let params = json!({"family": "hunyuan", "request": {"model": "hunyuan", "prompt": "x"}});
+        let request = engine_request("video.generation", "hunyuan", &params).unwrap();
+        assert!(matches!(
+            request,
+            EngineRequest::Unsupported {
+                action: Action::VideoCreate,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn video_edit_routes_hunyuan_only() {
+        let params = json!({
+            "family": "hunyuan",
+            "request": {
+                "model": "hunyuan-video-1.5-i2v-720p",
+                "source_asset_id": "ast_src",
+                "prompt": "a cat",
+                "num_frames": 81,
+            },
+        });
+        let request = engine_request("video.edit", "hunyuan-video-1.5-i2v-720p", &params).unwrap();
+        match request {
+            EngineRequest::VideoEdit(request) => {
+                assert_eq!(request.source_asset_id, "ast_src");
+                assert_eq!(request.num_frames, Some(81));
+                assert_eq!(request.size, None);
+            }
+            other => panic!("hunyuan video edit routed to {other:?}"),
+        }
+        let params = json!({
+            "family": "wan",
+            "request": {"model": "wan-2.2-ti2v-5b", "source_asset_id": "ast_src", "prompt": "x"},
+        });
+        let request = engine_request("video.edit", "wan-2.2-ti2v-5b", &params).unwrap();
+        assert!(matches!(
+            request,
+            EngineRequest::Unsupported {
+                action: Action::VideoEdit,
+                ..
+            }
+        ));
     }
 }

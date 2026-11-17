@@ -6191,13 +6191,63 @@
               "zh": "BF16",
               "en": "BF16"
             },
-            "size": "42.0GB",
+            "size": "70.6GB",
             "source": "modelscope",
             "source_type": "full",
             "repo_id": "unsloth/LTX-2.3-GGUF",
             "local_path": "models/Video/ltx-2.3-distilled/bf16",
             "allow_patterns": [
               "distilled/ltx-2.3-22b-distilled-BF16.gguf"
+            ],
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "vae/ltx-2.3-22b-distilled_video_vae.safetensors"
+                ],
+                "role": "vae"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "vae/ltx-2.3-22b-distilled_audio_vae.safetensors"
+                ],
+                "role": "audio_vae"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "text_encoders/ltx-2.3-22b-distilled_embeddings_connectors.safetensors"
+                ],
+                "role": "connectors"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/gemma-3-12b-it-GGUF",
+                "allow_patterns": [
+                  "gemma-3-12b-it-BF16.gguf"
+                ],
+                "role": "text_encoder"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/gemma-3-12b-it",
+                "allow_patterns": [
+                  "tokenizer.json"
+                ],
+                "role": "tokenizer"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "Lightricks/LTX-2.3",
+                "allow_patterns": [
+                  "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+                ],
+                "role": "upscaler"
+              }
             ],
             "default": true
           },
@@ -6206,13 +6256,63 @@
               "zh": "Q8_0",
               "en": "Q8_0"
             },
-            "size": "22.8GB",
+            "size": "40.4GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "unsloth/LTX-2.3-GGUF",
             "local_path": "models/Video/ltx-2.3-distilled/q8_0",
             "allow_patterns": [
               "distilled/ltx-2.3-22b-distilled-Q8_0.gguf"
+            ],
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "vae/ltx-2.3-22b-distilled_video_vae.safetensors"
+                ],
+                "role": "vae"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "vae/ltx-2.3-22b-distilled_audio_vae.safetensors"
+                ],
+                "role": "audio_vae"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "text_encoders/ltx-2.3-22b-distilled_embeddings_connectors.safetensors"
+                ],
+                "role": "connectors"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/gemma-3-12b-it-GGUF",
+                "allow_patterns": [
+                  "gemma-3-12b-it-Q8_0.gguf"
+                ],
+                "role": "text_encoder"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/gemma-3-12b-it",
+                "allow_patterns": [
+                  "tokenizer.json"
+                ],
+                "role": "tokenizer"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "Lightricks/LTX-2.3",
+                "allow_patterns": [
+                  "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+                ],
+                "role": "upscaler"
+              }
             ]
           },
           "q4_k": {
@@ -6220,13 +6320,63 @@
               "zh": "Q4_K_M",
               "en": "Q4_K_M"
             },
-            "size": "14.3GB",
+            "size": "26.7GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "unsloth/LTX-2.3-GGUF",
             "local_path": "models/Video/ltx-2.3-distilled/q4_k",
             "allow_patterns": [
               "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf"
+            ],
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "vae/ltx-2.3-22b-distilled_video_vae.safetensors"
+                ],
+                "role": "vae"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "vae/ltx-2.3-22b-distilled_audio_vae.safetensors"
+                ],
+                "role": "audio_vae"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "text_encoders/ltx-2.3-22b-distilled_embeddings_connectors.safetensors"
+                ],
+                "role": "connectors"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/gemma-3-12b-it-GGUF",
+                "allow_patterns": [
+                  "gemma-3-12b-it-Q4_K_M.gguf"
+                ],
+                "role": "text_encoder"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/gemma-3-12b-it",
+                "allow_patterns": [
+                  "tokenizer.json"
+                ],
+                "role": "tokenizer"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "Lightricks/LTX-2.3",
+                "allow_patterns": [
+                  "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+                ],
+                "role": "upscaler"
+              }
             ]
           }
         }
@@ -6369,13 +6519,71 @@
               "zh": "BF16",
               "en": "BF16"
             },
-            "size": "42.0GB",
+            "size": "112.6GB",
             "source": "modelscope",
             "source_type": "full",
             "repo_id": "unsloth/LTX-2.3-GGUF",
             "local_path": "models/Video/ltx-2.3-dev/bf16",
             "allow_patterns": [
               "ltx-2.3-22b-dev-BF16.gguf"
+            ],
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "vae/ltx-2.3-22b-dev_video_vae.safetensors"
+                ],
+                "role": "vae"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "vae/ltx-2.3-22b-dev_audio_vae.safetensors"
+                ],
+                "role": "audio_vae"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors"
+                ],
+                "role": "connectors"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/gemma-3-12b-it-GGUF",
+                "allow_patterns": [
+                  "gemma-3-12b-it-BF16.gguf"
+                ],
+                "role": "text_encoder"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/gemma-3-12b-it",
+                "allow_patterns": [
+                  "tokenizer.json"
+                ],
+                "role": "tokenizer"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "distilled/ltx-2.3-22b-distilled-BF16.gguf"
+                ],
+                "role": "transformer_stage2"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "Lightricks/LTX-2.3",
+                "allow_patterns": [
+                  "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+                ],
+                "role": "upscaler"
+              }
             ],
             "default": true
           },
@@ -6384,13 +6592,71 @@
               "zh": "Q8_0",
               "en": "Q8_0"
             },
-            "size": "22.8GB",
+            "size": "63.2GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "unsloth/LTX-2.3-GGUF",
             "local_path": "models/Video/ltx-2.3-dev/q8_0",
             "allow_patterns": [
               "ltx-2.3-22b-dev-Q8_0.gguf"
+            ],
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "vae/ltx-2.3-22b-dev_video_vae.safetensors"
+                ],
+                "role": "vae"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "vae/ltx-2.3-22b-dev_audio_vae.safetensors"
+                ],
+                "role": "audio_vae"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors"
+                ],
+                "role": "connectors"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/gemma-3-12b-it-GGUF",
+                "allow_patterns": [
+                  "gemma-3-12b-it-Q8_0.gguf"
+                ],
+                "role": "text_encoder"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/gemma-3-12b-it",
+                "allow_patterns": [
+                  "tokenizer.json"
+                ],
+                "role": "tokenizer"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "distilled/ltx-2.3-22b-distilled-Q8_0.gguf"
+                ],
+                "role": "transformer_stage2"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "Lightricks/LTX-2.3",
+                "allow_patterns": [
+                  "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+                ],
+                "role": "upscaler"
+              }
             ]
           },
           "q4_k": {
@@ -6398,13 +6664,71 @@
               "zh": "Q4_K_M",
               "en": "Q4_K_M"
             },
-            "size": "14.3GB",
+            "size": "41.0GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "unsloth/LTX-2.3-GGUF",
             "local_path": "models/Video/ltx-2.3-dev/q4_k",
             "allow_patterns": [
               "ltx-2.3-22b-dev-Q4_K_M.gguf"
+            ],
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "vae/ltx-2.3-22b-dev_video_vae.safetensors"
+                ],
+                "role": "vae"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "vae/ltx-2.3-22b-dev_audio_vae.safetensors"
+                ],
+                "role": "audio_vae"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors"
+                ],
+                "role": "connectors"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/gemma-3-12b-it-GGUF",
+                "allow_patterns": [
+                  "gemma-3-12b-it-Q4_K_M.gguf"
+                ],
+                "role": "text_encoder"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/gemma-3-12b-it",
+                "allow_patterns": [
+                  "tokenizer.json"
+                ],
+                "role": "tokenizer"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "unsloth/LTX-2.3-GGUF",
+                "allow_patterns": [
+                  "distilled/ltx-2.3-22b-distilled-Q4_K_M.gguf"
+                ],
+                "role": "transformer_stage2"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "Lightricks/LTX-2.3",
+                "allow_patterns": [
+                  "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+                ],
+                "role": "upscaler"
+              }
             ]
           }
         }
@@ -6926,13 +7250,58 @@
               "zh": "Q8_0",
               "en": "Q8_0"
             },
-            "size": "9.0GB",
+            "size": "31.2GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "jayn7/HunyuanVideo-1.5_I2V_720p-GGUF",
             "local_path": "models/Video/hunyuan-video-1.5-i2v-720p/q8_0",
             "allow_patterns": [
               "720p/hunyuanvideo1.5_720p_i2v-Q8_0.gguf"
+            ],
+            "components": [
+              {
+                "role": "vae",
+                "source": "modelscope",
+                "repo_id": "Tencent-Hunyuan/HunyuanVideo-1.5",
+                "allow_patterns": [
+                  "vae/config.json",
+                  "vae/diffusion_pytorch_model.safetensors"
+                ]
+              },
+              {
+                "role": "text_encoder",
+                "source": "modelscope",
+                "repo_id": "Qwen/Qwen2.5-VL-7B-Instruct",
+                "allow_patterns": [
+                  "config.json",
+                  "model.safetensors.index.json",
+                  "model-00001-of-00005.safetensors",
+                  "model-00002-of-00005.safetensors",
+                  "model-00003-of-00005.safetensors",
+                  "model-00004-of-00005.safetensors",
+                  "model-00005-of-00005.safetensors"
+                ]
+              },
+              {
+                "role": "tokenizer",
+                "source": "modelscope",
+                "repo_id": "Qwen/Qwen2.5-VL-7B-Instruct",
+                "allow_patterns": [
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "vocab.json",
+                  "merges.txt"
+                ]
+              },
+              {
+                "role": "image_encoder",
+                "source": "modelscope",
+                "repo_id": "black-forest-labs/FLUX.1-Redux-dev",
+                "allow_patterns": [
+                  "image_encoder/config.json",
+                  "image_encoder/model.safetensors"
+                ]
+              }
             ]
           },
           "q4_k": {
@@ -6940,7 +7309,7 @@
               "zh": "Q4_K_M",
               "en": "Q4_K_M"
             },
-            "size": "5.1GB",
+            "size": "27.3GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "jayn7/HunyuanVideo-1.5_I2V_720p-GGUF",
@@ -6948,7 +7317,52 @@
             "allow_patterns": [
               "720p/hunyuanvideo1.5_720p_i2v-Q4_K_M.gguf"
             ],
-            "default": true
+            "default": true,
+            "components": [
+              {
+                "role": "vae",
+                "source": "modelscope",
+                "repo_id": "Tencent-Hunyuan/HunyuanVideo-1.5",
+                "allow_patterns": [
+                  "vae/config.json",
+                  "vae/diffusion_pytorch_model.safetensors"
+                ]
+              },
+              {
+                "role": "text_encoder",
+                "source": "modelscope",
+                "repo_id": "Qwen/Qwen2.5-VL-7B-Instruct",
+                "allow_patterns": [
+                  "config.json",
+                  "model.safetensors.index.json",
+                  "model-00001-of-00005.safetensors",
+                  "model-00002-of-00005.safetensors",
+                  "model-00003-of-00005.safetensors",
+                  "model-00004-of-00005.safetensors",
+                  "model-00005-of-00005.safetensors"
+                ]
+              },
+              {
+                "role": "tokenizer",
+                "source": "modelscope",
+                "repo_id": "Qwen/Qwen2.5-VL-7B-Instruct",
+                "allow_patterns": [
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "vocab.json",
+                  "merges.txt"
+                ]
+              },
+              {
+                "role": "image_encoder",
+                "source": "modelscope",
+                "repo_id": "black-forest-labs/FLUX.1-Redux-dev",
+                "allow_patterns": [
+                  "image_encoder/config.json",
+                  "image_encoder/model.safetensors"
+                ]
+              }
+            ]
           }
         }
       }
@@ -7057,13 +7471,58 @@
               "zh": "Q8_0",
               "en": "Q8_0"
             },
-            "size": "9.0GB",
+            "size": "31.2GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "jayn7/HunyuanVideo-1.5_I2V_720p-GGUF",
             "local_path": "models/Video/hunyuan-video-1.5-i2v-720p-distill/q8_0",
             "allow_patterns": [
               "720p_distilled/hunyuanvideo1.5_720p_i2v_cfg_distilled-Q8_0.gguf"
+            ],
+            "components": [
+              {
+                "role": "vae",
+                "source": "modelscope",
+                "repo_id": "Tencent-Hunyuan/HunyuanVideo-1.5",
+                "allow_patterns": [
+                  "vae/config.json",
+                  "vae/diffusion_pytorch_model.safetensors"
+                ]
+              },
+              {
+                "role": "text_encoder",
+                "source": "modelscope",
+                "repo_id": "Qwen/Qwen2.5-VL-7B-Instruct",
+                "allow_patterns": [
+                  "config.json",
+                  "model.safetensors.index.json",
+                  "model-00001-of-00005.safetensors",
+                  "model-00002-of-00005.safetensors",
+                  "model-00003-of-00005.safetensors",
+                  "model-00004-of-00005.safetensors",
+                  "model-00005-of-00005.safetensors"
+                ]
+              },
+              {
+                "role": "tokenizer",
+                "source": "modelscope",
+                "repo_id": "Qwen/Qwen2.5-VL-7B-Instruct",
+                "allow_patterns": [
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "vocab.json",
+                  "merges.txt"
+                ]
+              },
+              {
+                "role": "image_encoder",
+                "source": "modelscope",
+                "repo_id": "black-forest-labs/FLUX.1-Redux-dev",
+                "allow_patterns": [
+                  "image_encoder/config.json",
+                  "image_encoder/model.safetensors"
+                ]
+              }
             ]
           },
           "q4_k": {
@@ -7071,7 +7530,7 @@
               "zh": "Q4_K_M",
               "en": "Q4_K_M"
             },
-            "size": "5.1GB",
+            "size": "27.3GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "jayn7/HunyuanVideo-1.5_I2V_720p-GGUF",
@@ -7079,7 +7538,52 @@
             "allow_patterns": [
               "720p_distilled/hunyuanvideo1.5_720p_i2v_cfg_distilled-Q4_K_M.gguf"
             ],
-            "default": true
+            "default": true,
+            "components": [
+              {
+                "role": "vae",
+                "source": "modelscope",
+                "repo_id": "Tencent-Hunyuan/HunyuanVideo-1.5",
+                "allow_patterns": [
+                  "vae/config.json",
+                  "vae/diffusion_pytorch_model.safetensors"
+                ]
+              },
+              {
+                "role": "text_encoder",
+                "source": "modelscope",
+                "repo_id": "Qwen/Qwen2.5-VL-7B-Instruct",
+                "allow_patterns": [
+                  "config.json",
+                  "model.safetensors.index.json",
+                  "model-00001-of-00005.safetensors",
+                  "model-00002-of-00005.safetensors",
+                  "model-00003-of-00005.safetensors",
+                  "model-00004-of-00005.safetensors",
+                  "model-00005-of-00005.safetensors"
+                ]
+              },
+              {
+                "role": "tokenizer",
+                "source": "modelscope",
+                "repo_id": "Qwen/Qwen2.5-VL-7B-Instruct",
+                "allow_patterns": [
+                  "tokenizer.json",
+                  "tokenizer_config.json",
+                  "vocab.json",
+                  "merges.txt"
+                ]
+              },
+              {
+                "role": "image_encoder",
+                "source": "modelscope",
+                "repo_id": "black-forest-labs/FLUX.1-Redux-dev",
+                "allow_patterns": [
+                  "image_encoder/config.json",
+                  "image_encoder/model.safetensors"
+                ]
+              }
+            ]
           }
         }
       }
@@ -8358,13 +8862,39 @@
               "zh": "Q8_0",
               "en": "Q8_0"
             },
-            "size": "5.4GB",
+            "size": "12.8GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "QuantStack/Wan2.2-TI2V-5B-GGUF",
             "local_path": "models/Video/wan-2.2-ti2v-5b/q8_0",
             "allow_patterns": [
               "Wan2.2-TI2V-5B-Q8_0.gguf"
+            ],
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "QuantStack/Wan2.2-TI2V-5B-GGUF",
+                "allow_patterns": [
+                  "VAE/Wan2.2_VAE.safetensors"
+                ],
+                "role": "vae"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "city96/umt5-xxl-encoder-gguf",
+                "allow_patterns": [
+                  "umt5-xxl-encoder-Q8_0.gguf"
+                ],
+                "role": "text_encoder"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "google/umt5-xxl",
+                "allow_patterns": [
+                  "tokenizer.json"
+                ],
+                "role": "tokenizer"
+              }
             ]
           },
           "q4_k": {
@@ -8372,7 +8902,7 @@
               "zh": "Q4_K_M",
               "en": "Q4_K_M"
             },
-            "size": "3.4GB",
+            "size": "8.5GB",
             "source": "modelscope",
             "source_type": "prequantized",
             "repo_id": "QuantStack/Wan2.2-TI2V-5B-GGUF",
@@ -8380,7 +8910,33 @@
             "allow_patterns": [
               "Wan2.2-TI2V-5B-Q4_K_M.gguf"
             ],
-            "default": true
+            "default": true,
+            "components": [
+              {
+                "source": "modelscope",
+                "repo_id": "QuantStack/Wan2.2-TI2V-5B-GGUF",
+                "allow_patterns": [
+                  "VAE/Wan2.2_VAE.safetensors"
+                ],
+                "role": "vae"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "city96/umt5-xxl-encoder-gguf",
+                "allow_patterns": [
+                  "umt5-xxl-encoder-Q4_K_M.gguf"
+                ],
+                "role": "text_encoder"
+              },
+              {
+                "source": "modelscope",
+                "repo_id": "google/umt5-xxl",
+                "allow_patterns": [
+                  "tokenizer.json"
+                ],
+                "role": "tokenizer"
+              }
+            ]
           }
         }
       }

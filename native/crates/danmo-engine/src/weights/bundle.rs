@@ -14,6 +14,16 @@ pub struct GgufBundle {
     pub vae: Vec<PathBuf>,
 }
 
+/// LTX bundle: the base GGUF bundle plus the audio VAE, the text-embedding
+/// connectors, and (distilled stage 2) the latent upscaler.
+pub struct LtxBundle {
+    pub base: GgufBundle,
+    pub audio_vae: Vec<PathBuf>,
+    pub connectors: Vec<PathBuf>,
+    pub upscaler: Vec<PathBuf>,
+    pub stage2_transformer: Vec<PathBuf>,
+}
+
 /// Upscale bundle (SeedVR2): GGUF DiT plus a GGUF or safetensors VAE. There
 /// is no text encoder and no tokenizer.
 pub struct UpscaleBundle {
@@ -21,6 +31,14 @@ pub struct UpscaleBundle {
     pub quant: String,
     pub transformer: Vec<PathBuf>,
     pub vae: Vec<PathBuf>,
+}
+
+/// Hunyuan i2v bundle: the base GGUF bundle (GGUF DiT + Qwen2.5-VL text
+/// encoder + video VAE + tokenizer) plus the SigLIP image encoder used for
+/// the vision conditioning tokens.
+pub struct HunyuanBundle {
+    pub base: GgufBundle,
+    pub image_encoder: Vec<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -37,6 +55,16 @@ struct ManifestFiles {
     text_encoder: Option<FileList>,
     #[serde(default)]
     vae: Option<FileList>,
+    #[serde(default)]
+    audio_vae: Option<FileList>,
+    #[serde(default)]
+    connectors: Option<FileList>,
+    #[serde(default)]
+    upscaler: Option<FileList>,
+    #[serde(default)]
+    transformer_stage2: Option<FileList>,
+    #[serde(default)]
+    image_encoder: Option<FileList>,
 }
 
 #[derive(Deserialize)]
@@ -85,6 +113,67 @@ pub fn assert_gguf_bundle(dir: &Path) -> Result<GgufBundle, WeightError> {
         vae: resolve_role(&root, "vae", vae.names())?,
         quant: manifest.quant,
         root,
+    })
+}
+
+/// The LTX bundle: everything [`assert_gguf_bundle`] checks plus the audio
+/// VAE, connectors, and (distilled) latent upscaler lists. Audio VAE and
+/// connectors are mandatory; the upscaler is required only by the distilled
+/// two-stage pipeline, so it stays optional here and the distilled session
+/// asserts it.
+pub fn assert_ltx_bundle(dir: &Path) -> Result<LtxBundle, WeightError> {
+    let base = assert_gguf_bundle(dir)?;
+    let (_, manifest) = read_manifest(dir)?;
+    let audio_vae = manifest
+        .files
+        .audio_vae
+        .as_ref()
+        .ok_or_else(|| WeightError::Bundle {
+            path: base.root.display().to_string(),
+            detail: "audio_vae file list is missing".into(),
+        })?;
+    let connectors = manifest
+        .files
+        .connectors
+        .as_ref()
+        .ok_or_else(|| WeightError::Bundle {
+            path: base.root.display().to_string(),
+            detail: "connectors file list is missing".into(),
+        })?;
+    let upscaler = match &manifest.files.upscaler {
+        Some(list) => resolve_role(&base.root, "upscaler", list.names())?,
+        None => Vec::new(),
+    };
+    let stage2_transformer = match &manifest.files.transformer_stage2 {
+        Some(list) => resolve_role(&base.root, "transformer_stage2", list.names())?,
+        None => Vec::new(),
+    };
+    Ok(LtxBundle {
+        audio_vae: resolve_role(&base.root, "audio_vae", audio_vae.names())?,
+        connectors: resolve_role(&base.root, "connectors", connectors.names())?,
+        upscaler,
+        stage2_transformer,
+        base,
+    })
+}
+
+/// The Hunyuan i2v bundle: everything [`assert_gguf_bundle`] checks plus the
+/// mandatory SigLIP image encoder list.
+pub fn assert_hunyuan_bundle(dir: &Path) -> Result<HunyuanBundle, WeightError> {
+    let base = assert_gguf_bundle(dir)?;
+    let (_, manifest) = read_manifest(dir)?;
+    let image_encoder =
+        manifest
+            .files
+            .image_encoder
+            .as_ref()
+            .ok_or_else(|| WeightError::Bundle {
+                path: base.root.display().to_string(),
+                detail: "image_encoder file list is missing".into(),
+            })?;
+    Ok(HunyuanBundle {
+        image_encoder: resolve_role(&base.root, "image_encoder", image_encoder.names())?,
+        base,
     })
 }
 
@@ -188,7 +277,10 @@ fn resolve_role(root: &Path, role: &str, names: &[String]) -> Result<Vec<PathBuf
 fn role_file(role: &str, ext: Option<&str>) -> bool {
     match (role, ext) {
         ("transformer", Some("gguf")) => true,
+        ("transformer_stage2", Some("gguf")) => true,
         ("text_encoder" | "vae", Some("gguf" | "safetensors")) => true,
+        ("audio_vae" | "connectors" | "upscaler", Some("gguf" | "safetensors")) => true,
+        ("image_encoder", Some("gguf" | "safetensors")) => true,
         _ => false,
     }
 }

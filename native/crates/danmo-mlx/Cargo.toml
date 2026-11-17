@@ -1,0 +1,15 @@
+[package]
+name = "danmo-mlx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+metal = ["danmo-mlx-sys/metal"]
+cuda = ["danmo-mlx-sys/cuda"]
+
+[dependencies]
+danmo-mlx-sys = { path = "../danmo-mlx-sys" }
+thiserror = { workspace = true }

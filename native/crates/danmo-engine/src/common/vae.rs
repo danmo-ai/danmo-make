@@ -11,6 +11,9 @@
 //! Output samples are the decoder tensor. The caller maps them to pixels.
 
 use crate::runtime::{flash_attend, shape, GgmlContext, GraphBuilder, RuntimeError, Tensor};
+
+#[cfg(feature = "mlx")]
+pub mod mlx;
 use crate::weights::{GgufWeights, WeightError};
 use std::collections::{BTreeSet, HashMap};
 

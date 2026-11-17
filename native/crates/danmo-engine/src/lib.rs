@@ -22,9 +22,10 @@ pub use engine::Engine;
 pub use error::EngineError;
 pub use families::{
     all_specs, spec, weight_layout, write_chain_bundle, write_config_bundle,
-    write_edit_smoke_bundle, write_flux2_edit_smoke_bundle, write_q8_bundle, write_qwen3_bundle,
-    write_seedvr2_smoke_bundle, write_smoke_bundle, write_z_image_control_smoke_bundle,
-    write_z_image_edit_smoke_bundle, FamilySpec, Flux2Config, Flux2Denoise, Media, Shape,
+    write_edit_smoke_bundle, write_flux2_edit_smoke_bundle, write_ltx_smoke_bundle,
+    write_q8_bundle, write_qwen3_bundle, write_seedvr2_smoke_bundle, write_smoke_bundle,
+    write_wan_smoke_bundle, write_z_image_control_smoke_bundle, write_z_image_edit_smoke_bundle,
+    FamilySpec, Flux2Config, Flux2Denoise, Media, Shape,
 };
 #[cfg(test)]
 pub use pipeline::legacy::{
@@ -491,6 +492,7 @@ mod tests {
         };
         assert!(err.to_string().contains("Re-download"), "{err}");
         assert!(spec("minimax_h3").unwrap().shape == Shape::GenerationFacade);
+        assert!(spec("wan").unwrap().shape == Shape::GenerationFacade);
         assert_eq!(all_specs().len(), 23);
         let _ = std::fs::remove_dir_all(&dir);
     }

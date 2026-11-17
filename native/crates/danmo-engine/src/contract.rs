@@ -199,6 +199,9 @@ pub enum EngineRequest {
     ImageCreate(danmo_contracts::ImageGenerationRequest),
     ImageEdit(danmo_contracts::ImageEditRequest),
     ImageUpscale(danmo_contracts::ImageUpscaleRequest),
+    VideoCreate(danmo_contracts::VideoGenerationRequest),
+    VideoEdit(danmo_contracts::VideoEditRequest),
+    VideoUpscale(danmo_contracts::VideoUpscaleRequest),
     AudioCreate(AudioCreateRequest),
     AudioEdit(AudioEditRequest),
     AudioLm(AudioLmRequest),
@@ -211,6 +214,9 @@ impl EngineRequest {
             Self::ImageCreate(request) => &request.model,
             Self::ImageEdit(request) => &request.model,
             Self::ImageUpscale(request) => &request.model,
+            Self::VideoCreate(request) => &request.model,
+            Self::VideoEdit(request) => &request.model,
+            Self::VideoUpscale(request) => &request.model,
             Self::AudioCreate(request) => &request.model,
             Self::AudioEdit(request) => &request.model,
             Self::AudioLm(request) => &request.model,
@@ -223,6 +229,9 @@ impl EngineRequest {
             Self::ImageCreate(_) => Action::ImageCreate,
             Self::ImageEdit(_) => Action::ImageEdit,
             Self::ImageUpscale(_) => Action::ImageUpscale,
+            Self::VideoCreate(_) => Action::VideoCreate,
+            Self::VideoEdit(_) => Action::VideoEdit,
+            Self::VideoUpscale(_) => Action::VideoUpscale,
             Self::AudioCreate(_) => Action::AudioCreate,
             Self::AudioEdit(_) => Action::AudioEdit,
             Self::AudioLm(_) => Action::AudioLm,
@@ -293,6 +302,29 @@ impl Artifact {
     fn with_sample_rate(mut self, sample_rate: u32) -> Self {
         self.metadata["sample_rate"] = json!(sample_rate);
         self
+    }
+
+    pub fn mp4(
+        bytes: Vec<u8>,
+        width: i64,
+        height: i64,
+        duration_seconds: f64,
+        metadata: Value,
+    ) -> Self {
+        Self {
+            extension: "mp4".into(),
+            mime: "video/mp4".into(),
+            kind: "video".into(),
+            bytes,
+            metadata,
+            source_action: "create".into(),
+            parent_asset_id: None,
+            relation_type: None,
+            duration_seconds: Some(duration_seconds),
+            width: Some(width),
+            height: Some(height),
+            sidecars: Vec::new(),
+        }
     }
 }
 

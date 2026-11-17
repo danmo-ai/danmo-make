@@ -191,6 +191,10 @@ impl GraphBuilder {
         unsafe { g::ggml_silu(self.ctx, a) }
     }
 
+    pub fn sigmoid(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_sigmoid(self.ctx, a) }
+    }
+
     pub fn tanh(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
         unsafe { g::ggml_tanh(self.ctx, a) }
     }
@@ -200,6 +204,12 @@ impl GraphBuilder {
     /// and not `ggml_gelu_quick`.
     pub fn gelu(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
         unsafe { g::ggml_gelu(self.ctx, a) }
+    }
+
+    /// `ggml_gelu_erf`: `0.5 * x * (1 + erf(x / sqrt(2)))`. The exact GELU of
+    /// MLX `nn.gelu` and the PyTorch default. The Wan umT5 FFN uses it.
+    pub fn gelu_erf(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_gelu_erf(self.ctx, a) }
     }
 
     pub fn mul(&self, a: *mut g::ggml_tensor, b: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
@@ -450,6 +460,19 @@ impl GraphBuilder {
         n_dims: i32,
         freq_base: f32,
     ) -> *mut g::ggml_tensor {
+        self.rope_neox_fs(a, pos, n_dims, freq_base, 1.0)
+    }
+
+    /// Half-split RoPE with a position frequency scale. Gemma-3 global layers
+    /// use the linear context scaling `1/8`; local layers keep `1.0`.
+    pub fn rope_neox_fs(
+        &self,
+        a: *mut g::ggml_tensor,
+        pos: *mut g::ggml_tensor,
+        n_dims: i32,
+        freq_base: f32,
+        freq_scale: f32,
+    ) -> *mut g::ggml_tensor {
         unsafe {
             g::ggml_rope_ext(
                 self.ctx,
@@ -460,7 +483,7 @@ impl GraphBuilder {
                 g::GGML_ROPE_TYPE_NEOX as i32,
                 0,
                 freq_base,
-                1.0,
+                freq_scale,
                 0.0,
                 1.0,
                 0.0,
@@ -477,6 +500,10 @@ impl GraphBuilder {
 
     pub fn cast_f16(&self, a: Tensor) -> Tensor {
         unsafe { g::ggml_cast(self.ctx, a, TYPE_F16) }
+    }
+
+    pub fn cast_f32(&self, a: Tensor) -> Tensor {
+        unsafe { g::ggml_cast(self.ctx, a, super::TYPE_F32) }
     }
 
     pub fn f32_4d(
@@ -528,6 +555,13 @@ impl GraphBuilder {
         unsafe { g::ggml_conv_1d(self.ctx, kernel, data, stride, padding, dilation) }
     }
 
+    /// Transposed 1D convolution. Kernel `a` is `[K, OC, IC]`, data `b` is `[T, IC]`.
+    /// ggml requires padding 0 and dilation 1; callers crop `p` rows from each
+    /// end of the `(T - 1) * stride + K` output to match symmetric padding `p`.
+    pub fn conv_transpose_1d(&self, kernel: Tensor, data: Tensor, stride: i32) -> Tensor {
+        unsafe { g::ggml_conv_transpose_1d(self.ctx, kernel, data, stride, 0, 1) }
+    }
+
     /// Scatter-add GEMM columns to a 1D signal. `a` is `[K*OC, T_in]`.
     pub fn col2im_1d(
         &self,
@@ -545,6 +579,10 @@ impl GraphBuilder {
 
     pub fn sqrt(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
         unsafe { g::ggml_sqrt(self.ctx, a) }
+    }
+
+    pub fn log(&self, a: *mut g::ggml_tensor) -> *mut g::ggml_tensor {
+        unsafe { g::ggml_log(self.ctx, a) }
     }
 
     pub fn div(&self, a: *mut g::ggml_tensor, b: *mut g::ggml_tensor) -> *mut g::ggml_tensor {

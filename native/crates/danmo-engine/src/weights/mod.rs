@@ -5,8 +5,13 @@ mod bundle;
 mod cache;
 mod gguf;
 mod lora;
+#[cfg(feature = "mlx")]
+mod mlx;
 
-pub use bundle::{assert_gguf_bundle, assert_upscale_bundle, UpscaleBundle};
+pub use bundle::{
+    assert_gguf_bundle, assert_hunyuan_bundle, assert_ltx_bundle, assert_upscale_bundle,
+    HunyuanBundle, LtxBundle, UpscaleBundle,
+};
 pub use cache::{resident_bytes, revision};
 pub(crate) use gguf::f16_to_f32;
 pub use gguf::{
@@ -18,6 +23,8 @@ pub use lora::{
     bind_lora_factors, load_lora_factors, load_lora_factors_with_default_alpha, LoraFactor,
     LoraFile,
 };
+#[cfg(feature = "mlx")]
+pub use mlx::load_directory as load_mlx_directory;
 
 use thiserror::Error;
 

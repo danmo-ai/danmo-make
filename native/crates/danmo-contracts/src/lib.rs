@@ -173,15 +173,77 @@ pub struct ImageUpscaleRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoUpscaleRequest {
+    pub model: String,
+    #[serde(default)]
+    pub title: String,
+    pub source_asset_id: String,
+    /// Output scale over the source short edge. None is the reference default
+    /// 2. Only 2 and 4 are registered.
+    pub scale: Option<u32>,
+    /// Softness of the bicubic pre-downscale (0 sharp .. 1 strong). None is
+    /// the reference default 0.3 for video.
+    pub denoise: Option<f32>,
+    /// Frames per spatiotemporal restoration chunk. None is the reference
+    /// default 5; values below 4 are clamped to 4.
+    pub temporal_window: Option<u32>,
+    /// Maximum decoded frames from the source. None is the reference default
+    /// 300.
+    pub max_frames: Option<u32>,
+    pub seed: Option<i64>,
+    #[serde(default)]
+    pub metadata: Value,
+    #[serde(default = "default_priority")]
+    pub priority: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoGenerationRequest {
     pub model: String,
     pub prompt: String,
     #[serde(default)]
     pub negative_prompt: String,
+    /// "WxH"; None is the reference default 832x480. Wan snaps each side down
+    /// to a multiple of vae_scale * patch (32).
+    pub size: Option<String>,
     pub steps: Option<u32>,
     pub guidance: Option<f32>,
+    /// Flow-match sigma shift; None is the reference default (wan ti2v: 5).
+    pub shift: Option<f32>,
     pub seed: Option<i64>,
+    /// None is the reference default 81. Wan requires (num_frames - 1) % 4 == 0.
     pub num_frames: Option<u32>,
+    /// None is the reference default 16.
+    pub fps: Option<u32>,
+    #[serde(default)]
+    pub metadata: Value,
+    #[serde(default = "default_priority")]
+    pub priority: String,
+}
+
+/// Video edit (image-to-video "animate"). The source asset is the first
+/// frame: image assets load directly, video assets contribute frame 0.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoEditRequest {
+    pub model: String,
+    pub source_asset_id: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub negative_prompt: String,
+    /// "WxH"; None is the family default (hunyuan i2v: 720x1280).
+    pub size: Option<String>,
+    pub steps: Option<u32>,
+    pub guidance: Option<f32>,
+    /// Flow-match sigma shift; None is the family default (hunyuan: 7).
+    pub shift: Option<f32>,
+    pub seed: Option<i64>,
+    /// None is the family default (hunyuan: 81). Hunyuan requires
+    /// (num_frames - 1) % 4 == 0.
+    pub num_frames: Option<u32>,
+    /// None is the family default (hunyuan: 24).
+    pub fps: Option<u32>,
+    #[serde(default)]
+    pub metadata: Value,
     #[serde(default = "default_priority")]
     pub priority: String,
 }

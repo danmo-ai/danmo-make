@@ -149,6 +149,7 @@ impl FacadeSession for SeedVr2UpscaleSession {
             &prepared.style,
             pw,
             ph,
+            1,
         )?;
         exec.progress("encode", 1, 1)?;
         let (lw, lh) = (pw / 8, ph / 8);
@@ -174,6 +175,7 @@ impl FacadeSession for SeedVr2UpscaleSession {
             &vid,
             lw,
             lh,
+            1,
             &prepared.pos_emb,
             1000.0,
         )?;
@@ -189,6 +191,7 @@ impl FacadeSession for SeedVr2UpscaleSession {
             &latents,
             lw,
             lh,
+            1,
         )?;
         exec.progress("decode", 1, 1)?;
         let (tw, th) = (prepared.true_w as usize, prepared.true_h as usize);
@@ -240,7 +243,7 @@ impl FacadeSession for SeedVr2UpscaleSession {
 }
 
 /// `int(w * scale)` floored to even, matching the reference preprocess.
-fn even(scaled: u64) -> Result<u32, EngineError> {
+pub(crate) fn even(scaled: u64) -> Result<u32, EngineError> {
     let v = ((scaled as usize) / 2 * 2) as u32;
     if v < 16 {
         return Err(EngineError::bad_request(format!(
@@ -320,7 +323,14 @@ fn bicubic_resize(rgb: &[u8], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec
 
 /// Reference preprocess: optional softness down→up blur, then resize to the
 /// true size. Returns interleaved RGB at `true_w x true_h`.
-fn preprocess(rgb: &[u8], sw: u32, sh: u32, true_w: u32, true_h: u32, softness: f32) -> Vec<u8> {
+pub(crate) fn preprocess(
+    rgb: &[u8],
+    sw: u32,
+    sh: u32,
+    true_w: u32,
+    true_h: u32,
+    softness: f32,
+) -> Vec<u8> {
     let factor = 1.0 + softness.clamp(0.0, 1.0) * 7.0;
     let (sw, sh, tw, th) = (sw as usize, sh as usize, true_w as usize, true_h as usize);
     if factor > 1.0 {
@@ -335,7 +345,7 @@ fn preprocess(rgb: &[u8], sw: u32, sh: u32, true_w: u32, true_h: u32, softness: 
 
 /// Interleaved RGB to `[W, H, 3]` planar `[-1, 1]`, zero-padded right and
 /// bottom by `pad_w`/`pad_h`.
-fn pad_planar(rgb: &[u8], w: usize, h: usize, pad_w: i64, pad_h: i64) -> Vec<f32> {
+pub(crate) fn pad_planar(rgb: &[u8], w: usize, h: usize, pad_w: i64, pad_h: i64) -> Vec<f32> {
     let (pw, ph) = (w + pad_w as usize, h + pad_h as usize);
     let mut out = vec![0f32; pw * ph * 3];
     for y in 0..h {
@@ -350,7 +360,7 @@ fn pad_planar(rgb: &[u8], w: usize, h: usize, pad_w: i64, pad_h: i64) -> Vec<f32
 }
 
 /// Take the top-left `tw x th` window of a `[W, H, 3]` planar tensor.
-fn crop_planar(planes: &[f32], w: usize, h: usize, tw: usize, th: usize) -> Vec<f32> {
+pub(crate) fn crop_planar(planes: &[f32], w: usize, h: usize, tw: usize, th: usize) -> Vec<f32> {
     let mut out = vec![0f32; tw * th * 3];
     for c in 0..3 {
         for y in 0..th {
@@ -365,7 +375,7 @@ fn crop_planar(planes: &[f32], w: usize, h: usize, tw: usize, th: usize) -> Vec<
 /// Fixed positive text embeddings. A bundle-local `pos_emb.safetensors`
 /// (root or `data/`) wins; otherwise the packaged default. Returns the flat
 /// `[txt_in_dim, txt_len]` ggml-order floats plus both dims.
-fn load_pos_emb(root: &Path) -> Result<(Vec<f32>, i64, i64), WeightError> {
+pub(crate) fn load_pos_emb(root: &Path) -> Result<(Vec<f32>, i64, i64), WeightError> {
     let candidates = [
         root.join("pos_emb.safetensors"),
         root.join("data").join("pos_emb.safetensors"),

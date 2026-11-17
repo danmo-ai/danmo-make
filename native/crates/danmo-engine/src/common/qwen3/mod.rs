@@ -7,10 +7,14 @@
 //! The concatenated width must equal the `width` argument.
 
 mod graph;
+#[cfg(feature = "mlx")]
+pub(crate) mod mlx;
 mod session;
 mod tokenizer;
 
 pub(crate) use session::{encoder_layout, is_rms, tower_present, Loaded, Qwen3Config};
 pub(crate) use tokenizer::load_tokenizer;
+#[cfg(feature = "mlx")]
+pub(crate) use tokenizer::tokenize;
 #[allow(unused_imports)]
 pub(crate) use tokenizer::{parse_tokenizer_json, tokenize_plain, tokenize_plain_parsed};

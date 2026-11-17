@@ -7,13 +7,17 @@ use crate::runtime::GgmlContext;
 
 pub fn ensure_available(family: &str, action: crate::contract::Action) -> Result<(), EngineError> {
     let spec = families::spec(family).ok_or_else(|| EngineError::UnknownFamily(family.into()))?;
+    let driver = families::driver(family, action);
+    if matches!(driver, FamilyDriver::DitImage(_) | FamilyDriver::Facade(_)) {
+        return Ok(());
+    }
     if spec.media != action.media() {
         return Err(EngineError::UnsupportedAction {
             family: family.into(),
             action: action.as_str().into(),
         });
     }
-    match families::driver(family, action) {
+    match driver {
         FamilyDriver::DitImage(_) | FamilyDriver::Facade(_) => Ok(()),
         FamilyDriver::Job => Err(EngineError::GraphNotBuilt {
             family: family.into(),
@@ -35,13 +39,16 @@ pub fn execute(
 ) -> Result<EngineOutput, EngineError> {
     let spec = families::spec(&run.family)
         .ok_or_else(|| EngineError::UnknownFamily(run.family.clone()))?;
-    if spec.media != run.action.media() {
+    let driver = families::driver(&run.family, run.action);
+    if !matches!(driver, FamilyDriver::DitImage(_) | FamilyDriver::Facade(_))
+        && spec.media != run.action.media()
+    {
         return Err(EngineError::UnsupportedAction {
             family: run.family.clone(),
             action: run.action.as_str().into(),
         });
     }
-    match families::driver(&run.family, run.action) {
+    match driver {
         FamilyDriver::DitImage(family) => {
             let EngineRequest::ImageCreate(request) = request else {
                 return Err(EngineError::bad_request("DiT driver requires image create"));

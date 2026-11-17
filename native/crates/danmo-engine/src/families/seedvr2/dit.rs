@@ -562,39 +562,61 @@ struct Plan {
     patch_out: Vec<i32>,
 }
 
-fn plan(config: &DitConfig, w: i64, h: i64, freqs: &[f32]) -> Result<Plan, WeightError> {
+fn plan(config: &DitConfig, t: i64, w: i64, h: i64, freqs: &[f32]) -> Result<Plan, WeightError> {
     let patch = config.patch;
     if w % patch != 0 || h % patch != 0 {
         return Err(WeightError::NotBuilt(format!(
             "seedvr2 latent {w}x{h} is not divisible by the patch {patch}"
         )));
     }
+    if t < 1 {
+        return Err(WeightError::NotBuilt(format!(
+            "seedvr2 dit needs at least one latent frame, got {t}"
+        )));
+    }
     let (hp, wp) = (h / patch, w / patch);
     let windows = [
-        plan_windows(1, hp, wp, false),
-        plan_windows(1, hp, wp, true),
+        plan_windows(t, hp, wp, false),
+        plan_windows(t, hp, wp, true),
     ];
     let rope = rope_tables(config, &windows, freqs);
-    let mut patch_in = Vec::with_capacity((hp * wp * config.patch_dim()) as usize);
-    for yy in 0..hp {
-        for xx in 0..wp {
-            for hh in 0..patch {
-                for ww in 0..patch {
-                    for c in 0..config.vid_channels {
-                        patch_in.push((xx * patch + ww + w * (yy * patch + hh) + w * h * c) as i32);
+    // Token order is `[T][H][W]` (frame outer, matching the reference
+    // patchify); each token spans `(hh, ww, c)` with the channel fastest.
+    let mut patch_in = Vec::with_capacity((t * hp * wp * config.patch_dim()) as usize);
+    for tt in 0..t {
+        for yy in 0..hp {
+            for xx in 0..wp {
+                for hh in 0..patch {
+                    for ww in 0..patch {
+                        for c in 0..config.vid_channels {
+                            patch_in.push(
+                                (xx * patch
+                                    + ww
+                                    + w * (yy * patch + hh)
+                                    + w * h * tt
+                                    + w * h * t * c) as i32,
+                            );
+                        }
                     }
                 }
             }
         }
     }
-    let mut patch_out = Vec::with_capacity((hp * wp * config.out_patch_dim()) as usize);
-    for yy in 0..hp {
-        for xx in 0..wp {
-            for hh in 0..patch {
-                for ww in 0..patch {
-                    for c in 0..config.out_channels {
-                        patch_out
-                            .push((xx * patch + ww + w * (yy * patch + hh) + w * h * c) as i32);
+    let mut patch_out = Vec::with_capacity((t * hp * wp * config.out_patch_dim()) as usize);
+    for tt in 0..t {
+        for yy in 0..hp {
+            for xx in 0..wp {
+                for hh in 0..patch {
+                    for ww in 0..patch {
+                        for c in 0..config.out_channels {
+                            patch_out.push(
+                                (xx * patch
+                                    + ww
+                                    + w * (yy * patch + hh)
+                                    + w * h * tt
+                                    + w * h * t * c) as i32,
+                            );
+                        }
                     }
                 }
             }
@@ -1045,9 +1067,10 @@ fn declare_weights(
     Ok(weights)
 }
 
-/// Run one SeedVR2 DiT forward. `vid` is the `[W, H, vid_channels]` planar
-/// input (`[noise; latent; mask]`), `txt` the `[txt_in_dim, txt_len]`
-/// positive embedding. Returns the `[W, H, out_channels]` planar velocity.
+/// Run one SeedVR2 DiT forward over `t` latent frames. `vid` is the
+/// `[W, H, T, vid_channels]` planar input (`[noise; latent; mask]`, channel
+/// outer), `txt` the `[txt_in_dim, txt_len]` positive embedding. Returns the
+/// `[W, H, T, out_channels]` planar velocity.
 pub fn run(
     ctx: &GgmlContext,
     config: &DitConfig,
@@ -1055,14 +1078,15 @@ pub fn run(
     vid: &[f32],
     w: i64,
     h: i64,
+    t: i64,
     txt: &[f32],
     timestep: f32,
 ) -> Result<Vec<f32>, WeightError> {
     let (vid_data, txt_data) = (vid, txt);
-    if vid_data.len() != (w * h * config.vid_channels) as usize {
+    if vid_data.len() != (w * h * t * config.vid_channels) as usize {
         return Err(WeightError::Shape {
             name: "seedvr2 dit vid".into(),
-            expected: vec![w, h, config.vid_channels],
+            expected: vec![w, h, t, config.vid_channels],
             got: vec![vid.len() as i64],
         });
     }
@@ -1099,13 +1123,14 @@ pub fn run(
     }
     let freqs =
         freqs.ok_or_else(|| WeightError::NotBuilt("seedvr2 dit has no rope freqs".into()))?;
-    let plan = plan(config, w, h, &freqs)?;
-    let tokens = (w / config.patch) * (h / config.patch);
+    let plan = plan(config, t, w, h, &freqs)?;
+    let tokens = t * (w / config.patch) * (h / config.patch);
 
     let mut b = ctx.builder(GRAPH_MEM).map_err(weight_err)?;
     let weights = declare_weights(&mut b, config, loaded)?;
 
-    let vid_in = nn(b.f32_2d("vid", 1, w * h * config.vid_channels, true)).map_err(weight_err)?;
+    let vid_in =
+        nn(b.f32_2d("vid", 1, w * h * t * config.vid_channels, true)).map_err(weight_err)?;
     let txt_in =
         nn(b.f32_2d("txt", config.txt_in_dim, config.txt_len, true)).map_err(weight_err)?;
     let temb = nn(b.f32_2d("temb", config.emb_sin, 1, true)).map_err(weight_err)?;
@@ -1188,11 +1213,11 @@ pub fn run(
     let out = nn(b.project(wt(&weights, "vid_out.proj.weight")?, vid)).map_err(weight_err)?;
     let out = add_bias(&b, out, wt(&weights, "vid_out.proj.bias")?).map_err(weight_err)?;
     let flat = nn(b.reshape_2d(out, 1, config.out_patch_dim() * tokens)).map_err(weight_err)?;
-    let canvas = b.blank_f32_2d(1, w * h * config.out_channels);
+    let canvas = b.blank_f32_2d(1, w * h * t * config.out_channels);
     let scattered = nn(b.set_rows(canvas, flat, patch_out_idx)).map_err(weight_err)?;
     let output = shaped(
-        nn(b.reshape_3d(scattered, w, h, config.out_channels)).map_err(weight_err)?,
-        [w, h, config.out_channels, 1],
+        nn(b.reshape_4d(scattered, w, h, t, config.out_channels)).map_err(weight_err)?,
+        [w, h, t, config.out_channels],
         "seedvr2 dit out",
     )
     .map_err(weight_err)?;
@@ -1502,6 +1527,7 @@ mod tests {
         layer: usize,
         vid: &[f32],
         txt: &[f32],
+        t: i64,
         hp: i64,
         wp: i64,
     ) -> (Vec<f32>, Vec<f32>) {
@@ -1532,7 +1558,7 @@ mod tests {
             at(map, &format!("{p}.attn.proj_qkv.{txt_side}.weight")),
             None,
         );
-        let windows = h_windows(1, hp, wp, layer % 2 == 1);
+        let windows = h_windows(t, hp, wp, layer % 2 == 1);
         // per-head q/k/v channels: [head][token][channel]
         let mut v_out = vec![0.0f32; dim * lv];
         let mut t_out = vec![0.0f32; dim * lt];
@@ -1691,8 +1717,6 @@ mod tests {
         assert!(!inferred.pixel_rope);
 
         let (w, h) = (48i64, 48i64);
-        let (hp, wp) = (h / 2, w / 2);
-        let tokens = (hp * wp) as usize;
         let vid: Vec<f32> = (0..(w * h * config.vid_channels) as usize)
             .map(|i| (i as f32 * 0.013).sin() * 0.5)
             .collect();
@@ -1701,8 +1725,8 @@ mod tests {
             .collect();
         let loaded = load(&weights, &config).unwrap();
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
-        let got = run(&ctx, &config, &loaded, &vid, w, h, &txt, 1000.0).unwrap();
-        let want = host_forward(&config, &map, &vid, &txt, w, h);
+        let got = run(&ctx, &config, &loaded, &vid, w, h, 1, &txt, 1000.0).unwrap();
+        let want = host_forward(&config, &map, &vid, &txt, 1, w, h);
 
         assert_eq!(got.len(), want.len());
         let mut worst = 0f32;
@@ -1726,10 +1750,11 @@ mod tests {
         map: &HashMap<String, Vec<f32>>,
         vid: &[f32],
         txt: &[f32],
+        t: i64,
         w: i64,
         h: i64,
     ) -> Vec<f32> {
-        host_trace(config, map, vid, txt, w, h).out
+        host_trace(config, map, vid, txt, t, w, h).out
     }
 
     fn host_trace(
@@ -1737,25 +1762,33 @@ mod tests {
         map: &HashMap<String, Vec<f32>>,
         vid: &[f32],
         txt: &[f32],
+        t: i64,
         w: i64,
         h: i64,
     ) -> HostTrace {
         let (hp, wp) = (h / 2, w / 2);
-        let tokens = (hp * wp) as usize;
+        let tokens = (t * hp * wp) as usize;
         let dim = config.dim as usize;
         let freqs = at(&map, "blocks.0.attn.rope.rope.freqs").clone();
-        // patchify: patches[e + t * patch_dim] in ggml order
+        // patchify: patches[e + token * patch_dim] in ggml order, tokens
+        // `[T][H][W]` frame outer.
         let mut patches = vec![0.0f32; config.patch_dim() as usize * tokens];
-        for yy in 0..hp {
-            for xx in 0..wp {
-                let t = (yy * wp + xx) as usize;
-                let mut e = 0usize;
-                for hh in 0..2 {
-                    for ww in 0..2 {
-                        for c in 0..config.vid_channels {
-                            patches[e + t * config.patch_dim() as usize] =
-                                vid[(xx * 2 + ww + w * (yy * 2 + hh) + w * h * c) as usize];
-                            e += 1;
+        for tt in 0..t {
+            for yy in 0..hp {
+                for xx in 0..wp {
+                    let tok = (tt * hp * wp + yy * wp + xx) as usize;
+                    let mut e = 0usize;
+                    for hh in 0..2 {
+                        for ww in 0..2 {
+                            for c in 0..config.vid_channels {
+                                patches[e + tok * config.patch_dim() as usize] = vid[(xx * 2
+                                    + ww
+                                    + w * (yy * 2 + hh)
+                                    + w * h * tt
+                                    + w * h * t * c)
+                                    as usize];
+                                e += 1;
+                            }
                         }
                     }
                 }
@@ -1850,7 +1883,7 @@ mod tests {
                 modulate(&mut txt_n, config.txt_len as usize, &ada_t, "attn", 0);
             }
             let (mut av, mut at_) =
-                h_attention(&map, &config, &freqs, layer, &vid_n, &txt_n, hp, wp);
+                h_attention(&map, &config, &freqs, layer, &vid_n, &txt_n, t, hp, wp);
             gate(&mut av, tokens, &ada_v, "attn", 0);
             for i in 0..vid_t.len() {
                 vid_t[i] += av[i];
@@ -1960,18 +1993,20 @@ mod tests {
             at(&map, "vid_out.proj.weight"),
             Some(at(&map, "vid_out.proj.bias")),
         );
-        // unpatchify: out[e + t * out_patch_dim] in ggml order
-        let mut want = vec![0.0f32; (w * h * config.out_channels) as usize];
-        for yy in 0..hp {
-            for xx in 0..wp {
-                let t = (yy * wp + xx) as usize;
-                let mut e = 0usize;
-                for hh in 0..2 {
-                    for ww in 0..2 {
-                        for c in 0..config.out_channels {
-                            want[(xx * 2 + ww + w * (yy * 2 + hh) + w * h * c) as usize] =
-                                out[e + t * config.out_patch_dim() as usize];
-                            e += 1;
+        // unpatchify: out[e + token * out_patch_dim] in ggml order
+        let mut want = vec![0.0f32; (w * h * t * config.out_channels) as usize];
+        for tt in 0..t {
+            for yy in 0..hp {
+                for xx in 0..wp {
+                    let tok = (tt * hp * wp + yy * wp + xx) as usize;
+                    let mut e = 0usize;
+                    for hh in 0..2 {
+                        for ww in 0..2 {
+                            for c in 0..config.out_channels {
+                                want[(xx * 2 + ww + w * (yy * 2 + hh) + w * h * tt + w * h * t * c)
+                                    as usize] = out[e + tok * config.out_patch_dim() as usize];
+                                e += 1;
+                            }
                         }
                     }
                 }
@@ -1993,6 +2028,7 @@ mod tests {
         config: &DitConfig,
         loaded: &LoadedDit,
         vid: &[f32],
+        t: i64,
         w: i64,
         h: i64,
         txt: &[f32],
@@ -2006,11 +2042,11 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        let plan = plan(config, w, h, &freqs).unwrap();
-        let tokens = (w / config.patch) * (h / config.patch);
+        let plan = plan(config, t, w, h, &freqs).unwrap();
+        let tokens = t * (w / config.patch) * (h / config.patch);
         let mut b = ctx.builder(GRAPH_MEM).unwrap();
         let weights = declare_weights(&mut b, config, loaded).unwrap();
-        let vid_in = nn(b.f32_2d("vid", 1, w * h * config.vid_channels, true)).unwrap();
+        let vid_in = nn(b.f32_2d("vid", 1, w * h * t * config.vid_channels, true)).unwrap();
         let txt_in = nn(b.f32_2d("txt", config.txt_in_dim, config.txt_len, true)).unwrap();
         let temb = nn(b.f32_2d("temb", config.emb_sin, 1, true)).unwrap();
         let patch_in_idx = nn(b.i32_1d("patch_in_idx", tokens * config.patch_dim(), true)).unwrap();
@@ -2130,21 +2166,21 @@ mod tests {
             .collect();
         let loaded = load(&weights, &config).unwrap();
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
-        let trace = host_trace(&config, &map, &vid, &txt, w, h);
+        let trace = host_trace(&config, &map, &vid, &txt, 1, w, h);
         let pairs: Vec<(String, Vec<f32>, Vec<f32>)> = vec![
             (
                 "vid_embed".into(),
-                trace_run(&ctx, &config, &loaded, &vid, w, h, &txt, 0),
+                trace_run(&ctx, &config, &loaded, &vid, 1, w, h, &txt, 0),
                 trace.vid0.clone(),
             ),
             (
                 "txt_embed".into(),
-                trace_run(&ctx, &config, &loaded, &vid, w, h, &txt, 1),
+                trace_run(&ctx, &config, &loaded, &vid, 1, w, h, &txt, 1),
                 trace.txt0.clone(),
             ),
             (
                 "timestep_emb".into(),
-                trace_run(&ctx, &config, &loaded, &vid, w, h, &txt, 2),
+                trace_run(&ctx, &config, &loaded, &vid, 1, w, h, &txt, 2),
                 trace.emb.clone(),
             ),
         ];
@@ -2152,12 +2188,12 @@ mod tests {
         for layer in 0..config.layers {
             pairs.push((
                 format!("block{layer}_vid"),
-                trace_run(&ctx, &config, &loaded, &vid, w, h, &txt, 3 + 2 * layer),
+                trace_run(&ctx, &config, &loaded, &vid, 1, w, h, &txt, 3 + 2 * layer),
                 trace.blocks[layer].0.clone(),
             ));
             pairs.push((
                 format!("block{layer}_txt"),
-                trace_run(&ctx, &config, &loaded, &vid, w, h, &txt, 4 + 2 * layer),
+                trace_run(&ctx, &config, &loaded, &vid, 1, w, h, &txt, 4 + 2 * layer),
                 trace.blocks[layer].1.clone(),
             ));
         }
@@ -2199,13 +2235,44 @@ mod tests {
             .collect();
         let loaded = load(&weights, &config).unwrap();
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
-        let got = run(&ctx, &config, &loaded, &vid, w, h, &txt, 1000.0).unwrap();
-        let want = host_forward(&config, &map, &vid, &txt, w, h);
+        let got = run(&ctx, &config, &loaded, &vid, w, h, 1, &txt, 1000.0).unwrap();
+        let want = host_forward(&config, &map, &vid, &txt, 1, w, h);
         let mut worst = 0f32;
         for (g, w_) in got.iter().zip(want.iter()) {
             worst = worst.max((g - w_).abs());
         }
         assert!(worst < 1e-4, "tiny dit max abs diff {worst}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn smoke_dit_multi_frame_matches_the_host_reference() {
+        let config = DitConfig::smoke();
+        let dir =
+            std::env::temp_dir().join(format!("danmo-seedvr2-dit-frames-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (weights, map) = write_smoke(&dir, &config);
+        // t = 5: the temporal window is 2 wide, so both parities split the
+        // frame axis instead of degenerating to one window.
+        let (w, h, t) = (16i64, 16i64, 5i64);
+        let vid: Vec<f32> = (0..(w * h * t * config.vid_channels) as usize)
+            .map(|i| (i as f32 * 0.013).sin() * 0.5)
+            .collect();
+        let txt: Vec<f32> = (0..(config.txt_in_dim * config.txt_len) as usize)
+            .map(|i| (i as f32 * 0.031).cos() * 0.4)
+            .collect();
+        let loaded = load(&weights, &config).unwrap();
+        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
+        let got = run(&ctx, &config, &loaded, &vid, w, h, t, &txt, 1000.0).unwrap();
+        let want = host_forward(&config, &map, &vid, &txt, t, w, h);
+        assert_eq!(got.len(), (w * h * t * config.out_channels) as usize);
+        assert_eq!(got.len(), want.len());
+        let mut worst = 0f32;
+        for (g, w_) in got.iter().zip(want.iter()) {
+            worst = worst.max((g - w_).abs());
+        }
+        assert!(worst < 1e-4, "multi-frame dit max abs diff {worst}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

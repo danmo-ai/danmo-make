@@ -475,7 +475,7 @@ fn tokenize_bytes(prompt: &str, vocab_size: i64) -> Result<Vec<i32>, WeightError
 
 #[cfg(test)]
 mod tests {
-    use super::{chat_text, load_tokenizer, tokenize};
+    use super::{chat_text, load_tokenizer, tokenize, tokenize_plain};
     use crate::common::bpe::pretokenize;
     use crate::common::qwen3::{encoder_layout, Loaded, Qwen3Config};
     use crate::runtime::{BackendKind, GgmlContext};
@@ -766,6 +766,37 @@ mod tests {
         assert_eq!(ids, again);
         let other = tokenize(&loaded, "a blue cube", 151_936, false).unwrap();
         assert_ne!(ids, other);
+    }
+
+    #[test]
+    #[ignore]
+    fn real_zimage_tokenizer_wraps_multilingual_prompts() {
+        let root = std::path::PathBuf::from(std::env::var("DANQING_TEST_ZIMAGE_BUNDLE").unwrap());
+        let loaded = load_tokenizer(&root).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&loaded).unwrap();
+        let added = value["added_tokens"].as_array().unwrap();
+        let special = |content: &str| {
+            added
+                .iter()
+                .find(|token| token["content"].as_str() == Some(content))
+                .and_then(|token| token["id"].as_i64())
+                .unwrap() as i32
+        };
+        let im_start = special("<|im_start|>");
+        let im_end = special("<|im_end|>");
+        let cat = tokenize(&loaded, "a red cube", 151_936, true).unwrap();
+        assert_eq!(cat[0], im_start);
+        assert!(cat.contains(&im_end));
+        assert_eq!(cat, tokenize(&loaded, "a red cube", 151_936, true).unwrap());
+        let chinese = tokenize(&loaded, "一只红色的猫", 151_936, true).unwrap();
+        assert_eq!(chinese[0], im_start);
+        assert!(chinese.contains(&im_end));
+        assert_ne!(cat, chinese);
+        let plain = tokenize_plain(&loaded, "a red cube", 151_936).unwrap();
+        assert!(!plain.contains(&im_start));
+        assert!(!plain.contains(&im_end));
+        println!("z-image `a red cube` ChatML ids: {cat:?}");
+        println!("z-image `a red cube` plain ids: {plain:?}");
     }
 
     #[test]

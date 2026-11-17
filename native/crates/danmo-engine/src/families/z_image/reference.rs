@@ -492,7 +492,7 @@ fn embed_caption(
     )
 }
 
-fn block(
+pub(crate) fn block(
     weights: &HashMap<String, Vec<f32>>,
     prefix: &str,
     x: &[f32],
@@ -577,7 +577,7 @@ fn block(
     }
 }
 
-fn attention(
+pub(crate) fn attention(
     weights: &HashMap<String, Vec<f32>>,
     prefix: &str,
     x: &[f32],

@@ -200,3 +200,286 @@ pub fn scaled_sinusoidal_timestep(sigma: f32, dim: usize) -> Vec<f32> {
     let t = if sigma <= 1.0 { sigma * 1000.0 } else { sigma };
     sinusoidal_timestep(t, dim)
 }
+
+// ---- Wan flow UniPC (`wan_flow_unipc`) ----
+
+/// `_wan_flow_sigmas`: linspace over the unshifted train range, static shift,
+/// terminal 0. Values are cast to F32 like the reference.
+pub fn wan_flow_sigmas(steps: u32, shift: f32) -> Vec<f32> {
+    let steps = steps.max(1) as usize;
+    let train = 1000f64;
+    let sigma_max = 1.0 - 1.0 / train;
+    let mut sigmas = Vec::with_capacity(steps + 1);
+    for i in 0..steps {
+        let s = sigma_max - (i as f64) * sigma_max / (steps as f64);
+        let shifted = shift as f64 * s / (1.0 + (shift as f64 - 1.0) * s);
+        sigmas.push(shifted as f32);
+    }
+    sigmas.push(0.0);
+    sigmas
+}
+
+/// Wan 2.x flow UniPC, predictor/corrector bh2, order ≤ 2 — a faithful port of
+/// main `WanFlowUniPCScheduler` (including its update-the-x0-cache-before-the-
+/// corrector ordering, which zeroes the corrector's own d1 term). Host-side;
+/// the model output and sample are flat latent vectors.
+pub struct WanFlowUniPc {
+    sigmas: Vec<f32>,
+    order: usize,
+    num_steps: usize,
+    step_index: usize,
+    x0_prev: Option<Vec<f32>>,
+    x0_cur: Option<Vec<f32>>,
+    last_sample: Option<Vec<f32>>,
+    lower_order_nums: usize,
+}
+
+fn flow_lambda(sigma: f32) -> f64 {
+    ((1.0 - sigma as f64) / sigma as f64).ln()
+}
+
+impl WanFlowUniPc {
+    pub fn new(steps: u32, shift: f32) -> Self {
+        Self {
+            sigmas: wan_flow_sigmas(steps, shift),
+            order: 2,
+            num_steps: steps.max(1) as usize,
+            step_index: 0,
+            x0_prev: None,
+            x0_cur: None,
+            last_sample: None,
+            lower_order_nums: 0,
+        }
+    }
+
+    pub fn sigmas(&self) -> &[f32] {
+        &self.sigmas
+    }
+
+    /// Timestep fed to the DiT: `trunc(sigma * 1000)` like the reference.
+    pub fn timestep(&self, index: usize) -> f32 {
+        (self.sigmas[index] * 1000.0).trunc()
+    }
+
+    /// One step: `model_output` is the CFG-combined velocity at `sample`.
+    pub fn step(&mut self, model_output: &[f32], sample: &[f32]) -> Result<Vec<f32>, String> {
+        let i = self.step_index;
+        if i >= self.num_steps || model_output.len() != sample.len() {
+            return Err(format!(
+                "wan unipc step {i} of {} with v {} sample {}",
+                self.num_steps,
+                model_output.len(),
+                sample.len()
+            ));
+        }
+        let sigma = self.sigmas[i];
+        let x0: Vec<f32> = sample
+            .iter()
+            .zip(model_output)
+            .map(|(s, v)| s - sigma * v)
+            .collect();
+        self.x0_prev = self.x0_cur.take();
+        self.x0_cur = Some(x0.clone());
+        let this_order = self
+            .order
+            .min(self.num_steps - i)
+            .min(self.lower_order_nums + 1);
+        let sigma_t = self.sigmas[i + 1];
+        if self.lower_order_nums < self.order {
+            self.lower_order_nums += 1;
+        }
+        self.step_index += 1;
+        if sigma_t == 0.0 {
+            return Ok(x0);
+        }
+        let mut sample_vec = sample.to_vec();
+        if i > 0 {
+            if let Some(last) = self.last_sample.take() {
+                sample_vec = self.corrector(&x0, &last, &sample_vec, this_order);
+            }
+        }
+        self.last_sample = Some(sample_vec.clone());
+        Ok(self.predictor(&x0, &sample_vec, this_order))
+    }
+
+    fn predictor(&self, x0: &[f32], sample: &[f32], order: usize) -> Vec<f32> {
+        let i = self.step_index - 1;
+        let sigma_s0 = self.sigmas[i] as f64;
+        let sigma_t = self.sigmas[i + 1] as f64;
+        let h = flow_lambda(self.sigmas[i + 1]) - flow_lambda(self.sigmas[i]);
+        let hh = -h;
+        let h_phi_1 = hh.exp_m1();
+        let alpha_t = 1.0 - sigma_t;
+        let ratio = (sigma_t / sigma_s0) as f32;
+        let coeff = (alpha_t * h_phi_1) as f32;
+        let mut x_t: Vec<f32> = sample
+            .iter()
+            .zip(x0)
+            .map(|(s, m)| ratio * s - coeff * m)
+            .collect();
+        if order >= 2 {
+            if let (Some(mk), true) = (&self.x0_prev, i >= 1) {
+                let rk = (flow_lambda(self.sigmas[i - 1]) - flow_lambda(self.sigmas[i])) / h;
+                if rk.is_finite() {
+                    let c = (alpha_t * h_phi_1 * 0.5 / rk) as f32;
+                    for (x, (mkv, m0)) in x_t.iter_mut().zip(mk.iter().zip(x0)) {
+                        *x -= c * (mkv - m0);
+                    }
+                }
+            }
+        }
+        x_t
+    }
+
+    fn corrector(&self, x0: &[f32], last_sample: &[f32], sample: &[f32], order: usize) -> Vec<f32> {
+        let i = self.step_index - 1;
+        let sigma_s0 = self.sigmas[i - 1] as f64;
+        let sigma_t = self.sigmas[i] as f64;
+        let h = flow_lambda(self.sigmas[i]) - flow_lambda(self.sigmas[i - 1]);
+        let hh = -h;
+        let h_phi_1 = hh.exp_m1();
+        let b_h = h_phi_1;
+        let alpha_t = 1.0 - sigma_t;
+        let ratio = (sigma_t / sigma_s0) as f32;
+        let coeff = (alpha_t * h_phi_1) as f32;
+        // x_t_ uses m0 = x0 (cache updated first); d1_t = x0 - m0 = 0 like main.
+        let x_t: Vec<f32> = last_sample
+            .iter()
+            .zip(x0)
+            .map(|(s, m)| ratio * s - coeff * m)
+            .collect();
+        let _ = sample;
+        if order < 2 || i < 2 {
+            return x_t;
+        }
+        let Some(mk) = &self.x0_prev else {
+            return x_t;
+        };
+        let rk = (flow_lambda(self.sigmas[i - 2]) - flow_lambda(self.sigmas[i - 1])) / h;
+        if !rk.is_finite() {
+            return x_t;
+        }
+        // Solve [[1, 1], [rk, 1]] @ rhos = [b1, b2] (np.linalg.solve, 2x2).
+        let mut h_phi_k = h_phi_1 / hh - 1.0;
+        let b1 = h_phi_k / b_h;
+        h_phi_k = h_phi_k / hh - 0.5;
+        let b2 = h_phi_k * 2.0 / b_h;
+        let det = 1.0 - rk;
+        if det.abs() < 1e-12 {
+            return x_t;
+        }
+        let r0 = (b1 - b2) / det;
+        let scale = (alpha_t * b_h * r0 / rk) as f32;
+        x_t.iter()
+            .zip(mk.iter().zip(x0))
+            .map(|(x, (mkv, m0))| x - scale * (mkv - m0))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod wan_unipc_tests {
+    use super::{wan_flow_sigmas, WanFlowUniPc};
+
+    #[test]
+    fn wan_flow_sigmas_match_main() {
+        let sigmas = wan_flow_sigmas(4, 5.0);
+        let expect = [0.99979985, 0.93726546, 0.83305538, 0.62468731, 0.0];
+        assert_eq!(sigmas.len(), 5);
+        for (got, want) in sigmas.iter().zip(expect) {
+            assert!((got - want).abs() < 1e-6, "{got} vs {want}");
+        }
+    }
+
+    /// Golden values from main `WanFlowUniPCScheduler` (shift 5, 4 steps,
+    /// bh2 order 2) driven by the fixed vectors below.
+    #[test]
+    fn unipc_bh2_matches_main_step_by_step() {
+        let latent = [
+            1.2301533575e-03f32,
+            2.9874553751e-01,
+            -2.7413785536e-01,
+            -8.9059183876e-01,
+            -4.5467078517e-01,
+            -9.9164655500e-01,
+        ];
+        let v = [
+            [
+                6.0143602597e-02,
+                1.3402152456e+00,
+                -4.9220651855e-01,
+                -6.2047489982e-01,
+                4.8984205019e-01,
+                3.5688700816e-01,
+            ],
+            [
+                1.0541424900e-01,
+                -9.3046804471e-01,
+                -2.9251822463e-02,
+                6.9530319446e-01,
+                -1.3442145473e+00,
+                -4.5761576104e-01,
+            ],
+            [
+                -1.9012227398e+00,
+                -1.2895377398e+00,
+                -1.8417350378e+00,
+                -2.3509113107e-01,
+                -1.2674464814e+00,
+                2.7126435882e-01,
+            ],
+            [
+                1.5675108662e-01,
+                -1.8693094463e-01,
+                -2.5167597108e+00,
+                -5.3869289585e-01,
+                -4.8500945401e-02,
+                1.1330898600e-01,
+            ],
+        ];
+        let expect = [
+            [
+                -0.00253089,
+                0.21493599,
+                -0.24335802,
+                -0.85179082,
+                -0.48530276,
+                -1.01396427,
+            ],
+            [
+                -0.01632000,
+                0.45253716,
+                -0.26898324,
+                -1.00574244,
+                -0.23162794,
+                -0.91582905,
+            ],
+            [
+                0.72894999,
+                0.79640526,
+                0.42776048,
+                -0.80210157,
+                0.02932185,
+                -1.09471572,
+            ],
+            [
+                0.63102957,
+                0.91317865,
+                1.99994834,
+                -0.46558695,
+                0.05961977,
+                -1.16549840,
+            ],
+        ];
+        let mut solver = WanFlowUniPc::new(4, 5.0);
+        let mut x = latent.to_vec();
+        let want_ts = [999.0f32, 937.0, 833.0, 624.0];
+        for i in 0..4 {
+            assert_eq!(solver.timestep(i), want_ts[i]);
+            x = solver.step(&v[i], &x).unwrap();
+            for (got, want) in x.iter().zip(expect[i]) {
+                assert!((got - want).abs() < 1e-4, "step {i}: {got} vs {want}");
+            }
+        }
+    }
+}

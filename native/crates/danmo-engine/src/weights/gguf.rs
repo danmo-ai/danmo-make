@@ -3,7 +3,7 @@
 use super::WeightError;
 use danmo_ggml_sys as g;
 use std::collections::BTreeMap;
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
@@ -178,11 +178,7 @@ impl Part {
             detail,
         })?;
         let tensors = if ext == Some("gguf") {
-            let c_path = CString::new(origin.as_str()).map_err(|_| WeightError::Open {
-                path: origin.clone(),
-                detail: "path is not a C string".into(),
-            })?;
-            unsafe { read_index(c_path.as_ptr(), &origin, map.len)? }
+            read_index(&map, &origin)?
         } else {
             read_safetensors(&map, &origin)?
         };
@@ -493,74 +489,228 @@ pub(crate) fn f16_to_f32(bits: u16) -> f32 {
     f32::from_bits(out)
 }
 
-unsafe fn read_index(
-    path: *const i8,
+const GGUF_DEFAULT_ALIGNMENT: usize = 32;
+const GGUF_TYPE_STRING: u32 = 8;
+const GGUF_TYPE_ARRAY: u32 = 9;
+const GGUF_TYPE_UINT32: u32 = 4;
+
+struct IndexCursor<'m> {
+    map: &'m MappedFile,
+    pos: usize,
+}
+
+impl<'m> IndexCursor<'m> {
+    fn take(&mut self, origin: &str, n: usize) -> Result<&'m [u8], WeightError> {
+        let bytes = self
+            .map
+            .bytes(self.pos, n)
+            .map_err(|detail| WeightError::Open {
+                path: origin.to_string(),
+                detail,
+            })?;
+        self.pos += n;
+        Ok(bytes)
+    }
+
+    fn u32(&mut self, origin: &str) -> Result<u32, WeightError> {
+        let bytes = self.take(origin, 4)?;
+        Ok(u32::from_le_bytes(bytes.try_into().expect("4 bytes")))
+    }
+
+    fn u64(&mut self, origin: &str) -> Result<u64, WeightError> {
+        let bytes = self.take(origin, 8)?;
+        Ok(u64::from_le_bytes(bytes.try_into().expect("8 bytes")))
+    }
+
+    fn string(&mut self, origin: &str) -> Result<String, WeightError> {
+        let len = self.u64(origin)? as usize;
+        let bytes = self.take(origin, len)?;
+        String::from_utf8(bytes.to_vec()).map_err(|_| WeightError::Open {
+            path: origin.to_string(),
+            detail: "gguf string is not utf-8".into(),
+        })
+    }
+}
+
+fn gguf_scalar_size(value_type: u32) -> Option<usize> {
+    match value_type {
+        0 | 1 | 7 => Some(1),
+        2 | 3 => Some(2),
+        4 | 5 | 6 => Some(4),
+        10 | 11 | 12 => Some(8),
+        _ => None,
+    }
+}
+
+fn gguf_skip_value(
+    cur: &mut IndexCursor<'_>,
     origin: &str,
-    file_len: usize,
-) -> Result<BTreeMap<String, TensorLoc>, WeightError> {
-    let params = g::gguf_init_params {
-        no_alloc: true,
-        ctx: std::ptr::null_mut(),
-    };
-    let gctx = g::gguf_init_from_file(path, params);
-    if gctx.is_null() {
+    value_type: u32,
+) -> Result<(), WeightError> {
+    if let Some(size) = gguf_scalar_size(value_type) {
+        cur.take(origin, size)?;
+        return Ok(());
+    }
+    match value_type {
+        GGUF_TYPE_STRING => {
+            cur.string(origin)?;
+            Ok(())
+        }
+        GGUF_TYPE_ARRAY => {
+            let elem_type = cur.u32(origin)?;
+            let count = cur.u64(origin)? as usize;
+            if elem_type == GGUF_TYPE_STRING {
+                for _ in 0..count {
+                    cur.string(origin)?;
+                }
+                return Ok(());
+            }
+            let size = gguf_scalar_size(elem_type).ok_or_else(|| WeightError::Open {
+                path: origin.to_string(),
+                detail: format!("gguf array element type {elem_type} is unknown"),
+            })?;
+            let bytes = size.checked_mul(count).ok_or_else(|| WeightError::Open {
+                path: origin.to_string(),
+                detail: "gguf array size overflows".into(),
+            })?;
+            cur.take(origin, bytes)?;
+            Ok(())
+        }
+        other => Err(WeightError::Open {
+            path: origin.to_string(),
+            detail: format!("gguf value type {other} is unknown"),
+        }),
+    }
+}
+
+/// Index the tensor table without the ggml gguf reader: ggml refuses tensors
+/// with more than four dimensions, and published video checkpoints (Wan
+/// `patch_embedding.weight`) carry a 5D conv shape. Extra leading dims fold
+/// into `ne3`; the flat bytes do not move (same rule as safetensors reads).
+fn read_index(map: &MappedFile, origin: &str) -> Result<BTreeMap<String, TensorLoc>, WeightError> {
+    let mut cur = IndexCursor { map, pos: 0 };
+    if cur.take(origin, 4)? != b"GGUF" {
         return Err(WeightError::Open {
             path: origin.to_string(),
-            detail: "gguf_init_from_file failed".into(),
+            detail: "not a GGUF file".into(),
         });
     }
-    let n = g::gguf_get_n_tensors(gctx);
-    let data_off = g::gguf_get_data_offset(gctx) as usize;
-    let mut tensors = BTreeMap::new();
-    for i in 0..n {
-        let name_ptr = g::gguf_get_tensor_name(gctx, i);
-        if name_ptr.is_null() {
-            g::gguf_free(gctx);
+    let version = cur.u32(origin)?;
+    if version != 2 && version != 3 {
+        return Err(WeightError::Open {
+            path: origin.to_string(),
+            detail: format!("gguf version {version} is not 2 or 3"),
+        });
+    }
+    let n_tensors = cur.u64(origin)?;
+    let n_kv = cur.u64(origin)?;
+    let mut alignment = GGUF_DEFAULT_ALIGNMENT;
+    for _ in 0..n_kv {
+        let key = cur.string(origin)?;
+        let value_type = cur.u32(origin)?;
+        if key == "general.alignment" && value_type == GGUF_TYPE_UINT32 {
+            alignment = cur.u32(origin)? as usize;
+            if alignment == 0 {
+                alignment = GGUF_DEFAULT_ALIGNMENT;
+            }
+        } else {
+            gguf_skip_value(&mut cur, origin, value_type)?;
+        }
+    }
+    struct Info {
+        name: String,
+        ne: [i64; 4],
+        ggml_type: u32,
+        tensor_off: usize,
+        nbytes: usize,
+    }
+    let mut infos = Vec::new();
+    for _ in 0..n_tensors {
+        let name = cur.string(origin)?;
+        let n_dims = cur.u32(origin)? as usize;
+        if n_dims == 0 || n_dims > 8 {
             return Err(WeightError::Open {
                 path: origin.to_string(),
-                detail: format!("tensor {i} has no name"),
+                detail: format!("{name} has {n_dims} dimensions"),
             });
         }
-        let name = CStr::from_ptr(name_ptr).to_string_lossy().into_owned();
-        let ne_ptr = g::gguf_get_tensor_ne(gctx, i);
-        let mut ne = [1i64; 4];
-        if !ne_ptr.is_null() {
-            for dim in 0..4 {
-                ne[dim] = *ne_ptr.add(dim);
+        let mut dims = [1i64; 8];
+        let mut elems = 1i64;
+        for dim in dims.iter_mut().take(n_dims) {
+            let value = cur.u64(origin)?;
+            if value == 0 || value > i64::MAX as u64 {
+                return Err(WeightError::Open {
+                    path: origin.to_string(),
+                    detail: format!("{name} dimension {value} is not usable"),
+                });
             }
+            *dim = value as i64;
+            elems = elems.checked_mul(*dim).ok_or_else(|| WeightError::Open {
+                path: origin.to_string(),
+                detail: format!("{name} shape overflows"),
+            })?;
         }
-        let ggml_type = g::gguf_get_tensor_type(gctx, i);
-        let nbytes = g::gguf_get_tensor_size(gctx, i);
-        let tensor_off = g::gguf_get_tensor_offset(gctx, i) as usize;
-        let offset = data_off.saturating_add(tensor_off);
-        let end = offset.saturating_add(nbytes);
-        if end > file_len {
-            g::gguf_free(gctx);
+        let ggml_type = cur.u32(origin)?;
+        let tensor_off = cur.u64(origin)? as usize;
+        let mut ne = [1i64; 4];
+        if n_dims <= 4 {
+            ne[..n_dims].copy_from_slice(&dims[..n_dims]);
+        } else {
+            ne[..3].copy_from_slice(&dims[..3]);
+            ne[3] = dims[3..n_dims].iter().product();
+        }
+        if ggml_type >= g::ggml_type_GGML_TYPE_COUNT {
             return Err(WeightError::Open {
                 path: origin.to_string(),
-                detail: format!("{name} extends past the end of the file"),
+                detail: format!("{name} ggml type {ggml_type} is unknown"),
+            });
+        }
+        let block = unsafe { g::ggml_blck_size(ggml_type) } as i64;
+        let type_size = unsafe { g::ggml_type_size(ggml_type) };
+        if block <= 0 || type_size == 0 || elems % block != 0 {
+            return Err(WeightError::Open {
+                path: origin.to_string(),
+                detail: format!("{name} ggml type {ggml_type} does not hold {elems} elements"),
+            });
+        }
+        let nbytes = type_size.saturating_mul((elems / block) as usize);
+        infos.push(Info {
+            name,
+            ne,
+            ggml_type,
+            tensor_off,
+            nbytes,
+        });
+    }
+    let data_off = cur.pos.div_ceil(alignment) * alignment;
+    let mut tensors = BTreeMap::new();
+    for info in infos {
+        let offset = data_off.saturating_add(info.tensor_off);
+        let end = offset.saturating_add(info.nbytes);
+        if end > map.len {
+            return Err(WeightError::Open {
+                path: origin.to_string(),
+                detail: format!("{} extends past the end of the file", info.name),
             });
         }
         if tensors
             .insert(
-                name.clone(),
+                info.name.clone(),
                 TensorLoc {
-                    ggml_type,
-                    ne,
+                    ggml_type: info.ggml_type,
+                    ne: info.ne,
                     offset,
-                    nbytes,
+                    nbytes: info.nbytes,
                 },
             )
             .is_some()
         {
-            g::gguf_free(gctx);
             return Err(WeightError::Duplicate {
-                name,
+                name: info.name,
                 path: origin.to_string(),
             });
         }
     }
-    g::gguf_free(gctx);
     Ok(tensors)
 }
 
@@ -1219,6 +1369,99 @@ mod tests {
     fn q6_k_is_a_matmul_type() {
         assert!(matmul_type(g::ggml_type_GGML_TYPE_Q6_K));
         assert_eq!(type_block(g::ggml_type_GGML_TYPE_Q6_K), 256);
+    }
+
+    fn push_string(out: &mut Vec<u8>, value: &str) {
+        out.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        out.extend_from_slice(value.as_bytes());
+    }
+
+    /// A GGUF v3 header with string/array KV entries, a 5D F32 tensor (the
+    /// published Wan `patch_embedding.weight` layout), and a 2D tensor.
+    #[test]
+    fn gguf_index_folds_past_four_dims() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-gguf5d-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wan.gguf");
+        let mut header = Vec::new();
+        header.extend_from_slice(b"GGUF");
+        header.extend_from_slice(&3u32.to_le_bytes());
+        header.extend_from_slice(&2u64.to_le_bytes()); // tensors
+        header.extend_from_slice(&3u64.to_le_bytes()); // kv
+        push_string(&mut header, "general.alignment");
+        header.extend_from_slice(&4u32.to_le_bytes());
+        header.extend_from_slice(&32u32.to_le_bytes());
+        push_string(&mut header, "general.architecture");
+        header.extend_from_slice(&8u32.to_le_bytes());
+        push_string(&mut header, "wan");
+        push_string(&mut header, "tokenizer.ggml.tokens");
+        header.extend_from_slice(&9u32.to_le_bytes());
+        header.extend_from_slice(&8u32.to_le_bytes()); // array of string
+        header.extend_from_slice(&2u64.to_le_bytes());
+        push_string(&mut header, "<pad>");
+        push_string(&mut header, "</s>");
+        // tensor 0: patch_embedding.weight, dims (2, 2, 1, 4, 6), F32
+        push_string(&mut header, "patch_embedding.weight");
+        header.extend_from_slice(&5u32.to_le_bytes());
+        for dim in [2u64, 2, 1, 4, 6] {
+            header.extend_from_slice(&dim.to_le_bytes());
+        }
+        header.extend_from_slice(&0u32.to_le_bytes()); // F32
+        header.extend_from_slice(&0u64.to_le_bytes()); // offset
+                                                       // tensor 1: head.head.weight, dims (4, 6), F32
+        push_string(&mut header, "head.head.weight");
+        header.extend_from_slice(&2u32.to_le_bytes());
+        for dim in [4u64, 6] {
+            header.extend_from_slice(&dim.to_le_bytes());
+        }
+        header.extend_from_slice(&0u32.to_le_bytes());
+        header.extend_from_slice(&(96u64 * 4).to_le_bytes()); // offset
+        let data_off = header.len().div_ceil(32) * 32;
+        header.resize(data_off, 0);
+        let mut file = header;
+        for index in 0..96u32 + 24 {
+            file.extend_from_slice(&(index as f32).to_le_bytes());
+        }
+        std::fs::write(&path, &file).unwrap();
+        let weights = GgufWeights::open(&path).unwrap();
+        assert_eq!(
+            weights.shape("patch_embedding.weight").unwrap(),
+            [2, 2, 1, 24]
+        );
+        assert_eq!(weights.shape("head.head.weight").unwrap(), [4, 6, 1, 1]);
+        let patch = weights
+            .f32_exact("patch_embedding.weight", &[2, 2, 1, 24])
+            .unwrap();
+        assert_eq!(patch.len(), 96);
+        assert_eq!(patch[95], 95.0);
+        let head = weights.f32_exact("head.head.weight", &[4, 6]).unwrap();
+        assert_eq!(head[0], 96.0);
+        assert_eq!(head[23], 119.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn gguf_index_rejects_non_gguf() {
+        let dir = std::env::temp_dir().join(format!("danmo-ggufbad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.gguf");
+        std::fs::write(&path, b"not-a-gguf-file-at-all").unwrap();
+        let err = match GgufWeights::open(&path) {
+            Err(WeightError::Open { detail, .. }) => detail,
+            Err(err) => panic!("garbage gguf returned {err}"),
+            Ok(_) => panic!("garbage gguf was accepted"),
+        };
+        assert!(err.contains("not a GGUF file"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

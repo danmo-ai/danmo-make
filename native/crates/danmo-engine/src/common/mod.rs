@@ -1,7 +1,9 @@
 pub mod bpe;
 pub mod conditioning;
+pub mod ffmpeg;
 pub mod image;
 pub mod ops;
 pub mod png;
+pub mod qwen25vl;
 pub mod qwen3;
 pub mod vae;

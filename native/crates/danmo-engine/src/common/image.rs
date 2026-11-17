@@ -154,9 +154,102 @@ pub fn resize_lanczos(
     Ok(out)
 }
 
+/// PIL-style separable bicubic (`Image.Resampling.BICUBIC`, a = -0.5) with
+/// antialias widening on downscale. `rgb` is interleaved bytes.
+pub fn resize_bicubic(
+    rgb: &[u8],
+    sw: u32,
+    sh: u32,
+    dw: u32,
+    dh: u32,
+) -> Result<Vec<u8>, WeightError> {
+    let (sw, sh, dw, dh) = (sw as usize, sh as usize, dw as usize, dh as usize);
+    if sw < 1 || sh < 1 || dw < 1 || dh < 1 || rgb.len() != sw * sh * 3 {
+        return Err(WeightError::Shape {
+            name: "rgb".into(),
+            expected: vec![(sw * sh * 3) as i64],
+            got: vec![rgb.len() as i64],
+        });
+    }
+    fn kernel(x: f32) -> f32 {
+        let x = x.abs();
+        if x < 1.0 {
+            1.5 * x.powi(3) - 2.5 * x.powi(2) + 1.0
+        } else if x < 2.0 {
+            -0.5 * x.powi(3) + 2.5 * x.powi(2) - 4.0 * x + 2.0
+        } else {
+            0.0
+        }
+    }
+    fn weights(in_size: usize, out_size: usize) -> Vec<(usize, Vec<f32>)> {
+        let scale = in_size as f32 / out_size as f32;
+        let filter = scale.max(1.0);
+        let support = 2.0 * filter;
+        (0..out_size)
+            .map(|o| {
+                let center = (o as f32 + 0.5) * scale;
+                let first = (center - support).ceil().max(0.0) as usize;
+                let last = ((center + support).floor() as usize).min(in_size - 1);
+                let mut ws = Vec::with_capacity(last + 1 - first);
+                let mut sum = 0f32;
+                for i in first..=last {
+                    let w = kernel((i as f32 + 0.5 - center) / filter);
+                    ws.push(w);
+                    sum += w;
+                }
+                if sum.abs() > 1e-8 {
+                    for w in &mut ws {
+                        *w /= sum;
+                    }
+                }
+                (first, ws)
+            })
+            .collect()
+    }
+    let wx = weights(sw, dw);
+    let mut tmp = vec![0f32; dw * sh * 3];
+    for y in 0..sh {
+        for (ox, (first, ws)) in wx.iter().enumerate() {
+            for c in 0..3 {
+                let mut acc = 0f32;
+                for (k, &w) in ws.iter().enumerate() {
+                    acc += w * rgb[(y * sw + first + k) * 3 + c] as f32;
+                }
+                tmp[(y * dw + ox) * 3 + c] = acc;
+            }
+        }
+    }
+    let wy = weights(sh, dh);
+    let mut out = vec![0u8; dw * dh * 3];
+    for (oy, (first, ws)) in wy.iter().enumerate() {
+        for x in 0..dw {
+            for c in 0..3 {
+                let mut acc = 0f32;
+                for (k, &w) in ws.iter().enumerate() {
+                    acc += w * tmp[((first + k) * dw + x) * 3 + c];
+                }
+                out[(oy * dw + x) * 3 + c] = acc.round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{center_crop_align, resize_lanczos, rgb_to_n11_planar};
+    use super::{center_crop_align, resize_bicubic, resize_lanczos, rgb_to_n11_planar};
+
+    #[test]
+    fn bicubic_keeps_a_constant_image_constant() {
+        let rgb = vec![77u8; 8 * 8 * 3];
+        let up = resize_bicubic(&rgb, 8, 8, 16, 16).unwrap();
+        assert!(up.iter().all(|&v| v == 77));
+        let down = resize_bicubic(&rgb, 8, 8, 4, 4).unwrap();
+        assert!(down.iter().all(|&v| v == 77));
+        let same = resize_bicubic(&rgb, 8, 8, 8, 8).unwrap();
+        assert_eq!(same, rgb);
+        assert!(resize_bicubic(&rgb[..3], 8, 8, 4, 4).is_err());
+    }
 
     #[test]
     fn lanczos_keeps_a_constant_image_constant() {

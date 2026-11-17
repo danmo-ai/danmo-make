@@ -10,9 +10,13 @@ default = []
 cuda = ["danmo-ggml-sys/cuda"]
 vulkan = ["danmo-ggml-sys/vulkan"]
 metal = ["danmo-ggml-sys/metal"]
+mlx = ["dep:danmo-mlx"]
+mlx-metal = ["mlx", "danmo-mlx/metal"]
+mlx-cuda = ["mlx", "danmo-mlx/cuda"]
 
 [dependencies]
 danmo-ggml-sys = { path = "../danmo-ggml-sys" }
+danmo-mlx = { path = "../danmo-mlx", optional = true }
 danmo-contracts = { path = "../danmo-contracts" }
 regex = "1.13"
 unicode-normalization = "0.1"

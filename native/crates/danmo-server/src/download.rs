@@ -1384,8 +1384,9 @@ fn plan_component(
 }
 
 /// Optional `role` remaps a flat GGUF companion into `text_encoder/`, `vae/`,
-/// or `tokenizer/` so `bundle.manifest.json` can classify it. Empty role keeps
-/// the remote relative path (Flux2 / Z-Image HF trees).
+/// or `tokenizer/` so `bundle.manifest.json` can classify it. The LTX extras
+/// use `audio_vae/`, `connectors/`, and `upscaler/` the same way. Empty role
+/// keeps the remote relative path (Flux2 / Z-Image HF trees).
 fn component_dest(root: &Path, role: &str, remote_path: &str) -> Result<PathBuf, String> {
     if remote_path.is_empty() || remote_path.contains("..") {
         return Err("component path escapes the bundle".into());
@@ -1397,10 +1398,15 @@ fn component_dest(root: &Path, role: &str, remote_path: &str) -> Result<PathBuf,
         "" => root.join(remote_path),
         "text_encoder" => root.join("text_encoder").join(file_name),
         "vae" => root.join("vae").join(file_name),
+        "audio_vae" => root.join("audio_vae").join(file_name),
+        "connectors" => root.join("connectors").join(file_name),
+        "upscaler" => root.join("upscaler").join(file_name),
+        "transformer_stage2" => root.join("transformer_stage2").join(file_name),
+        "image_encoder" => root.join("image_encoder").join(file_name),
         "tokenizer" => root.join("tokenizer").join(file_name),
         other => {
             return Err(format!(
-                "component role {other} is not text_encoder, vae, or tokenizer"
+                "component role {other} is not a known bundle component"
             ))
         }
     })
@@ -2121,6 +2127,92 @@ mod component_role_tests {
             "/models/Audio/ace-step-xl-turbo/q8_0/nested/file.gguf"
         );
     }
+
+    #[test]
+    fn ltx_roles_land_in_their_bundle_subdirs() {
+        let root = PathBuf::from("/models/Video/ltx-2.3-dev/bf16");
+        for (role, remote, expect) in [
+            (
+                "audio_vae",
+                "vae/ltx-2.3-22b-dev_audio_vae.safetensors",
+                "/models/Video/ltx-2.3-dev/bf16/audio_vae/ltx-2.3-22b-dev_audio_vae.safetensors",
+            ),
+            (
+                "connectors",
+                "text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors",
+                "/models/Video/ltx-2.3-dev/bf16/connectors/ltx-2.3-22b-dev_embeddings_connectors.safetensors",
+            ),
+            (
+                "upscaler",
+                "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+                "/models/Video/ltx-2.3-dev/bf16/upscaler/ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+            ),
+            (
+                "transformer_stage2",
+                "distilled/ltx-2.3-22b-distilled-BF16.gguf",
+                "/models/Video/ltx-2.3-dev/bf16/transformer_stage2/ltx-2.3-22b-distilled-BF16.gguf",
+            ),
+        ] {
+            assert_eq!(
+                component_dest(&root, role, remote)
+                    .unwrap()
+                    .display()
+                    .to_string(),
+                expect
+            );
+        }
+        let err = component_dest(&root, "vocoder", "vocoder.gguf").unwrap_err();
+        assert!(err.contains("is not a known bundle component"), "{err}");
+    }
+
+    #[test]
+    fn manifest_collects_the_ltx_component_roles() {
+        use super::{bundle_manifest_value, PlannedFile};
+        use std::path::Path;
+
+        let root = Path::new("/models/Video/ltx-2.3-distilled/bf16");
+        let file = |dest: &str| PlannedFile {
+            url: String::new(),
+            dest: format!("{root}/{dest}", root = root.display(), dest = dest),
+            size: None,
+        };
+        let files = vec![
+            file("ltx-2.3-22b-distilled-BF16.gguf"),
+            file("text_encoder/gemma-3-12b-it-BF16.gguf"),
+            file("vae/ltx-2.3-22b-distilled_video_vae.safetensors"),
+            file("audio_vae/ltx-2.3-22b-distilled_audio_vae.safetensors"),
+            file("connectors/ltx-2.3-22b-distilled_embeddings_connectors.safetensors"),
+            file("upscaler/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"),
+            file("transformer_stage2/ltx-2.3-22b-distilled-BF16.gguf"),
+        ];
+        let manifest = bundle_manifest_value("bf16", root, &files).unwrap();
+        let files = &manifest["files"];
+        assert_eq!(
+            files["transformer"].as_str().unwrap(),
+            "ltx-2.3-22b-distilled-BF16.gguf"
+        );
+        assert_eq!(
+            files["audio_vae"].as_str().unwrap(),
+            "audio_vae/ltx-2.3-22b-distilled_audio_vae.safetensors"
+        );
+        assert_eq!(
+            files["connectors"].as_str().unwrap(),
+            "connectors/ltx-2.3-22b-distilled_embeddings_connectors.safetensors"
+        );
+        assert_eq!(
+            files["upscaler"].as_str().unwrap(),
+            "upscaler/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+        );
+        assert_eq!(
+            files["transformer_stage2"].as_str().unwrap(),
+            "transformer_stage2/ltx-2.3-22b-distilled-BF16.gguf"
+        );
+        // Without the distilled-only slots they stay out of the map.
+        let files = vec![file("ltx-2.3-22b-distilled-BF16.gguf")];
+        let manifest = bundle_manifest_value("bf16", root, &files).unwrap();
+        assert!(manifest["files"].get("upscaler").is_none());
+        assert!(manifest["files"].get("audio_vae").is_none());
+    }
 }
 
 fn write_bundle_manifest(root: &Path, quant: &str, files: &[PlannedFile]) -> Result<(), String> {
@@ -2138,6 +2230,11 @@ fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Res
     let mut transformer = Vec::new();
     let mut text_encoder = Vec::new();
     let mut vae = Vec::new();
+    let mut audio_vae = Vec::new();
+    let mut connectors = Vec::new();
+    let mut upscaler = Vec::new();
+    let mut transformer_stage2 = Vec::new();
+    let mut image_encoder = Vec::new();
     for file in files {
         let rel = rel_under(root, &file.dest)?;
         let Some(role) = manifest_role(&rel) else {
@@ -2147,6 +2244,11 @@ fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Res
             "transformer" => &mut transformer,
             "text_encoder" => &mut text_encoder,
             "vae" => &mut vae,
+            "audio_vae" => &mut audio_vae,
+            "connectors" => &mut connectors,
+            "upscaler" => &mut upscaler,
+            "transformer_stage2" => &mut transformer_stage2,
+            "image_encoder" => &mut image_encoder,
             _ => continue,
         };
         if !slot.iter().any(|path| path == &rel) {
@@ -2156,6 +2258,11 @@ fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Res
     transformer.sort();
     text_encoder.sort();
     vae.sort();
+    audio_vae.sort();
+    connectors.sort();
+    upscaler.sort();
+    transformer_stage2.sort();
+    image_encoder.sort();
     if transformer.is_empty() {
         return Err("bundle manifest has no transformer file".into());
     }
@@ -2167,6 +2274,21 @@ fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Res
     }
     if !vae.is_empty() {
         files_map["vae"] = role_value(vae);
+    }
+    if !audio_vae.is_empty() {
+        files_map["audio_vae"] = role_value(audio_vae);
+    }
+    if !connectors.is_empty() {
+        files_map["connectors"] = role_value(connectors);
+    }
+    if !upscaler.is_empty() {
+        files_map["upscaler"] = role_value(upscaler);
+    }
+    if !transformer_stage2.is_empty() {
+        files_map["transformer_stage2"] = role_value(transformer_stage2);
+    }
+    if !image_encoder.is_empty() {
+        files_map["image_encoder"] = role_value(image_encoder);
     }
     Ok(json!({
         "format": "gguf",
@@ -2208,6 +2330,16 @@ fn manifest_role(rel: &str) -> Option<&'static str> {
         Some("text_encoder")
     } else if rel.starts_with("vae/") {
         Some("vae")
+    } else if rel.starts_with("audio_vae/") {
+        Some("audio_vae")
+    } else if rel.starts_with("connectors/") {
+        Some("connectors")
+    } else if rel.starts_with("upscaler/") {
+        Some("upscaler")
+    } else if rel.starts_with("transformer_stage2/") {
+        Some("transformer_stage2")
+    } else if rel.starts_with("image_encoder/") {
+        Some("image_encoder")
     } else if lower.ends_with(".gguf") {
         Some("transformer")
     } else {

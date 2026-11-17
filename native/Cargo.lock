@@ -198,6 +198,7 @@ version = "0.1.0"
 dependencies = [
  "danmo-contracts",
  "danmo-ggml-sys",
+ "danmo-mlx",
  "regex",
  "serde",
  "serde_json",
@@ -207,6 +208,21 @@ dependencies = [
 
 [[package]]
 name = "danmo-ggml-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+]
+
+[[package]]
+name = "danmo-mlx"
+version = "0.1.0"
+dependencies = [
+ "danmo-mlx-sys",
+ "thiserror",
+]
+
+[[package]]
+name = "danmo-mlx-sys"
 version = "0.1.0"
 dependencies = [
  "bindgen",

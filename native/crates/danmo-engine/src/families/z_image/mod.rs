@@ -14,6 +14,8 @@
 mod edit_session;
 mod geom;
 mod graph;
+#[cfg(feature = "mlx")]
+mod mlx;
 #[cfg(test)]
 mod reference;
 mod session;

@@ -24,6 +24,17 @@ pub trait ResolvePort {
             "source image reading is not available".into(),
         ))
     }
+
+    /// Filesystem path of a video asset. The default refuses; hosts override it.
+    fn read_source_video_path(
+        &self,
+        _run: &ResolvedRun,
+        _source_asset_id: &str,
+    ) -> Result<PathBuf, EngineError> {
+        Err(EngineError::Resolve(
+            "source video reading is not available".into(),
+        ))
+    }
 }
 
 #[derive(Debug)]

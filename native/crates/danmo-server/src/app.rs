@@ -8,7 +8,8 @@ use axum::{Json, Router};
 use danmo_catalog::Catalog;
 use danmo_contracts::{
     AudioEditRequest, AudioGenerationRequest, AudioLmRequest, ImageEditRequest,
-    ImageGenerationRequest, ImageUpscaleRequest, TaskAccepted, TaskKind, VideoGenerationRequest,
+    ImageGenerationRequest, ImageUpscaleRequest, TaskAccepted, TaskKind, VideoEditRequest,
+    VideoGenerationRequest, VideoUpscaleRequest,
 };
 use danmo_engine::{spec, BackendKind};
 use danmo_schedule::Scheduler;
@@ -1239,6 +1240,424 @@ mod tests {
             .unwrap_or(json!({}));
         assert_eq!(upscaled["parent_asset_id"], json!(source_id), "{upscaled}");
         assert_eq!(upscaled["relation_type"], "upscale", "{upscaled}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn seedvr2_video_upscale_runs_end_to_end() {
+        let have_ffmpeg = ["ffmpeg", "ffprobe"].iter().all(|tool| {
+            std::process::Command::new(tool)
+                .arg("-version")
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+        });
+        if !have_ffmpeg {
+            eprintln!("ffmpeg/ffprobe not installed; skipping video upscale e2e");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-video-upscale-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (model, local_path) = published_weight("seedvr2-video-3b", "q4_k");
+        let bundle = dir.join(&local_path);
+        danmo_engine::write_seedvr2_smoke_bundle(&bundle).unwrap();
+        // Five 32x32 frames at 5 fps.
+        let source_mp4 = dir.join("source.mp4");
+        let rendered = std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=32x32:rate=5:duration=1",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "libx264",
+            ])
+            .arg(&source_mp4)
+            .output()
+            .expect("spawn ffmpeg");
+        assert!(
+            rendered.status.success(),
+            "{}",
+            String::from_utf8_lossy(&rendered.stderr)
+        );
+        let app = router(&dir.join("studio.db"), &factory_registry());
+        let upload = post_json(
+            &app,
+            "/api/assets",
+            &json!({
+                "filename": "source.mp4",
+                "data_base64": base64_encode(&std::fs::read(&source_mp4).unwrap()),
+            }),
+        )
+        .await;
+        assert_eq!(upload.0, StatusCode::OK, "{}", upload.1);
+        assert_eq!(upload.1["kind"], "video", "{}", upload.1);
+        let source_id = upload.1["id"].as_str().unwrap().to_string();
+        let upscale = post_json(
+            &app,
+            "/api/videos/upscales",
+            &json!({
+                "model": model,
+                "source_asset_id": source_id,
+                "scale": 2,
+                "temporal_window": 5,
+                "max_frames": 10,
+                "seed": 1,
+                "priority": "normal"
+            }),
+        )
+        .await;
+        assert_eq!(upscale.0, StatusCode::ACCEPTED, "{}", upscale.1);
+        let id = upscale.1["id"].as_str().unwrap();
+        let task = wait_terminal_for(&app, id, 600, 100).await;
+        assert_eq!(task["status"], "completed", "task {task}");
+        assert_eq!(task["result"]["width"], 64, "task {task}");
+        assert_eq!(task["result"]["height"], 64, "task {task}");
+        assert_eq!(task["result"]["frames"], 5, "task {task}");
+        assert_eq!(task["result"]["source_asset_id"], json!(source_id));
+        assert_eq!(task["result"]["scale"], 2, "task {task}");
+        let denoise = task["result"]["denoise"].as_f64().unwrap_or(-1.0);
+        assert!((denoise - 0.3).abs() < 1e-6, "task {task}");
+        assert_eq!(task["result"]["chunk_frames"], 5, "task {task}");
+        let ids = task["result"]["asset_ids"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(ids.len(), 1, "task {task}");
+        let assets = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/assets")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = assets.into_body().collect().await.unwrap().to_bytes();
+        let listed: Value = serde_json::from_slice(&bytes).unwrap();
+        let upscaled = listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == ids[0])
+            .cloned()
+            .unwrap_or(json!({}));
+        assert_eq!(upscaled["kind"], "video", "{upscaled}");
+        assert_eq!(upscaled["mime_type"], "video/mp4", "{upscaled}");
+        assert_eq!(upscaled["parent_asset_id"], json!(source_id), "{upscaled}");
+        assert_eq!(upscaled["relation_type"], "upscale", "{upscaled}");
+        // ffprobe the persisted mp4: 64x64, 5 fps, 5 frames.
+        let asset_id = ids[0].as_str().unwrap();
+        let mp4 = dir
+            .join("outputs")
+            .join("assets")
+            .join(format!("{asset_id}.mp4"));
+        let probe = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height,nb_frames,avg_frame_rate",
+                "-of",
+                "json",
+            ])
+            .arg(&mp4)
+            .output()
+            .expect("spawn ffprobe");
+        assert!(
+            probe.status.success(),
+            "{}",
+            String::from_utf8_lossy(&probe.stderr)
+        );
+        let probe_json: Value = serde_json::from_slice(&probe.stdout).unwrap();
+        let stream = &probe_json["streams"][0];
+        assert_eq!(stream["width"], 64, "{probe_json}");
+        assert_eq!(stream["height"], 64, "{probe_json}");
+        assert_eq!(stream["avg_frame_rate"], "5/1", "{probe_json}");
+        assert_eq!(stream["nb_frames"], "5", "{probe_json}");
+        // A non-seedvr2 family fails loud before queueing.
+        let unbuilt = post_json(
+            &app,
+            "/api/videos/upscales",
+            &json!({
+                "model": "hunyuan-video-1.5-1080p-sr",
+                "source_asset_id": source_id,
+                "scale": 2
+            }),
+        )
+        .await;
+        assert_eq!(unbuilt.0, StatusCode::NOT_IMPLEMENTED, "{}", unbuilt.1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn wan_video_create_runs_end_to_end() {
+        let have_ffmpeg = ["ffmpeg", "ffprobe"].iter().all(|tool| {
+            std::process::Command::new(tool)
+                .arg("-version")
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+        });
+        if !have_ffmpeg {
+            eprintln!("ffmpeg/ffprobe not installed; skipping wan t2v e2e");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-wan-t2v-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (model, local_path) = published_weight("wan-2.2-ti2v-5b", "q4_k");
+        danmo_engine::write_wan_smoke_bundle(&dir.join(&local_path)).unwrap();
+        let app = router(&dir.join("studio.db"), &factory_registry());
+        let create = post_json(
+            &app,
+            "/api/videos/generations",
+            &json!({
+                "model": model,
+                "prompt": "hello world",
+                "size": "32x32",
+                "num_frames": 5,
+                "fps": 4,
+                "steps": 2,
+                "guidance": 2.0,
+                "seed": 3,
+                "priority": "normal"
+            }),
+        )
+        .await;
+        assert_eq!(create.0, StatusCode::ACCEPTED, "{}", create.1);
+        let id = create.1["id"].as_str().unwrap();
+        let task = wait_terminal_for(&app, id, 300, 100).await;
+        assert_eq!(task["status"], "completed", "task {task}");
+        assert_eq!(task["result"]["width"], 32, "task {task}");
+        assert_eq!(task["result"]["height"], 32, "task {task}");
+        assert_eq!(task["result"]["frames"], 5, "task {task}");
+        let ids = task["result"]["asset_ids"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(ids.len(), 1, "task {task}");
+        let asset_id = ids[0].as_str().unwrap();
+        let mp4 = dir
+            .join("outputs")
+            .join("assets")
+            .join(format!("{asset_id}.mp4"));
+        let probe = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height,nb_frames,avg_frame_rate",
+                "-of",
+                "json",
+            ])
+            .arg(&mp4)
+            .output()
+            .expect("spawn ffprobe");
+        assert!(
+            probe.status.success(),
+            "{}",
+            String::from_utf8_lossy(&probe.stderr)
+        );
+        let probe_json: Value = serde_json::from_slice(&probe.stdout).unwrap();
+        let stream = &probe_json["streams"][0];
+        assert_eq!(stream["width"], 32, "{probe_json}");
+        assert_eq!(stream["height"], 32, "{probe_json}");
+        assert_eq!(stream["avg_frame_rate"], "4/1", "{probe_json}");
+        assert_eq!(stream["nb_frames"], "5", "{probe_json}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn hunyuan_video_edit_fails_loud_until_the_graphs_land() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-hunyuan-i2v-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = router(&dir.join("studio.db"), &factory_registry());
+        let (model, local_path) = published_weight("hunyuan-video-1.5-i2v-720p", "q4_k");
+        let missing_source = post_json(
+            &app,
+            "/api/videos/edits",
+            &json!({
+                "model": model,
+                "prompt": "a cat",
+            }),
+        )
+        .await;
+        assert_eq!(
+            missing_source.0,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            missing_source.1
+        );
+        let detail = missing_source.1["detail"]
+            .as_str()
+            .or_else(|| missing_source.1["raw"].as_str())
+            .unwrap_or("");
+        assert!(detail.contains("source_asset_id"), "{}", missing_source.1);
+        // The family is wired, so a well-formed request queues; with no
+        // installed bundle the task fails loud naming the registry path.
+        let create = post_json(
+            &app,
+            "/api/videos/edits",
+            &json!({
+                "model": model,
+                "source_asset_id": "ast_src",
+                "prompt": "a cat",
+                "num_frames": 81,
+                "priority": "normal"
+            }),
+        )
+        .await;
+        assert_eq!(create.0, StatusCode::ACCEPTED, "{}", create.1);
+        let id = create.1["id"].as_str().unwrap();
+        let task = wait_terminal_for(&app, id, 300, 100).await;
+        assert_eq!(task["status"], "failed", "task {task}");
+        let err = task["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains(&local_path),
+            "hunyuan i2v did not use the registry path for {model}: {err}"
+        );
+        // A non-hunyuan family fails loud before queueing.
+        let unbuilt = post_json(
+            &app,
+            "/api/videos/edits",
+            &json!({
+                "model": "wan-2.2-ti2v-5b",
+                "source_asset_id": "ast_src",
+                "prompt": "a cat",
+            }),
+        )
+        .await;
+        assert_eq!(unbuilt.0, StatusCode::NOT_IMPLEMENTED, "{}", unbuilt.1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn ltx_video_create_runs_end_to_end() {
+        let have_ffmpeg = ["ffmpeg", "ffprobe"].iter().all(|tool| {
+            std::process::Command::new(tool)
+                .arg("-version")
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+        });
+        if !have_ffmpeg {
+            eprintln!("ffmpeg/ffprobe not installed; skipping ltx t2v e2e");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-ltx-t2v-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (model, local_path) = published_weight("ltx-2.3-dev", "bf16");
+        danmo_engine::write_ltx_smoke_bundle(&dir.join(&local_path)).unwrap();
+        let app = router(&dir.join("studio.db"), &factory_registry());
+        let create = post_json(
+            &app,
+            "/api/videos/generations",
+            &json!({
+                "model": model,
+                "prompt": "a cat",
+                // The smoke bundle ships a toy tokenizer with a tiny alphabet.
+                "negative_prompt": "b",
+                "size": "64x64",
+                "num_frames": 9,
+                "fps": 8,
+                "steps": 2,
+                "guidance": 2.0,
+                "seed": 3,
+                "priority": "normal"
+            }),
+        )
+        .await;
+        assert_eq!(create.0, StatusCode::ACCEPTED, "{}", create.1);
+        let id = create.1["id"].as_str().unwrap();
+        let task = wait_terminal_for(&app, id, 300, 100).await;
+        assert_eq!(task["status"], "completed", "task {task}");
+        assert_eq!(task["result"]["width"], 64, "task {task}");
+        assert_eq!(task["result"]["height"], 64, "task {task}");
+        assert_eq!(task["result"]["frames"], 9, "task {task}");
+        assert_eq!(task["result"]["steps"], 5, "task {task}");
+        let ids = task["result"]["asset_ids"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(ids.len(), 1, "task {task}");
+        let asset_id = ids[0].as_str().unwrap();
+        let mp4 = dir
+            .join("outputs")
+            .join("assets")
+            .join(format!("{asset_id}.mp4"));
+        let probe = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type,width,height,nb_frames,avg_frame_rate,sample_rate,channels",
+                "-of",
+                "json",
+            ])
+            .arg(&mp4)
+            .output()
+            .expect("spawn ffprobe");
+        assert!(
+            probe.status.success(),
+            "{}",
+            String::from_utf8_lossy(&probe.stderr)
+        );
+        let probe_json: Value = serde_json::from_slice(&probe.stdout).unwrap();
+        let streams = probe_json["streams"].as_array().unwrap();
+        let video = streams
+            .iter()
+            .find(|s| s["codec_type"] == "video")
+            .unwrap_or_else(|| panic!("no video stream: {probe_json}"));
+        assert_eq!(video["width"], 64, "{probe_json}");
+        assert_eq!(video["height"], 64, "{probe_json}");
+        assert_eq!(video["avg_frame_rate"], "8/1", "{probe_json}");
+        assert_eq!(video["nb_frames"], "9", "{probe_json}");
+        // LTX generates the 48 kHz stereo track alongside the video.
+        let audio = streams
+            .iter()
+            .find(|s| s["codec_type"] == "audio")
+            .unwrap_or_else(|| panic!("no audio stream: {probe_json}"));
+        assert_eq!(audio["sample_rate"], "48000", "{probe_json}");
+        assert_eq!(audio["channels"], 2, "{probe_json}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2819,14 +3238,52 @@ async fn video_edits(
     State(state): State<AppState>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
-    accept_value(&state, "video.edit", &body)
+    let request: VideoEditRequest = serde_json::from_value(body)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    if request.source_asset_id.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "source_asset_id is required".into(),
+        ));
+    }
+    let accepted = accept(
+        &state,
+        TaskKind::VideoEdit,
+        &request.model,
+        &request,
+        &request.priority,
+    )?;
+    Ok((StatusCode::ACCEPTED, accepted))
 }
 
 async fn video_upscales(
     State(state): State<AppState>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
-    accept_value(&state, "video.upscale", &body)
+    let request: VideoUpscaleRequest = serde_json::from_value(body)
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    if request.source_asset_id.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "source_asset_id is required".into(),
+        ));
+    }
+    if let Some(scale) = request.scale {
+        if scale != 2 && scale != 4 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("seedvr2 video upscale scale must be 2 or 4, got {scale}"),
+            ));
+        }
+    }
+    let accepted = accept(
+        &state,
+        TaskKind::VideoUpscale,
+        &request.model,
+        &request,
+        &request.priority,
+    )?;
+    Ok((StatusCode::ACCEPTED, accepted))
 }
 
 async fn video_avatars(
