@@ -21,6 +21,10 @@ def main():
     parser.add_argument("--teacache-thresh", type=float)
     parser.add_argument("--native-dtype", action="store_true")
     parser.add_argument("--quantization-bits", type=int, choices=(4, 8))
+    parser.add_argument(
+        "--vae-config-dir",
+        help="directory holding the published vae/config.json when the bundle omits it",
+    )
     args = parser.parse_args()
     if args.compile and args.teacache:
         raise SystemExit("--compile and --teacache are separate validation paths")
@@ -176,23 +180,65 @@ def main():
     mx.clear_cache()
 
     vae_started = time.monotonic()
-    session = build_standard_vae_preview_session(ctx, bundle / "vae")
-    if session is None:
-        raise RuntimeError("VAE preview session did not load")
-    if args.native_dtype:
+    if args.quantization_bits:
+        # Production VAE path (image_run_common): resolve the component mode
+        # from the bundle's affine tensors and load quantized linears packed.
+        from backend.engine.common.bundle.quant_inference import (
+            resolve_inference_weight_mode_from_bundle,
+        )
+        from backend.engine.common.bundle.safetensors_affine_quant import (
+            read_bundle_affine_bits_if_quantized,
+        )
+        from backend.engine.common.codecs.vae.decoder import (
+            create_loaded_vae_decoder,
+            load_vae_weight_dict,
+            read_vae_dir_config,
+        )
+
+        vae_dir = bundle / "vae"
+        vae_weights = load_vae_weight_dict(ctx, vae_dir, fail_if_config_only=True)
+        vae_cfg, scaling_factor, shift_factor = read_vae_dir_config(vae_dir)
+        if not vae_cfg and args.vae_config_dir:
+            vae_cfg, scaling_factor, shift_factor = read_vae_dir_config(
+                Path(args.vae_config_dir)
+            )
+        if not vae_cfg:
+            raise RuntimeError(
+                "quantized VAE needs the published config.json; pass --vae-config-dir"
+            )
+        bundle_affine_bits = read_bundle_affine_bits_if_quantized(vae_weights, vae_dir)
+        vae_mode = resolve_inference_weight_mode_from_bundle(
+            ctx,
+            weight_keys=frozenset(vae_weights.keys()),
+            bundle_affine_bits=bundle_affine_bits,
+        )
+        vae, _decoder_w, _loaded, _skipped = create_loaded_vae_decoder(
+            ctx,
+            latents,
+            vae_weights,
+            scaling_factor,
+            shift_factor,
+            vae_cfg=vae_cfg,
+            bundle_affine_bits=bundle_affine_bits,
+            inference_mode=vae_mode,
+        )
+        del vae_weights
+    else:
+        session = build_standard_vae_preview_session(ctx, bundle / "vae")
+        if session is None:
+            raise RuntimeError("VAE preview session did not load")
         vae = session["vae"]
-        for key, param in list(vae._param_map.items()):
-            if param.dtype == mx.bfloat16:
-                continue
-            native = param.astype(mx.bfloat16)
-            vae._param_map[key] = native
-            TransformerBase._rebind_param_by_key(vae, key, native)
-    output = session["vae"].forward(latents)
+        if args.native_dtype:
+            for key, param in list(vae._param_map.items()):
+                if param.dtype == mx.bfloat16:
+                    continue
+                native = param.astype(mx.bfloat16)
+                vae._param_map[key] = native
+                TransformerBase._rebind_param_by_key(vae, key, native)
+    output = vae.forward(latents)
     mx.eval(output)
     output_values = np.asarray(output.astype(mx.float32), dtype=np.float32).reshape(-1)
-    pixels = vae_output_to_uint8_hwc(
-        output.astype(mx.float32) if args.native_dtype else output, ctx
-    )
+    pixels = vae_output_to_uint8_hwc(output.astype(mx.float32), ctx)
     vae_seconds = time.monotonic() - vae_started
     payload = {
         "ids": ids,

@@ -1753,11 +1753,9 @@ mod tests {
 
         let vae_started = std::time::Instant::now();
         let vae_stream = Stream::gpu().unwrap();
-        let vae_weights = if quantization.is_some() {
-            crate::common::vae::mlx::load_dequantized(&bundle.join("vae")).unwrap()
-        } else {
-            crate::common::vae::mlx::load_dense(&bundle.join("vae"), weight_dtype).unwrap()
-        };
+        // Quantized bundles keep the VAE's affine mid-attention linears
+        // packed (main's quantized VAE inference); dense bundles load as-is.
+        let vae_weights = crate::common::vae::mlx::load(&bundle.join("vae"), weight_dtype).unwrap();
         let spec = crate::common::vae::VaeSpec {
             latent_channels: 16,
             block_out: vec![128, 256, 512, 512],
@@ -2191,7 +2189,7 @@ mod tests {
         )
         .unwrap();
         let vae_weights =
-            crate::common::vae::mlx::load_dense(&bundle.join("vae"), WeightDtype::Native).unwrap();
+            crate::common::vae::mlx::load(&bundle.join("vae"), WeightDtype::Native).unwrap();
         let spec = crate::common::vae::VaeSpec {
             latent_channels: 16,
             block_out: vec![128, 256, 512, 512],
@@ -2604,7 +2602,7 @@ mod tests {
         .unwrap();
         let dit_weight_bytes = weights.nbytes();
         let vae_weights =
-            crate::common::vae::mlx::load_dense(&bundle.join("vae"), WeightDtype::Native).unwrap();
+            crate::common::vae::mlx::load(&bundle.join("vae"), WeightDtype::Native).unwrap();
         let spec = crate::common::vae::VaeSpec {
             latent_channels: 16,
             block_out: vec![128, 256, 512, 512],

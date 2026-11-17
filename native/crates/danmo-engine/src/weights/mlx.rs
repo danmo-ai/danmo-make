@@ -89,6 +89,24 @@ impl MlxWeights {
         }
     }
 
+    pub fn has(&self, name: &str) -> bool {
+        self.tensors.contains_key(name)
+    }
+
+    /// Replace/insert one linear entry (test construction of mixed
+    /// dense/packed weight sets).
+    #[cfg(test)]
+    pub fn with_linear(mut self, name: String, linear: LinearWeight) -> Self {
+        self.tensors.insert(name, Entry::Packed(linear));
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_tensor(mut self, name: String, tensor: Array) -> Self {
+        self.tensors.insert(name, Entry::dense(tensor));
+        self
+    }
+
     /// Names of the linears that stay packed in memory.
     pub fn packed_names(&self) -> impl Iterator<Item = &str> {
         self.tensors

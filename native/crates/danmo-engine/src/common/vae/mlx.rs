@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use danmo_mlx::{Array, Error, Result, Stream};
 
 use super::VaeSpec;
+use crate::weights::MlxWeights;
 
+/// Dense-only load (fails loud on affine-quantized tensors).
 pub fn load_dense(
     directory: &std::path::Path,
     dtype: crate::weights::WeightDtype,
@@ -11,15 +13,14 @@ pub fn load_dense(
     crate::weights::load_mlx_directory(directory, dtype, None)?.into_dense()
 }
 
-#[cfg(test)]
-pub fn load_dequantized(directory: &std::path::Path) -> Result<BTreeMap<String, Array>> {
-    let stream = Stream::cpu()?;
-    crate::weights::load_mlx_directory(directory, crate::weights::WeightDtype::Native, None)?
-        .into_dequantized(&stream)
+/// Load keeping affine linears packed; the mid-attention projections run
+/// through QMM exactly like main's quantized VAE inference.
+pub fn load(directory: &std::path::Path, dtype: crate::weights::WeightDtype) -> Result<MlxWeights> {
+    crate::weights::load_mlx_directory(directory, dtype, None)
 }
 
 pub fn decode(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     spec: &VaeSpec,
     latents: &Array,
     stream: &Stream,
@@ -28,7 +29,7 @@ pub fn decode(
 }
 
 fn decode_impl(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     spec: &VaeSpec,
     latents: &Array,
     stream: &Stream,
@@ -136,7 +137,7 @@ fn record_stage(
 }
 
 fn resnet(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     spec: &VaeSpec,
     prefix: &str,
     input: &Array,
@@ -154,7 +155,7 @@ fn resnet(
     x = conv(weights, &format!("{prefix}.conv2"), &x, stream)?;
     record_stage(trace, &format!("{prefix}.conv2"), &x, stream)?;
     let shortcut = format!("{prefix}.conv_shortcut");
-    if weights.contains_key(&format!("{shortcut}.weight")) {
+    if weights.has(&format!("{shortcut}.weight")) {
         let shortcut = conv(weights, &shortcut, input, stream)?;
         record_stage(trace, &format!("{prefix}.shortcut"), &shortcut, stream)?;
         Array::add(&shortcut, &x, stream)
@@ -164,7 +165,7 @@ fn resnet(
 }
 
 fn spatial_attention(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     spec: &VaeSpec,
     prefix: &str,
     input: &Array,
@@ -172,36 +173,27 @@ fn spatial_attention(
 ) -> Result<Array> {
     let shape = input.shape();
     let (batch, height, width, channels) = (shape[0], shape[1], shape[2], shape[3]);
-    let norm_name = if weights.contains_key(&format!("{prefix}.group_norm.weight")) {
+    let norm_name = if weights.has(&format!("{prefix}.group_norm.weight")) {
         format!("{prefix}.group_norm")
     } else {
         format!("{prefix}.norm")
     };
     let x = group_norm(weights, spec, &norm_name, input, stream)?;
-    let q = linear(
-        &x,
-        weight(weights, &format!("{prefix}.to_q.weight"))?,
-        Some(weight(weights, &format!("{prefix}.to_q.bias"))?),
-        stream,
-    )?
-    .reshape(&[batch, height * width, 1, channels], stream)?
-    .transpose_axes(&[0, 2, 1, 3], stream)?;
-    let k = linear(
-        &x,
-        weight(weights, &format!("{prefix}.to_k.weight"))?,
-        Some(weight(weights, &format!("{prefix}.to_k.bias"))?),
-        stream,
-    )?
-    .reshape(&[batch, height * width, 1, channels], stream)?
-    .transpose_axes(&[0, 2, 1, 3], stream)?;
-    let v = linear(
-        &x,
-        weight(weights, &format!("{prefix}.to_v.weight"))?,
-        Some(weight(weights, &format!("{prefix}.to_v.bias"))?),
-        stream,
-    )?
-    .reshape(&[batch, height * width, 1, channels], stream)?
-    .transpose_axes(&[0, 2, 1, 3], stream)?;
+    let q = weights
+        .linear(&format!("{prefix}.to_q.weight"))?
+        .apply(&x, Some(weight(weights, &format!("{prefix}.to_q.bias"))?), stream)?
+        .reshape(&[batch, height * width, 1, channels], stream)?
+        .transpose_axes(&[0, 2, 1, 3], stream)?;
+    let k = weights
+        .linear(&format!("{prefix}.to_k.weight"))?
+        .apply(&x, Some(weight(weights, &format!("{prefix}.to_k.bias"))?), stream)?
+        .reshape(&[batch, height * width, 1, channels], stream)?
+        .transpose_axes(&[0, 2, 1, 3], stream)?;
+    let v = weights
+        .linear(&format!("{prefix}.to_v.weight"))?
+        .apply(&x, Some(weight(weights, &format!("{prefix}.to_v.bias"))?), stream)?
+        .reshape(&[batch, height * width, 1, channels], stream)?
+        .transpose_axes(&[0, 2, 1, 3], stream)?;
     let output = Array::scaled_dot_product_attention(
         &q,
         &k,
@@ -213,25 +205,25 @@ fn spatial_attention(
     )?
     .transpose_axes(&[0, 2, 1, 3], stream)?
     .reshape(&[batch, height, width, channels], stream)?;
-    let output = linear(
-        &output,
-        weight_alias(
+    let output = linear_alias(
             weights,
             &format!("{prefix}.to_out.weight"),
             &format!("{prefix}.to_out.0.weight"),
-        )?,
-        Some(weight_alias(
-            weights,
-            &format!("{prefix}.to_out.bias"),
-            &format!("{prefix}.to_out.0.bias"),
-        )?),
-        stream,
-    )?;
+        )?
+        .apply(
+            &output,
+            Some(weight_alias(
+                weights,
+                &format!("{prefix}.to_out.bias"),
+                &format!("{prefix}.to_out.0.bias"),
+            )?),
+            stream,
+        )?;
     Array::add(input, &output, stream)
 }
 
 fn upsample(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     prefix: &str,
     input: &Array,
     stream: &Stream,
@@ -248,7 +240,7 @@ fn upsample(
 }
 
 fn group_norm(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     spec: &VaeSpec,
     prefix: &str,
     input: &Array,
@@ -285,28 +277,32 @@ fn group_norm(
     )
 }
 
-fn linear(input: &Array, weight: &Array, bias: Option<&Array>, stream: &Stream) -> Result<Array> {
-    let weight = weight.matrix_transpose(stream)?;
-    match bias {
-        Some(bias) => Array::addmm(bias, input, &weight, 1.0, 1.0, stream),
-        None => Array::matmul(input, &weight, stream),
+fn linear_alias<'a>(
+    weights: &'a MlxWeights,
+    primary: &str,
+    alias: &str,
+) -> Result<&'a danmo_mlx::LinearWeight> {
+    if weights.has(primary) {
+        weights.linear(primary)
+    } else {
+        weights.linear(alias)
     }
 }
 
 fn conv(
-    weights: &BTreeMap<String, Array>,
+    weights: &MlxWeights,
     prefix: &str,
     input: &Array,
     stream: &Stream,
 ) -> Result<Array> {
-    let weight = weight(weights, &format!("{prefix}.weight"))?;
-    let shape = weight.shape();
+    let kernel_weight = weight(weights, &format!("{prefix}.weight"))?;
+    let shape = kernel_weight.shape();
     let padding = if shape.len() == 4 && shape[2] == 1 && shape[3] == 1 {
         0
     } else {
         1
     };
-    let kernel = weight.transpose_axes(&[0, 2, 3, 1], stream)?;
+    let kernel = kernel_weight.transpose_axes(&[0, 2, 3, 1], stream)?;
     let mut output = Array::conv2d(
         input,
         &kernel,
@@ -316,8 +312,8 @@ fn conv(
         1,
         stream,
     )?;
-    if let Some(bias) = weights.get(&format!("{prefix}.bias")) {
-        output = Array::add(&output, bias, stream)?;
+    if weights.has(&format!("{prefix}.bias")) {
+        output = Array::add(&output, weight(weights, &format!("{prefix}.bias"))?, stream)?;
     }
     Ok(output)
 }
@@ -327,27 +323,119 @@ fn scalar(value: f32, dtype: danmo_mlx::Dtype, stream: &Stream) -> Result<Array>
 }
 
 fn weight_alias<'a>(
-    weights: &'a BTreeMap<String, Array>,
+    weights: &'a MlxWeights,
     primary: &str,
     alias: &str,
 ) -> Result<&'a Array> {
-    weights
-        .get(primary)
-        .or_else(|| weights.get(alias))
-        .ok_or_else(|| Error::new("VAE MLX weights", format!("missing {primary} or {alias}")))
+    if weights.has(primary) {
+        weights.tensor(primary)
+    } else {
+        weights.tensor(alias)
+    }
 }
 
-fn weight<'a>(weights: &'a BTreeMap<String, Array>, name: &str) -> Result<&'a Array> {
-    weights
-        .get(name)
-        .ok_or_else(|| Error::new("VAE MLX weights", format!("missing {name}")))
+fn weight<'a>(weights: &'a MlxWeights, name: &str) -> Result<&'a Array> {
+    weights.tensor(name)
 }
 
 #[cfg(test)]
 mod tests {
     use super::decode;
     use super::VaeSpec;
+    use crate::weights::MlxWeights;
     use danmo_mlx::{Array, Stream};
+    use std::collections::BTreeMap;
+
+    /// The quantized VAE path runs the mid-attention projections through
+    /// packed QMM; against the dequantized dense reference the outputs must
+    /// agree within the affine quantization error (same contract as the DiT
+    /// packed probe).
+    fn quantized_vae_probe(device_type: danmo_mlx::DeviceType) -> danmo_mlx::Result<()> {
+        use danmo_mlx::{LinearWeight, QuantizedArray};
+        let stream = match device_type {
+            danmo_mlx::DeviceType::Cpu => Stream::cpu()?,
+            danmo_mlx::DeviceType::Gpu => Stream::gpu()?,
+        };
+        let channels = 64i32;
+        let spec = VaeSpec {
+            latent_channels: 2,
+            block_out: vec![4],
+            resnets: 1,
+            groups: 2,
+            scaling: 1.0,
+            shift: 0.0,
+            attention: true,
+        };
+        let attention = "decoder.mid_block.attentions.0";
+        fn make(name: &str, shape: &[i32], seed: usize) -> Array {
+            let count: i32 = shape.iter().product();
+            let values: Vec<f32> = (0..count)
+                .map(|index| (((index as usize + seed) % 13) as f32) * 0.02 - 0.12)
+                .collect();
+            Array::from_f32_slice(&values, shape).unwrap()
+        }
+        let mut dense: BTreeMap<String, Array> = BTreeMap::new();
+        dense.insert(
+            format!("{attention}.group_norm.weight"),
+            make("norm", &[channels], 17),
+        );
+        dense.insert(
+            format!("{attention}.group_norm.bias"),
+            make("norm", &[channels], 18),
+        );
+        let mut packed_weights = MlxWeights::from_dense(dense.clone());
+        for (index, projection) in ["to_q", "to_k", "to_v", "to_out"].iter().enumerate() {
+            let base = format!("{attention}.{projection}");
+            let weight = make("weight", &[channels, channels], 19 + index);
+            let bias = make("bias", &[channels], 23 + index);
+            dense.insert(format!("{base}.bias"), bias);
+            packed_weights = packed_weights.with_tensor(format!("{base}.bias"), dense[&format!("{base}.bias")].clone());
+            let quantized = weight.quantize_affine(32, 4, &stream)?;
+            dense.insert(
+                format!("{base}.weight"),
+                quantized.dequantize(32, 4, &stream)?,
+            );
+            let layer = LinearWeight::affine(
+                QuantizedArray {
+                    weight: quantized.weight,
+                    scales: quantized.scales,
+                    biases: quantized.biases,
+                },
+                danmo_mlx::AffineQuantization::new(4, 32)?,
+            )?;
+            packed_weights = packed_weights.with_linear(format!("{base}.weight"), layer);
+        }
+        let reference = MlxWeights::from_dense(dense);
+        let input_values: Vec<f32> = (0..(2 * 2 * channels))
+            .map(|index| ((index % 11) as f32) * 0.05 - 0.25)
+            .collect();
+        let input = Array::from_f32_slice(&input_values, &[1, 2, 2, channels])?;
+        let actual = super::spatial_attention(&packed_weights, &spec, attention, &input, &stream)?
+            .to_vec_f32(&stream)?;
+        let expected = super::spatial_attention(&reference, &spec, attention, &input, &stream)?
+            .to_vec_f32(&stream)?;
+        assert_eq!(actual.len(), expected.len());
+        let scale = expected.iter().fold(0.0f32, |peak, v| peak.max(v.abs()));
+        let mut max_error = 0.0f32;
+        for (actual, expected) in actual.iter().zip(&expected) {
+            let error = (actual - expected).abs();
+            max_error = max_error.max(error);
+            assert!(error <= 2e-2 * scale + 1e-3, "packed {actual} != dequantized {expected}");
+        }
+        println!("quantized VAE attention max abs error {max_error} (scale {scale})");
+        Ok(())
+    }
+
+    #[test]
+    fn cpu_quantized_vae_attention_matches_dequantized_reference() {
+        quantized_vae_probe(danmo_mlx::DeviceType::Cpu).unwrap();
+    }
+
+    #[cfg(feature = "mlx-metal")]
+    #[test]
+    fn metal_quantized_vae_attention_matches_dequantized_reference() {
+        quantized_vae_probe(danmo_mlx::DeviceType::Gpu).unwrap();
+    }
 
     #[test]
     #[ignore]
@@ -360,7 +448,9 @@ mod tests {
         let stream = Stream::gpu().unwrap();
         #[cfg(not(feature = "mlx-metal"))]
         let stream = Stream::cpu().unwrap();
-        let weights = super::load_dense(&root, crate::weights::WeightDtype::F32).unwrap();
+        let weights = MlxWeights::from_dense(
+            super::load_dense(&root, crate::weights::WeightDtype::F32).unwrap(),
+        );
         let spec = VaeSpec {
             latent_channels: payload["latent_channels"].as_i64().unwrap(),
             block_out: payload["block_out"]
@@ -428,7 +518,7 @@ mod tests {
         } else {
             crate::weights::WeightDtype::F32
         };
-        let weights = super::load_dense(&vae, weight_dtype).unwrap();
+        let weights = MlxWeights::from_dense(super::load_dense(&vae, weight_dtype).unwrap());
         let spec = VaeSpec {
             latent_channels: payload["latent_channels"].as_i64().unwrap(),
             block_out: payload["block_out"]
