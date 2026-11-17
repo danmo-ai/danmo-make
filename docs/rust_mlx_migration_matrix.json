@@ -9930,7 +9930,9 @@
       "e2e": "pending",
       "route": "pending",
       "evidence": [],
-      "notes": []
+      "notes": [
+        "2026-11-18 user decision: registry repo switched from the main HF mflux repos to the same-layout ModelScope mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit / -8bit (source: modelscope); HF endpoints are unusable on this network; weight content identical, download performed by the user"
+      ]
     },
     {
       "model_id": "z-image-turbo",
@@ -9978,7 +9980,9 @@
       "e2e": "pending",
       "route": "pending",
       "evidence": [],
-      "notes": []
+      "notes": [
+        "2026-11-18 user decision: registry repo switched from the main HF mflux repos to the same-layout ModelScope mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit / -8bit (source: modelscope); HF endpoints are unusable on this network; weight content identical, download performed by the user"
+      ]
     },
     {
       "model_id": "z-image-turbo",
@@ -10026,7 +10030,9 @@
       "e2e": "pending",
       "route": "pending",
       "evidence": [],
-      "notes": []
+      "notes": [
+        "2026-11-18 user decision: registry repo switched from the main HF mflux repos to the same-layout ModelScope mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit / -8bit (source: modelscope); HF endpoints are unusable on this network; weight content identical, download performed by the user"
+      ]
     },
     {
       "model_id": "z-image-turbo",
@@ -10074,7 +10080,9 @@
       "e2e": "pending",
       "route": "pending",
       "evidence": [],
-      "notes": []
+      "notes": [
+        "2026-11-18 user decision: registry repo switched from the main HF mflux repos to the same-layout ModelScope mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit / -8bit (source: modelscope); HF endpoints are unusable on this network; weight content identical, download performed by the user"
+      ]
     },
     {
       "model_id": "z-image-turbo-fun-controlnet-union",

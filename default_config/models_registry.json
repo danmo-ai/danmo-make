@@ -2548,8 +2548,8 @@
             },
             "size": "5.5GB",
             "default": false,
-            "source": "huggingface",
-            "repo_id": "filipstrand/Z-Image-Turbo-mflux-4bit",
+            "source": "modelscope",
+            "repo_id": "OsaurusAI/Z-Image-Turbo-mflux-4bit",
             "local_path": "models/Image/z-image-turbo-mlx-q4",
             "source_type": "prequantized",
             "quantization": {
@@ -2564,8 +2564,8 @@
             },
             "size": "10GB",
             "default": false,
-            "source": "huggingface",
-            "repo_id": "carsenk/z-image-turbo-mflux-8bit",
+            "source": "modelscope",
+            "repo_id": "OsaurusAI/Z-Image-Turbo-mflux-8bit",
             "local_path": "models/Image/z-image-turbo-mlx-q8",
             "source_type": "prequantized",
             "quantization": {
@@ -7340,7 +7340,10 @@
       },
       "actions": {
         "create": {
-          "media_roles": ["reference_image", "reference_audio"]
+          "media_roles": [
+            "reference_image",
+            "reference_audio"
+          ]
         },
         "animate": {}
       },
@@ -7417,7 +7420,10 @@
           "negative_prompt_support": false,
           "ref2va": {
             "enabled": true,
-            "kinds": ["image", "audio"],
+            "kinds": [
+              "image",
+              "audio"
+            ],
             "max_images": 5,
             "max_videos": 0,
             "max_audios": 2,
@@ -8766,10 +8772,16 @@
       },
       "actions": {
         "create": {
-          "media_roles": ["reference_image"]
+          "media_roles": [
+            "reference_image"
+          ]
         },
         "animate": {
-          "media_roles": ["source_video", "first_frame", "reference_image"]
+          "media_roles": [
+            "source_video",
+            "first_frame",
+            "reference_image"
+          ]
         }
       },
       "ui": {
@@ -8930,10 +8942,16 @@
       },
       "actions": {
         "create": {
-          "media_roles": ["reference_image"]
+          "media_roles": [
+            "reference_image"
+          ]
         },
         "animate": {
-          "media_roles": ["source_video", "first_frame", "reference_image"]
+          "media_roles": [
+            "source_video",
+            "first_frame",
+            "reference_image"
+          ]
         }
       },
       "ui": {
@@ -9389,10 +9407,17 @@
       },
       "actions": {
         "create": {
-          "media_roles": ["reference_image", "reference_video", "reference_audio"]
+          "media_roles": [
+            "reference_image",
+            "reference_video",
+            "reference_audio"
+          ]
         },
         "animate": {
-          "media_roles": ["first_frame", "last_frame"]
+          "media_roles": [
+            "first_frame",
+            "last_frame"
+          ]
         }
       },
       "ui": {
@@ -9462,7 +9487,11 @@
           "video_edit_source_mode": "first_frame",
           "ref2va": {
             "enabled": true,
-            "kinds": ["image", "video", "audio"],
+            "kinds": [
+              "image",
+              "video",
+              "audio"
+            ],
             "max_images": 9,
             "max_videos": 3,
             "max_audios": 3,
