@@ -39,7 +39,22 @@ fn embed_image(
     let gathered = latent
         .reshape(&[latent_size as i32], stream)?
         .take_axis(&indices, 0, stream)?;
-    let patches = gathered.reshape(&[1, grid.img_real as i32, token_dim as i32], stream)?;
+    let mut patches = gathered.reshape(&[grid.img_real as i32, token_dim as i32], stream)?;
+    if grid.img_pad > 0 {
+        // main pads the raw patch rows by repeating the last row BEFORE the
+        // embedder (`pad_tail_with_last`), then overwrites the embedded pad
+        // positions with `x_pad_token`. The pre-embed repeat is numerically
+        // visible whenever the pad rows are attended (small grids).
+        let last = patches.slice(
+            &[grid.img_real as i32 - 1, 0],
+            &[grid.img_real as i32, token_dim as i32],
+            &[1, 1],
+            stream,
+        )?;
+        let repeats = last.broadcast_to(&[grid.img_pad as i32, token_dim as i32], stream)?;
+        patches = Array::concatenate_axis(&[patches, repeats], 0, stream)?;
+    }
+    let patches = patches.reshape(&[1, grid.img_len as i32, token_dim as i32], stream)?;
     let embedding_weight = linear(weights, "x_embedder.weight")?;
     let patches = cast_to(&patches, embedding_weight.compute_dtype(), stream)?;
     let mut embedded =
@@ -49,7 +64,13 @@ fn embed_image(
         let pad = weight(weights, "x_pad_token")?
             .broadcast_to(&[1, grid.img_pad as i32, config.dim as i32], stream)?;
         let pad = cast_to(&pad, embedded.dtype(), stream)?;
-        embedded = Array::concatenate_axis(&[embedded, pad], 1, stream)?;
+        let real = embedded.slice(
+            &[0, 0, 0],
+            &[1, grid.img_real as i32, config.dim as i32],
+            &[1, 1, 1],
+            stream,
+        )?;
+        embedded = Array::concatenate_axis(&[real, pad], 1, stream)?;
     }
     Ok(embedded)
 }
@@ -74,19 +95,38 @@ fn embed_caption(
     }
     let cap_norm = weight(weights, "cap_norm.weight")?;
     let caption = cast_to(caption, cap_norm.dtype(), stream)?;
-    let normalized = caption.rms_norm(Some(cap_norm), config.norm_eps, stream)?;
+    let mut normalized = caption.rms_norm(Some(cap_norm), config.norm_eps, stream)?;
+    if grid.cap_pad > 0 {
+        // Same pre-embed last-row repeat as the image branch (main
+        // `_encode_cap_branch` pads cap_feats before cap_norm/cap_embedder;
+        // the norm is per-row so padding before or after it is equivalent).
+        let last = normalized.slice(
+            &[grid.cap_real as i32 - 1, 0],
+            &[grid.cap_real as i32, config.cap_dim as i32],
+            &[1, 1],
+            stream,
+        )?;
+        let repeats = last.broadcast_to(&[grid.cap_pad as i32, config.cap_dim as i32], stream)?;
+        normalized = Array::concatenate_axis(&[normalized, repeats], 0, stream)?;
+    }
     let mut embedded = linear(weights, "cap_embedder.weight")?
         .apply(
             &normalized,
             Some(weight(weights, "cap_embedder.bias")?),
             stream,
         )?
-        .reshape(&[1, grid.cap_real as i32, config.dim as i32], stream)?;
+        .reshape(&[1, grid.cap_len as i32, config.dim as i32], stream)?;
     if grid.cap_pad > 0 {
         let pad = weight(weights, "cap_pad_token")?
             .broadcast_to(&[1, grid.cap_pad as i32, config.dim as i32], stream)?;
         let pad = cast_to(&pad, embedded.dtype(), stream)?;
-        embedded = Array::concatenate_axis(&[embedded, pad], 1, stream)?;
+        let real = embedded.slice(
+            &[0, 0, 0],
+            &[1, grid.cap_real as i32, config.dim as i32],
+            &[1, 1, 1],
+            stream,
+        )?;
+        embedded = Array::concatenate_axis(&[real, pad], 1, stream)?;
     }
     Ok(embedded)
 }
@@ -1365,7 +1405,7 @@ mod tests {
         let height = payload["height"].as_u64().unwrap() as u32;
         let ids = payload["ids"].as_array().unwrap();
         let grid = geom::token_grid(width, height, ids.len() as i64, config.vae_scale).unwrap();
-        let latent = Array::from_f32_slice(
+        let mut latent = Array::from_f32_slice(
             &values("latent"),
             &[16, (height / 8) as i32, (width / 8) as i32],
         )
@@ -1384,6 +1424,75 @@ mod tests {
             &stream,
         )
         .unwrap();
+        // TeaCache skip-step replay: warm the cache with the earlier steps
+        // exactly like the production loop, then force the recorded step
+        // through the skip path with the captured residual.
+        let teacache_replay = std::env::var("DANQING_TEST_ZIMAGE_STAGES_TEACACHE").is_ok();
+        let mut replay_cache = teacache_replay.then(|| StepCache::z_image(payload["sigmas"].as_array().unwrap().len() - 1));
+        if let Some(cache) = &mut replay_cache {
+            let caption_cache =
+                super::CaptionCache::new(&weights, config, grid, &caption, &stream).unwrap();
+            let initial: Vec<f32> = payload["initial_latent"].as_array().unwrap().iter()
+                .map(|v| v.as_f64().unwrap() as f32).collect();
+            let mut current = Array::from_f32_slice(
+                &initial,
+                &[16, (height / 8) as i32, (width / 8) as i32],
+            )
+            .unwrap()
+            .astype(Dtype::BFloat16, &stream)
+            .unwrap();
+            let sigmas = values("sigmas");
+            for index in 0..step {
+                let (velocity, residual) = super::forward_cached_with_step_cache(
+                    &weights, config, grid, &current, &caption_cache,
+                    sigmas[index], cache, index, &stream,
+                )
+                .unwrap();
+                let _ = residual;
+                let cast = velocity.astype(current.dtype(), &stream).unwrap();
+                let delta = Array::from_f32_slice(&[sigmas[index + 1] - sigmas[index]], &[])
+                    .unwrap()
+                    .astype(current.dtype(), &stream)
+                    .unwrap();
+                current = Array::add(
+                    &current,
+                    &Array::multiply(&cast, &delta, &stream).unwrap(),
+                    &stream,
+                )
+                .unwrap();
+                Array::eval_all(&[&velocity, &current]).unwrap();
+                let expected_velocity: Vec<f32> = payload["velocities"][index]
+                    .as_array().unwrap().iter()
+                    .map(|v| v.as_f64().unwrap() as f32).collect();
+                let actual_velocity = velocity.to_vec_f32(&stream).unwrap();
+                let velocity_error = actual_velocity.iter().zip(&expected_velocity)
+                    .map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                let decision = &cache.history[index];
+                println!(
+                    "replay step {index}: velocity err {velocity_error}, gate {} rel_l1 {:?} pred {:?} acc {}",
+                    decision.kind, decision.rel_l1, decision.predicted_distance, decision.accumulated_distance
+                );
+            }
+            if let Some(decision) = cache.history.last() {
+                println!(
+                    "replay final cache: acc {} residual_present {}",
+                    decision.accumulated_distance,
+                    cache.cached_residual().is_some()
+                );
+            }
+            // Transplant the fixture's recorded step-input latent: the
+            // replay above only exists to reproduce the cache state
+            // (previous mod input, residual, accumulated distance).
+            let recorded: Vec<f32> = payload["latent"].as_array().unwrap().iter()
+                .map(|v| v.as_f64().unwrap() as f32).collect();
+            latent = Array::from_f32_slice(
+                &recorded,
+                &[16, (height / 8) as i32, (width / 8) as i32],
+            )
+            .unwrap()
+            .astype(Dtype::BFloat16, &stream)
+            .unwrap();
+        }
         let mut errors = BTreeMap::new();
         super::forward_with_timestep_observed(
             &weights,
@@ -1394,10 +1503,14 @@ mod tests {
             &timestep,
             None,
             None,
-            None,
+            replay_cache.as_mut().map(|cache| (cache, step)),
             &stream,
             |name, actual| {
-                let expected = stages.get(name).unwrap().unwrap();
+                let Some(expected) = stages.get(name).unwrap() else {
+                    // Skip steps never run the unified blocks; main's fixture
+                    // has no stages for them either.
+                    return;
+                };
                 let actual = if actual.shape() == expected.shape() {
                     actual.clone()
                 } else {
@@ -2046,6 +2159,326 @@ mod tests {
         );
     }
 
+    /// Session lifecycle gate (plan S2): consecutive generations on resident
+    /// weights, geometry switches with compiled re-trace, mid-run cancellation
+    /// from another thread, and unload with memory release. Every completed
+    /// run must stay bit-exact with its main fixture; a cancelled run must not
+    /// pollute the next one.
+    #[cfg(feature = "mlx-metal")]
+    #[test]
+    #[ignore]
+    fn real_session_lifecycle_consecutive_switch_cancel_unload() {
+        let bundle = std::path::PathBuf::from(std::env::var("DANQING_TEST_ZIMAGE_BUNDLE").unwrap());
+        let load_fixture = |path: String| -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        };
+        let default_payload = load_fixture(
+            std::env::var("DANQING_TEST_ZIMAGE_WARM_MAIN_JSON").unwrap(),
+        );
+        let small_payload =
+            load_fixture(std::env::var("DANQING_TEST_ZIMAGE_LIFECYCLE_SMALL_JSON").unwrap());
+        for payload in [&default_payload, &small_payload] {
+            assert_eq!(payload["native_dtype"].as_str(), Some("checkpoint"));
+            assert!(payload["teacache"].as_bool().unwrap());
+        }
+        let stream = Stream::gpu().unwrap();
+        let config = MlxZImageConfig::published();
+        let weights = load_directory(
+            &bundle.join("transformer"),
+            config,
+            WeightDtype::Native,
+            None,
+        )
+        .unwrap();
+        let vae_weights =
+            crate::common::vae::mlx::load_dense(&bundle.join("vae"), WeightDtype::Native).unwrap();
+        let spec = crate::common::vae::VaeSpec {
+            latent_channels: 16,
+            block_out: vec![128, 256, 512, 512],
+            resnets: 2,
+            groups: 32,
+            scaling: 0.3611,
+            shift: 0.1159,
+            attention: true,
+        };
+        let mut cache = StepCache::z_image(9);
+        let mut compiled: Option<(super::CompiledCompute, u32, u32)> = None;
+        let eager_mode = std::env::var("DANQING_TEST_ZIMAGE_LIFECYCLE_EAGER").is_ok();
+
+        #[derive(Debug)]
+        struct RunOutcome {
+            velocities: Vec<Vec<u8>>,
+            latents: Vec<Vec<u8>>,
+            pixels: Vec<u8>,
+            computed: usize,
+            skipped: usize,
+        }
+
+        let mut run = |payload: &serde_json::Value,
+                       cancel: Option<&danmo_mlx::CancelToken>|
+         -> Result<RunOutcome> {
+            let values = |name: &str| -> Vec<f32> {
+                payload[name]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.as_f64().unwrap() as f32)
+                    .collect()
+            };
+            let width = payload["width"].as_u64().unwrap() as u32;
+            let height = payload["height"].as_u64().unwrap() as u32;
+            let ids: Vec<i64> = payload["ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_i64().unwrap())
+                .collect();
+            let grid = geom::token_grid(width, height, ids.len() as i64, config.vae_scale)
+                .map_err(|error| danmo_mlx::Error::new("Z-Image lifecycle", error.to_string()))?;
+            let caption = Array::from_f32_slice(
+                &values("caption"),
+                &[
+                    payload["caption_shape"][0].as_i64().unwrap() as i32,
+                    payload["caption_shape"][1].as_i64().unwrap() as i32,
+                ],
+            )?
+            .astype(Dtype::BFloat16, &stream)?;
+            let sigmas = values("sigmas");
+            // Geometry switch: rebuild the compiled compute for the new token
+            // grid; the resident weights and the StepCache allocation stay.
+            let needs_rebuild = compiled
+                .as_ref()
+                .is_none_or(|(_, w, h)| *w != width || *h != height);
+            if needs_rebuild && !eager_mode {
+                compiled = Some((
+                    super::CompiledCompute::new(&weights, config, grid, &stream)?,
+                    width,
+                    height,
+                ));
+            }
+            let compute = compiled.as_ref().map(|(compute, _, _)| compute);
+            let caption_cache =
+                super::CaptionCache::new(&weights, config, grid, &caption, &stream)?;
+            cache.reset();
+            let initial_latent = Array::from_f32_slice(
+                &values("latent"),
+                &[1, 16, (height / 8) as i32, (width / 8) as i32],
+            )?
+            .squeeze_axis(0, &stream)?
+            .astype(Dtype::BFloat16, &stream)?;
+            let mut velocities = Vec::new();
+            let mut latents = Vec::new();
+            let final_latent = crate::families::z_image::mlx::denoise::euler_cancellable(
+                &initial_latent,
+                &sigmas,
+                &stream,
+                cancel,
+                |current, sigma| {
+                    let step = velocities.len();
+                    let (velocity, residual) = match compute {
+                        Some(compute) => super::forward_compiled_with_step_cache(
+                            &weights,
+                            config,
+                            compute,
+                            current,
+                            &caption_cache,
+                            sigma,
+                            &mut cache,
+                            step,
+                            &stream,
+                        )?,
+                        None => super::forward_cached_with_step_cache(
+                            &weights,
+                            config,
+                            grid,
+                            current,
+                            &caption_cache,
+                            sigma,
+                            &mut cache,
+                            step,
+                            &stream,
+                        )?,
+                    };
+                    let cast = velocity.astype(current.dtype(), &stream)?;
+                    let delta =
+                        Array::from_f32_slice(&[sigmas[step + 1] - sigmas[step]], &[])?
+                            .astype(current.dtype(), &stream)?;
+                    let next = Array::add(
+                        current,
+                        &Array::multiply(&cast, &delta, &stream)?,
+                        &stream,
+                    )?;
+                    let mut targets = vec![&velocity, &next];
+                    if let Some(residual) = &residual {
+                        targets.push(residual);
+                    }
+                    Array::eval_all(&targets)?;
+                    velocities.push(velocity.to_raw_bytes(&stream)?);
+                    latents.push(next.to_raw_bytes(&stream)?);
+                    Ok(velocity)
+                },
+            )?;
+            let decoded = crate::common::vae::mlx::decode(
+                &vae_weights,
+                &spec,
+                &final_latent.expand_dims(0, &stream)?,
+                &stream,
+            )?;
+            let decoded_values = decoded.to_vec_f32(&stream)?;
+            let plane = (width * height) as usize;
+            let pixels: Vec<u8> = (0..plane * 3)
+                .map(|index| {
+                    let channel = index % 3;
+                    let pixel = index / 3;
+                    let value = decoded_values[channel * plane + pixel];
+                    ((value + 1.0) * 127.5).clamp(0.0, 255.0).round_ties_even() as u8
+                })
+                .collect();
+            Ok(RunOutcome {
+                velocities,
+                latents,
+                pixels,
+                computed: cache.computed_count,
+                skipped: cache.skipped_count,
+            })
+        };
+
+        let bf16_bytes = |values: &[f32]| -> Vec<u8> {
+            values
+                .iter()
+                .flat_map(|value| {
+                    let bits = value.to_bits();
+                    assert_eq!(bits & 0xFFFF, 0, "expected value is not exact BF16");
+                    [(bits >> 16) as u8, (bits >> 24) as u8]
+                })
+                .collect()
+        };
+        let verify = |outcome: &RunOutcome, payload: &serde_json::Value, label: &str| {
+            let expected_f32 = |name: &str| -> Vec<f32> {
+                payload[name]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.as_f64().unwrap() as f32)
+                    .collect()
+            };
+            let steps = payload["velocities"].as_array().unwrap().len();
+            assert_eq!(outcome.velocities.len(), steps, "{label}: step count");
+            for step in 0..steps {
+                let expected_velocity: Vec<u8> = payload["velocities"][step]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|value| {
+                        (value.as_f64().unwrap() as f32).to_bits().to_le_bytes()
+                    })
+                    .collect();
+                assert_eq!(
+                    outcome.velocities[step], expected_velocity,
+                    "{label} step {step}: velocity diverged"
+                );
+                let expected_latent = bf16_bytes(
+                    &payload["step_latents"][step]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|value| value.as_f64().unwrap() as f32)
+                        .collect::<Vec<_>>(),
+                );
+                assert_eq!(
+                    outcome.latents[step], expected_latent,
+                    "{label} step {step}: latent diverged"
+                );
+            }
+            let expected_pixels: Vec<u8> = payload["pixels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_u64().unwrap() as u8)
+                .collect();
+            assert_eq!(outcome.pixels, expected_pixels, "{label}: RGB diverged");
+            assert_eq!(
+                outcome.computed,
+                payload["cache_counts"]["computed"].as_u64().unwrap() as usize,
+                "{label}: compute count"
+            );
+            assert_eq!(
+                outcome.skipped,
+                payload["cache_counts"]["skipped"].as_u64().unwrap() as usize,
+                "{label}: skip count"
+            );
+            let _ = expected_f32;
+        };
+
+        // 0. Small geometry first (fresh process state) to separate geometry
+        //    issues from sequence effects.
+        if std::env::var("DANQING_TEST_ZIMAGE_LIFECYCLE_SMALL_FIRST").is_ok() {
+            let small_first = run(&small_payload, None).unwrap();
+            verify(&small_first, &small_payload, "run 0 (small first)");
+            println!("lifecycle: small-first run bit-exact");
+        }
+        // 1. Two consecutive default-resolution generations on resident weights.
+        let first = run(&default_payload, None).unwrap();
+        verify(&first, &default_payload, "run 1");
+        let second = run(&default_payload, None).unwrap();
+        verify(&second, &default_payload, "run 2 (consecutive)");
+        assert_eq!(first.velocities, second.velocities);
+        assert_eq!(first.pixels, second.pixels);
+        println!("lifecycle: consecutive default runs bit-exact");
+
+        // 2. Switch to the small geometry (compiled re-trace), then back.
+        let small = run(&small_payload, None).unwrap();
+        verify(&small, &small_payload, "run 3 (small geometry)");
+        let back = run(&default_payload, None).unwrap();
+        verify(&back, &default_payload, "run 4 (switch back)");
+        assert_eq!(first.velocities, back.velocities);
+        println!("lifecycle: geometry switch and switch-back bit-exact");
+
+        // 3. Cancel mid-run from another thread; the next run must be clean.
+        let token = danmo_mlx::CancelToken::new();
+        let control = token.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(2500));
+            control.cancel();
+        });
+        let error = run(&default_payload, Some(&token)).unwrap_err();
+        assert!(error.to_string().contains("cancelled at step"), "{error}");
+        println!("lifecycle: mid-run cancellation: {error}");
+        let after_cancel = run(&default_payload, None).unwrap();
+        verify(&after_cancel, &default_payload, "run 6 (after cancel)");
+        assert_eq!(first.velocities, after_cancel.velocities);
+        println!("lifecycle: post-cancel run bit-exact (no state pollution)");
+
+        // 4. Unload: dropping weights + compiled closures and clearing the
+        //    buffer pool must release the resident DiT bytes.
+        let before_unload = danmo_mlx::active_memory().unwrap();
+        let dit_bytes = weights.nbytes();
+        drop(compiled);
+        drop(weights);
+        drop(vae_weights);
+        danmo_mlx::clear_cache().unwrap();
+        let after_unload = danmo_mlx::active_memory().unwrap();
+        println!(
+            "lifecycle: unload active {before_unload} -> {after_unload} bytes (DiT {dit_bytes})"
+        );
+        assert!(
+            before_unload.saturating_sub(after_unload) >= dit_bytes * 9 / 10,
+            "unload did not release the resident weights: {before_unload} -> {after_unload}"
+        );
+        if let Ok(path) = std::env::var("DANQING_TEST_ZIMAGE_LIFECYCLE_REPORT") {
+            let report = serde_json::json!({
+                "consecutive_bit_exact": true,
+                "geometry_switch_bit_exact": true,
+                "cancel_error": error.to_string(),
+                "post_cancel_bit_exact": true,
+                "unload_active_before": before_unload,
+                "unload_active_after": after_unload,
+                "dit_weight_bytes": dit_bytes,
+            });
+            std::fs::write(path, serde_json::to_string(&report).unwrap()).unwrap();
+        }
+    }
+
     /// One-off micro benchmark: a single real unified block at production
     /// token geometry, eager with per-call eval, to compare against main's
     /// per-block timing (not a parity fixture).
@@ -2114,6 +2547,12 @@ mod tests {
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(3);
         assert!(passes_requested >= 2, "need at least one warm pass");
+        // Sustained-load thermal recovery can take several minutes on M5 Max;
+        // extra passes let the p50 window sit in the recovered steady state.
+        let warmup_passes = std::env::var("DANQING_TEST_ZIMAGE_WARM_WARMUP")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1);
         let values = |name: &str| -> Vec<f32> {
             payload[name]
                 .as_array()
@@ -2265,7 +2704,7 @@ mod tests {
         let mut trace_seconds = Vec::new();
 
         let mut passes = Vec::new();
-        for pass_index in 0..passes_requested {
+        for pass_index in 0..warmup_passes + passes_requested {
             let started = std::time::Instant::now();
             let caption = crate::common::qwen3::mlx::encode_ids(
                 &text_weights,
@@ -2486,7 +2925,7 @@ mod tests {
             values.sort_by(f64::total_cmp);
             values[values.len() / 2]
         };
-        let warm = &passes[1..];
+        let warm = &passes[warmup_passes..];
         let main_p50 = &payload["warm_p50"];
         let mut ratios = serde_json::Map::new();
         let mut failures = Vec::new();

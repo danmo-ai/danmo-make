@@ -478,6 +478,18 @@ Z-Image Metal 固定注入噪声垂直切片已通过（提交于 `dbcfaff`）�
 - **fixture SHA 漂移说明**：重新生成的 TeaCache fixture 不再匹配 2026-11-17 记录的 SHA，因为 fixture 脚本新增了 timing/memory 字段；parity 断言均对同轮新生成的 main 输出执行（default SHA `3017444cb4a9f84a76de0bed98ed4ca41564315de2b13e1ca2ef804e172e98bc`，skip SHA `4fc6931b5f457b687b4359cfb2a669db836509fc5db364a5a15e654a8ff4d274`）。
 - `z-image-turbo/fp16/create` 的 `metal_performance` 与 `metal_peak_memory` 标为 `passed`；已发布量化 checkpoint、连续会话/生产路由 E2E、CUDA 仍独立待办。
 
+#### 会话生命周期验收通过 + padding 语义修复（2026-11-18）
+
+- **真实 bug 修复（padding 语义）**：main 在 `x_embedder`/`cap_embedder` **之前**用 `pad_tail_with_last` 重复最后一行 patch/caption 到 32 的倍数，再用 `x_pad_token`/`cap_pad_token` 覆盖 embed 后的 pad 位置。Rust 此前只对 embed 后的真实 token 做线性、pad 行直接拼 pad_token——当 pad 行参与注意力（小图，如 16×16 的 4 image token + 28 pad）时产生 1 BF16 ULP 的 `x_embed` 差，经 skip 步 residual 放大为可见 velocity 差。修复后 `embed_image`/`embed_caption` 与 main 完全同序；16×16 9 步 TeaCache（5 compute / 4 skip）全部 velocity、VAE、768 个 RGB 通道**逐位一致**。无 pad 几何（768×1280、1024×1024）数值不变，既有编译/门结论不受影响。定位方法：stage fixture 增加 TeaCache replay（cache 状态移植 + 记录步输入 latent），子阶段 dump 对比锁定 `x_embed` 单点分叉。
+- **生命周期门（`real_session_lifecycle_consecutive_switch_cancel_unload`，真实权重、release）**：
+  1. 常驻权重连续两次 768×1280 默认 TeaCache 生成：逐步逐位一致；
+  2. 切换 16×16 几何（compiled compute 重建）再切回：均逐位一致；
+  3. 另一线程 2.5s 后取消：`cancelled at step 2` 显式失败，取消后的下一次完整生成仍逐位一致（cache/compiled 状态无污染）；
+  4. unload：drop 权重与 compiled closure + `clear_cache` 后 active 从 24.82GB 回落到 119MB（≥90% DiT 常驻字节释放）。
+- **取消原语**：`danmo-mlx::CancelToken`（跨线程只传普通数据，§1.3）；`z_image` denoise 增加 `euler_cancellable`，在 step 边界检查取消；in-flight forward 不中断（边界已记录）。CPU 单测覆盖「取消后不再启动新 forward」。
+- **热性能测量补充**：M5 Max 持续负载后的热恢复需要数分钟（Rust denoise 从 43s 逐步回落到 15s 量级）；warm 脚本/测试新增 `--warmup` / `DANQING_TEST_ZIMAGE_WARM_WARMUP`，p50 窗口取热恢复后的稳态段。
+- **padding 修复后性能门复验通过**（双方各 5 warmup + 5 计量 pass、相邻热窗）：warm p50 encode **99.7%**、denoise **92.9%**、VAE **102.2%**、total **93.0%**；每个计量 pass 逐位一致；稳态常驻显存 32.66GB vs 32.91GB（99.3%）。证据 SHA：Rust `1d17b0edcdb34bd3deed1949350007ce834d4b705a8f8f97a65e20b294e66526` / main `7c6d4fc6dc7a7facef5d93b7373f1b9c74dfc1e4aaa36ecafd3a5a7cdc49e5b0`，摘要 `tests/parity/evidence/zimage-native-default-teacache-warm-gate-2026-11-18.json`；生命周期证据 `tests/parity/evidence/zimage-session-lifecycle-2026-11-18.json`。
+
 #### S0 原生构建与最小分发
 
 - vendor/pin mlx-c + MLX。
@@ -768,7 +780,7 @@ Assistant：
 | 文档复核 | done | 2026-11-17：纠正 Euler 归属、Z-Image 默认 9 步与 compile 策略、`dbcfaff` 提交边界、分支 registry 偏差；确立稠密权重原生 dtype 决策（§1.5.1，main F32 放大为错误设计）；增补 executor 状态模型、assistant 独立 worker、ggml 退役；推理进程隔离与 Python 训练去留标记为待确认 |
 | 共享资产盘点 | done | 复用/重写/算法归属与 family 扩展边界：`docs/rust_mlx_shared_asset_inventory.md` |
 | 全量 workspace 回归 | existing_failure | 373 项 engine 测试：370 通过、2 忽略、1 个既有 ggml Hunyuan smoke（随 `dbcfaff` 一并提交） 因缺少 `txt_in.individual_token_refiner.blocks.0.self_attn.qkv.weight` 失败；新增 MLX crate 的 CPU/Metal 测试均单独通过，不在 P0 修改该 ggml family |
-| P0 | in_progress | **源码 Metal 构建通过**；runtime、safetensors、>32K QMM、compile/eager、executor、seeded RNG 探针通过；官方 DiT/text/VAE/tokenizer 已下载；真实 Qwen3 与 VAE fixture 通过。`9859706` 已落地共享 `WeightDtype` 与全程 packed affine QMM。F32 parity 已通过 16×16、1024×1024、768×1280 9 步 eager/compile。checkpoint-Native 16×16 与 768×1280 完整切片、默认 9 步 TeaCache 及阈值 0.5 的 6 次 residual skip 均通过，latent/VAE/RGB 一致；官方 DiT 实测为 F32，VAE/Qwen3 为 BF16。Native Metal peak 26.15GB vs main 31.79GB（82.25%）。**2026-11-18 正式热性能门通过**：compiled TeaCache 生产路径（CaptionCache + CompiledCompute，gate eager）warm p50 denoise 63.5% / encode 96.8% / VAE 85.0% / total 63.9%，每 pass 逐位一致；稳态显存 99.3%；`metal_performance`/`metal_peak_memory` 标为 passed。剩余：连续任务/切换/取消/缓存、已发布量化 checkpoint 端到端、custom kernel、干净打包和 CUDA runtime |
+| P0 | in_progress | **源码 Metal 构建通过**；runtime、safetensors、>32K QMM、compile/eager、executor、seeded RNG 探针通过；官方 DiT/text/VAE/tokenizer 已下载；真实 Qwen3 与 VAE fixture 通过。`9859706` 已落地共享 `WeightDtype` 与全程 packed affine QMM。F32 parity 已通过 16×16、1024×1024、768×1280 9 步 eager/compile。checkpoint-Native 16×16 与 768×1280 完整切片、默认 9 步 TeaCache 及阈值 0.5 的 6 次 residual skip 均通过，latent/VAE/RGB 一致；官方 DiT 实测为 F32，VAE/Qwen3 为 BF16。Native Metal peak 26.15GB vs main 31.79GB（82.25%）。**2026-11-18 正式热性能门通过**：compiled TeaCache 生产路径（CaptionCache + CompiledCompute，gate eager）稳态复验 warm p50 denoise 92.9% / encode 99.7% / VAE 102.2% / total 93.0%，每 pass 逐位一致；稳态显存 99.3%；`metal_performance`/`metal_peak_memory` 标为 passed。**会话生命周期门通过**（连续生成/几何切换/跨线程取消/unload，真实权重 release）；修复 padding 语义（embed 前重复末行，小图 pad 参与注意力时 1 ULP 分叉），16×16 TeaCache 5c/4s 逐位一致。剩余：已发布量化 checkpoint 端到端、custom kernel、干净打包、CUDA runtime、executor 级 ModelCache（P2）|
 | P0H | pending | main 收割独立进行 |
 | P1 | pending | Rust server 核心先行 |
 | P2 | pending | MLX runtime |

@@ -34,6 +34,7 @@ def main():
     parser.add_argument("--bundle", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--passes", type=int, default=3)
+    parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--width", type=int, default=16)
     parser.add_argument("--height", type=int, default=16)
     parser.add_argument("--steps", type=int, default=8)
@@ -123,10 +124,11 @@ def main():
     pixels_reference = None
     cache_reference = None
     caption_reference = None
+    output_reference = None
     velocities_reference = None
     step_latents_reference = None
     sigmas_reference = None
-    for pass_index in range(args.passes):
+    for pass_index in range(args.warmup + args.passes):
         started = time.monotonic()
         input_ids = mx.array([ids], dtype=mx.int32)
         attention_mask = mx.ones((1, len(ids)), dtype=mx.int32)
@@ -169,6 +171,7 @@ def main():
             )
         if args.compile and (not model._use_mlx_compile_run or model._compiled_forward is None):
             raise RuntimeError("main compiled forward was not enabled")
+        cache_decisions = []
         if args.teacache:
             if model._step_cache is None or not model._step_cache.enabled:
                 raise RuntimeError("main TeaCache was not enabled")
@@ -176,6 +179,23 @@ def main():
                 raise RuntimeError("TeaCache must disable compiled forward")
             if args.teacache_thresh is not None:
                 model._step_cache.thresh = float(args.teacache_thresh)
+            original_gate = model._step_cache.gate
+
+            def recording_gate(mod_in, **kwargs):
+                decision = original_gate(mod_in, **kwargs)
+                cache_decisions.append(
+                    {
+                        "kind": decision.kind,
+                        "should_compute": decision.should_compute,
+                        "should_update_cache": decision.should_update_cache,
+                        "rel_l1": decision.rel_l1,
+                        "predicted_distance": decision.predicted_distance,
+                        "accumulated_distance": decision.accumulated_distance,
+                    }
+                )
+                return decision
+
+            model._step_cache.gate = recording_gate
         step_seconds = []
         step_velocities = []
         step_latents = []
@@ -231,6 +251,11 @@ def main():
             output.astype(mx.float32) if args.native_dtype else output, ctx
         )
         vae_seconds = time.monotonic() - vae_started
+        output_values = np.asarray(output.astype(mx.float32), dtype=np.float32).reshape(-1)
+        if output_reference is None:
+            output_reference = output_values
+        elif not np.array_equal(output_values, output_reference):
+            raise RuntimeError("warm passes produced different VAE outputs")
         if pixels_reference is None:
             pixels_reference = pixels
         elif not np.array_equal(pixels, pixels_reference):
@@ -250,7 +275,7 @@ def main():
             + (f" cache={cache_counts}" if cache_counts else "")
         )
 
-    warm = passes[1:] if len(passes) > 1 else passes
+    warm = passes[args.warmup:] if len(passes) > args.warmup else passes
     payload = {
         "ids": ids,
         "width": width,
@@ -267,6 +292,7 @@ def main():
             for key in ("encode", "denoise", "vae", "total")
         },
         "cache_counts": cache_reference,
+        "cache_decisions": cache_decisions,
         "caption_shape": [len(ids), 2560],
         "caption": caption_reference.tolist(),
         "latent": latent_values.tolist(),
@@ -274,6 +300,7 @@ def main():
         "velocities": [values.tolist() for values in velocities_reference],
         "step_latents": [values.tolist() for values in step_latents_reference],
         "denoised": denoised_reference.tolist(),
+        "output": output_reference.tolist(),
         "pixels": pixels_reference.reshape(-1).tolist(),
         "memory": {
             "peak": int(mx.get_peak_memory()),

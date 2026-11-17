@@ -23,6 +23,9 @@ def main():
     parser.add_argument("--steps", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--step", type=int, default=0)
+    parser.add_argument("--teacache", action="store_true")
+    parser.add_argument("--native-dtype", action="store_true")
+    parser.add_argument("--injection-fixture", help="warm fixture whose latent/caption/sigmas to replay")
     args = parser.parse_args()
     sys.path.insert(0, args.main_root)
     width, height, steps = args.width, args.height, args.steps
@@ -59,11 +62,25 @@ def main():
     del encoder, hidden
     mx.clear_cache()
 
-    model = ZImageDiTMLX(ZImageConfig(), ctx)
+    config = ZImageConfig()
+    if args.teacache:
+        config.use_mlx_compile = False
+        config.teacache_mode = "auto"
+    model = ZImageDiTMLX(config, ctx)
     weights = {}
     for shard in sorted((bundle / "transformer").glob("*.safetensors")):
         weights.update(mx.load(str(shard)))
     model.load_weights(list(weights.items()), strict=True)
+    if args.native_dtype:
+        from backend.engine.common.model.base import TransformerBase  # noqa: F401
+        native_weights = model.sanitize(weights)
+        for key, param in list(model._param_map.items()):
+            native = native_weights[key]
+            if param.dtype == native.dtype:
+                continue
+            model._param_map[key] = native
+            model._rebind_param_by_key(key, native)
+        del native_weights
     del weights
     mx.clear_cache()
 
@@ -102,10 +119,24 @@ def main():
         hook(layer, f"layers.{i}")
     hook(model.final_layer, "final_layer")
 
-    latent_values = np.asarray(
-        mx.random.normal((1, 16, latent_h, latent_w), key=mx.random.key(args.seed)),
-        dtype=np.float32,
-    ).reshape(-1)
+    injection = None
+    if args.injection_fixture:
+        injection = json.loads(Path(args.injection_fixture).read_text())
+        if (injection["width"], injection["height"], injection["steps"]) != (width, height, steps):
+            raise SystemExit("injection fixture geometry/steps mismatch")
+        if injection["ids"] != ids:
+            raise SystemExit("injection fixture token ids mismatch")
+        caption_values = np.asarray(injection["caption"], dtype=np.float32)
+        latent_values = np.asarray(injection["latent"], dtype=np.float32)
+    else:
+        latent_values = np.asarray(
+            mx.random.normal((1, 16, latent_h, latent_w), key=mx.random.key(args.seed)),
+            dtype=np.float32,
+        ).reshape(-1)
+    initial_latent_values = latent_values.copy()
+    if injection is not None and args.step > 0:
+        # Start directly from the recorded step's INPUT latent.
+        latent_values = np.asarray(injection["step_latents"][args.step - 1], dtype=np.float32)
     latents = mx.array(latent_values.reshape(1, 16, latent_h, latent_w), dtype=mx.float32).astype(
         mx.bfloat16
     )
@@ -119,17 +150,57 @@ def main():
     )
     if not 0 <= args.step < steps:
         raise SystemExit(f"--step must be in [0, {steps})")
-    for step in range(args.step + 1):
+    conditioning = {"txt_embeds": caption_in}
+    if args.teacache:
+        latents, conditioning = model.before_denoise(
+            latents, timesteps, scheduler.sigmas, **conditioning
+        )
+        if model._step_cache is None or not model._step_cache.enabled:
+            raise RuntimeError("main TeaCache was not enabled")
+        original_gate = model._step_cache.gate
+
+        def traced_gate(mod_in, **kwargs):
+            decision = original_gate(mod_in, **kwargs)
+            print(
+                f"main gate: kind={decision.kind} rel_l1={decision.rel_l1} "
+                f"pred={decision.predicted_distance} acc={decision.accumulated_distance}"
+            )
+            return decision
+
+        model._step_cache.gate = traced_gate
+    step_velocities = []
+    if injection is not None and args.step > 0:
+        step_velocities = injection["velocities"][: args.step]
+        if args.teacache:
+            # Replay the earlier steps so the cache state (previous mod
+            # input, residual, accumulated distance, step counter) matches
+            # the production loop at the recorded step.
+            replay = mx.array(
+                initial_latent_values.reshape(1, 16, latent_h, latent_w), dtype=mx.float32
+            ).astype(mx.bfloat16)
+            for index in range(args.step):
+                velocity = model.forward(
+                    replay, timesteps[index], sigmas=scheduler.sigmas, **conditioning
+                )
+                replay = scheduler.step(velocity, timesteps[index], replay)
+                model.step_callback(timesteps[index], replay, velocity)
+                mx.eval(velocity, replay)
+        start_step = args.step
+    else:
+        start_step = 0
+    for step in range(start_step, args.step + 1):
         stages.clear()
         velocity = model.forward(
-            latents, timesteps[step], txt_embeds=caption_in, sigmas=scheduler.sigmas
+            latents, timesteps[step], sigmas=scheduler.sigmas, **conditioning
         )
-        mx.eval(velocity)
-        if step < args.step:
-            latents = scheduler.step(velocity, timesteps[step], latents)
-            mx.eval(latents)
+        latents = scheduler.step(velocity, timesteps[step], latents)
+        if args.teacache:
+            model.step_callback(timesteps[step], latents, velocity)
+        mx.eval(velocity, latents)
+        step_velocities.append(
+            np.asarray(velocity.astype(mx.float32), dtype=np.float32).reshape(-1).tolist()
+        )
     record("velocity", velocity)
-    latent_values = np.asarray(latents.astype(mx.float32), dtype=np.float32).reshape(-1)
     mx.eval(*stages.values())
     mx.save_safetensors(str(out / "stages.safetensors"), stages)
     payload = {
@@ -143,7 +214,9 @@ def main():
         "caption": caption_values.tolist(),
         "latent_shape": [1, 16, latent_h, latent_w],
         "latent": latent_values.tolist(),
+        "initial_latent": initial_latent_values.tolist(),
         "sigmas": np.asarray(scheduler.sigmas, dtype=np.float32).tolist(),
+        "velocities": step_velocities,
         "velocity_shape": list(velocity.shape),
         "stages": {name: list(value.shape) for name, value in stages.items()},
     }

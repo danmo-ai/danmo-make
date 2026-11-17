@@ -1,0 +1,13 @@
+{
+ "cancel_error": "Z-Image denoise: cancelled at step 2",
+ "consecutive_bit_exact": true,
+ "dit_weight_bytes": 24619634944,
+ "geometry_switch_bit_exact": true,
+ "post_cancel_bit_exact": true,
+ "unload_active_after": 118947840,
+ "unload_active_before": 24819935886,
+ "small_fixture_sha256": "acb492b7bb9fa3f17694094fef7e314b9065d389134d3250b3702162ba3773e6",
+ "default_fixture_sha256": "7c6d4fc6dc7a7facef5d93b7373f1b9c74dfc1e4aaa36ecafd3a5a7cdc49e5b0",
+ "date": "2026-11-18",
+ "notes": "consecutive/switch/cancel/unload on resident official fp16 weights, release build, compiled TeaCache; 16x16 fixture has 5 compute/4 skip"
+}

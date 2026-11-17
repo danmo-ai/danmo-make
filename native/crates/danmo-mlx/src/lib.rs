@@ -1,4 +1,5 @@
 mod array;
+mod cancel;
 mod compile;
 mod device;
 mod error;
@@ -12,6 +13,7 @@ mod stream;
 use std::ffi::CStr;
 
 pub use array::{Array, Dtype, QuantizedArray};
+pub use cancel::CancelToken;
 pub use compile::{Closure, MultiClosure, UnaryClosure};
 pub use device::{Device, DeviceType};
 pub use error::{Error, Result};

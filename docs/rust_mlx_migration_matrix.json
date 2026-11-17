@@ -9555,8 +9555,8 @@
       "metal_performance": "passed",
       "metal_peak_memory": {
         "status": "passed",
-        "rust_bytes": 32663479666,
-        "python_bytes": 32907992549,
+        "rust_bytes": 32663483762,
+        "python_bytes": 32908008933,
         "rust_to_python_ratio": 0.9926,
         "metric": "steady_active_after_clear_cache (resident weights + activations, reusable buffer pool emptied on both sides)",
         "dit_weight_bytes": 24619634944,
@@ -9573,7 +9573,7 @@
           "ratio": 1.0035,
           "note": "both sides accumulate the MLX reusable buffer pool across passes; not a resident-weight difference"
         },
-        "evidence": "out/parity-zimage-native-default-teacache-rust-warm.json SHA-256 69ba38dc6d5227216e87037768562c292cde5657bc06a799c2dfde6d016327fe"
+        "evidence": "out/parity-zimage-native-default-teacache-rust-warm.json SHA-256 1d17b0edcdb34bd3deed1949350007ce834d4b705a8f8f97a65e20b294e66526 (steady-state re-verification after the padding fix)"
       },
       "cuda_performance": "pending",
       "cuda_peak_memory": "pending",
@@ -9622,7 +9622,12 @@
         "Eager Native warm path also passes the gate when selected (DANQING_TEST_ZIMAGE_WARM_EAGER=1): compiled full-DiT probe denoise 20.876s vs main eager 25.472s (82.0%) with bit-exact velocities/latents/RGB; the eager cached TeaCache path without compile is ~1.7s/step vs main ~1.6s/step in the same window and is not the production default",
         "Test-harness fix: weights/mlx.rs Scratch temp dirs now include a process-wide atomic counter; macOS coarse clocks gave parallel tests identical pid+nanos names, causing cross-test shard collisions (duplicate tensor) and Deleted-file save failures",
         "TF32 gotcha confirmed on source Metal build: host-reference F32 micro probes (danmo-mlx SDPA, z_image attention/blocks) need MLX_ENABLE_TF32=0 on M5 NAX; real BF16 model paths are unaffected; full suites green with TF32 off (danmo-mlx 16+2+3+3, engine mlx:: 32, architecture 5)",
-        "Committable gate summary: tests/parity/evidence/zimage-native-default-teacache-warm-gate-2026-11-18.json (p50, per-pass timings, memory, full-fixture SHA-256); regenerate with tests/parity/evidence/summarize_warm_gate.py"
+        "Committable gate summary: tests/parity/evidence/zimage-native-default-teacache-warm-gate-2026-11-18.json (p50, per-pass timings, memory, full-fixture SHA-256); regenerate with tests/parity/evidence/summarize_warm_gate.py",
+        "2026-11-18 padding semantics fix: main repeats the last raw patch/caption row to the 32-multiple BEFORE x_embedder/cap_embedder (pad_tail_with_last) and overwrites embedded pad positions with x_pad_token/cap_pad_token; Rust now matches exactly. The old post-embed-only padding diverged by 1 BF16 ULP at x_embed whenever pad rows are attended (small grids); 16x16 9-step TeaCache (5 compute/4 skip) is now bit-exact end to end (velocities, VAE, all 768 RGB channels). No-pad geometries (768x1280, 1024x1024) are numerically unchanged",
+        "2026-11-18 session lifecycle gate PASSED (real_session_lifecycle_consecutive_switch_cancel_unload, release, resident official weights): two consecutive 768x1280 default-TeaCache runs bit-exact; switch to 16x16 (compiled re-trace) and back bit-exact; cross-thread cancel at step 2 fails loud and the next full run stays bit-exact (no cache/compiled state pollution); unload drops active memory 24.82GB -> 119MB (>=90% of resident DiT bytes). Evidence tests/parity/evidence/zimage-session-lifecycle-2026-11-18.json",
+        "danmo-mlx::CancelToken (plain-data cross-thread flag) + z_image euler_cancellable step-boundary checks; CPU unit test proves no forward starts after cancellation",
+        "Warm gate re-verified after the padding fix with steady-state methodology (5 warmup + 5 measured passes each side, adjacent thermal window): warm p50 encode 99.7%, denoise 92.9%, VAE 102.2%, total 93.0% of main; every measured pass bit-exact; steady resident memory 32.66GB vs 32.91GB (99.3%). Evidence SHA rust 1d17b0edcdb34bd3deed1949350007ce834d4b705a8f8f97a65e20b294e66526 / main 7c6d4fc6dc7a7facef5d93b7373f1b9c74dfc1e4aaa36ecafd3a5a7cdc49e5b0; summary tests/parity/evidence/zimage-native-default-teacache-warm-gate-2026-11-18.json",
+        "Thermal methodology refined: M5 Max recovery from sustained load takes minutes; both warm scripts accept warmup passes (main --warmup, Rust DANQING_TEST_ZIMAGE_WARM_WARMUP) and the p50 window uses the recovered steady state"
       ],
       "notes": [
         "Metal parity covers F32 main fixtures, checkpoint-Native direct slices, default TeaCache and forced residual skip with measured peak memory; a published quant, production routing and full E2E remain pending",
@@ -9635,7 +9640,8 @@
         "Source Metal build gate passed after installing MetalToolchain 27B47: full suite (danmo-mlx 16+2+2, engine mlx:: 31 incl. all real fixtures) green without DANQING_MLX_PREBUILT; switching linkage modes requires cargo clean -p danmo-mlx-sys or stale @rpath resolution produces fake numeric failures",
         "metal_performance=passed covers the checkpoint-Native default TeaCache production path at 768x1280/9 steps on Metal (release); published-quant performance, CUDA, and production routing/E2E remain independent pending items",
         "Earlier session ratios (Rust 111-124% of main) were thermal-window artifacts plus per-step parity readbacks inside the timed loop; both were fixed rather than relaxing the 105% gate",
-        "Fixture SHA drift: regenerated TeaCache fixtures no longer match the 2026-11-17 recorded SHAs because the fixture script gained timing/memory fields; parity is asserted against freshly generated main outputs in the same run (default SHA 3017444cb4a9f84a76de0bed98ed4ca41564315de2b13e1ca2ef804e172e98bc, skip SHA 4fc6931b5f457b687b4359cfb2a669db836509fc5db364a5a15e654a8ff4d274)"
+        "Fixture SHA drift: regenerated TeaCache fixtures no longer match the 2026-11-17 recorded SHAs because the fixture script gained timing/memory fields; parity is asserted against freshly generated main outputs in the same run (default SHA 3017444cb4a9f84a76de0bed98ed4ca41564315de2b13e1ca2ef804e172e98bc, skip SHA 4fc6931b5f457b687b4359cfb2a669db836509fc5db364a5a15e654a8ff4d274)",
+        "Session lifecycle (consecutive/switch/cancel/unload) verified on Metal with real weights; executor-level ModelCache/byte budgets and production routing remain P2 items"
       ]
     },
     {
