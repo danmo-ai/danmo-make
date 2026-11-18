@@ -837,7 +837,7 @@ function verifyUserLora(ul: {
     guidance?: number;
     lora_weight?: number;
     scheduler?: string;
-    extra_adapters?: string[];
+    extra_adapters?: Array<string | { id?: string; weight?: number }>;
   };
 }) {
   const inference = ul.inference || {};
@@ -853,8 +853,7 @@ function verifyUserLora(ul: {
   if (inference.guidance != null) query.guidance = String(inference.guidance);
   if (inference.lora_weight != null) query.lora_scale = String(inference.lora_weight);
   if (inference.scheduler) query.scheduler = String(inference.scheduler);
-  const extras = (inference.extra_adapters || []).map((id) => String(id).trim()).filter(Boolean);
-  if (extras.length) query.extra_adapters = extras.join(',');
+  // Companion adapters stay on the LoRA inference record; the API expands them.
   void router.push({ name: 'image_create', query });
 }
 

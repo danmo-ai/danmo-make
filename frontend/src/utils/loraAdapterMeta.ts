@@ -12,7 +12,19 @@ export type CompatibleLoraRow = {
   recommended_lora_scale?: [number, number];
   /** False when the registry card has no installed weight. */
   ready?: boolean;
+  /** Companion adapters declared by a trained LoRA. Inference appends them. */
+  extra_adapters?: Array<string | { id?: string; weight?: number }>;
 };
+
+export function stackedAdapterToken(item: string | { id?: string; weight?: number } | null | undefined): string {
+  if (!item) return '';
+  if (typeof item === 'string') return item.trim();
+  const id = String(item.id || '').trim();
+  if (!id) return '';
+  const weight = Number(item.weight);
+  if (!Number.isFinite(weight) || weight === 1) return id;
+  return `${id}@${weight}`;
+}
 
 export function loraRecommendedScale(
   lora: CompatibleLoraRow | null | undefined,

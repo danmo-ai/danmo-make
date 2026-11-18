@@ -32,4 +32,8 @@ impl EngineError {
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::InvalidRequest(message.into())
     }
+
+    pub fn message(message: impl Into<String>) -> Self {
+        Self::InvalidRequest(message.into())
+    }
 }

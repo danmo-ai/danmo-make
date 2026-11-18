@@ -40,6 +40,8 @@ pub enum TaskKind {
     /// ACE-Step 5Hz LM inspire / format / generate (phase-1 text; codes later).
     #[serde(rename = "audio.lm")]
     AudioLm,
+    #[serde(rename = "lora.training")]
+    LoraTraining,
 }
 
 impl TaskKind {
@@ -54,6 +56,7 @@ impl TaskKind {
             Self::AudioGeneration => "audio.generation",
             Self::AudioEdit => "audio.edit",
             Self::AudioLm => "audio.lm",
+            Self::LoraTraining => "lora.training",
         }
     }
 }
@@ -480,6 +483,307 @@ fn default_adapter_weight() -> f32 {
     1.0
 }
 
+fn default_train_preset() -> String {
+    "turbo-sft".into()
+}
+
+/// One companion adapter declared by a trained LoRA's inference record.
+///
+/// A JSON string is the same adapter at weight 1. An object carries its own
+/// weight. Inference appends these records; it does not special-case a name.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StackedAdapter {
+    pub id: String,
+    pub weight: f32,
+}
+
+impl StackedAdapter {
+    pub fn new(id: impl Into<String>, weight: f32) -> Self {
+        Self {
+            id: id.into(),
+            weight,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StackedAdapter {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        match value {
+            Value::String(id) => stacked_adapter(&id, 1.0).map_err(serde::de::Error::custom),
+            Value::Object(map) => {
+                let id = map.get("id").and_then(|item| item.as_str()).unwrap_or("");
+                let weight = map
+                    .get("weight")
+                    .and_then(|item| item.as_f64())
+                    .unwrap_or(1.0) as f32;
+                stacked_adapter(id, weight).map_err(serde::de::Error::custom)
+            }
+            _ => Err(serde::de::Error::custom(
+                "extra adapter must be an id or an {id, weight} object",
+            )),
+        }
+    }
+}
+
+fn stacked_adapter(id: &str, weight: f32) -> Result<StackedAdapter, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("extra adapter id is empty".into());
+    }
+    if !weight.is_finite() || !(0.0..=2.0).contains(&weight) {
+        return Err(format!(
+            "extra adapter {id} weight {weight} is not between 0 and 2"
+        ));
+    }
+    Ok(StackedAdapter::new(id, weight))
+}
+
+/// Read `inference.extra_adapters`. Missing or null means none.
+pub fn stacked_adapters_from_value(value: Option<&Value>) -> Result<Vec<StackedAdapter>, String> {
+    let Some(value) = value.filter(|item| !item.is_null()) else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_value(value.clone()).map_err(|err| err.to_string())
+}
+
+/// Portable inference recipe stored with a trained adapter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoraInferenceRecipe {
+    pub scheme: String,
+    pub model: String,
+    #[serde(default)]
+    pub steps: u32,
+    #[serde(default)]
+    pub guidance: f32,
+    #[serde(default = "default_adapter_weight")]
+    pub lora_weight: f32,
+    #[serde(default)]
+    pub scheduler: String,
+    #[serde(default)]
+    pub extra_adapters: Vec<StackedAdapter>,
+    #[serde(default)]
+    pub lora_weight_range: Option<[f32; 2]>,
+}
+
+/// DiffSynth-aligned LoRA training submit body (v1: Z-Image / Turbo).
+///
+/// Knobs come from the named `preset` only. Unified caption is the dataset
+/// `default_prompt` (loaded server-side); clients must not send overrides.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoraTrainingRequest {
+    pub base_model: String,
+    pub dataset_id: String,
+    #[serde(default = "default_train_preset")]
+    pub preset: String,
+    #[serde(default)]
+    pub output_name: String,
+    #[serde(default)]
+    pub auto_register: bool,
+    #[serde(default = "default_priority")]
+    pub priority: String,
+    pub seed: Option<i64>,
+    /// `auto` / `on` for concept; `off` allowed for style datasets.
+    #[serde(default)]
+    pub face_crop: Option<String>,
+    #[serde(default)]
+    pub resume_task_id: String,
+    #[serde(default)]
+    pub resume_checkpoint: String,
+    #[serde(default)]
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoraTrainingResult {
+    pub adapter_path: String,
+    #[serde(default)]
+    pub user_lora_id: String,
+    #[serde(default)]
+    pub output_name: String,
+    #[serde(default)]
+    pub loss_history: Vec<Value>,
+    #[serde(default)]
+    pub needs_candidate_evaluation: bool,
+    #[serde(default)]
+    pub checkpoints: Vec<String>,
+    #[serde(default)]
+    pub inference: Option<LoraInferenceRecipe>,
+}
+
+/// Dataset `meta.json` fields. `id` and `face_crop` are required on disk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoraDatasetMeta {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    /// `concept` (unified caption) or `style` (per-row prompts).
+    #[serde(default = "default_dataset_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub trigger_word: String,
+    #[serde(default)]
+    pub default_prompt: String,
+    #[serde(default)]
+    pub nsfw: bool,
+    pub face_crop: String,
+    #[serde(default)]
+    pub image_count: u32,
+}
+
+fn default_dataset_kind() -> String {
+    "concept".into()
+}
+
+/// One `train.jsonl` row (DiffSynth `image,prompt` columns).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoraDatasetRow {
+    pub image: String,
+    #[serde(default)]
+    pub prompt: String,
+}
+
+/// Resolved training preset (after merge with request overrides).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoraTrainPreset {
+    pub id: String,
+    pub iterations: u32,
+    pub lora_rank: u32,
+    pub lora_blocks: i32,
+    pub learning_rate: f32,
+    pub grad_accumulate: u32,
+    pub resolution: [u32; 2],
+    pub progress_every: u32,
+    pub checkpoint_every: u32,
+    pub lora_module_keys: Vec<String>,
+    pub caption_dropout: f32,
+    pub train_sigma_shift: f32,
+    pub sigma_bias: String,
+    pub inference: LoraInferenceRecipe,
+}
+
+pub fn z_image_lora_module_keys() -> Vec<String> {
+    ["to_q", "to_k", "to_v", "to_out", "w1", "w2", "w3"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Built-in presets for Z-Image / Turbo (DiffSynth Scheme 4 default).
+pub fn resolve_lora_train_preset(preset: &str, base_model: &str) -> Result<LoraTrainPreset, String> {
+    let mid = base_model.split(':').next().unwrap_or(base_model).trim();
+    let key = preset.trim().to_ascii_lowercase();
+    let modules = z_image_lora_module_keys();
+    match (mid, key.as_str()) {
+        ("z-image-turbo", "turbo-sft" | "sft" | "standard" | "") => Ok(LoraTrainPreset {
+            id: "turbo-sft".into(),
+            iterations: 2500,
+            lora_rank: 32,
+            lora_blocks: -1,
+            learning_rate: 1e-4,
+            grad_accumulate: 1,
+            resolution: [1024, 1024],
+            progress_every: 500,
+            checkpoint_every: 500,
+            lora_module_keys: modules,
+            caption_dropout: 0.05,
+            train_sigma_shift: 3.0,
+            sigma_bias: "discrete".into(),
+            inference: LoraInferenceRecipe {
+                scheme: "sft".into(),
+                model: "z-image-turbo".into(),
+                steps: 8,
+                guidance: 0.0,
+                lora_weight: 0.8,
+                scheduler: "linear".into(),
+                extra_adapters: vec![StackedAdapter::new(
+                    "z-image-turbo-distillpatch-lora:bf16",
+                    1.0,
+                )],
+                lora_weight_range: Some([0.7, 0.9]),
+            },
+        }),
+        ("z-image-turbo", "turbo-diff" | "turbo") => Ok(LoraTrainPreset {
+            id: "turbo-diff".into(),
+            iterations: 2500,
+            lora_rank: 32,
+            lora_blocks: -1,
+            learning_rate: 1e-4,
+            grad_accumulate: 1,
+            resolution: [1024, 1024],
+            progress_every: 500,
+            checkpoint_every: 500,
+            lora_module_keys: modules,
+            caption_dropout: 0.05,
+            train_sigma_shift: 1.0,
+            sigma_bias: "sigmoid".into(),
+            inference: LoraInferenceRecipe {
+                scheme: "turbo".into(),
+                model: "z-image-turbo".into(),
+                steps: 9,
+                guidance: 0.0,
+                lora_weight: 0.9,
+                scheduler: "linear".into(),
+                extra_adapters: Vec::new(),
+                lora_weight_range: Some([0.8, 1.0]),
+            },
+        }),
+        ("z-image", "base-face" | "standard" | "quality" | "") => Ok(LoraTrainPreset {
+            id: "base-face".into(),
+            iterations: 2500,
+            lora_rank: 32,
+            lora_blocks: -1,
+            learning_rate: 1e-4,
+            grad_accumulate: 1,
+            resolution: [1024, 1024],
+            progress_every: 500,
+            checkpoint_every: 500,
+            lora_module_keys: modules,
+            caption_dropout: 0.05,
+            train_sigma_shift: 1.0,
+            sigma_bias: "sigmoid".into(),
+            inference: LoraInferenceRecipe {
+                scheme: "base".into(),
+                model: "z-image".into(),
+                steps: 28,
+                guidance: 5.0,
+                lora_weight: 1.0,
+                scheduler: "flow_match".into(),
+                extra_adapters: Vec::new(),
+                lora_weight_range: None,
+            },
+        }),
+        _ => Err(format!(
+            "unknown training preset {preset:?} for base model {mid:?}; \
+             choose turbo-sft|turbo-diff|base-face"
+        )),
+    }
+}
+
+/// Validate that the request base model matches the resolved preset recipe.
+/// Named presets are closed; request bodies no longer carry knob overrides.
+pub fn merge_lora_train_request(
+    request: &LoraTrainingRequest,
+    preset: LoraTrainPreset,
+) -> Result<LoraTrainPreset, String> {
+    let mid = request
+        .base_model
+        .split(':')
+        .next()
+        .unwrap_or(&request.base_model)
+        .trim();
+    if preset.inference.model != mid {
+        return Err(format!(
+            "inference model {:?} must equal training base {mid:?}",
+            preset.inference.model
+        ));
+    }
+    Ok(preset)
+}
+
 pub fn parse_size(size: &str) -> Result<(u32, u32), String> {
     let (w, h) = size
         .split_once('x')
@@ -546,5 +850,50 @@ mod tests {
         assert_eq!(req.key_scale, "A minor");
         assert_eq!(req.time_signature, "4");
         assert_eq!(req.lm_expansion, "off");
+    }
+
+    #[test]
+    fn turbo_sft_preset_is_default_scheme4() {
+        let preset = resolve_lora_train_preset("turbo-sft", "z-image-turbo").unwrap();
+        assert_eq!(preset.id, "turbo-sft");
+        assert_eq!(preset.inference.steps, 8);
+        assert_eq!(
+            preset.inference.extra_adapters,
+            vec![StackedAdapter::new(
+                "z-image-turbo-distillpatch-lora:bf16",
+                1.0
+            )]
+        );
+        let from_string: LoraInferenceRecipe = serde_json::from_value(serde_json::json!({
+            "scheme": "sft",
+            "model": "z-image-turbo",
+            "extra_adapters": ["companion:bf16"]
+        }))
+        .unwrap();
+        assert_eq!(from_string.extra_adapters[0].weight, 1.0);
+        let from_object: LoraInferenceRecipe = serde_json::from_value(serde_json::json!({
+            "scheme": "sft",
+            "model": "z-image-turbo",
+            "extra_adapters": [{ "id": "companion:bf16", "weight": 0.5 }]
+        }))
+        .unwrap();
+        assert_eq!(from_object.extra_adapters[0].id, "companion:bf16");
+        assert_eq!(from_object.extra_adapters[0].weight, 0.5);
+        let req = LoraTrainingRequest {
+            base_model: "z-image-turbo".into(),
+            dataset_id: "ds".into(),
+            preset: "turbo-sft".into(),
+            output_name: String::new(),
+            auto_register: false,
+            priority: "normal".into(),
+            seed: None,
+            face_crop: None,
+            resume_task_id: String::new(),
+            resume_checkpoint: String::new(),
+            metadata: Value::Null,
+        };
+        let merged = merge_lora_train_request(&req, preset).unwrap();
+        assert_eq!(merged.iterations, 2500);
+        assert_eq!(merged.id, "turbo-sft");
     }
 }

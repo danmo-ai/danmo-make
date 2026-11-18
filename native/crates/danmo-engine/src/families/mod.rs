@@ -8,7 +8,7 @@ mod ltx;
 mod qwen_image;
 pub mod seedvr2;
 mod wan;
-mod z_image;
+pub mod z_image;
 
 pub use crate::contract::{Media, Shape};
 pub use driver::{

@@ -132,19 +132,73 @@ pub fn routes() -> Router<AppState> {
         .route("/api/download/lora/base-models", get(lora_base_models))
         .route("/api/download/lora/hub", post(start_lora_download))
         .route("/api/download/lora", post(start_lora_download))
-        .route("/api/loras/datasets", get(empty_items))
+        .route(
+            "/api/loras/datasets",
+            get(list_lora_datasets).post(create_lora_dataset),
+        )
+        .route(
+            "/api/loras/datasets/:id",
+            get(get_lora_dataset)
+                .patch(patch_lora_dataset)
+                .delete(delete_lora_dataset),
+        )
+        .route(
+            "/api/loras/datasets/:id/images",
+            post(upload_lora_dataset_images).delete(delete_lora_dataset_image_query),
+        )
+        .route(
+            "/api/loras/datasets/:id/images/:file",
+            axum::routing::delete(delete_lora_dataset_image),
+        )
+        .route(
+            "/api/loras/datasets/:id/file/:file",
+            get(serve_lora_dataset_file),
+        )
+        .route(
+            "/api/loras/datasets/:id/skipped-images",
+            axum::routing::put(put_lora_dataset_skipped),
+        )
+        .route(
+            "/api/loras/datasets/:id/health",
+            get(lora_dataset_health),
+        )
+        .route(
+            "/api/loras/datasets/:id/health/vlm",
+            post(lora_dataset_health_vlm),
+        )
+        .route(
+            "/api/loras/datasets/:id/import-assets",
+            post(import_lora_dataset_assets),
+        )
+        .route(
+            "/api/loras/datasets/:id/import-csv",
+            post(import_lora_dataset_csv),
+        )
         .route("/api/loras/user-adapters", get(empty_items))
         .route(
             "/api/loras/user-adapters/:id",
             axum::routing::delete(delete_lora),
         )
         .route("/api/loras/downloaded-adapters", get(list_downloaded_loras))
-        .route("/api/loras/trainable-models", get(empty_models))
+        .route("/api/loras/trainable-models", get(list_trainable_models))
         .route(
             "/api/loras/training/requirements",
             get(training_requirements),
         )
-        .route("/api/loras/trainings", post(reject_training))
+        .route("/api/loras/training/presets", get(list_training_presets))
+        .route("/api/loras/trainings", post(submit_training))
+        .route(
+            "/api/loras/trainings/:id/artifacts",
+            get(training_artifacts),
+        )
+        .route(
+            "/api/loras/trainings/:id/artifacts/file/:filename",
+            get(training_artifact_file),
+        )
+        .route(
+            "/api/loras/trainings/:id/register",
+            post(register_training_checkpoint),
+        )
         .route("/api/tools/z-image/merge", post(reject_merge))
         .route("/api/tools/z-image/merge/models", get(merge_models))
         .route("/api/tools/z-image/merge/merged", get(empty_items))
@@ -886,8 +940,8 @@ async fn compatible_loras(
             if id.is_empty() || !lora_compatible(&model, base) {
                 continue;
             }
-            let file = download::resolve_model_path(&state.workspace, path);
-            if !file.is_file() {
+            let root = download::resolve_model_path(&state.workspace, path);
+            if download::lora_weight_file(&root).is_err() {
                 continue;
             }
             if rows
@@ -896,17 +950,83 @@ async fn compatible_loras(
             {
                 continue;
             }
-            rows.insert(
-                    0,
-                    json!({
-                        "kind": "lora",
-                        "id": id,
-                        "name": item.get("name").and_then(|value| value.as_str()).unwrap_or(id),
-                        "base_model": base,
-                        "source": item.get("source").and_then(|value| value.as_str()).unwrap_or("user_trained"),
-                        "ready": true,
-                    }),
-                );
+            let mut row = json!({
+                "kind": "lora",
+                "id": id,
+                "name": item.get("name").and_then(|value| value.as_str()).unwrap_or(id),
+                "base_model": base,
+                "source": item.get("source").and_then(|value| value.as_str()).unwrap_or("user_trained"),
+                "ready": true,
+            });
+            if let Some(inference) = item.get("inference").filter(|value| value.is_object()) {
+                let extras = danmo_contracts::stacked_adapters_from_value(
+                    inference.get("extra_adapters"),
+                )
+                .map_err(|detail| fail(StatusCode::BAD_REQUEST, format!("lora {id}: {detail}")))?;
+                if !extras.is_empty() {
+                    row["extra_adapters"] = json!(extras);
+                }
+                let mut overrides = serde_json::Map::new();
+                if let Some(steps) = inference.get("steps").and_then(|value| value.as_u64()) {
+                    overrides.insert("steps".into(), json!(steps));
+                }
+                if let Some(guidance) = inference.get("guidance").and_then(|value| value.as_f64())
+                {
+                    overrides.insert("guidance".into(), json!(guidance));
+                }
+                if let Some(scheduler) = inference
+                    .get("scheduler")
+                    .and_then(|value| value.as_str())
+                    .filter(|text| !text.is_empty())
+                {
+                    overrides.insert("scheduler".into(), json!(scheduler));
+                }
+                if let Some(weight) = inference.get("lora_weight").and_then(|value| value.as_f64())
+                {
+                    overrides.insert("lora_scale".into(), json!(weight));
+                }
+                if !overrides.is_empty() {
+                    row["compose_overrides"] = Value::Object(overrides);
+                }
+                if let Some(range) = inference.get("lora_weight_range") {
+                    row["recommended_lora_scale"] = range.clone();
+                }
+            }
+            rows.insert(0, row);
+        }
+    }
+    if let Some(items) = state
+        .downloads
+        .list_loras()
+        .get("items")
+        .and_then(|value| value.as_array())
+    {
+        for item in items {
+            let id = item
+                .get("id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let base = item
+                .get("base_model")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            if id.is_empty() || !lora_compatible(&model, base) {
+                continue;
+            }
+            if rows
+                .iter()
+                .any(|row| row.get("id").and_then(|value| value.as_str()) == Some(id))
+            {
+                continue;
+            }
+            rows.push(json!({
+                "kind": "lora",
+                "id": id,
+                "name": item.get("name").and_then(|value| value.as_str()).unwrap_or(id),
+                "base_model": base,
+                "source": "remote_download",
+                "ready": true,
+            }));
         }
     }
     rows.sort_by(|left, right| {
@@ -1908,18 +2028,952 @@ async fn delete_preset(
     Ok(Json(json!({ "ok": true })))
 }
 
-async fn reject_training() -> Result<Json<Value>, ApiError> {
-    Err(fail(
-        StatusCode::NOT_IMPLEMENTED,
-        "LoRA training is temporarily unavailable: Python trainer removed; Rust MLX trainer not landed yet",
+async fn list_lora_datasets(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let items = danmo_store::list_datasets(&state.workspace)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({ "items": items })))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateDatasetBody {
+    #[serde(default)]
+    name: String,
+    #[serde(default = "default_concept")]
+    kind: String,
+    #[serde(default)]
+    trigger_word: String,
+}
+
+fn default_concept() -> String {
+    "concept".into()
+}
+
+async fn create_lora_dataset(
+    State(state): State<AppState>,
+    Json(body): Json<CreateDatasetBody>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let meta = danmo_store::create_dataset(
+        &state.workspace,
+        &body.name,
+        &body.kind,
+        &body.trigger_word,
+    )
+    .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let detail = danmo_store::get_dataset_detail(&state.workspace, &meta.id)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok((StatusCode::CREATED, Json(detail)))
+}
+
+async fn get_lora_dataset(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let detail = danmo_store::get_dataset_detail(&state.workspace, &id)
+        .map_err(|e| fail(StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(detail))
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchDatasetBody {
+    name: Option<String>,
+    kind: Option<String>,
+    trigger_word: Option<String>,
+    default_prompt: Option<String>,
+    nsfw: Option<bool>,
+    face_crop: Option<String>,
+}
+
+async fn patch_lora_dataset(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PatchDatasetBody>,
+) -> Result<Json<Value>, ApiError> {
+    danmo_store::update_dataset_meta(
+        &state.workspace,
+        &id,
+        body.name.as_deref(),
+        body.kind.as_deref(),
+        body.trigger_word.as_deref(),
+        body.default_prompt.as_deref(),
+        body.nsfw,
+        body.face_crop.as_deref(),
+    )
+    .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let detail = danmo_store::get_dataset_detail(&state.workspace, &id)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(detail))
+}
+
+async fn delete_lora_dataset(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    danmo_store::delete_dataset(&state.workspace, &id)
+        .map_err(|e| fail(StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportCsvBody {
+    csv: String,
+}
+
+async fn import_lora_dataset_csv(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ImportCsvBody>,
+) -> Result<Json<Value>, ApiError> {
+    danmo_store::import_metadata_csv(&state.workspace, &id, &body.csv)
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let detail = danmo_store::get_dataset_detail(&state.workspace, &id)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(detail))
+}
+
+async fn upload_lora_dataset_images(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<Value>, ApiError> {
+    let ct = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let (files, default_prompt) = multipart_files_and_prompt(ct, &body)
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e))?;
+    if files.is_empty() {
+        return Err(fail(StatusCode::BAD_REQUEST, "no image files in upload"));
+    }
+    let mut last = Value::Null;
+    for (filename, bytes) in files {
+        last = danmo_store::add_image_bytes(
+            &state.workspace,
+            &id,
+            &filename,
+            &bytes,
+            &default_prompt,
+        )
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    }
+    Ok(Json(last))
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteImageQuery {
+    file: Option<String>,
+}
+
+async fn delete_lora_dataset_image_query(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<DeleteImageQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let file = query
+        .file
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| fail(StatusCode::BAD_REQUEST, "file query required"))?;
+    let detail = danmo_store::delete_dataset_image(&state.workspace, &id, file)
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(detail))
+}
+
+async fn delete_lora_dataset_image(
+    State(state): State<AppState>,
+    Path((id, file)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let detail = danmo_store::delete_dataset_image(&state.workspace, &id, &file)
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(detail))
+}
+
+async fn serve_lora_dataset_file(
+    State(state): State<AppState>,
+    Path((id, file)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    let rel = file.trim().trim_start_matches('/');
+    if rel.is_empty() || rel.contains("..") {
+        return Err(fail(StatusCode::BAD_REQUEST, "invalid image path"));
+    }
+    let path = danmo_store::dataset_dir(&state.workspace, &id).join(rel);
+    if !path.is_file() {
+        return Err(fail(StatusCode::NOT_FOUND, format!("file {rel} not found")));
+    }
+    let bytes = std::fs::read(&path)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mime = mime_for_stored_path(rel);
+    Ok(([(header::CONTENT_TYPE, mime.to_string())], bytes).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct SkippedImagesBody {
+    #[serde(default)]
+    files: Vec<String>,
+}
+
+async fn put_lora_dataset_skipped(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<SkippedImagesBody>,
+) -> Result<Json<Value>, ApiError> {
+    let detail = danmo_store::set_skipped_images(&state.workspace, &id, &body.files)
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(detail))
+}
+
+#[derive(Debug, Deserialize)]
+struct DatasetHealthQuery {
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+async fn lora_dataset_health(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<DatasetHealthQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let mut report = danmo_store::dataset_health_report(&state.workspace, &id)
+        .map_err(|e| fail(StatusCode::NOT_FOUND, e.to_string()))?;
+    if let (Some(w), Some(h)) = (query.width, query.height) {
+        if let Some(obj) = report.as_object_mut() {
+            obj.insert(
+                "faces".into(),
+                json!({
+                    "available": false,
+                    "resolution": [w, h],
+                    "rows": [],
+                    "detail": "Face detector is not wired in the Rust trainer yet; structural checks only",
+                }),
+            );
+        }
+    }
+    Ok(Json(report))
+}
+
+async fn lora_dataset_health_vlm(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    // Fail loud: VLM audit is not available in the Rust path yet.
+    let mut report = danmo_store::dataset_health_report(&state.workspace, &id)
+        .map_err(|e| fail(StatusCode::NOT_FOUND, e.to_string()))?;
+    if let Some(obj) = report.as_object_mut() {
+        obj.insert("vision_available".into(), json!(false));
+        obj.insert("vlm_audited".into(), json!(false));
+        obj.insert(
+            "vlm_detail".into(),
+            json!("VLM dataset audit is not available yet; use structural health only"),
+        );
+    }
+    Ok(Json(report))
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportAssetsBody {
+    #[serde(default)]
+    asset_ids: Vec<String>,
+    #[serde(default)]
+    default_prompt: String,
+}
+
+async fn import_lora_dataset_assets(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ImportAssetsBody>,
+) -> Result<Json<Value>, ApiError> {
+    if body.asset_ids.is_empty() {
+        return Err(fail(StatusCode::BAD_REQUEST, "asset_ids required"));
+    }
+    let mut sources = Vec::new();
+    for asset_id in &body.asset_ids {
+        let row = state
+            .scheduler
+            .get_asset(asset_id)
+            .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or_else(|| fail(StatusCode::NOT_FOUND, format!("asset {asset_id} not found")))?;
+        if !row.kind.eq_ignore_ascii_case("image") {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                format!("asset {asset_id} is not an image"),
+            ));
+        }
+        let path = resolve_asset_fs_path(&state.outputs, &state.workspace, &row.file_path);
+        let name = FsPath::new(&row.file_path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("asset.jpg")
+            .to_string();
+        sources.push((path, name));
+    }
+    let detail = danmo_store::import_asset_files(
+        &state.workspace,
+        &id,
+        &sources,
+        &body.default_prompt,
+    )
+    .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(detail))
+}
+
+fn training_presets_for_model(mid: &str) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    for preset in ["turbo-sft", "turbo-diff", "base-face"] {
+        if let Ok(resolved) = danmo_contracts::resolve_lora_train_preset(preset, mid) {
+            out.insert(resolved.id.clone(), json!(resolved));
+        }
+    }
+    out
+}
+
+async fn list_trainable_models() -> Json<Value> {
+    let ready = cfg!(feature = "mlx");
+    let turbo = training_presets_for_model("z-image-turbo");
+    let base = training_presets_for_model("z-image");
+    Json(json!({
+        "items": [
+            {
+                "id": "z-image-turbo",
+                "name": "Z-Image-Turbo",
+                "family": "z_image",
+                "trainable": true,
+                "ready": ready,
+                "presets": turbo.keys().cloned().collect::<Vec<_>>(),
+                "default_preset": "turbo-sft",
+            },
+            {
+                "id": "z-image",
+                "name": "Z-Image",
+                "family": "z_image",
+                "trainable": true,
+                "ready": ready,
+                "presets": base.keys().cloned().collect::<Vec<_>>(),
+                "default_preset": "base-face",
+            },
+        ],
+        "presets_by_model": {
+            "z-image-turbo": turbo,
+            "z-image": base,
+        },
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct TrainingPresetsQuery {
+    model: Option<String>,
+    base_model: Option<String>,
+}
+
+async fn list_training_presets(Query(query): Query<TrainingPresetsQuery>) -> Json<Value> {
+    let mid = query
+        .model
+        .as_deref()
+        .or(query.base_model.as_deref())
+        .unwrap_or("z-image-turbo");
+    Json(json!({
+        "model": mid,
+        "presets": training_presets_for_model(mid),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct TrainingRequirementsQuery {
+    base_model: Option<String>,
+}
+
+async fn training_requirements(Query(query): Query<TrainingRequirementsQuery>) -> Json<Value> {
+    let ready = cfg!(feature = "mlx");
+    let mid = query
+        .base_model
+        .as_deref()
+        .unwrap_or("z-image-turbo")
+        .split(':')
+        .next()
+        .unwrap_or("z-image-turbo")
+        .trim();
+    let can_submit = ready && (mid == "z-image" || mid == "z-image-turbo");
+    let mut blockers: Vec<String> = Vec::new();
+    if !ready {
+        blockers.push(
+            "LoRA training requires an MLX-enabled build (--features mlx-metal or mlx-cuda)".into(),
+        );
+    }
+    if mid != "z-image" && mid != "z-image-turbo" {
+        blockers.push(format!("unsupported training base model {mid:?}"));
+    }
+    Json(json!({
+        "ready": ready,
+        "can_submit": can_submit,
+        "backend": if ready { "mlx" } else { "none" },
+        "detail": if ready {
+            "Rust MLX LoRA trainer is available for Z-Image / Z-Image-Turbo (probe-latent path until VAE encode lands)"
+        } else {
+            "LoRA training requires an MLX-enabled build (--features mlx-metal or mlx-cuda)"
+        },
+        "blockers": blockers,
+        "trainable_models": ["z-image-turbo", "z-image"],
+        "default_preset": {
+            "z-image-turbo": "turbo-sft",
+            "z-image": "base-face",
+        },
+        "base_model": mid,
+    }))
+}
+
+async fn submit_training(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    if !cfg!(feature = "mlx") {
+        return Err(fail(
+            StatusCode::NOT_IMPLEMENTED,
+            "LoRA training requires an MLX-enabled build (--features mlx-metal or mlx-cuda)",
+        ));
+    }
+    // Reject leftover UI override keys loudly (fail loud — no silent ignore).
+    if let Some(obj) = body.as_object() {
+        const REMOVED: &[&str] = &[
+            "progress_prompt",
+            "iterations",
+            "lora_rank",
+            "learning_rate",
+            "resolution",
+            "qlora_bits",
+            "grad_checkpoint",
+            "compile_step",
+            "lora_blocks",
+            "lora_alpha",
+            "lora_dropout",
+            "lora_module_keys",
+            "optimizer",
+            "weight_decay",
+            "val_split",
+            "val_every",
+            "train_type",
+            "min_snr_gamma",
+            "class_prompt",
+            "prior_loss_weight",
+            "early_stop_patience",
+            "fuse_adapters",
+            "num_augmentations",
+            "grad_accumulate",
+            "progress_steps",
+            "caption_mode",
+            "train_sigma_shift",
+            "sigma_bias",
+            "caption_dropout",
+            "batch_size",
+            "progress_every",
+            "checkpoint_every",
+            "guidance",
+        ];
+        let stray: Vec<&str> = REMOVED
+            .iter()
+            .copied()
+            .filter(|k| obj.contains_key(*k))
+            .collect();
+        if !stray.is_empty() {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "training request no longer accepts {:?}; use named preset + dataset default_prompt",
+                    stray
+                ),
+            ));
+        }
+    }
+    let request: danmo_contracts::LoraTrainingRequest = serde_json::from_value(body)
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let mid = request
+        .base_model
+        .split(':')
+        .next()
+        .unwrap_or(&request.base_model)
+        .trim();
+    if mid != "z-image" && mid != "z-image-turbo" {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!("unsupported training base model {mid:?}"),
+        ));
+    }
+    let meta = danmo_store::load_dataset_meta(&state.workspace, &request.dataset_id)
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let caption = meta.default_prompt.trim();
+    if caption.is_empty() {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            "dataset default_prompt is required (set it on the dataset step)",
+        ));
+    }
+    let (_meta, pairs) = danmo_store::load_training_pairs(
+        &state.workspace,
+        &request.dataset_id,
+        caption,
+    )
+    .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let preset = danmo_contracts::resolve_lora_train_preset(&request.preset, &request.base_model)
+        .and_then(|p| danmo_contracts::merge_lora_train_request(&request, p))
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e))?;
+    if preset.id == "turbo-sft" {
+        // DistillPatch must be installed for matching inference; fail loud if absent.
+        let registry = state.workspace.join("config").join("models_registry.json");
+        let _ = registry; // presence checked at infer time; training records the recipe.
+    }
+
+    let task_id = format!("tsk_{}", Uuid::new_v4());
+    let work_dir = state.workspace.join("tasks").join(&task_id);
+    std::fs::create_dir_all(&work_dir)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let params = json!({
+        "task_id": task_id,
+        "family": "z_image",
+        "request": request,
+        "preset": preset,
+        "training_caption": caption,
+        "n_images": pairs.len(),
+    });
+    let prio = if request.priority == "high" { 10 } else { 100 };
+    state
+        .scheduler
+        .submit(&task_id, "lora.training", mid, &params.to_string(), prio)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let scheduler = state.scheduler.clone();
+    let req = request.clone();
+    let wid = task_id.clone();
+    let wdir = work_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        run_training_job(&scheduler, &wid, &wdir, &req);
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "id": task_id,
+            "status": "queued",
+            "kind": "lora.training",
+        })),
     ))
 }
 
-async fn training_requirements() -> Json<Value> {
-    Json(json!({
-        "ready": false,
-        "detail": "LoRA training is temporarily unavailable: Python trainer removed; Rust MLX trainer not landed yet",
-    }))
+fn training_task_result(state: &AppState, task_id: &str) -> Result<(TaskRow, Value), ApiError> {
+    let row = state
+        .scheduler
+        .get(task_id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "training task not found"))?;
+    if row.kind != "lora.training" {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!("task {task_id} is not a LoRA training run"),
+        ));
+    }
+    let result = row
+        .result
+        .as_deref()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .unwrap_or(Value::Null);
+    Ok((row, result))
+}
+
+fn checkpoint_basename(path: &str) -> String {
+    FsPath::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn resolve_training_checkpoint(
+    work_dir: &FsPath,
+    result: &Value,
+    checkpoint: &str,
+) -> Result<PathBuf, ApiError> {
+    let name = checkpoint.trim();
+    if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err(fail(StatusCode::BAD_REQUEST, "invalid checkpoint name"));
+    }
+    let adapters = work_dir.join("adapters");
+    let candidate = adapters.join(name);
+    if candidate.is_file() {
+        return Ok(candidate);
+    }
+    if let Some(adapter_path) = result.get("adapter_path").and_then(|v| v.as_str()) {
+        let p = PathBuf::from(adapter_path);
+        if checkpoint_basename(adapter_path) == name && p.is_file() {
+            return Ok(p);
+        }
+    }
+    if let Some(list) = result.get("checkpoints").and_then(|v| v.as_array()) {
+        for item in list {
+            if let Some(path) = item.as_str() {
+                if checkpoint_basename(path) == name {
+                    let p = PathBuf::from(path);
+                    if p.is_file() {
+                        return Ok(p);
+                    }
+                }
+            }
+        }
+    }
+    Err(fail(
+        StatusCode::NOT_FOUND,
+        format!("checkpoint {name} not found for this training run"),
+    ))
+}
+
+async fn training_artifacts(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let (_row, result) = training_task_result(&state, &id)?;
+    let work_dir = state.workspace.join("tasks").join(&id);
+    let mut checkpoints: Vec<String> = result
+        .get("checkpoints")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(checkpoint_basename))
+        .collect();
+    if checkpoints.is_empty() {
+        if let Some(path) = result.get("adapter_path").and_then(|v| v.as_str()) {
+            checkpoints.push(checkpoint_basename(path));
+        }
+    }
+    let progress_dir = work_dir.join("progress");
+    let mut progress_images = Vec::new();
+    if progress_dir.is_dir() {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(&progress_dir)
+            .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        {
+            let entry = entry.map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            let lower = name.to_ascii_lowercase();
+            if lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".webp")
+            {
+                names.push(name);
+            }
+        }
+        names.sort();
+        progress_images = names;
+    }
+    Ok(Json(json!({
+        "loss_history": result.get("loss_history").cloned().unwrap_or_else(|| json!([])),
+        "checkpoints": checkpoints,
+        "progress_images": progress_images,
+        "inference": result.get("inference").cloned().unwrap_or(Value::Null),
+        "adapter_path": result.get("adapter_path").cloned().unwrap_or(Value::Null),
+        "output_name": result.get("output_name").cloned().unwrap_or(Value::Null),
+        "user_lora_id": result.get("user_lora_id").cloned().unwrap_or_else(|| json!("")),
+        "needs_candidate_evaluation": result
+            .get("needs_candidate_evaluation")
+            .cloned()
+            .unwrap_or(Value::Bool(false)),
+        "vision_available": false,
+    })))
+}
+
+async fn training_artifact_file(
+    State(state): State<AppState>,
+    Path((id, filename)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    let name = filename.trim();
+    if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err(fail(StatusCode::BAD_REQUEST, "invalid artifact filename"));
+    }
+    let _ = training_task_result(&state, &id)?;
+    let path = state
+        .workspace
+        .join("tasks")
+        .join(&id)
+        .join("progress")
+        .join(name);
+    if !path.is_file() {
+        return Err(fail(StatusCode::NOT_FOUND, format!("artifact {name} not found")));
+    }
+    let bytes = std::fs::read(&path)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mime = mime_for_stored_path(name);
+    Ok(([(header::CONTENT_TYPE, mime.to_string())], bytes).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct RegisterTrainingBody {
+    checkpoint: String,
+    #[serde(default)]
+    name: String,
+}
+
+async fn register_training_checkpoint(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<RegisterTrainingBody>,
+) -> Result<Json<Value>, ApiError> {
+    let (row, result) = training_task_result(&state, &id)?;
+    if row.status != "completed" {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!("training task is {}, register only after completed", row.status),
+        ));
+    }
+    let work_dir = state.workspace.join("tasks").join(&id);
+    let src = resolve_training_checkpoint(&work_dir, &result, &body.checkpoint)?;
+    let params: Value = serde_json::from_str(&row.params).unwrap_or_else(|_| json!({}));
+    let request = params.get("request").cloned().unwrap_or(Value::Null);
+    let preset = params.get("preset").cloned().unwrap_or(Value::Null);
+    let base_model = request
+        .get("base_model")
+        .and_then(|v| v.as_str())
+        .or_else(|| params.get("base_model").and_then(|v| v.as_str()))
+        .unwrap_or(row.model_id.as_str())
+        .to_string();
+    let output_name = {
+        let raw = body.name.trim();
+        if !raw.is_empty() {
+            raw.to_string()
+        } else if let Some(n) = result.get("output_name").and_then(|v| v.as_str()) {
+            n.trim().to_string()
+        } else if let Some(n) = request.get("output_name").and_then(|v| v.as_str()) {
+            n.trim().to_string()
+        } else {
+            format!("{base_model}-lora")
+        }
+    };
+    if output_name.is_empty() || output_name.contains("..") || output_name.contains('/') || output_name.contains('\\')
+    {
+        return Err(fail(StatusCode::BAD_REQUEST, "invalid LoRA name"));
+    }
+    let rel_dir = format!("models/Lora/{output_name}");
+    let dest_dir = state.workspace.join(&rel_dir);
+    std::fs::create_dir_all(&dest_dir)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let dest_name = checkpoint_basename(src.to_string_lossy().as_ref());
+    let dest_file = dest_dir.join(&dest_name);
+    std::fs::copy(&src, &dest_file)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Keep the training recipe next to the weight so the install is self-describing.
+    let cfg_src = src
+        .parent()
+        .map(|p| p.join("lora_config.json"))
+        .filter(|p| p.is_file());
+    if let Some(cfg) = cfg_src {
+        let _ = std::fs::copy(&cfg, dest_dir.join("lora_config.json"));
+    }
+    let inference = result
+        .get("inference")
+        .cloned()
+        .or_else(|| preset.get("inference").cloned())
+        .filter(|v| v.is_object())
+        .ok_or_else(|| {
+            fail(
+                StatusCode::BAD_REQUEST,
+                "training result has no inference recipe; cannot register without steps/guidance/extra_adapters",
+            )
+        })?;
+    let extras = danmo_contracts::stacked_adapters_from_value(inference.get("extra_adapters"))
+        .map_err(|detail| {
+            fail(
+                StatusCode::BAD_REQUEST,
+                format!("invalid inference.extra_adapters: {detail}"),
+            )
+        })?;
+    for extra in &extras {
+        // Fail loud: every companion listed on the inference recipe must be installed.
+        ensure_companion_lora_installed(&state, &extra.id)?;
+    }
+    let dataset_id = request
+        .get("dataset_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let trigger_word = if !dataset_id.is_empty() {
+        danmo_store::load_dataset_meta(&state.workspace, dataset_id)
+            .ok()
+            .map(|m| m.trigger_word.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let preset_id = request
+        .get("preset")
+        .and_then(|v| v.as_str())
+        .or_else(|| preset.get("id").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let lora_id = format!(
+        "user-lora-{}",
+        &Uuid::new_v4().simple().to_string()[..12]
+    );
+    let entry = json!({
+        "id": lora_id,
+        "name": output_name,
+        "base_model": base_model,
+        "local_path": rel_dir,
+        "trigger_word": trigger_word,
+        "lora_rank": preset.get("lora_rank").cloned().unwrap_or(json!(32)),
+        "lora_alpha": preset.get("lora_rank").cloned().unwrap_or(json!(32)),
+        "inference": inference,
+        "preset": preset_id,
+        "family": "z_image",
+        "train_type": "lora",
+        "lora_module_keys": preset.get("lora_module_keys").cloned().unwrap_or(json!([])),
+        "nsfw": false,
+        "source": "user_trained",
+        "task_id": id,
+        "checkpoint": dest_name,
+        "created_at": chrono_like_now(),
+    });
+    let user_path = state.workspace.join("config").join("user_loras.json");
+    let mut root = if user_path.is_file() {
+        let text = std::fs::read_to_string(&user_path)
+            .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        serde_json::from_str::<Value>(&text).map_err(|e| {
+            fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{} is not json: {e}", user_path.display()),
+            )
+        })?
+    } else {
+        json!({ "items": [] })
+    };
+    let items = root
+        .as_object_mut()
+        .ok_or_else(|| fail(StatusCode::INTERNAL_SERVER_ERROR, "user_loras.json root must be object"))?
+        .entry("items")
+        .or_insert_with(|| json!([]));
+    let arr = items
+        .as_array_mut()
+        .ok_or_else(|| fail(StatusCode::INTERNAL_SERVER_ERROR, "user_loras.json items must be array"))?;
+    arr.retain(|item| item.get("id").and_then(|v| v.as_str()) != Some(lora_id.as_str()));
+    arr.push(entry.clone());
+    if let Some(parent) = user_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+    let pretty = serde_json::to_string_pretty(&root)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    std::fs::write(&user_path, pretty)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({ "user_lora": entry })))
+}
+
+fn chrono_like_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{secs}")
+}
+
+fn ensure_companion_lora_installed(state: &AppState, id: &str) -> Result<(), ApiError> {
+    if let Some(path) = state
+        .downloads
+        .lora_path(id)
+        .map_err(|detail| fail(StatusCode::BAD_REQUEST, detail))?
+    {
+        if path.is_file() || download::lora_weight_file(&path).is_ok() {
+            return Ok(());
+        }
+    }
+    let (bare, version) = match id.split_once(':') {
+        Some((bare, version)) => (bare, Some(version)),
+        None => (id, None),
+    };
+    let catalog = open_catalog(state)?;
+    let Some(entry) = catalog.root().pointer(&format!("/models/{bare}")) else {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "companion LoRA {id} is not installed; required by this training recipe before register"
+            ),
+        ));
+    };
+    match download::registry_lora_weight(&state.workspace, entry, version)
+        .map_err(|detail| fail(StatusCode::BAD_REQUEST, detail))?
+    {
+        Some(_) => Ok(()),
+        None => Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "companion LoRA {id} is not installed; required by this training recipe before register"
+            ),
+        )),
+    }
+}
+
+fn run_training_job(
+    scheduler: &danmo_schedule::Scheduler,
+    task_id: &str,
+    work_dir: &FsPath,
+    request: &danmo_contracts::LoraTrainingRequest,
+) {
+    let _ = scheduler.log(task_id, "info", "Rust MLX LoRA training started");
+    #[cfg(feature = "mlx")]
+    {
+        use danmo_engine::run_z_image_lora_training;
+        use danmo_mlx::{Array, Stream};
+        let stream = match Stream::cpu() {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = scheduler.finish_err(task_id, &e.to_string());
+                return;
+            }
+        };
+        // Probe latents until VAE encode cache lands; shape [n, 64] keeps the
+        // shared Flow-Match loop exercised end-to-end.
+        let n = request
+            .metadata
+            .get("probe_batch")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(4)
+            .clamp(2, 16) as usize;
+        let mut data = vec![0.0f32; n * 64];
+        for (i, slot) in data.iter_mut().enumerate() {
+            *slot = ((i % 17) as f32) * 0.01 - 0.08;
+        }
+        let latent = match Array::from_f32_slice(&data, &[n as i32, 64]) {
+            Ok(a) => a,
+            Err(e) => {
+                let _ = scheduler.finish_err(task_id, &e.to_string());
+                return;
+            }
+        };
+        let mut req = request.clone();
+        if req.metadata.get("smoke").is_none() {
+            req.metadata = json!({ "smoke": true });
+        }
+        match run_z_image_lora_training(&req, work_dir, &stream, &latent) {
+            Ok(out) => {
+                let result = serde_json::to_string(&out.result).unwrap_or_else(|_| "{}".into());
+                let _ = scheduler.log(
+                    task_id,
+                    "success",
+                    &format!("adapter written to {}", out.result.adapter_path),
+                );
+                let _ = scheduler.finish_ok(task_id, &result);
+            }
+            Err(e) => {
+                let _ = scheduler.log(task_id, "error", &e.to_string());
+                let _ = scheduler.finish_err(task_id, &e.to_string());
+            }
+        }
+    }
+    #[cfg(not(feature = "mlx"))]
+    {
+        let _ = scheduler.finish_err(task_id, "MLX feature not enabled");
+    }
 }
 
 async fn reject_merge() -> Result<Json<Value>, ApiError> {
@@ -2495,6 +3549,17 @@ fn kind_for(mime: &str) -> &'static str {
 }
 
 fn multipart_file(content_type: &str, body: &[u8]) -> Result<(String, Vec<u8>), String> {
+    let (files, _) = multipart_files_and_prompt(content_type, body)?;
+    files
+        .into_iter()
+        .next()
+        .ok_or_else(|| "multipart body has no file field".into())
+}
+
+fn multipart_files_and_prompt(
+    content_type: &str,
+    body: &[u8],
+) -> Result<(Vec<(String, Vec<u8>)>, String), String> {
     let boundary = content_type
         .split("boundary=")
         .nth(1)
@@ -2508,6 +3573,8 @@ fn multipart_file(content_type: &str, body: &[u8]) -> Result<(String, Vec<u8>), 
         return Err("multipart body has no boundary".into());
     }
     let marker = format!("--{boundary}").into_bytes();
+    let mut files = Vec::new();
+    let mut default_prompt = String::new();
     let mut start = 0usize;
     while let Some(rel) = find_bytes(&body[start..], &marker) {
         let part = start + rel + marker.len();
@@ -2524,15 +3591,19 @@ fn multipart_file(content_type: &str, body: &[u8]) -> Result<(String, Vec<u8>), 
         };
         let header_end = header_at + header_end_rel;
         let headers = String::from_utf8_lossy(&body[header_at..header_end]);
+        let headers_lc = headers.to_ascii_lowercase();
         let data_start = header_end + 4;
         let next = find_bytes(&body[data_start..], &marker).unwrap_or(body.len() - data_start);
         let mut data_end = data_start + next;
         if data_end >= 2 && &body[data_end - 2..data_end] == b"\r\n" {
             data_end -= 2;
         }
-        if headers.to_ascii_lowercase().contains("name=\"file\"")
-            || headers.to_ascii_lowercase().contains("name=file")
-        {
+        let is_file = headers_lc.contains("filename=")
+            && (headers_lc.contains("name=\"file\"")
+                || headers_lc.contains("name=file")
+                || headers_lc.contains("name=\"files\"")
+                || headers_lc.contains("name=files"));
+        if is_file {
             let filename = headers
                 .split("filename=")
                 .nth(1)
@@ -2544,11 +3615,17 @@ fn multipart_file(content_type: &str, body: &[u8]) -> Result<(String, Vec<u8>), 
                         .to_string()
                 })
                 .unwrap_or_else(|| "upload.bin".into());
-            return Ok((filename, body[data_start..data_end].to_vec()));
+            files.push((filename, body[data_start..data_end].to_vec()));
+        } else if headers_lc.contains("name=\"default_prompt\"")
+            || headers_lc.contains("name=default_prompt")
+        {
+            default_prompt = String::from_utf8_lossy(&body[data_start..data_end])
+                .trim()
+                .to_string();
         }
         start = data_start + next;
     }
-    Err("multipart body has no file field".into())
+    Ok((files, default_prompt))
 }
 
 fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {

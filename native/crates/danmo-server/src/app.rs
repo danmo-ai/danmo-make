@@ -2198,15 +2198,35 @@ mod tests {
         .unwrap();
         body["model"] = json!("z-image-turbo");
         body["adapters"] = json!([{ "id": "user-lora-abc", "weight": 0.8 }]);
-        let sft = post_json(&app, "/api/images/generations", &body).await;
-        assert_eq!(sft.0, StatusCode::NOT_IMPLEMENTED);
+        let missing_file = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(missing_file.0, StatusCode::BAD_REQUEST);
         assert!(
-            sft.1["detail"]
+            missing_file.1["detail"]
                 .as_str()
                 .unwrap()
-                .contains("Turbo SFT DistillPatch is not built"),
+                .contains("lora user-lora-abc is not installed"),
             "{}",
-            sft.1
+            missing_file.1
+        );
+        let trained = dir.join("trained.safetensors");
+        std::fs::write(&trained, b"not-a-safetensors").unwrap();
+        std::fs::write(
+            config.join("user_loras.json"),
+            format!(
+                r#"{{"items":[{{"id":"user-lora-abc","base_model":"z-image-turbo","local_path":"{}","inference":{{"scheme":"sft","model":"z-image-turbo","extra_adapters":[{{"id":"companion-lora:bf16","weight":1.0}}]}}}}]}}"#,
+                trained.display()
+            ),
+        )
+        .unwrap();
+        let stacked = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(stacked.0, StatusCode::BAD_REQUEST);
+        assert!(
+            stacked.1["detail"]
+                .as_str()
+                .unwrap()
+                .contains("lora companion-lora:bf16 is not installed"),
+            "{}",
+            stacked.1
         );
         body["model"] = json!(model);
         body["adapters"] = json!([]);
@@ -3462,7 +3482,8 @@ fn bind_installed_loras(state: &AppState, model: &str, body: &mut Value) -> Resu
         return Ok(());
     }
     let bare = model.split(':').next().unwrap_or(model);
-    for row in rows.iter_mut() {
+    let mut order: Vec<(String, f32)> = Vec::new();
+    for row in rows.iter() {
         let id = row
             .get("id")
             .and_then(|v| v.as_str())
@@ -3472,31 +3493,39 @@ fn bind_installed_loras(state: &AppState, model: &str, body: &mut Value) -> Resu
         if id.is_empty() {
             return Err(fail(StatusCode::BAD_REQUEST, "lora id is required"));
         }
-        reject_foreign_lora(state, bare, &id)?;
-        if bare == "z-image-turbo" {
-            match state.downloads.turbo_sft(&id) {
-                Ok(true) => {
-                    return Err(fail(
-                        StatusCode::NOT_IMPLEMENTED,
-                        "Turbo SFT DistillPatch is not built",
-                    ));
-                }
-                Ok(false) => {}
-                Err(detail) => return Err(fail(StatusCode::BAD_REQUEST, detail)),
-            }
-        }
-        let path = installed_lora_path(state, &id)?;
-        let Some(obj) = row.as_object_mut() else {
+        let weight = row.get("weight").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+        if !weight.is_finite() || !(0.0..=2.0).contains(&weight) {
             return Err(fail(
                 StatusCode::BAD_REQUEST,
-                "lora adapter is not an object",
+                format!("lora {id} weight is not between 0 and 2"),
             ));
-        };
-        obj.insert(
-            "path".to_string(),
-            json!(path.to_string_lossy().to_string()),
-        );
+        }
+        order.push((id, weight));
     }
+    let requested = order.clone();
+    for (id, _) in &requested {
+        let extras = state
+            .downloads
+            .inference_stack(id)
+            .map_err(|detail| fail(StatusCode::BAD_REQUEST, detail))?;
+        for extra in extras {
+            if order.iter().any(|(have, _)| have == &extra.id) {
+                continue;
+            }
+            order.push((extra.id, extra.weight));
+        }
+    }
+    let mut bound = Vec::with_capacity(order.len());
+    for (id, weight) in order {
+        reject_foreign_lora(state, bare, &id)?;
+        let path = installed_lora_path(state, &id)?;
+        bound.push(json!({
+            "id": id,
+            "weight": weight,
+            "path": path.to_string_lossy().to_string(),
+        }));
+    }
+    *rows = bound;
     Ok(())
 }
 

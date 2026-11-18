@@ -160,6 +160,8 @@ pub fn lora_weight_file(root: &Path) -> Result<PathBuf, String> {
         return Ok(files.remove(0));
     }
     const PREFERRED: &[&str] = &[
+        "final_adapters.safetensors",
+        "adapters.safetensors",
         "adapter_model.safetensors",
         "pytorch_lora_weights.safetensors",
         "model.safetensors",
@@ -695,34 +697,25 @@ impl Downloads {
         ))
     }
 
-    /// True only for a user-trained Turbo adapter whose inference scheme is `sft`.
-    pub fn turbo_sft(&self, id: &str) -> Result<bool, String> {
-        if !id.starts_with("user-lora-") {
-            return Ok(false);
-        }
+    /// Companion adapters recorded on this LoRA. An id with no record stacks nothing.
+    pub fn inference_stack(
+        &self,
+        id: &str,
+    ) -> Result<Vec<danmo_contracts::StackedAdapter>, String> {
         let user = self.workspace.join("config").join("user_loras.json");
         if !user.is_file() {
-            return Ok(false);
+            return Ok(Vec::new());
         }
         for item in read_lora_items(&user)? {
             if item.get("id").and_then(|v| v.as_str()) != Some(id) {
                 continue;
             }
-            let base = item
-                .get("base_model")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let base = base.split(':').next().unwrap_or(base).trim();
-            if base != "z-image-turbo" {
-                return Ok(false);
-            }
-            let scheme = item
-                .pointer("/inference/scheme")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            return Ok(scheme.eq_ignore_ascii_case("sft"));
+            return danmo_contracts::stacked_adapters_from_value(
+                item.pointer("/inference/extra_adapters"),
+            )
+            .map_err(|err| format!("lora {id} inference record: {err}"));
         }
-        Ok(false)
+        Ok(Vec::new())
     }
 
     pub fn delete_lora(&self, id: &str, remove_files: bool) -> Result<Value, String> {
@@ -932,12 +925,7 @@ impl Downloads {
         if name.is_empty() {
             return Err("download file name is empty".into());
         }
-        let folder = sanitize_name(if display_name.is_empty() {
-            &name
-        } else {
-            display_name
-        });
-        let dest = self.resolve("models/Lora").join(folder).join(&name);
+        let dest = lora_download_dest(&self.resolve("models/Lora"), &name)?;
         let file = PlannedFile {
             url: file_url,
             dest: dest.display().to_string(),
@@ -1871,11 +1859,24 @@ fn file_name_from_url(url: &str) -> String {
         .to_string()
 }
 
+/// Hub weight file name. The display title is not part of the path: a Chinese
+/// title would otherwise become a directory of underscores.
+fn lora_download_dest(lora_root: &Path, filename: &str) -> Result<PathBuf, String> {
+    let name = sanitize_name(filename);
+    if name.is_empty() {
+        return Err("download file name is empty".into());
+    }
+    if !name.to_ascii_lowercase().ends_with(".safetensors") {
+        return Err(format!("lora file {name} is not safetensors"));
+    }
+    Ok(lora_root.join(name))
+}
+
 fn sanitize_name(name: &str) -> String {
     let name = name.rsplit(['/', '\\']).next().unwrap_or(name);
     let mut out = String::new();
     for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ' ') {
+        if ch.is_alphanumeric() || matches!(ch, '-' | '_' | '.' | ' ') {
             out.push(ch);
         } else {
             out.push('_');
@@ -2235,6 +2236,73 @@ fn version_lists_components(spec: &Value) -> bool {
 }
 
 #[cfg(test)]
+mod lora_dest_tests {
+    use super::{lora_download_dest, sanitize_name};
+    use std::path::Path;
+
+    #[test]
+    fn hub_filename_stays_flat_and_keeps_han_characters() {
+        assert_eq!(
+            sanitize_name("女孩奶昔-造相Z-Turbo.safetensors"),
+            "女孩奶昔-造相Z-Turbo.safetensors"
+        );
+        assert_eq!(
+            sanitize_name("nested/StarFace1.0-Z-Image-Turbo.safetensors"),
+            "StarFace1.0-Z-Image-Turbo.safetensors"
+        );
+        let dest = lora_download_dest(
+            Path::new("/models/Lora"),
+            "【风格】Style_GuoMan3D.safetensors",
+        )
+        .unwrap();
+        assert_eq!(
+            dest,
+            Path::new("/models/Lora/_风格_Style_GuoMan3D.safetensors")
+        );
+        assert!(lora_download_dest(Path::new("/models/Lora"), "readme.md").is_err());
+    }
+}
+
+#[cfg(test)]
+mod inference_stack_tests {
+    use super::Downloads;
+    use std::fs;
+
+    #[test]
+    fn recorded_companion_keeps_its_own_weight() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-stack-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join("config")).unwrap();
+        fs::write(
+            dir.join("config/user_loras.json"),
+            r#"{"items":[
+                {"id":"user-lora-sft","inference":{"extra_adapters":[{"id":"companion:bf16","weight":1.0}]}},
+                {"id":"user-lora-plain","inference":{"scheme":"turbo"}},
+                {"id":"user-lora-text","inference":{"extra_adapters":["patch:bf16"]}}
+            ]}"#,
+        )
+        .unwrap();
+        let downloads = Downloads::open(&dir);
+        let stacked = downloads.inference_stack("user-lora-sft").unwrap();
+        assert_eq!(stacked.len(), 1);
+        assert_eq!(stacked[0].id, "companion:bf16");
+        assert_eq!(stacked[0].weight, 1.0);
+        assert!(downloads.inference_stack("user-lora-plain").unwrap().is_empty());
+        let text = downloads.inference_stack("user-lora-text").unwrap();
+        assert_eq!(text[0].id, "patch:bf16");
+        assert_eq!(text[0].weight, 1.0);
+        assert!(downloads.inference_stack("missing").unwrap().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 mod component_role_tests {
     use super::component_dest;
     use std::path::PathBuf;
@@ -2574,7 +2642,10 @@ fn lora_item_file(items: &[Value], id: &str, workspace: &Path) -> Option<PathBuf
         .find(|item| item.get("id").and_then(|v| v.as_str()) == Some(id))?;
     let raw = item.get("local_path").and_then(|v| v.as_str())?;
     let path = resolve_model_path(workspace, raw);
-    path.is_file().then_some(path)
+    if path.is_file() {
+        return Some(path);
+    }
+    lora_weight_file(&path).ok()
 }
 
 fn load_lora_items(path: &Path) -> Vec<Value> {

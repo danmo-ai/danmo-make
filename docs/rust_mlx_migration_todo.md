@@ -108,7 +108,7 @@ P6 已落地、不要重做的部分：ACE XL 的 MLX 生成与 cover / cover-no
 
 ### P4
 
-- `z_image`：LoRA、controlnet union、structural guide、latent refine、LEMICA、8 步 DistillPatch。create/rewrite 的 safetensors 会话已经在树上。rewrite 还没有逐位 parity。
+- `z_image`：LoRA 已接到共享 `attach_lora`，模块名经 `remap_lora_module_prefix` 对齐图参数。还没有真实图的 LoRA 生成证据。controlnet union、structural guide、latent refine、LEMICA、8 步 DistillPatch 仍未做。create/rewrite 的 safetensors 会话已经在树上。rewrite 还没有逐位 parity。
 - `flux2`：Klein 4B/9B/base 的 create、edit、LoRA。变体不能用一次 family 级 parity 代替。
 - `qwen_image`：create、edit、edit-2511、lightning、多参考、LoRA。Qwen2.5-VL 进 common；108 token crop 和条件拼接留在 family。
 
@@ -138,7 +138,7 @@ SeedVR2 图像和视频超分。tiling、因果时间缓存、wavelet/LAB、ffmp
 
 - 下载、components、manifest、workspace registry、user LoRA、画廊、metadata、MCP、CLI。
 - 本地 assistant：qwen3 / qwen3_vl、chat template、视觉预处理、采样、KV cache、SSE、卸载。它用自己的 worker，不和分钟级 DiT 串在同一个 executor 上。
-- **训练（延后）**：不恢复 Python trainer。等 Rust MLX 推理链路成熟后，再做小模型 loss/梯度/optimizer/resume → Z-Image 短训 → z_image / flux1 / qwen_image trainer。候选评估直接调 Rust 推理。在此之前 API/UI 保持不可用。
+- **训练（进行中）**：不恢复 Python trainer。已落地：`danmo-mlx` `value_and_grad` + AdamW；DiffSynth 对齐的 Flow-Match schedule/`training_weight`；数据集 `train.jsonl`+`meta.json`；Z-Image/Turbo presets（默认 `turbo-sft`=Scheme 4）；共享 train loop（假 latent loss↓ + adapter `attach_lora` 可加载）；API datasets/requirements/trainings（MLX feature 下 `ready:true`）。仍缺：VAE/TE encode cache、完整 DiT forward 可微 LoRA、真图 E2E 与矩阵勾选。
 
 ### P10
 

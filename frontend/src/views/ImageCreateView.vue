@@ -344,7 +344,7 @@ function imageModelRow(config: Record<string, unknown>): boolean {
 /*  Params                                                             */
 /* ------------------------------------------------------------------ */
 
-const verificationExtraAdapters = ref<Array<{ id: string; weight: number }>>([]);
+/** When true, skip model-default / size-memory writes so an exported recipe stays intact. */
 const verificationRecipeActive = ref(false);
 const params = reactive<Record<string, unknown>>({
   title: '',
@@ -1069,7 +1069,7 @@ const controlNetHostRuntimeAvailable = computed(() =>
 function syncImageLoraSelection() {
   if (!params.lora) return;
   const row = findCompatibleLora(compatibleLoras.value, params.lora);
-  if (!row) {
+  if (!row || row.ready === false) {
     params.lora = '';
     return;
   }
@@ -1086,9 +1086,7 @@ async function loadCompatibleAdapters(modelKey: string) {
   try {
     const loras = await api.settings.getCompatibleLoras(modelKey);
     if (String(params.model || '') !== modelKey) return;
-    compatibleLoras.value = ((loras as CompatibleLoraRow[]) || []).filter(
-      (lora) => lora.ready !== false,
-    );
+    compatibleLoras.value = (loras as CompatibleLoraRow[]) || [];
     syncImageLoraSelection();
     await loadCompatibleControlNets(modelKey);
     clearControlNetIfIncompatible(params, () => {
@@ -1853,9 +1851,10 @@ async function prepareGenerationContext(): Promise<GenerationPrepared | null> {
   if (!validateGenerationPreconditions()) return null;
 
   const modelStr = params.version ? `${params.model}:${params.version}` : params.model;
+  // Primary LoRA only. Companion adapters come from the LoRA's inference metadata
+  // on the server (bind_installed_loras → inference_stack) — keep the client neutral.
   const adapters: Array<{ id: string; weight: number }> = [];
   if (params.lora) adapters.push({ id: String(params.lora), weight: Number(params.lora_scale) || 0.8 });
-  if (verificationRecipeActive.value) adapters.push(...verificationExtraAdapters.value);
   persistComposerSnapshot();
   const meta = buildCanvasMeta();
   if (params.scheduler) meta.scheduler = params.scheduler;
@@ -2600,13 +2599,9 @@ onMounted(async () => {
   if (typeof q.prompt === 'string' && q.prompt) params.prompt = q.prompt;
   if (typeof q.lora === 'string' && q.lora) params.lora = q.lora;
   if (q.verify === '1') {
-    // Apply the exported identity recipe, including the frozen acceleration companion.
+    // Apply exported compose params; companion stack stays on the LoRA metadata
+    // and is expanded server-side. Do not inject recipe-specific adapters here.
     verificationRecipeActive.value = true;
-    verificationExtraAdapters.value = String(q.extra_adapters || '')
-      .split(',')
-      .map((id) => id.trim())
-      .filter((id) => id && id !== String(params.lora || ''))
-      .map((id) => ({ id, weight: 1 }));
     const numberQuery = (key: string): number | undefined => {
       const value = Number(q[key]);
       return q[key] != null && q[key] !== '' && Number.isFinite(value) ? value : undefined;
@@ -2630,6 +2625,8 @@ onMounted(async () => {
     }
     selectedSize.value = `${params.width}x${params.height}`;
     await loadCompatibleAdapters(modelKey);
+    // Prefer LoRA compose_overrides when present; query values re-applied for seed/prompt handoff.
+    syncImageLoraSelection();
     for (const key of ['steps', 'guidance', 'lora_scale', 'width', 'height'] as const) {
       const value = numberQuery(key);
       if (value != null) params[key] = value;

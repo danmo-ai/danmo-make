@@ -1,9 +1,18 @@
 //! SQLite studio store. Same task, asset, and canvas tables as the previous product.
 //! `CREATE TABLE IF NOT EXISTS` only — no ALTER.
 
+mod datasets;
+
 use rusqlite::{params, Connection};
 use std::path::Path;
 use thiserror::Error;
+
+pub use datasets::{
+    add_image_bytes, append_image_row, create_dataset, dataset_dir, dataset_health_report,
+    datasets_root, delete_dataset, delete_dataset_image, get_dataset_detail, import_asset_files,
+    import_metadata_csv, list_datasets, load_dataset_meta, load_training_pairs, read_dataset_rows,
+    set_skipped_images, summarize_dataset, update_dataset_meta,
+};
 
 #[derive(Debug, Error)]
 pub enum StoreError {

@@ -4,16 +4,32 @@ import { api } from '@/utils/api';
 export type LoraTrainRun = Record<string, unknown>;
 export type UserLoraRow = Record<string, unknown>;
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function scalarText(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value).trim();
+  }
+  const obj = asRecord(value);
+  return String(obj.id || obj.name || '').trim();
+}
+
 function runParams(run: LoraTrainRun): Record<string, unknown> {
-  const p = run.params;
-  return p && typeof p === 'object' ? (p as Record<string, unknown>) : {};
+  return asRecord(run.params);
+}
+
+function runRequest(run: LoraTrainRun): Record<string, unknown> {
+  return asRecord(runParams(run).request);
 }
 
 function runResultMeta(run: LoraTrainRun): Record<string, unknown> {
-  const result = run.result;
-  if (!result || typeof result !== 'object') return {};
-  const meta = (result as Record<string, unknown>).metadata;
-  return meta && typeof meta === 'object' ? (meta as Record<string, unknown>) : {};
+  const result = asRecord(run.result);
+  return asRecord(result.metadata);
 }
 
 export function runTaskId(run: LoraTrainRun): string {
@@ -22,20 +38,37 @@ export function runTaskId(run: LoraTrainRun): string {
 
 export function runBaseModel(run: LoraTrainRun): string {
   const params = runParams(run);
-  return String(params.base_model || run.model || '—').split(':', 1)[0];
+  const request = runRequest(run);
+  const raw =
+    scalarText(params.base_model) ||
+    scalarText(request.base_model) ||
+    scalarText(run.model_id) ||
+    scalarText(run.model) ||
+    '—';
+  return raw.split(':', 1)[0] || '—';
+}
+
+export function runPresetId(run: LoraTrainRun): string {
+  const params = runParams(run);
+  const request = runRequest(run);
+  return (
+    scalarText(request.preset) ||
+    scalarText(asRecord(params.preset).id) ||
+    scalarText(params.preset) ||
+    ''
+  );
 }
 
 export function runOutputName(run: LoraTrainRun): string {
   const params = runParams(run);
+  const request = runRequest(run);
   const meta = runResultMeta(run);
-  const training =
-    meta.training && typeof meta.training === 'object'
-      ? (meta.training as Record<string, unknown>)
-      : {};
-  const fromParams = String(params.output_name || '').trim();
+  const training = asRecord(meta.training);
+  const fromParams =
+    scalarText(params.output_name) ||
+    scalarText(request.output_name) ||
+    scalarText(training.output_name);
   if (fromParams) return fromParams;
-  const fromTraining = String(training.output_name || '').trim();
-  if (fromTraining) return fromTraining;
   return runTaskId(run).slice(0, 12) || '—';
 }
 
@@ -110,6 +143,7 @@ export function useLoraTrainLibrary() {
     userLoraForRun,
     runOutputName,
     runBaseModel,
+    runPresetId,
     runTaskId,
     runUserLoraId,
   };

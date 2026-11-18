@@ -1,15 +1,14 @@
 <template>
   <div class="lora-run-detail">
     <div class="lora-run-detail__head">
-      <DqButton size="sm" @click="$emit('back')">{{ $t('common.back') }}</DqButton>
       <div class="lora-run-detail__head-main">
-        <h3 class="lora-run-detail__title">{{ $t('loraTrain.runTitle') }}</h3>
+        <h3 class="lora-run-detail__title">{{ runDisplayName }}</h3>
+        <DqTag v-if="task" :type="statusTagType">{{ statusLabel }}</DqTag>
         <TaskIdBadge :task-id="taskId" />
       </div>
     </div>
 
-    <div v-if="task" class="lora-run-detail__status">
-      <DqTag :type="statusTagType">{{ statusLabel }}</DqTag>
+    <div v-if="task && !isTerminal" class="lora-run-detail__status">
       <DqProgress :percentage="Math.round((task.progress || 0) * 100)" />
       <p v-if="progressMessage" class="lora-run-detail__progress-msg">{{ progressMessage }}</p>
       <p v-if="task.step != null && task.total != null" class="lora-run-detail__step-hint">
@@ -18,20 +17,28 @@
           · {{ $t('loraTrain.etaSeconds', { s: Math.max(0, Math.round(task.eta_seconds)) }) }}
         </span>
       </p>
-      <p v-if="task.status === 'failed' && task.error" class="lora-run-detail__error">
-        {{ task.error }}
-      </p>
+      <div class="lora-run-detail__queue-hint">
+        <p>{{ $t('loraTrain.runInBackgroundHint') }}</p>
+        <DqButton size="sm" type="secondary" @click="openGlobalTaskQueue">
+          {{ $t('loraTrain.openTaskQueue') }}
+        </DqButton>
+      </div>
     </div>
 
-    <div v-if="task && !isTerminal" class="lora-run-detail__queue-hint">
-      <p>{{ $t('loraTrain.runInBackgroundHint') }}</p>
-      <DqButton size="sm" type="secondary" @click="openGlobalTaskQueue">
-        {{ $t('loraTrain.openTaskQueue') }}
-      </DqButton>
-    </div>
+    <p v-if="task?.status === 'failed' && task.error" class="lora-run-detail__error">
+      {{ task.error }}
+    </p>
+
+    <ul v-if="task && isTerminal" class="lora-run-detail__summary">
+      <li v-for="row in runSummaryRows" :key="row.key">
+        <span>{{ row.label }}</span>
+        <strong>{{ row.value }}</strong>
+      </li>
+    </ul>
 
     <div v-if="artifacts?.loss_history?.length" class="lora-run-detail__section">
       <h4 class="lora-run-detail__section-title">{{ $t('loraTrain.lossCurve') }}</h4>
+      <p v-if="lossSummary" class="lora-run-detail__section-hint">{{ lossSummary }}</p>
       <div class="lora-run-loss-bars">
         <div
           v-for="pt in lossBars"
@@ -80,24 +87,39 @@
     </div>
 
     <div
-      v-if="artifacts?.checkpoints?.length && task?.status === 'completed'"
+      v-if="task?.status === 'completed'"
       class="lora-run-detail__section"
     >
       <h4 class="lora-run-detail__section-title">{{ $t('loraTrain.checkpoints') }}</h4>
-      <div class="lora-run-checkpoint-row">
+      <p class="lora-run-detail__section-hint">{{ $t('loraTrain.registerHint') }}</p>
+      <div v-if="checkpointOptions.length" class="lora-run-checkpoint-row">
         <DqSelect v-model="selectedCheckpoint" size="sm" class="lora-run-checkpoint-select">
           <DqOption
-            v-for="ck in artifacts.checkpoints"
+            v-for="ck in checkpointOptions"
             :key="ck"
             :label="ck"
             :value="ck"
           />
         </DqSelect>
         <DqInput v-model="registerName" :placeholder="$t('loraTrain.registerName')" size="sm" />
-        <DqButton size="sm" type="secondary" :loading="registering" @click="registerSelected">
-          {{ $t('loraTrain.registerCheckpoint') }}
+        <DqButton
+          size="sm"
+          type="primary"
+          :loading="registering"
+          :disabled="!selectedCheckpoint || Boolean(verifyLoraId())"
+          @click="registerSelected"
+        >
+          {{ verifyLoraId() ? $t('loraTrain.registeredBadge') : $t('loraTrain.registerCheckpoint') }}
         </DqButton>
       </div>
+      <DqAlert
+        v-else
+        type="warning"
+        :closable="false"
+        :title="$t('loraTrain.noCheckpointTitle')"
+      >
+        <p>{{ $t('loraTrain.noCheckpointBody') }}</p>
+      </DqAlert>
       <p v-if="registeredLoraId" class="lora-run-registered">
         {{ $t('loraTrain.registeredAs') }}: {{ registeredLoraId }}
       </p>
@@ -107,36 +129,37 @@
       <h4 class="lora-run-detail__section-title">{{ $t('loraTrain.verifyTitle') }}</h4>
       <p class="lora-run-detail__verify-hint">{{ $t('loraTrain.verifyHint') }}</p>
       <DqAlert v-if="!verifyLoraId()" type="warning" :closable="false" :title="$t('loraTrain.verifyNeedsRegistration')">
-        <p>{{ $t('loraTrain.verifyCheckpointHint', { checkpoint: selectedCheckpoint }) }}</p>
+        <p>{{ $t('loraTrain.verifyCheckpointHint', { checkpoint: selectedCheckpoint || '—' }) }}</p>
       </DqAlert>
-      <DqAlert v-else type="success" :closable="false" :title="$t('loraTrain.verifyCheckpointBound', { checkpoint: selectedCheckpoint || 'final_adapters.safetensors' })" />
-      <DqAlert
-        v-if="verification.extra_adapters?.length"
-        type="info"
-        :closable="false"
-        :title="$t('loraTrain.verifyExtraAdapters', { adapters: verification.extra_adapters.join(', ') })"
-      />
-      <div class="lora-run-detail__verify-grid">
-        <label>{{ $t('loraTrain.progressPrompt') }}<DqInput v-model="verifyPrompt" type="textarea" :rows="3" /></label>
-        <label>{{ $t('studio.seed') }}<DqInput v-model="verification.seed" /></label>
-        <label>{{ $t('create.loraScale') }}<DqInput v-model.number="verification.lora_scale" type="number" min="0" max="2" step="0.05" /></label>
-        <label>{{ $t('create.stepsLabel') }}<DqInput v-model.number="verification.steps" type="number" min="1" max="150" /></label>
-        <label>{{ $t('create.guidanceLabel') }}<DqInput v-model.number="verification.guidance" type="number" min="0" max="30" step="0.1" /></label>
-      </div>
-      <p class="lora-run-detail__verify-recipe">{{ verificationSummary }}</p>
-      <div class="lora-run-detail__actions">
-        <DqButton type="primary" :disabled="!verifyLoraId() || !verifyPrompt.trim()" @click="verifyGenerate">
-          {{ $t('loraTrain.verifyGenerate') }}
-        </DqButton>
-        <DqButton
-          v-if="registeredLoraId || verifyLoraId()"
-          size="sm"
-          type="secondary"
-          @click="openModelsUserLorasPage()"
-        >
-          {{ $t('loraTrain.viewInModels') }}
-        </DqButton>
-      </div>
+      <template v-else>
+        <DqAlert type="success" :closable="false" :title="$t('loraTrain.verifyCheckpointBound', { checkpoint: selectedCheckpoint || 'final_adapters.safetensors' })" />
+        <DqAlert
+          v-if="verification.extra_adapters?.length"
+          type="info"
+          :closable="false"
+          :title="$t('loraTrain.verifyExtraAdapters', { adapters: verification.extra_adapters.map((item) => stackedAdapterToken(item)).filter(Boolean).join(', ') })"
+        />
+        <div class="lora-run-detail__verify-grid">
+          <label>{{ $t('loraTrain.progressPrompt') }}<DqInput v-model="verifyPrompt" type="textarea" :rows="3" /></label>
+          <label>{{ $t('studio.seed') }}<DqInput v-model="verification.seed" /></label>
+          <label>{{ $t('create.loraScale') }}<DqInput v-model.number="verification.lora_scale" type="number" min="0" max="2" step="0.05" /></label>
+          <label>{{ $t('create.stepsLabel') }}<DqInput v-model.number="verification.steps" type="number" min="1" max="150" /></label>
+          <label>{{ $t('create.guidanceLabel') }}<DqInput v-model.number="verification.guidance" type="number" min="0" max="30" step="0.1" /></label>
+        </div>
+        <p class="lora-run-detail__verify-recipe">{{ verificationSummary }}</p>
+        <div class="lora-run-detail__actions">
+          <DqButton type="primary" :disabled="!verifyPrompt.trim()" @click="verifyGenerate">
+            {{ $t('loraTrain.verifyGenerate') }}
+          </DqButton>
+          <DqButton
+            size="sm"
+            type="secondary"
+            @click="openModelsUserLorasPage()"
+          >
+            {{ $t('loraTrain.viewInModels') }}
+          </DqButton>
+        </div>
+      </template>
     </div>
   </div>
 </template>
@@ -152,10 +175,10 @@ import { openModelsUserLoras } from '@/utils/loraTrainHandoff';
 import TaskIdBadge from '@/components/studio/TaskIdBadge.vue';
 import LoraQualityHints from '@/components/lora/LoraQualityHints.vue';
 import type { LoraTrainingQualityReport } from '@/utils/loraQuality';
+import { stackedAdapterToken } from '@/utils/loraAdapterMeta';
 
 const props = defineProps<{ taskId: string }>();
 const emit = defineEmits<{
-  (e: 'back'): void;
   (e: 'verify', payload: Record<string, unknown>): void;
 }>();
 
@@ -171,7 +194,7 @@ const registeredLoraId = ref('');
 const verifyPrompt = ref('');
 const registeredRecipe = ref<Record<string, any> | null>(null);
 const registeredCheckpoint = ref('');
-const verification = ref<Record<string, any>>({ seed: '42', steps: 30, guidance: 4, lora_scale: 0.85, width: 1024, height: 1024, model: 'z-image-turbo', scheduler: 'linear' });
+const verification = ref<Record<string, any>>({ seed: '42', steps: 8, guidance: 0, lora_scale: 0.8, width: 1024, height: 1024, model: 'z-image-turbo', scheduler: 'linear' });
 const visionAvailable = ref(false);
 const trainingVlmLoading = ref(false);
 let taskStream: EventSource | null = null;
@@ -198,6 +221,82 @@ const statusLabel = computed(() => {
   return translated !== key ? translated : s;
 });
 
+const runDisplayName = computed(() => {
+  const result = task.value?.result || {};
+  const params = task.value?.params || {};
+  const name =
+    result.output_name ||
+    params.request?.output_name ||
+    params.output_name ||
+    '';
+  return String(name).trim() || t('loraTrain.runTitle');
+});
+
+const checkpointOptions = computed(() => {
+  const fromArtifacts = Array.isArray(artifacts.value?.checkpoints)
+    ? artifacts.value.checkpoints.map((c: string) => checkpointBasename(c))
+    : [];
+  if (fromArtifacts.length) return [...new Set(fromArtifacts)];
+  const fromResult = Array.isArray(task.value?.result?.checkpoints)
+    ? task.value.result.checkpoints.map((c: string) => checkpointBasename(c))
+    : [];
+  if (fromResult.length) return [...new Set(fromResult)];
+  if (task.value?.result?.adapter_path) {
+    return [checkpointBasename(String(task.value.result.adapter_path))];
+  }
+  return [];
+});
+
+const runSummaryRows = computed(() => {
+  const params = task.value?.params || {};
+  const request = params.request || {};
+  const preset = params.preset || {};
+  const result = task.value?.result || {};
+  const base = String(request.base_model || params.base_model || result.inference?.model || '—');
+  const presetId = String(request.preset || preset.id || '—');
+  const presetLabelKey = `loraTrain.preset.${presetId}`;
+  const presetLabel = t(presetLabelKey);
+  const rows = [
+    { key: 'base', label: t('loraTrain.summaryBase'), value: base },
+    {
+      key: 'preset',
+      label: t('loraTrain.summaryPreset'),
+      value: presetLabel !== presetLabelKey ? presetLabel : presetId,
+    },
+    {
+      key: 'dataset',
+      label: t('loraTrain.summaryDataset'),
+      value: String(request.dataset_id || params.dataset_id || '—'),
+    },
+    {
+      key: 'images',
+      label: t('loraTrain.summaryImages'),
+      value: String(params.n_images ?? '—'),
+    },
+    {
+      key: 'caption',
+      label: t('loraTrain.summaryPrompt'),
+      value: String(params.training_caption || request.default_prompt || '—'),
+    },
+  ];
+  const res = Array.isArray(preset.resolution) ? preset.resolution.join('×') : '';
+  if (res) {
+    rows.push({ key: 'resolution', label: t('loraTrain.summaryResolution'), value: res });
+  }
+  if (preset.iterations != null) {
+    rows.push({
+      key: 'iterations',
+      label: t('loraTrain.summaryIterations'),
+      value: String(preset.iterations),
+    });
+  }
+  const out = String(result.output_name || request.output_name || '').trim();
+  if (out) {
+    rows.push({ key: 'output', label: t('loraTrain.summaryOutput'), value: out });
+  }
+  return rows;
+});
+
 const lossBars = computed(() => {
   const hist = artifacts.value?.loss_history;
   if (!Array.isArray(hist) || !hist.length) return [];
@@ -210,11 +309,30 @@ const lossBars = computed(() => {
   }));
 });
 
+const lossSummary = computed(() => {
+  const hist = artifacts.value?.loss_history;
+  if (!Array.isArray(hist) || hist.length < 2) return '';
+  const first = Number(hist[0]?.loss);
+  const last = Number(hist[hist.length - 1]?.loss);
+  if (!Number.isFinite(first) || !Number.isFinite(last)) return '';
+  return t('loraTrain.lossSummary', {
+    steps: hist.length,
+    first: first.toFixed(3),
+    last: last.toFixed(3),
+  });
+});
+
 const canResumeTraining = computed(() => {
   const s = task.value?.status;
   if (s !== 'failed' && s !== 'cancelled') return false;
-  return Array.isArray(artifacts.value?.checkpoints) && artifacts.value.checkpoints.length > 0;
+  return checkpointOptions.value.length > 0;
 });
+
+function checkpointBasename(path: string): string {
+  const s = String(path || '');
+  const parts = s.split(/[/\\]/);
+  return parts[parts.length - 1] || s;
+}
 
 function lossBarTitle(pt: { step: number; loss: number; val_loss?: number }): string {
   const base = `step ${pt.step}: loss ${Number(pt.loss).toFixed(4)}`;
@@ -274,6 +392,37 @@ function patchTask(patch: Record<string, unknown>) {
   task.value = { ...(task.value || {}), ...patch };
 }
 
+function hydrateArtifactsFromTaskResult() {
+  const result = task.value?.result;
+  if (!result || typeof result !== 'object') return;
+  const checkpoints = Array.isArray(result.checkpoints)
+    ? result.checkpoints.map((c: string) => checkpointBasename(c))
+    : result.adapter_path
+      ? [checkpointBasename(String(result.adapter_path))]
+      : [];
+  artifacts.value = {
+    ...(artifacts.value || {}),
+    loss_history: Array.isArray(result.loss_history)
+      ? result.loss_history
+      : artifacts.value?.loss_history,
+    checkpoints: checkpoints.length ? checkpoints : artifacts.value?.checkpoints,
+    inference: result.inference || artifacts.value?.inference,
+    adapter_path: result.adapter_path || artifacts.value?.adapter_path,
+    output_name: result.output_name || artifacts.value?.output_name,
+    progress_images: artifacts.value?.progress_images || [],
+  };
+  if (result.user_lora_id && !registeredLoraId.value) {
+    registeredLoraId.value = String(result.user_lora_id);
+  }
+  if (!selectedCheckpoint.value && checkpoints.length) {
+    const finals = checkpoints.filter((c: string) => c.includes('final'));
+    selectedCheckpoint.value = finals[finals.length - 1] || checkpoints[checkpoints.length - 1];
+  }
+  if (!registerName.value.trim()) {
+    registerName.value = String(result.output_name || task.value?.params?.request?.output_name || '').trim();
+  }
+}
+
 async function refreshArtifacts(force = false) {
   const now = Date.now();
   if (!force && now - lastArtifactRefresh < 8000) return;
@@ -284,13 +433,18 @@ async function refreshArtifacts(force = false) {
     if ((next as any)?.vision_available != null) {
       visionAvailable.value = Boolean((next as any).vision_available);
     }
-    if (!selectedCheckpoint.value && (next as any)?.checkpoints?.length) {
-      const finals = (next as any).checkpoints.filter((c: string) => c.includes('final'));
-      selectedCheckpoint.value = finals[finals.length - 1] || (next as any).checkpoints.at(-1);
+    if ((next as any)?.checkpoints?.length) {
+      const names = (next as any).checkpoints.map((c: string) => checkpointBasename(c));
+      artifacts.value = { ...(next as any), checkpoints: names };
+      if (!selectedCheckpoint.value) {
+        const finals = names.filter((c: string) => c.includes('final'));
+        selectedCheckpoint.value = finals[finals.length - 1] || names.at(-1);
+      }
     }
     syncVerification();
   } catch {
-    if (force) artifacts.value = null;
+    hydrateArtifactsFromTaskResult();
+    syncVerification();
   }
 }
 
@@ -334,7 +488,9 @@ async function refreshTask() {
   } else if (detail?.phase != null) {
     progressMessage.value = String(detail.phase);
   }
+  hydrateArtifactsFromTaskResult();
   await refreshArtifacts(true);
+  syncVerification();
 }
 
 function closeStream() {
@@ -403,18 +559,32 @@ function verifyLoraId(): string {
   if (registeredCheckpoint.value && registeredCheckpoint.value !== active) return '';
   return (
     registeredLoraId.value ||
-    String(task.value?.result?.metadata?.user_lora_id || task.value?.result?.metadata?.training?.user_lora_id || '')
+    String(
+      task.value?.result?.user_lora_id ||
+        task.value?.result?.metadata?.user_lora_id ||
+        task.value?.result?.metadata?.training?.user_lora_id ||
+        ''
+    )
   );
 }
 
 function verificationRecipe(): Record<string, any> {
   const params = task.value?.params || {};
+  const request = params.request || {};
   const registered = registeredCheckpoint.value === (selectedCheckpoint.value || 'final_adapters.safetensors');
-  return (registered && registeredRecipe.value?.inference) || artifacts.value?.inference || params.metadata?.inference || {
-    model: String(params.base_model || 'z-image'),
-    steps: Number(params.progress_steps || 30),
-    guidance: Number(params.guidance || 4),
-    lora_weight: 1,
+  const recipe =
+    (registered && registeredRecipe.value?.inference) ||
+    artifacts.value?.inference ||
+    task.value?.result?.inference ||
+    params.preset?.inference ||
+    params.metadata?.inference ||
+    null;
+  if (recipe && typeof recipe === 'object') return recipe;
+  return {
+    model: String(request.base_model || params.base_model || 'z-image-turbo'),
+    steps: 8,
+    guidance: 0,
+    lora_weight: 0.8,
     scheduler: 'linear',
   };
 }
@@ -431,26 +601,46 @@ const verificationSummary = computed(() => t('loraTrain.verifyRecipe', {
 function syncVerification() {
   const meta = task.value?.result?.metadata?.training || {};
   const params = task.value?.params || {};
-  if (!verifyPrompt.value) verifyPrompt.value = String(meta.training_caption || params.progress_prompt || '').trim();
+  const request = params.request || {};
+  if (!verifyPrompt.value) {
+    verifyPrompt.value = String(
+      meta.training_caption || params.training_caption || ''
+    ).trim();
+  }
   const recipe = verificationRecipe();
+  const res = Array.isArray(params.preset?.resolution) ? params.preset.resolution : null;
   verification.value = {
     ...verification.value,
     ...recipe,
-    lora_scale: Number(recipe.lora_weight ?? verification.value.lora_scale),
-    extra_adapters: Array.isArray(recipe.extra_adapters) ? recipe.extra_adapters.map(String) : [],
-    seed: '42',
-    width: Number(recipe.width || 1024),
-    height: Number(recipe.height || 1024),
-    model: String(recipe.model || params.base_model || 'z-image'),
+    lora_scale: Number(recipe.lora_weight ?? verification.value.lora_scale ?? 0.8),
+    extra_adapters: Array.isArray(recipe.extra_adapters)
+      ? recipe.extra_adapters.map((item: unknown) => stackedAdapterToken(item)).filter(Boolean)
+      : [],
+    seed: String(verification.value.seed || '42'),
+    width: Number(recipe.width || res?.[0] || 1024),
+    height: Number(recipe.height || res?.[1] || 1024),
+    model: String(recipe.model || request.base_model || params.base_model || 'z-image-turbo'),
+    steps: Number(recipe.steps ?? verification.value.steps ?? 8),
+    guidance: Number(recipe.guidance ?? verification.value.guidance ?? 0),
+    scheduler: String(recipe.scheduler || 'linear'),
   };
 }
 
 function verifyGenerate() {
   const checkpoint = selectedCheckpoint.value || 'final_adapters.safetensors';
+  // Hand off primary LoRA + compose knobs only. Companion adapters are read from
+  // the registered LoRA's inference metadata at bind time — keep inference neutral.
   emit('verify', {
-    ...verification.value,
     prompt: verifyPrompt.value.trim(),
     lora: verifyLoraId(),
+    model: verification.value.model,
+    steps: verification.value.steps,
+    guidance: verification.value.guidance,
+    lora_scale: verification.value.lora_scale,
+    scheduler: verification.value.scheduler,
+    width: verification.value.width,
+    height: verification.value.height,
+    seed: verification.value.seed,
     verify: '1',
     checkpoint,
   });
@@ -497,24 +687,13 @@ onUnmounted(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 20px 22px;
-  border-radius: var(--dq-radius-group, 16px);
-  border: 0.5px solid color-mix(in srgb, var(--dq-border) 50%, transparent);
-  background: color-mix(in srgb, var(--dq-fill-secondary) 72%, var(--dq-bg-base));
+  gap: 18px;
   overflow: auto;
-}
-
-.lora-run-detail :deep(.dq-surface-card__body) {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
 }
 
 .lora-run-detail__head {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
 }
 
 .lora-run-detail__head-main {
@@ -532,11 +711,53 @@ onUnmounted(() => {
   color: var(--dq-label-primary);
 }
 
+.lora-run-detail__summary {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.lora-run-detail__summary li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 0.5px solid var(--dq-border-subtle);
+  font-size: var(--dq-font-size-body);
+}
+
+.lora-run-detail__summary li:last-child {
+  border-bottom: none;
+}
+
+.lora-run-detail__summary span {
+  color: var(--dq-label-tertiary);
+  flex-shrink: 0;
+}
+
+.lora-run-detail__summary strong {
+  color: var(--dq-label-primary);
+  font-weight: 600;
+  text-align: right;
+  word-break: break-word;
+  min-width: 0;
+}
+
+.lora-run-detail__section-hint {
+  margin: 0 0 10px;
+  font-size: var(--dq-font-size-caption);
+  color: var(--dq-label-secondary);
+  line-height: 1.45;
+}
+
 .lora-run-detail__verification {
-  padding: 14px;
-  border: 0.5px solid var(--dq-border-subtle);
-  border-radius: var(--dq-radius-card);
-  background: color-mix(in srgb, var(--dq-accent) 3%, var(--dq-fill-secondary));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 4px;
+  border-top: 0.5px solid var(--dq-border-subtle);
 }
 
 .lora-run-detail__verify-hint,
@@ -603,13 +824,9 @@ onUnmounted(() => {
 
 .lora-run-detail__queue-hint {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: var(--dq-radius-group);
-  background: var(--dq-fill-secondary);
-  border: 0.5px solid var(--dq-border-subtle);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
 }
 
 .lora-run-detail__queue-hint p {
@@ -654,10 +871,7 @@ onUnmounted(() => {
   align-items: flex-end;
   gap: 2px;
   height: 80px;
-  padding: 8px;
-  border-radius: var(--dq-radius-group);
-  background: var(--dq-fill-secondary);
-  border: 0.5px solid var(--dq-border-subtle);
+  padding: 4px 0;
 }
 
 .lora-run-loss-bar {

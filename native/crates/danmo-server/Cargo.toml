@@ -14,9 +14,9 @@ default = []
 cuda = ["danmo-engine/cuda"]
 vulkan = ["danmo-engine/vulkan"]
 metal = ["danmo-engine/metal"]
-mlx = ["danmo-engine/mlx"]
-mlx-metal = ["mlx", "metal", "danmo-engine/mlx-metal"]
-mlx-cuda = ["mlx", "cuda", "danmo-engine/mlx-cuda"]
+mlx = ["danmo-engine/mlx", "dep:danmo-mlx"]
+mlx-metal = ["mlx", "metal", "danmo-engine/mlx-metal", "danmo-mlx/metal"]
+mlx-cuda = ["mlx", "cuda", "danmo-engine/mlx-cuda", "danmo-mlx/cuda"]
 
 [dependencies]
 danmo-engine = { path = "../danmo-engine" }
@@ -24,6 +24,7 @@ danmo-contracts = { path = "../danmo-contracts" }
 danmo-catalog = { path = "../danmo-catalog" }
 danmo-schedule = { path = "../danmo-schedule" }
 danmo-store = { path = "../danmo-store" }
+danmo-mlx = { path = "../danmo-mlx", optional = true }
 axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

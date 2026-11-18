@@ -48,7 +48,7 @@
             </template>
           </span>
           <span class="lora-train-history__item-meta">
-            <span class="lora-train-history__base">{{ runBaseModel(run) }}</span>
+            <span class="lora-train-history__base">{{ runMetaLine(run) }}</span>
             <span class="lora-train-history__sep" aria-hidden="true">·</span>
             <span
               v-if="variant === 'sidebar'"
@@ -57,7 +57,6 @@
             >
               {{ userLoraForRun(run) ? $t('loraTrain.registeredBadge') : statusLabel(String(run.status || '')) }}
             </span>
-            <span v-if="variant === 'sidebar'" class="lora-train-history__sep lora-train-history__sep--break" aria-hidden="true">·</span>
             <span class="lora-train-history__when">{{ formatWhen(run) }}</span>
           </span>
         </span>
@@ -77,8 +76,10 @@ import { ArrowRight } from '@danqing/dq-shell';
 import {
   runBaseModel,
   runOutputName,
+  runPresetId,
   runTaskId,
   useLoraTrainLibrary,
+  type LoraTrainRun,
 } from '@/composables/useLoraTrainLibrary';
 
 const props = withDefaults(
@@ -115,6 +116,13 @@ function statusLabel(status: string): string {
   const key = `loraTrain.runStatus.${status}`;
   const translated = t(key);
   return translated !== key ? translated : status;
+}
+
+function runMetaLine(run: LoraTrainRun): string {
+  const base = runBaseModel(run);
+  const preset = runPresetId(run);
+  if (base && preset && preset !== '—') return `${base} · ${preset}`;
+  return base || preset || '—';
 }
 
 function formatWhen(run: Record<string, unknown>): string {
@@ -223,10 +231,11 @@ defineExpose({
 .lora-train-history__list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  padding: 2px 0;
 }
 
 .lora-train-history--page .lora-train-history__list {
@@ -240,7 +249,7 @@ defineExpose({
   gap: 10px;
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid transparent;
+  border: 0.5px solid transparent;
   border-radius: var(--dq-radius-control-sm);
   background: transparent;
   cursor: pointer;
@@ -249,29 +258,30 @@ defineExpose({
 }
 
 .lora-train-history--sidebar .lora-train-history__item {
-  padding: 8px 8px;
+  padding: 8px 10px;
   gap: 8px;
+  border-radius: 10px;
 }
 
 .lora-train-history--page .lora-train-history__item {
   padding: 12px 14px;
-  border: 1px solid var(--dq-border-subtle);
+  border: 0.5px solid var(--dq-border-subtle);
   border-radius: 12px;
   background: var(--dq-fill-control);
 }
 
 .lora-train-history__item:hover {
   background: var(--dq-fill-tertiary);
-  border-color: color-mix(in srgb, var(--dq-accent) 22%, var(--dq-border-subtle));
 }
 
 .lora-train-history--page .lora-train-history__item:hover {
   background: var(--dq-surface-inset-hover, var(--dq-fill-tertiary));
+  border-color: color-mix(in srgb, var(--dq-accent) 22%, var(--dq-border-subtle));
 }
 
 .lora-train-history__item.is-active {
-  background: color-mix(in srgb, var(--dq-accent) 10%, var(--dq-fill-secondary));
-  border-color: color-mix(in srgb, var(--dq-accent) 35%, transparent);
+  background: color-mix(in srgb, var(--dq-accent) 12%, var(--dq-fill-secondary));
+  border-color: color-mix(in srgb, var(--dq-accent) 28%, transparent);
 }
 
 .lora-train-history__status-bar {
@@ -381,15 +391,12 @@ defineExpose({
 .lora-train-history--sidebar .lora-train-history__item-meta {
   flex-wrap: wrap;
   min-width: 0;
-  gap: 2px 4px;
-}
-
-.lora-train-history--sidebar .lora-train-history__sep--break {
-  display: none;
+  gap: 2px 6px;
+  line-height: 1.35;
 }
 
 .lora-train-history--sidebar .lora-train-history__base {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
   white-space: nowrap;
@@ -400,6 +407,7 @@ defineExpose({
 .lora-train-history--sidebar .lora-train-history__when {
   flex-basis: 100%;
   flex-shrink: 0;
+  color: var(--dq-label-quaternary, var(--dq-label-tertiary));
 }
 
 .lora-train-history__base {

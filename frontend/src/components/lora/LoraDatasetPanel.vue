@@ -1,15 +1,13 @@
 <template>
   <div class="lora-dataset-panel">
-    <!-- Left: persistent dataset library -->
+    <!-- Left: dataset library -->
     <aside class="lora-dataset-panel__list">
       <div class="lora-dataset-panel__list-head">
         <span class="lora-dataset-panel__list-title">{{ $t('loraTrain.datasetLibrary') }}</span>
-        <DqButton type="primary" @click="openCreateDialog">
+        <DqButton size="sm" type="primary" @click="openCreateDialog">
           {{ $t('loraTrain.newDataset') }}
         </DqButton>
       </div>
-
-      <p class="lora-dataset-panel__persist-note">{{ $t('loraTrain.datasetPersistNote') }}</p>
 
       <DqInput
         v-if="datasets.length > 3"
@@ -43,27 +41,8 @@
             <span class="lora-dataset-panel__list-name">{{ d.name }}</span>
             <span class="lora-dataset-panel__list-meta">
               {{ $t('loraTrain.imageCount', { count: d.image_count || 0 }) }}
-              <DqTag
-                v-if="(d.image_count || 0) >= minImages"
-                size="sm"
-                type="success"
-                effect="plain"
-                class="lora-dataset-panel__ready-tag"
-              >
-                {{ $t('loraTrain.datasetReady') }}
-              </DqTag>
             </span>
           </span>
-          <DqIconButton
-            type="text"
-            size="sm"
-            class="lora-dataset-panel__list-delete"
-            :label="$t('loraTrain.deleteDataset')"
-            :disabled="deletingDataset"
-            @click.stop="deleteDataset(d.id, d.name)"
-          >
-            <DqIcon :size="14"><Delete /></DqIcon>
-          </DqIconButton>
         </button>
       </div>
       <DqEmpty
@@ -73,152 +52,138 @@
       />
       <DqEmpty v-else :description="$t('loraTrain.noDatasets')" class="lora-dataset-panel__list-empty" />
 
-      <div class="lora-dataset-panel__list-foot">
-        <DqButton size="sm" type="secondary" :loading="importingDog6" block @click="importDog6">
-          {{ $t('loraTrain.importDog6') }}
-        </DqButton>
-      </div>
+      <button
+        type="button"
+        class="lora-dataset-panel__list-foot-link"
+        :disabled="importingDog6"
+        @click="importDog6"
+      >
+        {{ importingDog6 ? $t('common.loading') : $t('loraTrain.importDog6') }}
+      </button>
     </aside>
 
     <!-- Right: active dataset workspace -->
     <div class="lora-dataset-panel__workspace">
       <template v-if="selectedId && selectedDataset">
-        <div class="lora-dataset-panel__workspace-head">
-          <div class="lora-dataset-panel__name-row">
-            <label class="lora-dataset-panel__label">{{ $t('loraTrain.datasetName') }}</label>
-            <DqInput
-              v-model="datasetNameEdit"
-              size="sm"
-              class="lora-dataset-panel__name-input"
-              @blur="saveDatasetName"
-            />
-          </div>
-          <div class="lora-dataset-panel__workspace-head-actions">
-            <DqTag
-              size="sm"
-              :type="trainingCount >= minImages ? 'success' : 'warning'"
-              effect="plain"
-            >
-              {{ skippedCount
-                ? $t('loraTrain.datasetProgressTraining', { training: trainingCount, total: imageCount })
-                : $t('loraTrain.datasetProgress', { current: imageCount, min: minImages }) }}
-            </DqTag>
-            <DqButton
-              size="sm"
-              type="danger"
-              :loading="deletingDataset"
-              @click="deleteDataset(selectedId, selectedDataset?.name || selectedId)"
-            >
-              {{ $t('loraTrain.deleteDataset') }}
-            </DqButton>
-          </div>
-        </div>
+        <header class="lora-dataset-panel__workspace-head">
+          <DqInput
+            v-model="datasetNameEdit"
+            size="sm"
+            class="lora-dataset-panel__name-input"
+            :placeholder="$t('loraTrain.datasetName')"
+            @blur="saveDatasetName"
+          />
+          <span
+            class="lora-dataset-panel__count"
+            :class="trainingCount >= minImages ? 'is-ok' : 'is-warn'"
+          >
+            {{ skippedCount
+              ? $t('loraTrain.datasetProgressTraining', { training: trainingCount, total: imageCount })
+              : $t('loraTrain.datasetProgress', { current: imageCount, min: minImages }) }}
+          </span>
+          <DqButton
+            size="sm"
+            type="text"
+            class="lora-dataset-panel__delete-link"
+            :loading="deletingDataset"
+            @click="deleteDataset(selectedId, selectedDataset?.name || selectedId)"
+          >
+            {{ $t('loraTrain.deleteDataset') }}
+          </DqButton>
+        </header>
 
         <div class="lora-dataset-panel__meta">
-        <div class="lora-dataset-panel__kind-row">
-          <label class="lora-dataset-panel__label">{{ $t('loraTrain.datasetKind') }}</label>
-          <DqSelect v-model="datasetKindEdit" size="sm" class="lora-dataset-panel__kind-select" @change="saveDatasetKind">
-            <DqOption :label="$t('loraTrain.datasetKindConcept')" value="concept" />
-            <DqOption :label="$t('loraTrain.datasetKindStyle')" value="style" />
-          </DqSelect>
-        </div>
-
-        <div v-if="datasetKindEdit === 'concept'" class="lora-dataset-panel__field">
-          <label class="lora-dataset-panel__label">{{ $t('loraTrain.triggerWord') }}</label>
-          <div class="lora-dataset-panel__trigger-row">
-            <DqInput
-              v-model="triggerWordEdit"
-              size="sm"
-              :placeholder="$t('loraTrain.triggerWordHint')"
-              @blur="saveTriggerWord"
-            />
-            <DqButton
-              v-if="triggerWordEdit.trim() && !captionHasTrigger"
-              size="sm"
-              type="secondary"
-              @click="writeTriggerIntoCaption"
-            >
-              {{ $t('loraTrain.bindTriggerToCaption') }}
-            </DqButton>
+          <div class="lora-dataset-panel__meta-grid">
+            <div class="lora-dataset-panel__field">
+              <label class="lora-dataset-panel__label">{{ $t('loraTrain.datasetKind') }}</label>
+              <DqSelect v-model="datasetKindEdit" size="sm" @change="saveDatasetKind">
+                <DqOption :label="$t('loraTrain.datasetKindConcept')" value="concept" />
+                <DqOption :label="$t('loraTrain.datasetKindStyle')" value="style" />
+              </DqSelect>
+            </div>
+            <div v-if="datasetKindEdit === 'concept'" class="lora-dataset-panel__field">
+              <label class="lora-dataset-panel__label">{{ $t('loraTrain.triggerWord') }}</label>
+              <div class="lora-dataset-panel__trigger-row">
+                <DqInput
+                  v-model="triggerWordEdit"
+                  size="sm"
+                  :placeholder="$t('loraTrain.triggerWordHint')"
+                  @blur="saveTriggerWord"
+                />
+                <DqButton
+                  v-if="triggerWordEdit.trim() && !captionHasTrigger"
+                  size="sm"
+                  type="secondary"
+                  @click="writeTriggerIntoCaption"
+                >
+                  {{ $t('loraTrain.bindTriggerToCaption') }}
+                </DqButton>
+              </div>
+            </div>
           </div>
-          <p v-if="datasetHealthLoading" class="lora-dataset-panel__trigger-status is-warning">
-            {{ $t('loraTrain.facePreflightRunning') }}
-          </p>
-          <p v-else-if="datasetHealth" class="lora-dataset-panel__trigger-status" :class="datasetHealthStale ? 'is-warning' : 'is-ready'">
-            {{ datasetHealthStale
-              ? $t('loraTrain.facePreflightStale')
-              : $t('loraTrain.facePreflightFresh', { resolution: (datasetHealth.faces?.resolution || []).join('×') }) }}
-          </p>
+
+          <div class="lora-dataset-panel__field">
+            <label class="lora-dataset-panel__label">{{ $t('loraTrain.defaultPrompt') }}</label>
+            <DqInput
+              :model-value="defaultPrompt"
+              type="textarea"
+              :rows="1"
+              :placeholder="$t('loraTrain.defaultPromptHint')"
+              @update:model-value="(v: string) => emit('update:defaultPrompt', v)"
+              @blur="patchDefaultPrompt"
+            />
+          </div>
+
           <p
-            v-if="triggerWordEdit.trim()"
-            class="lora-dataset-panel__trigger-status"
-            :class="captionHasTrigger ? 'is-ready' : 'is-warning'"
+            v-if="statusLine"
+            class="lora-dataset-panel__status"
+            :class="statusLine.ok ? 'is-ready' : 'is-warning'"
           >
-            {{ captionHasTrigger
-              ? $t('loraTrain.triggerCoverageReady', { trigger: triggerWordEdit.trim() })
-              : $t('loraTrain.triggerCoverageMissing', { trigger: triggerWordEdit.trim() }) }}
-          </p>
-          <p v-else class="lora-dataset-panel__trigger-status is-warning">
-            {{ $t('loraTrain.identityCheckTriggerMissing') }}
+            {{ statusLine.text }}
           </p>
         </div>
 
-        <div class="lora-dataset-panel__field">
-          <label class="lora-dataset-panel__label">{{ $t('loraTrain.defaultPrompt') }}</label>
-          <DqInput
-            :model-value="defaultPrompt"
-            type="textarea"
-            :rows="2"
-            :placeholder="$t('loraTrain.defaultPromptHint')"
-            @update:model-value="(v: string) => emit('update:defaultPrompt', v)"
-            @blur="patchDefaultPrompt"
-          />
-          <p class="lora-dataset-panel__field-hint">{{ $t('loraTrain.defaultPromptDesc') }}</p>
-        </div>
-        </div>
-
-        <details v-if="datasetKindEdit === 'concept'" class="lora-dataset-panel__guide" :open="imageCount < 3">
+        <details v-if="datasetKindEdit === 'concept'" class="lora-dataset-panel__guide">
           <summary>{{ $t('loraTrain.identityGuideTitle') }}</summary>
           <p>{{ $t('loraTrain.identityGuideBody') }}</p>
         </details>
 
         <div class="lora-dataset-panel__toolbar">
-        <div
-          class="lora-dataset-panel__dropzone"
-          :class="{
-            'is-dragover': dragOver,
-            'is-disabled': !selectedId,
-            'is-uploading': uploading,
-            'is-compact': imageCount > 0,
-          }"
-          @dragover.prevent="dragOver = true"
-          @dragleave.prevent="dragOver = false"
-          @drop.prevent="onDropFiles"
-          @click="openUploadPicker"
-        >
-          <DqIcon class="lora-dataset-panel__dropzone-icon" aria-hidden="true"><Upload /></DqIcon>
-          <p class="lora-dataset-panel__dropzone-title">
-            {{ uploading ? $t('loraTrain.uploading') : $t('loraTrain.dropzoneTitle') }}
-          </p>
-          <p v-if="!uploading && !imageCount" class="lora-dataset-panel__dropzone-hint">{{ $t('loraTrain.dropzoneHint') }}</p>
-          <input
-            ref="uploadInputRef"
-            type="file"
-            multiple
-            accept="image/*"
-            hidden
-            @change="onUploadImages"
-          />
-        </div>
+          <div
+            class="lora-dataset-panel__dropzone"
+            :class="{
+              'is-dragover': dragOver,
+              'is-disabled': !selectedId,
+              'is-uploading': uploading,
+              'is-compact': imageCount > 0,
+            }"
+            @dragover.prevent="dragOver = true"
+            @dragleave.prevent="dragOver = false"
+            @drop.prevent="onDropFiles"
+            @click="openUploadPicker"
+          >
+            <DqIcon class="lora-dataset-panel__dropzone-icon" aria-hidden="true"><Upload /></DqIcon>
+            <p class="lora-dataset-panel__dropzone-title">
+              {{ uploading ? $t('loraTrain.uploading') : $t('loraTrain.dropzoneTitle') }}
+            </p>
+            <input
+              ref="uploadInputRef"
+              type="file"
+              multiple
+              accept="image/*"
+              hidden
+              @change="onUploadImages"
+            />
+          </div>
 
-        <div class="lora-dataset-panel__actions">
-          <DqButton size="sm" type="primary" :loading="preflightLoading || datasetHealthLoading" :disabled="!imageCount" @click="runPreflight">
-            {{ $t('loraTrain.runFacePreflight') }}
-          </DqButton>
-          <DqButton size="sm" type="secondary" @click="showGalleryImport = true">
-            {{ $t('loraTrain.importGallery') }}
-          </DqButton>
-        </div>
+          <div class="lora-dataset-panel__actions">
+            <DqButton size="sm" type="secondary" :loading="preflightLoading || datasetHealthLoading" :disabled="!imageCount" @click="runPreflight">
+              {{ $t('loraTrain.runFacePreflight') }}
+            </DqButton>
+            <DqButton size="sm" type="secondary" @click="showGalleryImport = true">
+              {{ $t('loraTrain.importGallery') }}
+            </DqButton>
+          </div>
         </div>
 
         <div v-if="hasVlmMarks" class="lora-dataset-panel__vlm-legend">
@@ -421,7 +386,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Close, Upload, PictureFilled, Delete } from '@danqing/dq-shell';
+import { Close, Upload, PictureFilled } from '@danqing/dq-shell';
 import { api } from '@/utils/api';
 import { toast, confirm } from '@/utils/feedback';
 import AssetPicker from '@/components/asset/AssetPicker.vue';
@@ -495,6 +460,39 @@ const captionHasTrigger = computed(() => {
   const trigger = triggerWordEdit.value.trim();
   if (!trigger) return false;
   return props.defaultPrompt.includes(trigger);
+});
+
+/** One compact status line under the form (replaces stacked green/warning paragraphs). */
+const statusLine = computed((): { ok: boolean; text: string } | null => {
+  if (props.datasetHealthLoading || preflightLoading.value) {
+    return { ok: false, text: t('loraTrain.facePreflightRunning') };
+  }
+  if (datasetKindEdit.value === 'concept') {
+    const trigger = triggerWordEdit.value.trim();
+    if (!trigger) {
+      return { ok: false, text: t('loraTrain.identityCheckTriggerMissing') };
+    }
+    if (!captionHasTrigger.value) {
+      return { ok: false, text: t('loraTrain.triggerCoverageMissing', { trigger }) };
+    }
+  }
+  if (props.datasetHealthStale && props.datasetHealth) {
+    return { ok: false, text: t('loraTrain.facePreflightStale') };
+  }
+  if (props.datasetHealth) {
+    if (props.datasetHealth.faces?.available) {
+      const res = (props.datasetHealth.faces.resolution || []).join('×');
+      return { ok: true, text: t('loraTrain.facePreflightFresh', { resolution: res }) };
+    }
+    return { ok: true, text: t('loraTrain.identityCheckStructural') };
+  }
+  if (datasetKindEdit.value === 'concept' && captionHasTrigger.value) {
+    return {
+      ok: true,
+      text: t('loraTrain.triggerCoverageReady', { trigger: triggerWordEdit.value.trim() }),
+    };
+  }
+  return null;
 });
 
 const vlmSampleMap = computed(() => {
@@ -1047,26 +1045,42 @@ defineExpose({
 <style scoped>
 .lora-dataset-panel {
   display: flex;
-  gap: 16px;
-  min-height: 380px;
+  gap: 20px;
+  min-height: 420px;
+  align-items: stretch;
 }
 
 .lora-dataset-panel__guide {
-  border-radius: 12px;
-  border: 0.5px solid var(--dq-border-subtle);
-  background: color-mix(in srgb, var(--dq-bg-base) 55%, var(--dq-fill-secondary));
-  padding: 10px 12px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
 }
 
 .lora-dataset-panel__guide summary {
   cursor: pointer;
+  list-style: none;
   font-size: var(--dq-font-size-caption);
-  font-weight: 600;
-  color: var(--dq-label-primary);
+  font-weight: 500;
+  color: var(--dq-label-tertiary);
 }
 
-.lora-dataset-panel__guide p,
-.lora-dataset-panel__guide .lora-dataset-panel__field {
+.lora-dataset-panel__guide summary::-webkit-details-marker {
+  display: none;
+}
+
+.lora-dataset-panel__guide summary::before {
+  content: '›';
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.15s ease;
+}
+
+.lora-dataset-panel__guide[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.lora-dataset-panel__guide p {
   margin: 8px 0 0;
   font-size: var(--dq-font-size-caption);
   line-height: 1.5;
@@ -1092,30 +1106,29 @@ defineExpose({
   gap: 10px;
 }
 
-.lora-dataset-panel__trigger-status {
-  margin: 8px 0 0;
+.lora-dataset-panel__status {
+  margin: 0;
   font-size: var(--dq-font-size-caption);
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
-.lora-dataset-panel__trigger-status.is-ready { color: var(--dq-success); }
-.lora-dataset-panel__trigger-status.is-warning { color: var(--dq-warning); }
+.lora-dataset-panel__status.is-ready { color: var(--dq-success); }
+.lora-dataset-panel__status.is-warning { color: var(--dq-warning); }
 
 .lora-dataset-panel__list {
-  width: 248px;
+  width: 220px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--dq-bg-base) 45%, var(--dq-fill-secondary));
-  border: 0.5px solid var(--dq-border-subtle);
+  gap: 8px;
+  padding: 0 16px 0 0;
+  border-right: 0.5px solid var(--dq-border-subtle);
 }
 
 .lora-dataset-panel__list-head {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
 }
 
@@ -1123,14 +1136,6 @@ defineExpose({
   font-size: var(--dq-font-size-caption);
   font-weight: 600;
   color: var(--dq-label-secondary);
-  letter-spacing: var(--dq-tracking-wide);
-}
-
-.lora-dataset-panel__persist-note {
-  margin: 0;
-  font-size: var(--dq-font-size-caption);
-  line-height: 1.45;
-  color: var(--dq-label-tertiary);
 }
 
 .lora-dataset-panel__search {
@@ -1235,9 +1240,25 @@ defineExpose({
   padding: 12px 0;
 }
 
-.lora-dataset-panel__list-foot {
-  padding-top: 4px;
+.lora-dataset-panel__list-foot-link {
+  margin-top: auto;
+  padding: 6px 4px 0;
+  border: none;
   border-top: 0.5px solid var(--dq-border-subtle);
+  background: transparent;
+  font-size: var(--dq-font-size-caption);
+  color: var(--dq-label-tertiary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.lora-dataset-panel__list-foot-link:hover:not(:disabled) {
+  color: var(--dq-label-secondary);
+}
+
+.lora-dataset-panel__list-foot-link:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .lora-dataset-panel__workspace {
@@ -1245,29 +1266,23 @@ defineExpose({
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 .lora-dataset-panel__meta {
-  display: grid;
-  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
-  gap: 12px 20px;
-  align-items: start;
-  padding: 14px 16px;
-  border-radius: 14px;
-  border: 0.5px solid var(--dq-border-subtle);
-  background: color-mix(in srgb, var(--dq-bg-base) 55%, var(--dq-fill-secondary));
-}
-
-.lora-dataset-panel__kind-row {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  min-width: 0;
+  gap: 10px;
+  padding: 0;
+  border: none;
+  background: transparent;
 }
 
-.lora-dataset-panel__kind-select {
-  width: 100%;
+.lora-dataset-panel__meta-grid {
+  display: grid;
+  grid-template-columns: minmax(140px, 200px) minmax(0, 1fr);
+  gap: 10px 16px;
+  align-items: end;
 }
 
 .lora-dataset-panel__field-hint {
@@ -1278,34 +1293,43 @@ defineExpose({
 }
 
 .lora-dataset-panel__health {
-  margin-top: -4px;
+  margin-top: 0;
 }
 
 .lora-dataset-panel__workspace-head {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.lora-dataset-panel__workspace-head-actions {
-  display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-}
-
-.lora-dataset-panel__name-row {
-  flex: 1;
-  min-width: 180px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  gap: 12px;
+  min-height: 32px;
 }
 
 .lora-dataset-panel__name-input {
-  max-width: 360px;
+  flex: 1;
+  max-width: 280px;
+  min-width: 140px;
+}
+
+.lora-dataset-panel__count {
+  font-size: var(--dq-font-size-caption);
+  color: var(--dq-label-tertiary);
+  white-space: nowrap;
+}
+
+.lora-dataset-panel__count.is-ok {
+  color: var(--dq-success);
+}
+
+.lora-dataset-panel__count.is-warn {
+  color: var(--dq-warning);
+}
+
+.lora-dataset-panel__delete-link {
+  margin-left: auto;
+  color: var(--dq-label-tertiary) !important;
+}
+
+.lora-dataset-panel__delete-link:hover {
+  color: var(--dq-danger) !important;
 }
 
 .lora-dataset-panel__dropzone {
@@ -1340,7 +1364,7 @@ defineExpose({
 }
 
 .lora-dataset-panel__dropzone.is-compact {
-  flex: 1 1 220px;
+  flex: 1 1 200px;
   flex-direction: row;
   justify-content: flex-start;
   gap: 8px;
@@ -1348,9 +1372,16 @@ defineExpose({
   min-height: 0;
 }
 
+.lora-dataset-panel__dropzone.is-compact .lora-dataset-panel__dropzone-title {
+  font-size: var(--dq-font-size-caption);
+  font-weight: 500;
+}
+
 .lora-dataset-panel__toolbar .lora-dataset-panel__actions {
-  flex: 1 1 280px;
-  justify-content: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .lora-dataset-panel__dropzone-icon {
@@ -1580,13 +1611,14 @@ defineExpose({
 .lora-dataset-panel__field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .lora-dataset-panel__label {
-  font-size: var(--dq-font-size-caption);
+  font-size: 11px;
   font-weight: 500;
-  color: var(--dq-label-secondary);
+  color: var(--dq-label-tertiary);
+  letter-spacing: 0.02em;
 }
 
 .lora-dataset-panel__field-hint {
@@ -1643,9 +1675,16 @@ defineExpose({
   .lora-dataset-panel__list {
     width: 100%;
     max-height: 240px;
+    padding: 0 0 12px;
+    border-right: none;
+    border-bottom: 0.5px solid var(--dq-border-subtle);
   }
 
-  .lora-dataset-panel__meta {
+  .lora-dataset-panel__workspace {
+    padding-top: 4px;
+  }
+
+  .lora-dataset-panel__meta-grid {
     grid-template-columns: 1fr;
   }
 

@@ -8,8 +8,10 @@ mod executor;
 mod io;
 mod linear;
 mod memory;
+mod optim;
 mod random;
 mod stream;
+mod transforms;
 
 use std::ffi::CStr;
 
@@ -23,8 +25,10 @@ pub use executor::{EventSink, Executor, ExecutorEvent};
 pub use io::{save_safetensors, SafeTensors};
 pub use linear::{AffineQuantization, LinearWeight, LoraResidual};
 pub use memory::{active_memory, clear_cache, peak_memory, reset_peak_memory};
+pub use optim::{adamw_update, adamw_update_all, AdamWConfig, AdamWState};
 pub use random::RandomKey;
 pub use stream::Stream;
+pub use transforms::ValueAndGrad;
 
 pub fn version() -> Result<String> {
     error::initialize();
@@ -460,5 +464,88 @@ mod tests {
     #[test]
     fn metal_shapeless_compile_matches_eager_across_replays() {
         compile_probe(DeviceType::Gpu).unwrap();
+    }
+
+    #[test]
+    fn value_and_grad_of_quadratic_matches_analytic() {
+        let stream = Stream::cpu().unwrap();
+        // f(x) = (x - 3)^2 → f'(x) = 2(x - 3). At x=5, grad=4, value=4.
+        // value_and_grad requires a true scalar (ndim 0), not shape [1].
+        let closure = Closure::new(Stream::cpu().unwrap(), |inputs, stream| {
+            let three = Array::scalar_f32(3.0)?;
+            let delta = Array::subtract(&inputs[0], &three, stream)?;
+            Array::multiply(&delta, &delta, stream)?.mean(false, stream)
+        })
+        .unwrap();
+        let vag = ValueAndGrad::new(closure, &[0]).unwrap();
+        let x = Array::from_f32_slice(&[5.0], &[1]).unwrap();
+        let (values, grads) = vag.apply(&[x]).unwrap();
+        assert_eq!(values.len(), 1);
+        assert_eq!(grads.len(), 1);
+        Array::eval_all(&[&values[0], &grads[0]]).unwrap();
+        let value = values[0].to_vec_f32(&stream).unwrap();
+        let grad = grads[0].to_vec_f32(&stream).unwrap();
+        assert_close(&value, &[4.0], 1e-5);
+        assert_close(&grad, &[4.0], 1e-5);
+    }
+
+    #[test]
+    fn stop_gradient_blocks_upstream_grad() {
+        let stream = Stream::cpu().unwrap();
+        // f(x) = mean(stop_gradient(x) * x) → df/dx = stop_gradient(x).
+        let closure = Closure::new(Stream::cpu().unwrap(), |inputs, stream| {
+            let stopped = inputs[0].stop_gradient(stream)?;
+            Array::multiply(&stopped, &inputs[0], stream)?.mean(false, stream)
+        })
+        .unwrap();
+        let vag = ValueAndGrad::new(closure, &[0]).unwrap();
+        let x = Array::from_f32_slice(&[3.0], &[1]).unwrap();
+        let (values, grads) = vag.apply(&[x]).unwrap();
+        Array::eval_all(&[&values[0], &grads[0]]).unwrap();
+        assert_close(&values[0].to_vec_f32(&stream).unwrap(), &[9.0], 1e-5);
+        assert_close(&grads[0].to_vec_f32(&stream).unwrap(), &[3.0], 1e-5);
+    }
+
+    #[test]
+    fn adamw_drives_quadratic_loss_down() {
+        let stream = Stream::cpu().unwrap();
+        let mut param = Array::from_f32_slice(&[5.0], &[1]).unwrap();
+        let mut state = AdamWState::zeros_like(&param, &stream).unwrap();
+        let config = AdamWConfig {
+            learning_rate: 0.1,
+            betas: (0.9, 0.999),
+            eps: 1e-8,
+            weight_decay: 0.0,
+        };
+        let mut first_loss = None;
+        let mut last_loss = 0.0_f32;
+        for _ in 0..80 {
+            let closure = Closure::new(Stream::cpu().unwrap(), |inputs, stream| {
+                let three = Array::scalar_f32(3.0)?;
+                let delta = Array::subtract(&inputs[0], &three, stream)?;
+                Array::multiply(&delta, &delta, stream)?.mean(false, stream)
+            })
+            .unwrap();
+            let vag = ValueAndGrad::new(closure, &[0]).unwrap();
+            let (values, grads) = vag.apply(&[param.clone()]).unwrap();
+            Array::eval_all(&[&values[0], &grads[0]]).unwrap();
+            last_loss = values[0].to_vec_f32(&stream).unwrap()[0];
+            assert!(last_loss.is_finite());
+            if first_loss.is_none() {
+                first_loss = Some(last_loss);
+            }
+            param = adamw_update(&param, &grads[0], &mut state, &config, &stream).unwrap();
+            param.eval().unwrap();
+        }
+        let first = first_loss.expect("at least one step");
+        let final_val = param.to_vec_f32(&stream).unwrap()[0];
+        assert!(
+            (final_val - 3.0).abs() < 0.25,
+            "param did not approach 3.0: {final_val}"
+        );
+        assert!(
+            last_loss < first * 0.1,
+            "loss did not drop enough: {first} → {last_loss}"
+        );
     }
 }

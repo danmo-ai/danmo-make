@@ -21,6 +21,8 @@ mod mlx;
 #[cfg(test)]
 mod reference;
 mod session;
+#[cfg(feature = "mlx")]
+pub mod train;
 mod weights;
 
 pub(crate) use edit_session::ZImageEditFamily;

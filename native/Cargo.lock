@@ -245,6 +245,7 @@ dependencies = [
  "danmo-catalog",
  "danmo-contracts",
  "danmo-engine",
+ "danmo-mlx",
  "danmo-schedule",
  "danmo-store",
  "http-body-util",
@@ -262,7 +263,10 @@ dependencies = [
 name = "danmo-store"
 version = "0.1.0"
 dependencies = [
+ "danmo-contracts",
  "rusqlite",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 

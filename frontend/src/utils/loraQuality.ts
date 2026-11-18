@@ -75,6 +75,7 @@ export type FaceAuditRow = {
 export type FaceAuditReport = {
   available: boolean;
   reason?: string;
+  detail?: string;
   resolution?: number[];
   rows: FaceAuditRow[];
   counts?: Record<string, number>;

@@ -1,8 +1,8 @@
 //! Z-Image image create. The ggml graph for this action is gone.
 //!
 //! Safetensors bundles run on the MLX session when the engine is built with
-//! `mlx`. A GGUF bundle fails here instead of falling back to ggml. Rewrite
-//! edit uses the same MLX session.
+//! `mlx`. A GGUF bundle fails here instead of falling back to ggml. LoRA is
+//! attached by the shared weight layer. Rewrite edit uses the same MLX session.
 
 use crate::contract::ResolvedRun;
 use crate::error::EngineError;
@@ -22,18 +22,15 @@ impl DitImageFamily for ZImageFamily {
         _resolver: &dyn ResolvePort,
     ) -> Result<Box<dyn DitImageSession>, EngineError> {
         let _ = &run.bundle;
-        if !loras.is_empty() {
-            return Err(EngineError::bad_request(
-                "Z-Image create does not apply LoRA; the ggml create graph has been removed",
-            ));
-        }
         #[cfg(feature = "mlx")]
         if super::mlx::session::is_mlx_bundle(&run.bundle) {
             return Ok(Box::new(super::mlx::session::MlxSession::prepare(
                 &run.bundle,
                 request,
+                loras,
             )?));
         }
+        let _ = loras;
         let _ = request;
         Err(WeightError::NotBuilt(
             "z_image image create no longer has a ggml graph; install the safetensors bundle and build with the mlx feature"

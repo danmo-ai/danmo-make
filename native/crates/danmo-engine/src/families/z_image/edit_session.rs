@@ -4,7 +4,8 @@
 //! with noise at `sigma[init_timestep]`, and denoised from that timestep.
 //! `init_timestep` is `max(1, int(steps * source_fidelity))` with the reference
 //! default fidelity 0.6. The ggml DiT for this action is gone: a GGUF bundle
-//! fails loud. LoRA, guidance other than 0 or 1, and a negative prompt fail loud.
+//! fails loud. Guidance other than 0 or 1, and a negative prompt, fail loud.
+//! LoRA uses the same shared residual as create.
 
 use super::geom;
 use crate::contract::{Artifact, EngineOutput, EngineRequest, ExecutionContext, ResolvedRun};
@@ -12,7 +13,7 @@ use crate::error::EngineError;
 use crate::families::{FacadeFamily, FacadeSession};
 use crate::ports::ResolvePort;
 use crate::runtime::GgmlContext;
-use crate::weights::WeightError;
+use crate::weights::{LoraFile, WeightError};
 use danmo_contracts::ImageEditRequest;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -29,6 +30,7 @@ struct Prepared {
     sigmas: Vec<f32>,
     init: usize,
     bundle: PathBuf,
+    loras: Vec<LoraFile>,
 }
 
 pub(crate) fn init_timestep(steps: u32, fidelity: f32) -> Result<usize, EngineError> {
@@ -104,11 +106,7 @@ impl FacadeFamily for ZImageEditFamily {
                 "MLX Z-Image edit does not apply a negative prompt",
             ));
         }
-        if !request.adapters.is_empty() {
-            return Err(EngineError::bad_request(
-                "MLX Z-Image edit does not apply LoRA",
-            ));
-        }
+        let loras = crate::pipeline::lora_files(&request.adapters)?;
         if request.seed.is_none() {
             return Err(EngineError::bad_request(
                 "MLX Z-Image edit requires a seed",
@@ -116,7 +114,7 @@ impl FacadeFamily for ZImageEditFamily {
         }
         #[cfg(not(feature = "mlx"))]
         {
-            let _ = (run, resolver, exec, init);
+            let _ = (run, resolver, exec, init, loras);
             return Err(WeightError::NotBuilt(
                 "z_image image edit no longer has a ggml graph; build with the mlx feature"
                     .into(),
@@ -186,6 +184,7 @@ impl FacadeFamily for ZImageEditFamily {
                     sigmas,
                     init,
                     bundle: run.bundle.clone(),
+                    loras,
                 },
             }))
         }
@@ -240,6 +239,7 @@ impl FacadeSession for ZImageEditSession {
                     seed as u64,
                     &prepared.reference,
                     sigmas,
+                    &prepared.loras,
                     exec,
                 )?;
                 if let Some(detail) = crate::common::ops::non_finite("z-image-edit latent", &latents)

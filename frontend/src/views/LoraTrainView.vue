@@ -37,12 +37,15 @@
         </p>
       </DqSurfaceCard>
 
-      <LoraTrainRunDetail
+      <DqSurfaceCard
         v-else-if="activeRunId"
-        :task-id="activeRunId"
-        @back="onRunBack"
-        @verify="onVerifyGenerate"
-      />
+        class="copilot-page__workspace-card studio-surface-card"
+      >
+        <LoraTrainRunDetail
+          :task-id="activeRunId"
+          @verify="onVerifyGenerate"
+        />
+      </DqSurfaceCard>
 
       <template v-else>
         <div class="lv-editor-tabs-wrapper">
@@ -101,7 +104,7 @@
                 <span class="lora-train-page__base-tile-body">
                   <span class="lora-train-page__base-tile-name">
                     {{ modelDisplayName(m) }}
-                    <em v-if="m.id === 'z-image'" class="lora-train-page__preset-badge">{{ $t('loraTrain.presetRecommended') }}</em>
+                    <em v-if="m.id === 'z-image-turbo'" class="lora-train-page__preset-badge">{{ $t('loraTrain.presetRecommended') }}</em>
                   </span>
                   <span v-if="modelShortDesc(m)" class="lora-train-page__base-tile-desc">
                     {{ modelShortDesc(m) }}
@@ -204,185 +207,19 @@
               </button>
             </div>
             <p
-              v-if="form.base_model === 'z-image' && form.preset === 'scheme4'"
+              v-if="form.base_model === 'z-image-turbo' && form.preset === 'turbo-sft'"
               class="lora-train-page__recipe-note"
             >
-              {{ $t('loraTrain.scheme4InferHint') }}
+              {{ $t('loraTrain.turboSftInferHint') }}
             </p>
 
-            <div v-if="form.preset === 'custom'" class="lora-train-page__custom-block">
-              <p class="lora-train-page__recipe-note">{{ $t('loraTrain.customGuideBody') }}</p>
-              <div class="lora-train-page__field-grid">
-                <div class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.iterations') }}</label>
-                  <DqInput v-model.number="form.iterations" type="number" min="50" />
-                  <p class="lora-train-page__field-hint">{{ $t('loraTrain.customIterationsHint') }}</p>
-                </div>
-                <div class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.loraRank') }}</label>
-                  <DqInput v-model.number="form.lora_rank" type="number" min="1" max="64" />
-                  <p class="lora-train-page__field-hint">{{ $t('loraTrain.customRankHint') }}</p>
-                </div>
-                <div class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.resolutionEdge') }}</label>
-                  <DqInput v-model.number="form.resolution_edge" type="number" min="256" max="1024" step="8" />
-                  <p class="lora-train-page__field-hint">{{ $t('loraTrain.customResolutionHint') }}</p>
-                </div>
-                <div class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.loraBlocks') }}</label>
-                  <DqInput v-model.number="form.lora_blocks" type="number" min="-1" max="64" />
-                  <p class="lora-train-page__field-hint">{{ $t('loraTrain.customBlocksHint') }}</p>
-                </div>
-              </div>
-            </div>
-
             <div class="lora-train-page__essentials">
-            <div class="lora-train-page__field">
-              <label class="lora-train-page__label">{{ $t('loraTrain.trainingCaption') }}</label>
-              <DqInput v-model="form.progress_prompt" type="textarea" :rows="3" />
-              <p class="lora-train-page__field-hint">{{ $t('loraTrain.progressPromptDesc') }}</p>
-              <DqAlert
-                v-if="promptCaptionMismatch"
-                type="warning"
-                :closable="false"
-                class="lora-train-page__prompt-warn"
-                :title="$t('loraTrain.promptMismatchTitle')"
-              >
-                <p>{{ $t('loraTrain.promptMismatchBody', { dataset: effectiveDatasetCaption, progress: form.progress_prompt.trim() }) }}</p>
-                <DqButton size="sm" type="secondary" @click="syncProgressPromptFromDataset">
-                  {{ $t('loraTrain.promptMismatchSync') }}
-                </DqButton>
-              </DqAlert>
-            </div>
             <div class="lora-train-page__field">
               <label class="lora-train-page__label">{{ $t('loraTrain.outputName') }}</label>
               <DqInput v-model="form.output_name" :placeholder="$t('loraTrain.outputNamePlaceholder')" />
               <p class="lora-train-page__field-hint">{{ $t('loraTrain.outputNameDesc') }}</p>
             </div>
             </div>
-            <details class="lora-train-page__advanced">
-              <summary>{{ form.preset === 'custom' ? $t('loraTrain.advanced') : $t('loraTrain.expertTuning') }}</summary>
-              <div class="lora-train-page__field-grid">
-                <div v-if="form.preset === 'custom'" class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.learningRate') }}</label>
-                  <DqInput v-model.number="form.learning_rate" type="number" step="0.00001" />
-                </div>
-                <div v-if="form.preset === 'custom'" class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.progressSteps') }}</label>
-                  <DqInput v-model.number="form.progress_steps" type="number" min="4" max="100" />
-                  <p class="lora-train-page__field-hint">{{ $t('loraTrain.progressStepsHint') }}</p>
-                </div>
-                <div v-if="form.preset === 'custom'" class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.minSnrGamma') }}</label>
-                  <DqInput v-model.number="form.min_snr_gamma" type="number" step="1" min="0" />
-                  <p class="lora-train-page__field-hint">{{ $t('loraTrain.customMinSnrHint') }}</p>
-                </div>
-                <div v-if="form.preset === 'custom'" class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.numAugmentations') }}</label>
-                  <DqInput v-model.number="form.num_augmentations" type="number" min="1" max="10" />
-                  <p class="lora-train-page__field-hint">{{ $t('loraTrain.customAugmentHint') }}</p>
-                </div>
-                <div v-if="form.preset === 'custom'" class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.gradAccumulate') }}</label>
-                  <DqInput v-model.number="form.grad_accumulate" type="number" min="1" max="32" />
-                  <p class="lora-train-page__field-hint">{{ $t('loraTrain.customGradAccumHint') }}</p>
-                </div>
-                <div class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.qloraBits') }}</label>
-                  <DqSelect v-model="form.qlora_bits">
-                    <DqOption :label="$t('loraTrain.qloraOff')" value="" />
-                    <DqOption :label="$t('loraTrain.qlora4')" value="4" />
-                    <DqOption :label="$t('loraTrain.qlora8')" value="8" />
-                  </DqSelect>
-                </div>
-                <div class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.faceCrop') }}</label>
-                  <DqSelect v-model="form.face_crop">
-                    <DqOption :label="$t('loraTrain.faceCropAuto')" value="auto" />
-                    <DqOption :label="$t('loraTrain.faceCropOn')" value="on" />
-                    <DqOption v-if="!isIdentityDataset" :label="$t('loraTrain.faceCropOff')" value="off" />
-                  </DqSelect>
-                </div>
-                <div class="lora-train-page__field lora-train-page__field--switch">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.gradCheckpoint') }}</label>
-                  <DqSwitch v-model="form.grad_checkpoint" />
-                </div>
-                <div class="lora-train-page__field lora-train-page__field--switch">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.compileStep') }}</label>
-                  <DqSwitch v-model="form.compile_step" />
-                </div>
-                <div v-if="form.preset !== 'custom'" class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.loraBlocks') }}</label>
-                  <DqInput v-model.number="form.lora_blocks" type="number" min="-1" max="64" :placeholder="$t('loraTrain.usePresetDefault')" />
-                </div>
-                <div class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.loraAlpha') }}</label>
-                  <DqInput v-model.number="form.lora_alpha" type="number" step="1" min="1" />
-                </div>
-                <div class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.loraDropout') }}</label>
-                  <DqInput v-model.number="form.lora_dropout" type="number" step="0.05" min="0" max="0.5" />
-                </div>
-                <div class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.optimizer') }}</label>
-                  <DqSelect v-model="form.optimizer">
-                    <DqOption :label="$t('loraTrain.usePresetDefault')" value="" />
-                    <DqOption :label="$t('loraTrain.optimizerAdam')" value="adam" />
-                    <DqOption :label="$t('loraTrain.optimizerAdamw')" value="adamw" />
-                  </DqSelect>
-                </div>
-                <div class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.weightDecay') }}</label>
-                  <DqInput v-model.number="form.weight_decay" type="number" step="0.01" />
-                </div>
-                <div class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.valSplit') }}</label>
-                  <DqInput v-model.number="form.val_split" type="number" step="0.05" min="0" max="0.5" />
-                </div>
-                <div class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.valEvery') }}</label>
-                  <DqInput v-model.number="form.val_every" type="number" />
-                </div>
-                <div class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.trainType') }}</label>
-                  <DqSelect v-model="form.train_type">
-                    <DqOption :label="$t('loraTrain.usePresetDefault')" value="" />
-                    <DqOption label="LoRA" value="lora" />
-                    <DqOption label="DoRA" value="dora" />
-                  </DqSelect>
-                </div>
-                <div v-if="form.preset !== 'custom'" class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.minSnrGamma') }}</label>
-                  <DqInput v-model.number="form.min_snr_gamma" type="number" step="1" min="0" />
-                </div>
-                <div v-if="supportsPriorPreservation" class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.priorLossWeight') }}</label>
-                  <DqInput v-model.number="form.prior_loss_weight" type="number" step="0.1" min="0" />
-                </div>
-                <div v-if="supportsPriorPreservation" class="lora-train-page__field lora-train-page__field--wide">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.classPrompt') }}</label>
-                  <DqInput
-                    v-model="form.class_prompt"
-                    :placeholder="$t('loraTrain.classPromptPlaceholder')"
-                  />
-                </div>
-                <div class="lora-train-page__field">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.earlyStopPatience') }}</label>
-                  <DqInput v-model.number="form.early_stop_patience" type="number" min="0" />
-                </div>
-                <div class="lora-train-page__field lora-train-page__field--switch">
-                  <label class="lora-train-page__label">{{ $t('loraTrain.fuseAdapters') }}</label>
-                  <DqSwitch v-model="form.fuse_adapters" />
-                </div>
-              </div>
-              <div class="lora-train-page__field">
-                <label class="lora-train-page__label">{{ $t('loraTrain.loraModuleKeys') }}</label>
-                <DqInput
-                  v-model="form.lora_module_keys"
-                  :placeholder="$t('loraTrain.loraModuleKeysPlaceholder')"
-                />
-              </div>
-            </details>
           </div>
           <div v-if="step === 2" class="lora-train-page__nav-bar">
             <DqButton size="sm" @click="goToStep(1)">
@@ -446,21 +283,16 @@
                 <strong>{{ selectedDataset?.name }} ({{ selectedDataset?.training_image_count ?? trainingImages.length }})</strong>
               </li>
               <li><span>{{ $t('loraTrain.summaryPreset') }}</span><strong>{{ $t(`loraTrain.preset.${form.preset}`) }}</strong></li>
-              <li><span>{{ $t('loraTrain.summaryPrompt') }}</span><strong>{{ form.progress_prompt }}</strong></li>
+              <li v-if="effectiveDatasetCaption">
+                <span>{{ $t('loraTrain.summaryPrompt') }}</span>
+                <strong>{{ effectiveDatasetCaption }}</strong>
+              </li>
               <li v-if="datasetHealth?.faces?.resolution">
                 <span>{{ $t('loraTrain.facePreflightSummary') }}</span>
                 <strong>{{ datasetHealth.faces.resolution.join('×') }}</strong>
               </li>
-              <li v-if="effectiveDatasetCaption && effectiveDatasetCaption !== form.progress_prompt.trim()">
-                <span>{{ $t('loraTrain.summaryDatasetCaption') }}</span>
-                <strong>{{ effectiveDatasetCaption }}</strong>
-              </li>
               <li v-if="form.output_name.trim()">
                 <span>{{ $t('loraTrain.summaryOutput') }}</span><strong>{{ form.output_name }}</strong>
-              </li>
-              <li v-if="confirmOptimizationSummary">
-                <span>{{ $t('loraTrain.summaryOptimization') }}</span>
-                <strong>{{ confirmOptimizationSummary }}</strong>
               </li>
               <li v-if="hasResume">
                 <span>{{ $t('loraTrain.summaryResume') }}</span>
@@ -468,10 +300,10 @@
               </li>
             </ul>
             <p
-              v-if="form.base_model === 'z-image' && form.preset === 'scheme4'"
+              v-if="form.base_model === 'z-image-turbo' && form.preset === 'turbo-sft'"
               class="lora-train-page__recipe-note"
             >
-              {{ $t('loraTrain.scheme4InferHint') }}
+              {{ $t('loraTrain.turboSftInferHint') }}
             </p>
             </div>
             <div v-if="confirmPreviewImages.length" class="lora-train-page__confirm-preview">
@@ -556,42 +388,38 @@ const presetsByModel = ref<Record<string, Record<string, Record<string, unknown>
 const datasetPanelRef = ref<InstanceType<typeof LoraDatasetPanel> | null>(null);
 const historyRef = ref<InstanceType<typeof LoraTrainHistory> | null>(null);
 const { loading: historyLoading, refresh: refreshHistory } = useLoraTrainLibrary();
-/** Rust MLX trainer not landed yet — API returns ready:false / 501. */
+/** Gate on GET /api/loras/training/requirements.ready (MLX build). */
 const trainingUnavailable = computed(
   () => requirements.value == null || requirements.value.ready === false,
 );
 function recommendedPresetFor(model: string) {
-  return model === 'z-image' ? 'scheme4' : 'standard';
+  if (model === 'z-image-turbo') return 'turbo-sft';
+  if (model === 'z-image') return 'base-face';
+  return 'turbo-sft';
 }
 
 const recommendedPreset = computed(() => recommendedPresetFor(form.base_model));
 
+const NAMED_PRESETS = new Set(['turbo-sft', 'turbo-diff', 'base-face']);
+
 const presetKeys = computed(() => {
-  const keys = [recommendedPreset.value, 'custom'];
-  const resumed = form.resume_task_id.trim() && form.resume_checkpoint.trim();
-  if (resumed && form.preset && !keys.includes(form.preset)) return [form.preset, ...keys];
+  const fromApi = Object.keys(modelPresets.value || {}).filter((k) => NAMED_PRESETS.has(k));
+  const keys = fromApi.length
+    ? [
+        ...fromApi.filter((k) => k === recommendedPreset.value),
+        ...fromApi.filter((k) => k !== recommendedPreset.value),
+      ]
+    : [recommendedPreset.value];
   return keys;
 });
 
 function coerceVisiblePreset() {
-  if (form.resume_task_id.trim() && form.resume_checkpoint.trim()) return;
   if (!presetKeys.value.includes(form.preset)) form.preset = recommendedPreset.value;
 }
 
 function presetCardResolution(preset: string): string {
   const cfg = modelPresets.value[preset] as Record<string, unknown> | undefined;
   return cfg ? presetResolution(cfg) : '';
-}
-
-const Z_IMAGE_PRIOR_DISABLED_MODELS = new Set(['z-image', 'z-image-turbo']);
-
-const supportsPriorPreservation = computed(
-  () => !Z_IMAGE_PRIOR_DISABLED_MODELS.has(form.base_model),
-);
-
-function clearPriorPreservationFields() {
-  form.class_prompt = '';
-  form.prior_loss_weight = null;
 }
 
 const stepNavItems = computed(() => [
@@ -602,39 +430,13 @@ const stepNavItems = computed(() => [
 ]);
 
 const form = reactive({
-  base_model: 'z-image',
+  base_model: 'z-image-turbo',
   dataset_id: '',
-  preset: 'scheme4' as string,
-  progress_prompt: '',
+  preset: 'turbo-sft' as string,
   default_prompt: '',
   output_name: '',
-  iterations: null as number | null,
-  lora_rank: null as number | null,
-  learning_rate: null as number | null,
-  resolution_edge: null as number | null,
-  progress_steps: null as number | null,
-  num_augmentations: null as number | null,
-  grad_accumulate: null as number | null,
-  qlora_bits: '' as '' | '4' | '8',
-  face_crop: 'auto' as 'auto' | 'on' | 'off',
-  grad_checkpoint: false,
-  compile_step: false,
-  lora_blocks: null as number | null,
-  lora_alpha: null as number | null,
-  lora_dropout: null as number | null,
-  lora_module_keys: '',
-  optimizer: '' as '' | 'adam' | 'adamw',
-  weight_decay: null as number | null,
-  val_split: null as number | null,
-  val_every: null as number | null,
   resume_task_id: '',
   resume_checkpoint: '',
-  train_type: '' as '' | 'lora' | 'dora',
-  min_snr_gamma: null as number | null,
-  class_prompt: '',
-  prior_loss_weight: null as number | null,
-  early_stop_patience: null as number | null,
-  fuse_adapters: false,
 });
 
 const selectedDataset = computed(() =>
@@ -657,15 +459,23 @@ function faceRowBlocksTraining(row: { action?: string; multi?: boolean } | undef
   return row.action === 'tiny' || row.action === 'none' || row.action === 'error' || row.action === 'multi' || !!row.multi;
 }
 
+const structuralHealthOk = computed(() => {
+  if (!datasetHealth.value || datasetHealthStale.value) return false;
+  const level = String(datasetHealth.value.level || '');
+  if (level === 'error') return false;
+  const faces = datasetHealth.value.faces;
+  // When face detector is not wired, accept structural health only.
+  if (!faces?.available) return true;
+  if ((faces.resolution || []).join('x') !== activeResolutionKey.value) return false;
+  return !trainingImages.value.some((img: { file: string }) => faceRowBlocksTraining(faceAuditRow(img.file)));
+});
+
 const faceDatasetReady = computed(() => {
   if (trainingImages.value.length < 3) return false;
   if (!isIdentityDataset.value) return true;
   const trigger = String(selectedDataset.value?.trigger_word || '').trim();
   if (!trigger) return false;
-  const faces = datasetHealth.value?.faces;
-  if (!faces?.available || !datasetHealth.value || datasetHealthStale.value) return false;
-  if ((faces.resolution || []).join('x') !== activeResolutionKey.value) return false;
-  if (trainingImages.value.some((img: { file: string }) => faceRowBlocksTraining(faceAuditRow(img.file)))) return false;
+  if (!structuralHealthOk.value) return false;
   return triggerBound.value;
 });
 
@@ -676,21 +486,17 @@ const triggerBound = computed(() => {
 });
 
 function activeTrainingResolution(): [number, number] {
-  if (form.preset !== 'custom') {
-    const res = activePresetDetail.value?.resolution;
-    if (Array.isArray(res) && res.length >= 2) return [Number(res[0]), Number(res[1])];
-  }
-  const edge = Number(form.resolution_edge) || 1024;
-  return [edge, edge];
+  const res = activePresetDetail.value?.resolution;
+  if (Array.isArray(res) && res.length >= 2) return [Number(res[0]), Number(res[1])];
+  return [1024, 1024];
 }
 const activeResolutionKey = computed(() => activeTrainingResolution().join('x'));
 
 const modelPresets = computed(
-  () => presetsByModel.value[form.base_model] || presetsByModel.value['flux1-dev'] || {}
+  () => presetsByModel.value[form.base_model] || {}
 );
 
 const activePresetDetail = computed(() => {
-  if (form.preset === 'custom') return null;
   return (modelPresets.value[form.preset] || null) as Record<string, unknown> | null;
 });
 
@@ -703,42 +509,6 @@ const effectiveDatasetCaption = computed(() => {
     if (fromForm) return fromForm;
   }
   return String(selectedDataset.value?.default_prompt || '').trim();
-});
-
-const promptCaptionMismatch = computed(() => {
-  const progress = form.progress_prompt.trim();
-  const datasetCaption = effectiveDatasetCaption.value;
-  if (!progress || !datasetCaption) return false;
-  return progress !== datasetCaption;
-});
-
-function syncProgressPromptFromDataset() {
-  const caption = effectiveDatasetCaption.value;
-  if (caption) form.progress_prompt = caption;
-}
-
-const effectiveQloraBits = computed(() => {
-  if (form.qlora_bits === '4') return 4;
-  if (form.qlora_bits === '8') return 8;
-  return null;
-});
-
-const confirmOptimizationSummary = computed(() => {
-  const parts: string[] = [];
-  if (effectiveQloraBits.value) {
-    parts.push(t('loraTrain.summaryQlora', { bits: effectiveQloraBits.value }));
-  }
-  if (form.grad_checkpoint) {
-    parts.push(t('loraTrain.summaryGradCkpt'));
-  }
-  if (form.compile_step) {
-    parts.push(t('loraTrain.compileStep'));
-  }
-  const vs = form.val_split ?? (activePresetDetail.value?.val_split as number | undefined);
-  if (vs && Number(vs) > 0) {
-    parts.push(t('loraTrain.summaryValSplit', { pct: Math.round(Number(vs) * 100) }));
-  }
-  return parts.join(' · ');
 });
 
 const wizardSummary = computed(() => {
@@ -767,7 +537,14 @@ const wizardSummary = computed(() => {
 function stepDone(i: number): boolean {
   if (i === 0) return !!form.base_model && step.value > 0;
   if (i === 1) return faceDatasetReady.value && step.value > 1;
-  if (i === 2) return !!form.progress_prompt.trim() && (!isIdentityDataset.value || form.progress_prompt.includes(String(selectedDataset.value?.trigger_word || '').trim())) && step.value > 2;
+  if (i === 2) {
+    return (
+      !!form.preset
+      && !!effectiveDatasetCaption.value
+      && (!isIdentityDataset.value || triggerBound.value)
+      && step.value > 2
+    );
+  }
   return false;
 }
 
@@ -797,17 +574,19 @@ const identityConfirmChecks = computed(() => {
     },
     {
       key: 'faces',
-      ok: !!faces?.available && blocked === 0 && imageCount >= 3 && !datasetHealthStale.value,
+      ok: faces?.available
+        ? blocked === 0 && imageCount >= 3 && !datasetHealthStale.value
+        : structuralHealthOk.value && imageCount >= 3,
       label: faces?.available
         ? t('loraTrain.identityCheckFaces', {
             ok: usable,
             total: imageCount,
           })
-        : t('loraTrain.identityCheckFacesNeeded'),
+        : t('loraTrain.identityCheckStructural'),
     },
     {
       key: 'recipe',
-      ok: !!form.progress_prompt.trim() && (!trigger || form.progress_prompt.includes(trigger)),
+      ok: !!form.preset && !!effectiveDatasetCaption.value && (!trigger || triggerBound.value),
       label: t('loraTrain.identityCheckRecipe', {
         preset: t(`loraTrain.preset.${form.preset}`),
         resolution: activeResolutionKey.value.replace('x', '×'),
@@ -831,17 +610,6 @@ function presetResolution(cfg: Record<string, unknown> | null): string {
   return `${res[0]}×${res[1]}`;
 }
 
-function presetResolutionBody(p: string): [number, number] | null {
-  if (p === 'custom') return null;
-  const cfg = modelPresets.value[p] as Record<string, unknown> | undefined;
-  const res = cfg?.resolution;
-  if (!Array.isArray(res) || res.length < 1) return null;
-  const edge = Number(res[0]);
-  if (!Number.isFinite(edge) || edge < 256) return null;
-  const h = res.length >= 2 ? Number(res[1]) : edge;
-  return [edge, Number.isFinite(h) && h >= 256 ? h : edge];
-}
-
 function confirmImageUrl(file: string): string {
   if (!form.dataset_id || !file) return '';
   return api.loras.datasetImageUrl(form.dataset_id, file);
@@ -851,14 +619,20 @@ const maxReachableStep = computed(() => {
   let max = 0;
   if (form.base_model) max = 1;
   if (faceDatasetReady.value) max = Math.max(max, 2);
-  if (form.progress_prompt.trim()) max = Math.max(max, 3);
+  if (form.preset && effectiveDatasetCaption.value) max = Math.max(max, 3);
   return max;
 });
 
 function canNext(stepIndex: number): boolean {
   if (stepIndex === 0) return !!form.base_model;
   if (stepIndex === 1) return faceDatasetReady.value;
-  if (stepIndex === 2) return !!form.progress_prompt.trim() && (!isIdentityDataset.value || form.progress_prompt.includes(String(selectedDataset.value?.trigger_word || '').trim()));
+  if (stepIndex === 2) {
+    return (
+      !!form.preset
+      && !!effectiveDatasetCaption.value
+      && (!isIdentityDataset.value || triggerBound.value)
+    );
+  }
   return true;
 }
 
@@ -887,11 +661,6 @@ function goToStep(i: number) {
 function openRun(taskId: string) {
   if (!taskId) return;
   activeRunId.value = taskId;
-}
-
-function onRunBack() {
-  activeRunId.value = '';
-  historyRef.value?.refresh();
 }
 
 function modelDisplayName(m: any): string {
@@ -1015,179 +784,38 @@ async function onFacePreflightRequested() {
 function selectBase(m: any) {
   if (!m.trainable || !m.ready) return;
   form.base_model = m.id;
-  applyPresetTrainingDefaults();
-}
-
-function qloraBitsForApi(): number | null {
-  return effectiveQloraBits.value;
 }
 
 async function loadMeta() {
   const [modelsRes, dsRes, reqRes] = await Promise.all([
     api.loras.trainableModels(),
     api.loras.listDatasets(),
-    api.loras.trainingRequirements(form.base_model, qloraBitsForApi()),
+    api.loras.trainingRequirements(form.base_model),
   ]);
   trainableModels.value = (modelsRes as any).items || [];
   presetsByModel.value = (modelsRes as any).presets_by_model || {};
   datasets.value = (dsRes as any).items || [];
   requirements.value = reqRes;
+  coerceVisiblePreset();
 }
 
 async function refreshRequirements() {
   try {
-    requirements.value = await api.loras.trainingRequirements(form.base_model, qloraBitsForApi());
+    requirements.value = await api.loras.trainingRequirements(form.base_model);
   } catch {
     // ignore
   }
-}
-
-function applyPresetTrainingDefaults() {
-  if (form.preset === 'custom') return;
-  const cfg = modelPresets.value[form.preset] as Record<string, unknown> | undefined;
-  form.grad_checkpoint = Boolean(cfg?.grad_checkpoint);
-  if (cfg && Object.prototype.hasOwnProperty.call(cfg, 'min_snr_gamma')) {
-    form.min_snr_gamma = Number(cfg.min_snr_gamma) || 0;
-  } else {
-    form.min_snr_gamma = null;
-  }
-  if (cfg && Object.prototype.hasOwnProperty.call(cfg, 'lora_blocks')) {
-    form.lora_blocks = Number(cfg.lora_blocks) || null;
-  } else {
-    form.lora_blocks = null;
-  }
-  if (cfg && Object.prototype.hasOwnProperty.call(cfg, 'progress_steps')) {
-    form.progress_steps = Number(cfg.progress_steps) || null;
-  } else {
-    form.progress_steps = null;
-  }
-  if (cfg && Object.prototype.hasOwnProperty.call(cfg, 'prior_loss_weight')) {
-    form.prior_loss_weight = Number(cfg.prior_loss_weight) || 0;
-  } else {
-    form.prior_loss_weight = null;
-  }
-  if (!supportsPriorPreservation.value) {
-    clearPriorPreservationFields();
-  }
-}
-
-function applyCustomDefaultsFromQuick() {
-  const sourceKey = recommendedPresetFor(form.base_model);
-  const quick = (modelPresets.value[sourceKey] || modelPresets.value.standard) as Record<string, unknown> | undefined;
-  if (!quick) return;
-  if (form.iterations == null) form.iterations = Number(quick.iterations) || 400;
-  if (form.lora_rank == null) form.lora_rank = Number(quick.lora_rank) || 8;
-  if (form.learning_rate == null) form.learning_rate = Number(quick.learning_rate) || 0.0001;
-  const res = quick.resolution as number[] | undefined;
-  if (form.resolution_edge == null) form.resolution_edge = Number(res?.[0]) || 1024;
-  if (form.progress_steps == null) form.progress_steps = 20;
-  if (form.min_snr_gamma == null) {
-    const snr = quick.min_snr_gamma;
-    form.min_snr_gamma = snr == null ? 0 : Number(snr);
-  }
-  if (form.lora_blocks == null && quick.lora_blocks != null) {
-    form.lora_blocks = Number(quick.lora_blocks);
-  }
-  if (form.lora_blocks !== -1 && ['z-image', 'qwen-image'].includes(form.base_model)) {
-    form.lora_blocks = -1;
-  }
-  if (form.num_augmentations == null) form.num_augmentations = 3;
-  if (form.grad_accumulate == null) {
-    form.grad_accumulate = Number(quick.grad_accumulate) || 4;
-  }
-  if (form.prior_loss_weight == null && supportsPriorPreservation.value) form.prior_loss_weight = 0;
-  form.grad_checkpoint = true;
-}
-
-function parseModuleKeys(raw: string): string[] | undefined {
-  const keys = raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return keys.length ? keys : undefined;
-}
-
-function activePresetNumber(key: string): number | null {
-  if (form.preset === 'custom') return null;
-  const cfg = modelPresets.value[form.preset] as Record<string, unknown> | undefined;
-  if (!cfg || !Object.prototype.hasOwnProperty.call(cfg, key)) return null;
-  const value = Number(cfg[key]);
-  return Number.isFinite(value) ? value : null;
-}
-
-function shouldSendPresetNumberOverride(key: string, value: number | null): boolean {
-  if (value == null || !Number.isFinite(Number(value))) return false;
-  if (form.preset === 'custom') return true;
-  const presetValue = activePresetNumber(key);
-  return presetValue == null || Number(value) !== presetValue;
 }
 
 function buildTrainingBody(): Record<string, unknown> {
   const body: Record<string, unknown> = {
     base_model: form.base_model,
     dataset_id: form.dataset_id,
-    progress_prompt: form.progress_prompt,
     preset: form.preset,
     output_name: form.output_name,
     auto_register: true,
+    face_crop: isIdentityDataset.value ? 'auto' : 'off',
   };
-
-  if (effectiveQloraBits.value) body.qlora_bits = effectiveQloraBits.value;
-  if (form.preset === 'custom') {
-    body.grad_checkpoint = form.grad_checkpoint;
-  } else {
-    const presetGradCheckpoint = Boolean(
-      (modelPresets.value[form.preset] as Record<string, unknown> | undefined)?.grad_checkpoint
-    );
-    if (form.grad_checkpoint !== presetGradCheckpoint) {
-      body.grad_checkpoint = form.grad_checkpoint;
-    }
-  }
-  if (form.compile_step) body.compile_step = true;
-  // Identity datasets always train with face crops; style may opt out.
-  if (isIdentityDataset.value) {
-    body.face_crop = form.face_crop === 'on' ? 'on' : 'auto';
-  } else if (form.face_crop !== 'auto') {
-    body.face_crop = form.face_crop;
-  }
-
-  if (form.preset === 'custom') {
-    if (form.iterations) body.iterations = form.iterations;
-    if (form.lora_rank) body.lora_rank = form.lora_rank;
-    if (form.learning_rate) body.learning_rate = form.learning_rate;
-    const edge = Number(form.resolution_edge);
-    if (edge >= 256) body.resolution = [edge, edge];
-    if (form.progress_steps != null && form.progress_steps >= 4) {
-      body.progress_steps = form.progress_steps;
-    }
-    if (form.lora_blocks === -1 || (form.lora_blocks != null && form.lora_blocks > 0)) {
-      body.lora_blocks = form.lora_blocks;
-    }
-    if (form.num_augmentations != null && form.num_augmentations >= 1) {
-      body.num_augmentations = form.num_augmentations;
-    }
-    if (form.grad_accumulate != null && form.grad_accumulate >= 1) {
-      body.grad_accumulate = form.grad_accumulate;
-    }
-  } else {
-    const presetRes = presetResolutionBody(form.preset);
-    if (presetRes) body.resolution = presetRes;
-    if (form.lora_blocks === -1 || (form.lora_blocks != null && form.lora_blocks > 0)) {
-      const presetBlocks = Number((modelPresets.value[form.preset] as Record<string, unknown> | undefined)?.lora_blocks);
-      if (!Number.isFinite(presetBlocks) || form.lora_blocks !== presetBlocks) {
-        body.lora_blocks = form.lora_blocks;
-      }
-    }
-  }
-  if (form.lora_alpha != null && form.lora_alpha > 0) body.lora_alpha = form.lora_alpha;
-  if (form.lora_dropout != null && form.lora_dropout >= 0) body.lora_dropout = form.lora_dropout;
-  if (form.optimizer === 'adam' || form.optimizer === 'adamw') body.optimizer = form.optimizer;
-  if (form.weight_decay != null && form.weight_decay >= 0) body.weight_decay = form.weight_decay;
-  if (form.val_split != null && form.val_split >= 0) body.val_split = form.val_split;
-  if (form.val_every != null && form.val_every > 0) body.val_every = form.val_every;
-
-  const moduleKeys = parseModuleKeys(form.lora_module_keys);
-  if (moduleKeys) body.lora_module_keys = moduleKeys;
 
   const resumeTask = form.resume_task_id.trim();
   const resumeCk = form.resume_checkpoint.trim();
@@ -1195,33 +823,6 @@ function buildTrainingBody(): Record<string, unknown> {
     body.resume_task_id = resumeTask;
     body.resume_checkpoint = resumeCk;
   }
-
-  if (form.train_type === 'lora' || form.train_type === 'dora') body.train_type = form.train_type;
-  if (form.preset === 'custom' || form.preset === 'standard' || form.preset === 'quality') {
-    if (
-      form.min_snr_gamma != null
-      && form.min_snr_gamma >= 0
-      && shouldSendPresetNumberOverride('min_snr_gamma', form.min_snr_gamma)
-    ) {
-      body.min_snr_gamma = form.min_snr_gamma;
-    }
-  }
-  if (supportsPriorPreservation.value && form.class_prompt.trim()) {
-    body.class_prompt = form.class_prompt.trim();
-  }
-  if (
-    supportsPriorPreservation.value
-    && form.prior_loss_weight != null
-    && form.prior_loss_weight >= 0
-    && shouldSendPresetNumberOverride('prior_loss_weight', form.prior_loss_weight)
-  ) {
-    body.prior_loss_weight = form.prior_loss_weight;
-  }
-  if (form.early_stop_patience != null && form.early_stop_patience > 0) {
-    body.early_stop_patience = form.early_stop_patience;
-  }
-  if (form.fuse_adapters) body.fuse_adapters = true;
-
   return body;
 }
 
@@ -1233,39 +834,13 @@ function restoreDraft() {
     if (draft.base_model) form.base_model = draft.base_model;
     if (draft.dataset_id) form.dataset_id = draft.dataset_id;
     if (draft.preset) form.preset = draft.preset;
-    if (draft.progress_prompt) form.progress_prompt = draft.progress_prompt;
     if (draft.default_prompt) form.default_prompt = draft.default_prompt;
     if (draft.output_name) form.output_name = draft.output_name;
-    if (draft.iterations != null) form.iterations = Number(draft.iterations);
-    if (draft.lora_rank != null) form.lora_rank = Number(draft.lora_rank);
-    if (draft.learning_rate != null) form.learning_rate = Number(draft.learning_rate);
-    if (draft.resolution_edge != null) form.resolution_edge = Number(draft.resolution_edge);
-    if (draft.progress_steps != null) form.progress_steps = Number(draft.progress_steps);
-    if (draft.num_augmentations != null) form.num_augmentations = Number(draft.num_augmentations);
-    if (draft.grad_accumulate != null) form.grad_accumulate = Number(draft.grad_accumulate);
-    if (draft.qlora_bits) form.qlora_bits = draft.qlora_bits as '' | '4' | '8';
-    if (draft.face_crop === 'auto' || draft.face_crop === 'on' || draft.face_crop === 'off') form.face_crop = draft.face_crop;
-    if (typeof draft.grad_checkpoint === 'boolean') form.grad_checkpoint = draft.grad_checkpoint;
-    if (typeof draft.compile_step === 'boolean') form.compile_step = draft.compile_step;
-    if (draft.lora_blocks != null) form.lora_blocks = Number(draft.lora_blocks);
-    if (draft.lora_alpha != null) form.lora_alpha = Number(draft.lora_alpha);
-    if (draft.lora_dropout != null) form.lora_dropout = Number(draft.lora_dropout);
-    if (draft.lora_module_keys) form.lora_module_keys = String(draft.lora_module_keys);
-    if (draft.optimizer) form.optimizer = draft.optimizer as '' | 'adam' | 'adamw';
-    if (draft.weight_decay != null) form.weight_decay = Number(draft.weight_decay);
-    if (draft.val_split != null) form.val_split = Number(draft.val_split);
-    if (draft.val_every != null) form.val_every = Number(draft.val_every);
     // Never restore resume fields from draft — they leak across unrelated new runs.
     form.resume_task_id = '';
     form.resume_checkpoint = '';
     resumeIntent.value = false;
     coerceVisiblePreset();
-    if (draft.train_type) form.train_type = draft.train_type as '' | 'lora' | 'dora';
-    if (draft.min_snr_gamma != null) form.min_snr_gamma = Number(draft.min_snr_gamma);
-    if (draft.class_prompt) form.class_prompt = String(draft.class_prompt);
-    if (draft.prior_loss_weight != null) form.prior_loss_weight = Number(draft.prior_loss_weight);
-    if (draft.early_stop_patience != null) form.early_stop_patience = Number(draft.early_stop_patience);
-    if (typeof draft.fuse_adapters === 'boolean') form.fuse_adapters = draft.fuse_adapters;
     if (typeof draft.step === 'number' && draft.step >= 0 && draft.step <= 3) {
       step.value = Math.min(draft.step, maxReachableStep.value);
     }
@@ -1281,34 +856,8 @@ function persistDraft() {
       base_model: form.base_model,
       dataset_id: form.dataset_id,
       preset: form.preset,
-      progress_prompt: form.progress_prompt,
       default_prompt: form.default_prompt,
       output_name: form.output_name,
-      iterations: form.iterations,
-      lora_rank: form.lora_rank,
-      learning_rate: form.learning_rate,
-      resolution_edge: form.resolution_edge,
-      progress_steps: form.progress_steps,
-      num_augmentations: form.num_augmentations,
-      grad_accumulate: form.grad_accumulate,
-      qlora_bits: form.qlora_bits,
-      face_crop: form.face_crop,
-      grad_checkpoint: form.grad_checkpoint,
-      compile_step: form.compile_step,
-      lora_blocks: form.lora_blocks,
-      lora_alpha: form.lora_alpha,
-      lora_dropout: form.lora_dropout,
-      lora_module_keys: form.lora_module_keys,
-      optimizer: form.optimizer,
-      weight_decay: form.weight_decay,
-      val_split: form.val_split,
-      val_every: form.val_every,
-      train_type: form.train_type,
-      min_snr_gamma: form.min_snr_gamma,
-      class_prompt: form.class_prompt,
-      prior_loss_weight: form.prior_loss_weight,
-      early_stop_patience: form.early_stop_patience,
-      fuse_adapters: form.fuse_adapters,
       step: step.value,
     })
   );
@@ -1419,7 +968,7 @@ function resumeFromRouteQuery() {
     if (sourceBase) form.base_model = sourceBase;
     const sourcePreset = String(params.preset || '').trim();
     if (sourcePreset) form.preset = sourcePreset;
-    applyPresetTrainingDefaults();
+    coerceVisiblePreset();
     void refreshRequirements();
     toast.success(t('loraTrain.resumeTraining'));
   }).catch(() => {
@@ -1429,10 +978,7 @@ function resumeFromRouteQuery() {
   });
 }
 
-watch(step, (s) => {
-  if (s === 2 && !form.progress_prompt.trim() && form.default_prompt.trim()) {
-    form.progress_prompt = form.default_prompt.trim();
-  }
+watch(step, () => {
   persistDraft();
 });
 
@@ -1441,28 +987,8 @@ watch(
     form.base_model,
     form.dataset_id,
     form.preset,
-    form.progress_prompt,
     form.default_prompt,
     form.output_name,
-    form.iterations,
-    form.lora_rank,
-    form.learning_rate,
-    form.resolution_edge,
-    form.progress_steps,
-    form.num_augmentations,
-    form.grad_accumulate,
-    form.qlora_bits,
-    form.face_crop,
-    form.grad_checkpoint,
-    form.compile_step,
-    form.lora_blocks,
-    form.lora_alpha,
-    form.lora_dropout,
-    form.lora_module_keys,
-    form.optimizer,
-    form.weight_decay,
-    form.val_split,
-    form.val_every,
   ],
   () => persistDraft()
 );
@@ -1476,14 +1002,10 @@ watch(() => form.base_model, (mid) => {
       toast.info(t('loraTrain.resumeClearedOnBaseChange'));
     }
   }
-  if (form.preset === 'scheme4' && mid !== 'z-image') {
-    form.preset = 'standard';
+  if (!presetKeys.value.includes(form.preset)) {
+    form.preset = recommendedPresetFor(mid);
   }
   coerceVisiblePreset();
-  if (!supportsPriorPreservation.value) {
-    clearPriorPreservationFields();
-  }
-  applyPresetTrainingDefaults();
   void refreshRequirements();
 });
 
@@ -1492,13 +1014,8 @@ watch(activeResolutionKey, () => {
   if (form.dataset_id && isIdentityDataset.value) void refreshDatasetHealth();
 });
 
-watch(() => form.qlora_bits, () => {
-  void refreshRequirements();
-});
-
-watch(() => form.preset, (preset) => {
-  applyPresetTrainingDefaults();
-  if (preset === 'custom') applyCustomDefaultsFromQuick();
+watch(() => form.preset, () => {
+  coerceVisiblePreset();
 });
 
 async function submitTraining() {
@@ -1544,31 +1061,8 @@ function startNewTraining() {
   activeRunId.value = '';
   form.output_name = '';
   form.preset = recommendedPreset.value;
-  form.iterations = null;
-  form.lora_rank = null;
-  form.learning_rate = null;
-  form.resolution_edge = null;
-  form.progress_steps = null;
-  form.num_augmentations = null;
-  form.grad_accumulate = null;
-  form.qlora_bits = '';
-  form.face_crop = 'auto';
-  form.grad_checkpoint = false;
-  form.compile_step = false;
-  form.lora_blocks = null;
-  form.lora_alpha = null;
-  form.lora_dropout = null;
-  form.lora_module_keys = '';
-  form.optimizer = '';
-  form.weight_decay = null;
-  form.val_split = null;
-  form.val_every = null;
-  form.train_type = '';
-  form.min_snr_gamma = null;
-  form.early_stop_patience = null;
-  form.fuse_adapters = false;
   clearResume();
-  applyPresetTrainingDefaults();
+  coerceVisiblePreset();
   if (step.value !== 0) step.value = 0;
   else persistDraft();
   toast.success(t('loraTrain.newTrainingOpened'));
@@ -1591,8 +1085,7 @@ onMounted(async () => {
     if (!form.dataset_id && datasets.value.length === 1) {
       form.dataset_id = datasets.value[0].id;
     }
-    applyPresetTrainingDefaults();
-    if (form.preset === 'custom') applyCustomDefaultsFromQuick();
+    coerceVisiblePreset();
     openRunFromQuery();
     await resumeFromRouteQuery();
     await importFromRouteQuery();
@@ -1638,8 +1131,8 @@ onMounted(async () => {
   overflow: hidden;
 }
 
-.lora-train-page__sidebar-card .lv-sidebar-card__new-btn {
-  margin-bottom: 12px;
+.lora-train-page .lv-sidebar-card__new-btn {
+  margin-bottom: 14px;
   flex-shrink: 0;
 }
 
@@ -1648,6 +1141,7 @@ onMounted(async () => {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  gap: 4px;
   overflow: hidden;
 }
 
@@ -2076,22 +1570,19 @@ onMounted(async () => {
 .lora-train-page__identity-checklist li {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 12px;
-  border: 0.5px solid var(--dq-border-subtle);
+  gap: 8px;
+  padding: 4px 0;
   font-size: var(--dq-font-size-caption);
   line-height: 1.45;
-}
-
-.lora-train-page__identity-checklist li.is-ok {
-  background: color-mix(in srgb, var(--dq-success) 12%, var(--dq-fill-secondary));
   color: var(--dq-label-primary);
 }
 
-.lora-train-page__identity-checklist li.is-bad {
-  background: color-mix(in srgb, var(--dq-danger) 10%, var(--dq-fill-secondary));
-  color: var(--dq-label-primary);
+.lora-train-page__identity-checklist li.is-ok .lora-train-page__identity-check-mark {
+  color: var(--dq-success);
+}
+
+.lora-train-page__identity-checklist li.is-bad .lora-train-page__identity-check-mark {
+  color: var(--dq-danger);
 }
 
 .lora-train-page__identity-check-mark {
@@ -2185,15 +1676,17 @@ onMounted(async () => {
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--dq-bg-base) 50%, var(--dq-fill-secondary));
-  border: 0.5px solid var(--dq-border-subtle);
+  padding: 10px 0;
+  border-bottom: 0.5px solid var(--dq-border-subtle);
   font-size: var(--dq-font-size-body);
   width: 100%;
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
+}
+
+.lora-train-page__summary li:last-child {
+  border-bottom: none;
 }
 
 .lora-train-page__summary span {

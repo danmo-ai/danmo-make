@@ -253,6 +253,66 @@ impl Array {
         Ok(output)
     }
 
+    pub fn square(&self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_square(&mut output.raw, self.raw, stream.raw) },
+            "mlx_square",
+        )?;
+        Ok(output)
+    }
+
+    pub fn stop_gradient(&self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_stop_gradient(&mut output.raw, self.raw, stream.raw) },
+            "mlx_stop_gradient",
+        )?;
+        Ok(output)
+    }
+
+    pub fn zeros_like(&self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_zeros_like(&mut output.raw, self.raw, stream.raw) },
+            "mlx_zeros_like",
+        )?;
+        Ok(output)
+    }
+
+    pub fn ones_like(&self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_ones_like(&mut output.raw, self.raw, stream.raw) },
+            "mlx_ones_like",
+        )?;
+        Ok(output)
+    }
+
+    pub fn scalar_f32(value: f32) -> Result<Self> {
+        initialize();
+        clear_error();
+        let raw = unsafe { sys::mlx_array_new_float(value) };
+        check_infallible("mlx_array_new_float", raw).map(|raw| Self {
+            raw,
+            _thread_affine: PhantomData,
+        })
+    }
+
+    pub fn maximum(lhs: &Self, rhs: &Self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_maximum(&mut output.raw, lhs.raw, rhs.raw, stream.raw) },
+            "mlx_maximum",
+        )?;
+        Ok(output)
+    }
+
     pub fn isfinite_all(&self, stream: &Stream) -> Result<Self> {
         let finite = Self::empty()?;
         let mut raw = finite.raw;

@@ -21,8 +21,8 @@ pub use gguf::{
     SafeTensor, TypedTensor,
 };
 pub use lora::{
-    bind_lora_factors, load_lora_factors, load_lora_factors_with_default_alpha, LoraFactor,
-    LoraFile,
+    bind_lora_factors, load_lora_factors, load_lora_factors_mapped,
+    load_lora_factors_with_default_alpha, LoraFactor, LoraFile,
 };
 #[cfg(feature = "mlx")]
 pub use mlx::{load_directory as load_mlx_directory, MlxWeights, WeightDtype};

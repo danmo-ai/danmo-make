@@ -207,11 +207,22 @@ impl MlxWeights {
         files: &[super::LoraFile],
         stream: &Stream,
     ) -> std::result::Result<Self, super::WeightError> {
+        self.attach_lora_mapped(files, stream, &|module| Ok(module.to_string()))
+    }
+
+    /// Same residual as [`attach_lora`]. `remap` rewrites the module stem
+    /// onto this graph's parameter name before the lookup.
+    pub fn attach_lora_mapped(
+        self,
+        files: &[super::LoraFile],
+        stream: &Stream,
+        remap: &dyn Fn(&str) -> std::result::Result<String, super::WeightError>,
+    ) -> std::result::Result<Self, super::WeightError> {
         if files.is_empty() {
             return Ok(self);
         }
         let layout = self.linear_layout();
-        let factors = super::load_lora_factors(files, &layout)?;
+        let factors = super::load_lora_factors_mapped(files, &layout, remap)?;
         let mut grouped: BTreeMap<String, Vec<danmo_mlx::LoraResidual>> = BTreeMap::new();
         for factor in factors {
             let dtype = self

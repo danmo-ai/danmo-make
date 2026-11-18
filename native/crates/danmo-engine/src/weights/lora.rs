@@ -1,9 +1,9 @@
 //! LoRA factors on published graph parameter names.
 //!
 //! A factor is an in-graph residual `scale * B(Ax)` added to `Wx`. The base
-//! weight stays quantized. Suffixes and wrapper prefixes are stripped; module
-//! names are not rewritten onto another module tree. A name that is not a
-//! graph parameter fails.
+//! weight stays quantized. Suffixes and wrapper prefixes are stripped. A
+//! caller may remap the remaining module stem onto the graph name; this
+//! loader does not invent that map. A name that is not a graph parameter fails.
 
 use super::{GgufWeights, WeightError};
 use crate::runtime::{GraphBuilder, RuntimeError, Tensor};
@@ -41,8 +41,17 @@ pub(crate) fn resolve_lora_key(
     key: &str,
     names: &HashSet<String>,
 ) -> Result<(String, Part), WeightError> {
+    resolve_lora_key_mapped(key, names, &|module| Ok(module.to_string()))
+}
+
+pub(crate) fn resolve_lora_key_mapped(
+    key: &str,
+    names: &HashSet<String>,
+    remap: &dyn Fn(&str) -> Result<String, WeightError>,
+) -> Result<(String, Part), WeightError> {
     let (module, part) = split_lora_suffix(key)?;
     let module = strip_wrappers(&module);
+    let module = remap(&module)?;
     for candidate in [
         module.clone(),
         format!("{module}.weight"),
@@ -65,10 +74,29 @@ pub fn load_lora_factors(
     load_lora_factors_with_default_alpha(files, layout, None)
 }
 
+pub fn load_lora_factors_mapped(
+    files: &[LoraFile],
+    layout: &[(String, i64, i64)],
+    remap: &dyn Fn(&str) -> Result<String, WeightError>,
+) -> Result<Vec<LoraFactor>, WeightError> {
+    load_lora_factors_with_default_alpha_mapped(files, layout, None, remap)
+}
+
 pub fn load_lora_factors_with_default_alpha(
     files: &[LoraFile],
     layout: &[(String, i64, i64)],
     default_alpha: Option<f32>,
+) -> Result<Vec<LoraFactor>, WeightError> {
+    load_lora_factors_with_default_alpha_mapped(files, layout, default_alpha, &|module| {
+        Ok(module.to_string())
+    })
+}
+
+fn load_lora_factors_with_default_alpha_mapped(
+    files: &[LoraFile],
+    layout: &[(String, i64, i64)],
+    default_alpha: Option<f32>,
+    remap: &dyn Fn(&str) -> Result<String, WeightError>,
 ) -> Result<Vec<LoraFactor>, WeightError> {
     if default_alpha.is_some_and(|alpha| !alpha.is_finite()) {
         return Err(WeightError::NotBuilt(
@@ -88,7 +116,7 @@ pub fn load_lora_factors_with_default_alpha(
                 file.id
             )));
         }
-        factors.extend(load_file(file, &names, &shapes, default_alpha)?);
+        factors.extend(load_file(file, &names, &shapes, default_alpha, remap)?);
     }
     Ok(factors)
 }
@@ -126,6 +154,7 @@ fn load_file(
     names: &HashSet<String>,
     shapes: &HashMap<&str, (i64, i64)>,
     default_alpha: Option<f32>,
+    remap: &dyn Fn(&str) -> Result<String, WeightError>,
 ) -> Result<Vec<LoraFactor>, WeightError> {
     let weights = GgufWeights::open(&file.path)
         .map_err(|err| WeightError::NotBuilt(format!("lora {}: {err}", file.id)))?;
@@ -133,7 +162,7 @@ fn load_file(
     let mut groups: HashMap<String, Group> = HashMap::new();
     let mut order = Vec::new();
     for key in &keys {
-        let (target, part) = resolve_lora_key(key, names)?;
+        let (target, part) = resolve_lora_key_mapped(key, names, remap)?;
         if !groups.contains_key(&target) {
             order.push(target.clone());
         }
@@ -369,7 +398,8 @@ fn strip_wrappers(module: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        load_lora_factors, load_lora_factors_with_default_alpha, resolve_lora_key, LoraFile, Part,
+        load_lora_factors, load_lora_factors_mapped, load_lora_factors_with_default_alpha,
+        resolve_lora_key, LoraFile, Part,
     };
     use crate::weights::{write_safetensors, SafeTensor};
     use std::collections::HashSet;
@@ -606,6 +636,46 @@ mod tests {
             err.to_string().contains("not a down, up, or alpha"),
             "{err}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn module_remap_lands_on_the_graph_name() {
+        let dir = std::env::temp_dir().join(format!("danmo-remap-lora-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("adapter.safetensors");
+        let down = f32_bytes(&[1.0, 0.0, 0.0, 1.0]);
+        write_safetensors(
+            &path,
+            &[
+                SafeTensor {
+                    name: "diffusion_model.layers.0.attention.to_out.0.lora_A.weight",
+                    dtype: "F32",
+                    shape: &[1, 4],
+                    data: &down,
+                },
+                SafeTensor {
+                    name: "diffusion_model.layers.0.attention.to_out.0.lora_B.weight",
+                    dtype: "F32",
+                    shape: &[4, 1],
+                    data: &down,
+                },
+            ],
+        )
+        .unwrap();
+        let layout = [("layers.0.attention.to_out.weight".into(), 4, 4)];
+        let factors = load_lora_factors_mapped(
+            &[LoraFile {
+                id: "zimage".into(),
+                path,
+                weight: 1.0,
+            }],
+            &layout,
+            &|module| Ok(module.replace(".to_out.0", ".to_out")),
+        )
+        .unwrap();
+        assert_eq!(factors[0].target, "layers.0.attention.to_out.weight");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

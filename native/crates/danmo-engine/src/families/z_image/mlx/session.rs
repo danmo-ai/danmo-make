@@ -2,8 +2,10 @@
 //!
 //! The three component directories are admitted into `ModelCache`, then
 //! encode, denoise, and decode run on that thread. Guidance 0 and 1 are the
-//! single-forward path. Any other guidance, a negative prompt, LoRA, and a
-//! structural guide fail instead of being dropped.
+//! single-forward path. Any other guidance, a negative prompt, and a
+//! structural guide fail instead of being dropped. LoRA is the shared
+//! residual on a clone of the DiT; the compiled graph for that clone is
+//! keyed by the adapter files.
 
 use std::path::{Path, PathBuf};
 
@@ -19,11 +21,12 @@ use crate::contract::ExecutionContext;
 use crate::error::EngineError;
 use crate::families::{DitDecode, DitImageSession};
 use crate::runtime::GgmlContext;
-use crate::weights::{MlxWeights, WeightError};
+use crate::weights::{LoraFile, MlxWeights, WeightError};
 
 pub(crate) struct MlxSession {
     bundle: PathBuf,
     request: ImageGenerationRequest,
+    loras: Vec<LoraFile>,
     ids: Vec<i32>,
     sigmas: Option<Vec<f32>>,
     width: u32,
@@ -38,6 +41,7 @@ impl MlxSession {
     pub(crate) fn prepare(
         bundle: &Path,
         request: &ImageGenerationRequest,
+        loras: Vec<LoraFile>,
     ) -> Result<Self, EngineError> {
         if !is_mlx_bundle(bundle) {
             return Err(EngineError::bad_request(format!(
@@ -69,6 +73,7 @@ impl MlxSession {
         Ok(Self {
             bundle: bundle.to_path_buf(),
             request: request.clone(),
+            loras,
             ids: Vec::new(),
             sigmas: None,
             width,
@@ -129,6 +134,7 @@ impl DitImageSession for MlxSession {
         let width = self.width;
         let height = self.height;
         let exec = exec.clone();
+        let loras = self.loras.clone();
         crate::runtime::mlx_executor()
             .map_err(from_mlx)?
             .execute("z_image mlx infer", move |_, stream, cache, _| {
@@ -142,6 +148,7 @@ impl DitImageSession for MlxSession {
                     seed as u64,
                     None,
                     &sigmas,
+                    &loras,
                     &exec,
                     stream,
                 )
@@ -171,6 +178,35 @@ impl DitImageSession for MlxSession {
     }
 }
 
+fn lora_cache_tag(loras: &[LoraFile]) -> String {
+    if loras.is_empty() {
+        return String::new();
+    }
+    let mut tag = String::from("#lora");
+    for file in loras {
+        tag.push('#');
+        tag.push_str(&file.id);
+        tag.push('@');
+        tag.push_str(&file.path.display().to_string());
+        tag.push(':');
+        tag.push_str(&format!("{}", file.weight));
+    }
+    tag
+}
+
+fn attach_dit_lora(
+    weights: MlxWeights,
+    loras: &[LoraFile],
+    patch: i64,
+    stream: &Stream,
+) -> danmo_mlx::Result<MlxWeights> {
+    weights
+        .attach_lora_mapped(loras, stream, &|module| {
+            super::weights::remap_lora_module_prefix(module, patch)
+        })
+        .map_err(|error| Error::new("Z-Image LoRA", error.to_string()))
+}
+
 fn denoise(
     cache: &mut danmo_mlx::ModelCache,
     text_key: &danmo_mlx::CacheKey,
@@ -181,6 +217,7 @@ fn denoise(
     seed: u64,
     initial: Option<&[f32]>,
     sigmas: &[f32],
+    loras: &[LoraFile],
     exec: &ExecutionContext,
     stream: &Stream,
 ) -> danmo_mlx::Result<Vec<f32>> {
@@ -204,10 +241,12 @@ fn denoise(
     };
     caption.eval()?;
     let weights = resident_weights(cache, dit_key, "transformer")?.clone();
+    let weights = attach_dit_lora(weights, loras, config.patch, stream)?;
     let caption_cache = CaptionCache::new(&weights, config, grid, &caption, stream)?;
+    let lora_key = lora_cache_tag(loras);
     let compiled_key = danmo_mlx::CacheKey {
         id: format!(
-            "{}#compiled-dit#{}x{}#cap{}",
+            "{}#compiled-dit#{}x{}#cap{}{lora_key}",
             dit_key.id, grid.tokens_w, grid.tokens_h, grid.cap_len
         ),
         revision: dit_key.revision,
@@ -525,6 +564,7 @@ pub(crate) fn denoise_reference(
     seed: u64,
     reference: &[f32],
     sigmas: &[f32],
+    loras: &[LoraFile],
     exec: &ExecutionContext,
 ) -> Result<Vec<f32>, EngineError> {
     resident::load_transformer(
@@ -541,6 +581,7 @@ pub(crate) fn denoise_reference(
     let reference = reference.to_vec();
     let sigmas = sigmas.to_vec();
     let exec = exec.clone();
+    let loras = loras.to_vec();
     crate::runtime::mlx_executor()
         .map_err(from_mlx)?
         .execute("z_image mlx edit denoise", move |_, stream, cache, _| {
@@ -554,6 +595,7 @@ pub(crate) fn denoise_reference(
                 seed,
                 Some(&reference),
                 &sigmas,
+                &loras,
                 &exec,
                 stream,
             )
@@ -710,7 +752,7 @@ mod tests {
         std::fs::write(bundle.join("tokenizer.json"), r#"{"vocab":{"red":1}}"#).unwrap();
         assert!(is_mlx_bundle(&bundle));
 
-        let mut session = MlxSession::prepare(&bundle, &request()).unwrap();
+        let mut session = MlxSession::prepare(&bundle, &request(), Vec::new()).unwrap();
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
         session.encode(&ctx).unwrap();
         let again = super::resident::load_transformer(
@@ -760,7 +802,7 @@ mod tests {
             "scheduler": "linear"
         }))
         .unwrap();
-        let mut session = MlxSession::prepare(&bundle, &request).unwrap();
+        let mut session = MlxSession::prepare(&bundle, &request, Vec::new()).unwrap();
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
         session.encode(&ctx).unwrap();
         session.schedule().unwrap();

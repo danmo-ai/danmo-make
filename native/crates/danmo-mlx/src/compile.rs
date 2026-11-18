@@ -164,6 +164,10 @@ pub struct Closure {
 }
 
 impl Closure {
+    pub(crate) fn raw(&self) -> sys::mlx_closure {
+        self.raw
+    }
+
     pub fn new<F>(stream: Stream, function: F) -> Result<Self>
     where
         F: Fn(&[Array], &Stream) -> Result<Array> + 'static,

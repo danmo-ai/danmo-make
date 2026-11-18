@@ -88,6 +88,17 @@ pub fn remap_lora_module_prefix(module: &str, patch_size: i64) -> Result<String,
         .replace("cap_embedder.0.", "cap_norm.")
         .replace("cap_embedder.1.", "cap_embedder.")
         .replace(".adaLN_modulation.1.", ".adaLN_modulation.0.");
+    // The shared loader strips `.lora_*.weight` before this remap, so a
+    // diffusers index can be the last component (`...to_out.0`). The dotted
+    // replacements above only match when another segment follows.
+    module = rewrite_terminal(&module, "to_out.0", "to_out");
+    module = rewrite_terminal(&module, "t_embedder.mlp.0", "t_embedder.linear1");
+    module = rewrite_terminal(&module, "t_embedder.mlp.2", "t_embedder.linear2");
+    module = rewrite_terminal(&module, "cap_embedder.0", "cap_norm");
+    module = rewrite_terminal(&module, "cap_embedder.1", "cap_embedder");
+    module = rewrite_terminal(&module, "attention_norm1", "attn_norm1");
+    module = rewrite_terminal(&module, "attention_norm2", "attn_norm2");
+    module = rewrite_terminal(&module, "adaLN_modulation.1", "adaLN_modulation.0");
     if let Some(rest) = module.strip_suffix(".default") {
         module = rest.trim_end_matches('.').to_string();
     }
@@ -97,6 +108,19 @@ pub fn remap_lora_module_prefix(module: &str, patch_size: i64) -> Result<String,
         module = rest.trim_end_matches('.').to_string();
     }
     Ok(module.trim_matches('.').to_string())
+}
+
+/// Replace `from` only when it is the whole path or a final segment.
+fn rewrite_terminal(module: &str, from: &str, to: &str) -> String {
+    let at_end = module == from
+        || module
+            .strip_suffix(from)
+            .is_some_and(|rest| rest.ends_with('.'));
+    if !at_end {
+        return module.to_string();
+    }
+    let rest = &module[..module.len() - from.len()];
+    format!("{rest}{to}")
 }
 
 fn remap_name(name: &str, prefix: &str) -> String {
@@ -246,6 +270,26 @@ mod tests {
             remap_lora_module_prefix("diffusion_model.layers.0.attention.to_out.0.weight", 2)
                 .unwrap(),
             "layers.0.attention.to_out"
+        );
+        assert_eq!(
+            remap_lora_module_prefix("context_refiner.0.attention.to_out.0", 2).unwrap(),
+            "context_refiner.0.attention.to_out"
+        );
+        assert_eq!(
+            remap_lora_module_prefix("layers.0.attention_norm1", 2).unwrap(),
+            "layers.0.attn_norm1"
+        );
+        assert_eq!(
+            remap_lora_module_prefix("cap_embedder.0", 2).unwrap(),
+            "cap_norm"
+        );
+        assert_eq!(
+            remap_lora_module_prefix("t_embedder.mlp.2", 2).unwrap(),
+            "t_embedder.linear2"
+        );
+        assert_eq!(
+            remap_lora_module_prefix("all_final_layer.2-1.adaLN_modulation.1", 2).unwrap(),
+            "final_layer.adaLN_modulation.0"
         );
         assert_eq!(
             remap_lora_module_prefix("transformer.cap_embedder.0.weight", 2).unwrap(),

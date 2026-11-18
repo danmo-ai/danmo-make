@@ -70,7 +70,7 @@
       </div>
     </div>
 
-    <div v-if="loraSupported && compatibleLoras?.length" class="composer-advanced-fields__row">
+    <div v-if="loraSupported" class="composer-advanced-fields__row">
       <div class="composer-advanced-fields__field composer-advanced-fields__field--full composer-advanced-fields__field--stack">
         <div class="composer-advanced-fields__inline">
           <label>{{ $t('studio.loraLabel') }}</label>
@@ -86,9 +86,11 @@
               :key="String(l.id)"
               :label="loraOptionLabel(l)"
               :value="l.id"
+              :disabled="l.ready === false"
             />
           </DqSelect>
         </div>
+        <p v-if="!installedLoraCount" class="composer-advanced-fields__hint">{{ $t('studio.loraNoneReady') }}</p>
         <div v-if="params.lora" class="composer-advanced-fields__inline">
           <label>{{ $t('create.loraScale') }}</label>
           <DqSlider v-model="params.lora_scale" :min="0" :max="2" :step="0.05" class="composer-advanced-fields__slider-grow" />
@@ -96,6 +98,9 @@
         </div>
         <p v-if="params.lora && selectedLoraHintKey" class="composer-advanced-fields__hint">
           {{ $t(selectedLoraHintKey) }}
+        </p>
+        <p v-if="params.lora && stackedAdapterNames" class="composer-advanced-fields__hint">
+          {{ $t('studio.loraStack', { names: stackedAdapterNames }) }}
         </p>
         <p
           v-if="params.lora && selectedLoraScaleRange"
@@ -283,6 +288,7 @@ import {
   findCompatibleLora,
   loraHintKey,
   loraRecommendedScale,
+  stackedAdapterToken,
 } from '@/utils/loraAdapterMeta';
 import {
   COMPOSER_INFERENCE_ENUM_KEYS,
@@ -376,6 +382,10 @@ const loraSupported = computed(() =>
   Boolean((props.currentModelConfig?.parameters as { lora_support?: boolean } | undefined)?.lora_support),
 );
 
+const installedLoraCount = computed(
+  () => ((props.compatibleLoras || []) as CompatibleLoraRow[]).filter((lora) => lora.ready !== false).length,
+);
+
 const selectedLoraRow = computed<CompatibleLoraRow | undefined>(() => {
   const id = String(props.params.lora || '');
   if (!id) return undefined;
@@ -383,6 +393,11 @@ const selectedLoraRow = computed<CompatibleLoraRow | undefined>(() => {
 });
 
 const selectedLoraHintKey = computed(() => loraHintKey(selectedLoraRow.value));
+
+const stackedAdapterNames = computed(() => {
+  const extras = selectedLoraRow.value?.extra_adapters || [];
+  return extras.map((item) => stackedAdapterToken(item)).filter(Boolean).join(', ');
+});
 
 const selectedLoraScaleRange = computed(() => loraRecommendedScale(selectedLoraRow.value));
 
@@ -426,10 +441,9 @@ const controlNetGuideHint = computed(() => {
 
 function loraOptionLabel(l: Record<string, unknown>): string {
   const base = String(l.name || l.id || '');
-  if (l.source === 'user_trained') {
-    return `${base} (${$t('studio.myLoraTag')})`;
-  }
-  return base;
+  const tagged = l.source === 'user_trained' ? `${base} (${$t('studio.myLoraTag')})` : base;
+  if (l.ready === false) return `${tagged} (${$t('studio.loraNotInstalled')})`;
+  return tagged;
 }
 
 function controlNetOptionLabel(n: Record<string, unknown>): string {

@@ -9,7 +9,12 @@ mod pipeline;
 mod ports;
 pub mod runtime;
 mod session;
+#[cfg(feature = "mlx")]
+pub mod train;
 mod weights;
+
+#[cfg(feature = "mlx")]
+pub use families::z_image::train::{run_z_image_lora_training, ZImageTrainOutput};
 
 pub use common::png;
 pub use contract::{
