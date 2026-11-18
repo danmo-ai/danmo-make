@@ -185,6 +185,51 @@ mod tests {
         }
     }
 
+    /// Published prequantized bundle (mflux mlx-q4/q8): every shard loads,
+    /// the remap has no collisions, affine linears stay packed, and the
+    /// registry bits/group size validate against the shard metadata.
+    #[test]
+    #[ignore]
+    fn real_quantized_bundle_loads_packed_without_remap_collisions() {
+        let root = std::path::PathBuf::from(std::env::var("DANQING_TEST_ZIMAGE_QUANT_DIT_DIR").unwrap());
+        let bits: i32 = std::env::var("DANQING_TEST_ZIMAGE_QUANT_BITS")
+            .unwrap_or_else(|_| "4".into())
+            .parse()
+            .unwrap();
+        let config = crate::families::z_image::mlx::MlxZImageConfig::published();
+        let quantization = danmo_mlx::AffineQuantization::new(bits, 64).unwrap();
+        let weights = crate::families::z_image::mlx::model::load_directory(
+            &root,
+            config,
+            crate::weights::WeightDtype::Native,
+            Some(quantization),
+        )
+        .unwrap();
+        assert_eq!(weights.quantization(), Some(quantization));
+        let packed: Vec<&str> = weights.packed_names().collect();
+        assert!(packed.len() > 100, "expected the DiT linears to stay packed: {}", packed.len());
+        // Every packed linear must answer through LinearWeight and keep the
+        // checkpoint group size; spot-check the first block projections.
+        for name in [
+            "layers.0.attention.to_q.weight",
+            "layers.0.attention.to_out.weight",
+            "layers.0.feed_forward.w1.weight",
+            "layers.29.feed_forward.w2.weight",
+        ] {
+            let linear = weights.linear(name).unwrap();
+            assert_eq!(linear.compute_dtype(), danmo_mlx::Dtype::BFloat16);
+        }
+        // Norms / pad tokens stay dense tensors.
+        for name in ["layers.0.attn_norm1.weight", "x_pad_token", "cap_pad_token"] {
+            assert!(weights.tensor(name).is_ok(), "{name} must stay dense");
+        }
+        println!(
+            "quantized bundle: {} packed linears, {} resident bytes",
+            packed.len(),
+            weights.nbytes()
+        );
+    }
+
     #[test]
     fn control_and_lora_prefixes_match_main() {
         assert_eq!(

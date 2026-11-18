@@ -15,8 +15,91 @@ pub fn load_dense(
 
 /// Load keeping affine linears packed; the mid-attention projections run
 /// through QMM exactly like main's quantized VAE inference.
+///
+/// mflux-serialized bundles wrap conv/norm modules one level deeper
+/// (`decoder.conv_in.conv.weight`, `decoder.conv_norm_out.norm.weight`) and
+/// store conv kernels in MLX NHWC `[O, kH, kW, I]`; both are normalized here
+/// to the diffusers key names and the `[O, I, kH, kW]` kernel layout the
+/// decoder graph expects. Detection is by key shape, never by family id.
 pub fn load(directory: &std::path::Path, dtype: crate::weights::WeightDtype) -> Result<MlxWeights> {
-    crate::weights::load_mlx_directory(directory, dtype, None)
+    let weights = crate::weights::load_mlx_directory(directory, dtype, None)?;
+    let weights = normalize_mflux_layout(weights)?;
+    // main's quantized VAE keeps dense conv/norm params at the F32 module-init
+    // dtype (slice assignment preserves it); the dense fp16 path replaces them
+    // with BF16. Widen dense floating tensors for quantized bundles so the
+    // activation dtype chain matches main exactly.
+    if weights.quantization().is_some() {
+        return widen_dense_to_f32(weights);
+    }
+    Ok(weights)
+}
+
+fn widen_dense_to_f32(weights: MlxWeights) -> Result<MlxWeights> {
+    let stream = Stream::cpu()?;
+    let dense_names: Vec<String> = weights
+        .names()
+        .filter(|name| {
+            weights
+                .tensor(name)
+                .map(|t| t.dtype().is_floating() && t.dtype() != danmo_mlx::Dtype::Float32)
+                .unwrap_or(false)
+        })
+        .map(str::to_string)
+        .collect();
+    let mut output = weights;
+    for name in dense_names {
+        let tensor = output.tensor(&name)?;
+        let widened = tensor.astype(danmo_mlx::Dtype::Float32, &stream)?;
+        output = output.with_tensor_production(name, widened);
+    }
+    Ok(output)
+}
+
+fn normalize_mflux_layout(weights: MlxWeights) -> Result<MlxWeights> {
+    let mflux = weights.names().any(|name| name.contains(".conv."));
+    if !mflux {
+        return Ok(weights);
+    }
+    let stream = Stream::cpu()?;
+    let mut names = BTreeMap::new();
+    for name in weights.names() {
+        let mut target = name.to_string();
+        if let Some(rest) = name.strip_prefix("decoder.") {
+            // conv_in / conv_out wrap the Conv2d one level deeper in mflux;
+            // the decoder graph reads them flat. Upsamplers keep their .conv
+            // submodule in both layouts, so those keys stay untouched.
+            let rest = rest
+                .replacen("conv_in.conv.", "conv_in.", 1)
+                .replacen("conv_out.conv.", "conv_out.", 1)
+                .replacen("conv_norm_out.norm.", "conv_norm_out.", 1);
+            target = format!("decoder.{rest}");
+        }
+        names.insert(name.to_string(), target);
+    }
+    let renamed = weights.rename(&names)?;
+    // NHWC [O, kH, kW, I] conv kernels -> [O, I, kH, kW]. Only dense conv
+    // kernels can be NHWC; packed linears are 2-D and never match.
+    let conv_names: Vec<String> = renamed
+        .names()
+        .filter(|name| name.ends_with(".weight"))
+        .filter(|name| {
+            renamed
+                .tensor(name)
+                .map(|tensor| {
+                    let shape = tensor.shape();
+                    shape.len() == 4 && shape[1] <= 7 && shape[2] <= 7 && shape[3] > 7
+                })
+                .unwrap_or(false)
+        })
+        .map(str::to_string)
+        .collect();
+    let mut output = renamed;
+    for name in conv_names {
+        let tensor = output.tensor(&name)?;
+        let oi_hw = tensor.transpose_axes(&[0, 3, 1, 2], &stream)?;
+        output = output.with_tensor_production(name, oi_hw);
+    }
+    Ok(output)
 }
 
 pub fn decode(

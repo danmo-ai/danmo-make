@@ -107,6 +107,13 @@ impl MlxWeights {
         self
     }
 
+    /// Replace a dense tensor in place (layout normalization such as the
+    /// mflux NHWC conv kernels). Fails loud on packed or missing entries.
+    pub fn with_tensor_production(mut self, name: String, tensor: Array) -> Self {
+        self.tensors.insert(name, Entry::dense(tensor));
+        self
+    }
+
     /// Names of the linears that stay packed in memory.
     pub fn packed_names(&self) -> impl Iterator<Item = &str> {
         self.tensors

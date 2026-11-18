@@ -9920,20 +9920,37 @@
         ]
       },
       "python_baseline_status": "registry_declared",
-      "rust_driver_status": "unstarted",
-      "metal_parity": "pending",
+      "rust_driver_status": "in_progress",
+      "metal_parity": "passed",
       "cuda_parity": "pending",
       "metal_performance": "pending",
-      "metal_peak_memory": "pending",
+      "metal_peak_memory": {
+        "status": "passed",
+        "rust_bytes": 14706888508,
+        "python_bytes": 14025201656,
+        "rust_to_python_ratio": 1.0486,
+        "metric": "single-run peak, checkpoint-Native packed QMM, 768x1280 9-step default TeaCache",
+        "dit_weight_bytes": 3465730304,
+        "weight_dtype": "checkpoint (packed affine, group_size 64)",
+        "resident_active": {
+          "rust_bytes": 330878732,
+          "python_bytes": 418846426,
+          "ratio": 0.79
+        },
+        "evidence": "out/parity-zimage-q4-768-memory.json"
+      },
       "cuda_performance": "pending",
       "cuda_peak_memory": "pending",
       "e2e": "pending",
       "route": "pending",
-      "evidence": [],
+      "evidence": [
+        "2026-11-18 published-quant E2E parity PASSED on Metal (mflux mlx-q4 bundle, ModelScope OsaurusAI mirror, packed affine group_size 64): 16x16 and 768x1280 9-step default TeaCache, all 9 velocities + recurrent latents + VAE + all RGB channels bit-exact with main (768x1280: 0/2949120 RGB channels differ). mflux layout adapted in the Rust weight layer (VAE .conv./.norm. key unwrap + NHWC->OIHW kernels, text encoder model. prefix); quantized dense norms/conv widened to F32 to match main's slice-assign module-init dtype; Qwen3 quantized tower promotes to F32 with BF16 rotary table; timestep MLP keeps F32 sinusoidal input (no cast to weight compute dtype). Peak memory 14706888508 vs main 14025201656 (1.0486); resident active 330878732 vs 418846426 (0.79). Evidence summary tests/parity/evidence/zimage-published-quant-parity-2026-11-18.json"
+      ],
       "notes": [
         "2026-11-18 user decision: registry repo switched from the main HF mflux repos to the same-layout ModelScope mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit / -8bit (source: modelscope); HF endpoints are unusable on this network; weight content identical, download performed by the user",
         "2026-11-18 final repo decision: mflux bundles (HF filipstrand/carsenk and ModelScope OsaurusAI mirrors) use a modified VAE key layout (decoder.conv_in.conv.weight, conv_norm_out.norm.*) that main's remap_vae_weights does not handle; switched to standard diffusers-layout MLX affine quants on hf-mirror: zimageapp/z-image-turbo-q4 (4-bit gs32) and mzbac/Z-Image-Turbo-8bit (8-bit gs32); keys match the official fp16 names so the existing Rust remap applies; group_size 32 is inferred from shapes",
-        "2026-11-18 final: user rejected the small standard-layout HF repos (zimageapp/mzbac) over malware-implant risk; registry stays on the ModelScope mflux mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit/-8bit (source: modelscope), weights downloaded and verified by the user. mflux layout adaptation (VAE .conv./.norm. wrapper keys + NHWC kernels, text encoder without model. prefix) is implemented in the Rust weight layer and mirrored in the parity fixture script"
+        "2026-11-18 final: user rejected the small standard-layout HF repos (zimageapp/mzbac) over malware-implant risk; registry stays on the ModelScope mflux mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit/-8bit (source: modelscope), weights downloaded and verified by the user. mflux layout adaptation (VAE .conv./.norm. wrapper keys + NHWC kernels, text encoder without model. prefix) is implemented in the Rust weight layer and mirrored in the parity fixture script",
+        "mlx-q4 create Metal parity passed with real published mflux weights; production routing/E2E, warm performance gate, and CUDA remain pending"
       ]
     },
     {
@@ -10024,20 +10041,37 @@
         ]
       },
       "python_baseline_status": "registry_declared",
-      "rust_driver_status": "unstarted",
-      "metal_parity": "pending",
+      "rust_driver_status": "in_progress",
+      "metal_parity": "passed",
       "cuda_parity": "pending",
       "metal_performance": "pending",
-      "metal_peak_memory": "pending",
+      "metal_peak_memory": {
+        "status": "passed",
+        "rust_bytes": 14707429180,
+        "python_bytes": 14076188664,
+        "rust_to_python_ratio": 1.0448,
+        "metric": "single-run peak, checkpoint-Native packed QMM, 768x1280 9-step default TeaCache",
+        "dit_weight_bytes": 6542661888,
+        "weight_dtype": "checkpoint (packed affine, group_size 64)",
+        "resident_active": {
+          "rust_bytes": 331419404,
+          "python_bytes": 469833434,
+          "ratio": 0.7054
+        },
+        "evidence": "out/parity-zimage-q8-768-memory.json"
+      },
       "cuda_performance": "pending",
       "cuda_peak_memory": "pending",
       "e2e": "pending",
       "route": "pending",
-      "evidence": [],
+      "evidence": [
+        "2026-11-18 published-quant E2E parity PASSED on Metal (mflux mlx-q8 bundle, ModelScope OsaurusAI mirror, packed affine group_size 64): 16x16 and 768x1280 9-step default TeaCache, all 9 velocities + recurrent latents + VAE + all RGB channels bit-exact with main (768x1280: 0/2949120 RGB channels differ). mflux layout adapted in the Rust weight layer (VAE .conv./.norm. key unwrap + NHWC->OIHW kernels, text encoder model. prefix); quantized dense norms/conv widened to F32 to match main's slice-assign module-init dtype; Qwen3 quantized tower promotes to F32 with BF16 rotary table; timestep MLP keeps F32 sinusoidal input (no cast to weight compute dtype). Peak memory 14707429180 vs main 14076188664 (1.0448); resident active 331419404 vs 469833434 (0.7054). Evidence summary tests/parity/evidence/zimage-published-quant-parity-2026-11-18.json"
+      ],
       "notes": [
         "2026-11-18 user decision: registry repo switched from the main HF mflux repos to the same-layout ModelScope mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit / -8bit (source: modelscope); HF endpoints are unusable on this network; weight content identical, download performed by the user",
         "2026-11-18 final repo decision: mflux bundles (HF filipstrand/carsenk and ModelScope OsaurusAI mirrors) use a modified VAE key layout (decoder.conv_in.conv.weight, conv_norm_out.norm.*) that main's remap_vae_weights does not handle; switched to standard diffusers-layout MLX affine quants on hf-mirror: zimageapp/z-image-turbo-q4 (4-bit gs32) and mzbac/Z-Image-Turbo-8bit (8-bit gs32); keys match the official fp16 names so the existing Rust remap applies; group_size 32 is inferred from shapes",
-        "2026-11-18 final: user rejected the small standard-layout HF repos (zimageapp/mzbac) over malware-implant risk; registry stays on the ModelScope mflux mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit/-8bit (source: modelscope), weights downloaded and verified by the user. mflux layout adaptation (VAE .conv./.norm. wrapper keys + NHWC kernels, text encoder without model. prefix) is implemented in the Rust weight layer and mirrored in the parity fixture script"
+        "2026-11-18 final: user rejected the small standard-layout HF repos (zimageapp/mzbac) over malware-implant risk; registry stays on the ModelScope mflux mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit/-8bit (source: modelscope), weights downloaded and verified by the user. mflux layout adaptation (VAE .conv./.norm. wrapper keys + NHWC kernels, text encoder without model. prefix) is implemented in the Rust weight layer and mirrored in the parity fixture script",
+        "mlx-q8 create Metal parity passed with real published mflux weights; production routing/E2E, warm performance gate, and CUDA remain pending"
       ]
     },
     {

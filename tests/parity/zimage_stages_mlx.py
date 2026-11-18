@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--step", type=int, default=0)
     parser.add_argument("--teacache", action="store_true")
     parser.add_argument("--native-dtype", action="store_true")
+    parser.add_argument("--quantization-bits", type=int, choices=(4, 8))
     parser.add_argument("--injection-fixture", help="warm fixture whose latent/caption/sigmas to replay")
     args = parser.parse_args()
     sys.path.insert(0, args.main_root)
@@ -70,7 +71,17 @@ def main():
     weights = {}
     for shard in sorted((bundle / "transformer").glob("*.safetensors")):
         weights.update(mx.load(str(shard)))
-    model.load_weights(list(weights.items()), strict=True)
+    if args.quantization_bits:
+        from backend.engine.common.bundle.quant_inference import WeightInferenceMode
+
+        model.load_weights(
+            list(weights.items()),
+            strict=True,
+            bundle_affine_bits=args.quantization_bits,
+            inference_mode=WeightInferenceMode(kind="quantized", bits=args.quantization_bits),
+        )
+    else:
+        model.load_weights(list(weights.items()), strict=True)
     if args.native_dtype:
         from backend.engine.common.model.base import TransformerBase  # noqa: F401
         native_weights = model.sanitize(weights)
@@ -218,6 +229,8 @@ def main():
         "sigmas": np.asarray(scheduler.sigmas, dtype=np.float32).tolist(),
         "velocities": step_velocities,
         "velocity_shape": list(velocity.shape),
+        "quantization_bits": args.quantization_bits,
+        "quantization_group_size": 64 if args.quantization_bits else None,
         "stages": {name: list(value.shape) for name, value in stages.items()},
     }
     (out / "expected.json").write_text(json.dumps(payload), encoding="utf-8")

@@ -9,7 +9,7 @@
 ### 0.1 固定基线
 
 - ggml Rust 基线 commit：`67495d3353d64f1ffd605e3586d0eea74837aebe`。
-- `main` 行为基线 commit：`ab4456cb1a712b9e8a56a0629862170c967bef52`。
+- `main` 行为基线 commit：`ab4456cb1a712b9e8a56a0629862170c967bef52`。 本地路径：/Users/nil.luo/Workspace/coding/danmo-make
 - 创建迁移分支时工作树已有未提交的 ggml Rust 修改（Hunyuan/LTX/Wan/SeedVR2、server 等），已与 MLX P0 切片一并提交在 `dbcfaff`。该 commit 内 ggml 在途工作与 MLX 切片混合：MLX 新增成果限于 `danmo-mlx*`、`common/qwen3/mlx.rs`、`common/vae/mlx.rs`、`weights/mlx.rs`、`families/z_image/mlx/`、`tests/parity/` 与本组文档；其余不得记为本迁移成果。
 - `main` registry 基线：92 个 model card，23 个 runtime family，其中 21 个生成 family，另有 `qwen3`、`qwen3_vl` 两个 assistant family。92 个 card 中 **54 个有 action**（展开为矩阵 227 个 model/version/action 条目），**38 个无 action 的组件 card**（各家族 LoRA、`z-image-turbo-distillpatch-lora`、`flux-canny/depth-controlnet`、`flux-redux`、`depth-pro`、`minimax-h3-veda`、`minimax-h3-turbo-lora`、Wan/Qwen lightning LoRA 等）**尚未进入能力矩阵**，见 §4。
 - **已知偏差（2026-11-18 已修复）**：分支 registry 曾是 ggml 时期的 GGUF 布局（93 个 model，多出 `ace-step-5hz-lm`）。现已从固定 main 基线 `ab4456c` 复制恢复 `default_config/models_registry.json`（92 个 model、23 个 family、MLX safetensors 版本键 `fp16`/`int4`/`int8`/`mlx-q4`/`mlx-q8`）；`ace-step-5hz-lm` 按 main 基线移除（如后续需要须单独决策）。架构守卫 `registry_and_family_factory_stay_in_sync` 通过，全量 engine 测试仅剩既有 ggml Hunyuan smoke 失败（与 registry 无关）。repo 来源语义与 main 一致：`source` 未设置默认 ModelScope。**有意偏差（2026-11-18，用户决策，三次迭代后定稿）**：main 的 `mlx-q4`/`mlx-q8` 指向 HF mflux 社区量化（`filipstrand/Z-Image-Turbo-mflux-4bit`、`carsenk/z-image-turbo-mflux-8bit`）。曾尝试 hf-mirror 上的标准 diffusers 布局小仓库（`zimageapp/z-image-turbo-q4`、`mzbac/Z-Image-Turbo-8bit`），**用户以小型 HF 仓库存在病毒植入风险为由否决**；最终定稿为魔塔镜像 `mlx-q4 → OsaurusAI/Z-Image-Turbo-mflux-4bit`、`mlx-q8 → OsaurusAI/Z-Image-Turbo-mflux-8bit`（`source: modelscope`），权重已由用户下载验证。mflux bundle 是合法 MLX affine 量化但布局魔改：DiT 键名与官方一致（现有 remap 适用）；VAE conv/norm 键包一层（`decoder.conv_in.conv.weight`、`conv_norm_out.norm.*`）且 kernel 已 NHWC；text encoder 无 `model.` 前缀。Rust 权重层需增加 mflux 布局归一化（见 S2 量化验收记录）；main 的 `remap_vae_weights` 不处理该布局，parity fixture 脚本做同等归一化。mlx-community 官方仅有 bf16，无量化版。
@@ -476,7 +476,21 @@ Z-Image Metal 固定注入噪声垂直切片已通过（提交于 `dbcfaff`）�
 - **测试基建修复**：`weights/mlx.rs` 测试 `Scratch` 临时目录名加入进程内原子计数器——macOS 粗时钟让并行测试拿到相同 pid+nanos 目录名，造成跨测试 shard 串扰（`duplicate tensor`）与文件被删的假失败。
 - **TF32 gotcha 复核**：源码 Metal 构建下，host 参考 F32 微探针（`danmo-mlx` SDPA、z_image attention/blocks）在 M5 NAX 上需 `MLX_ENABLE_TF32=0`；真实 BF16 模型路径不受影响。全套件 TF32-off 绿：`danmo-mlx` 16+2+3+3、engine `mlx::` 32、architecture 5。
 - **fixture SHA 漂移说明**：重新生成的 TeaCache fixture 不再匹配 2026-11-17 记录的 SHA，因为 fixture 脚本新增了 timing/memory 字段；parity 断言均对同轮新生成的 main 输出执行（default SHA `3017444cb4a9f84a76de0bed98ed4ca41564315de2b13e1ca2ef804e172e98bc`，skip SHA `4fc6931b5f457b687b4359cfb2a669db836509fc5db364a5a15e654a8ff4d274`）。
-- `z-image-turbo/fp16/create` 的 `metal_performance` 与 `metal_peak_memory` 标为 `passed`；已发布量化 checkpoint、连续会话/生产路由 E2E、CUDA 仍独立待办。
+- `z-image-turbo/fp16/create` 的 `metal_performance` 与 `metal_peak_memory` 标为 `passed`；连续会话/生产路由 E2E、CUDA 仍独立待办。
+
+#### 已发布量化 checkpoint（mflux mlx-q4 / mlx-q8）端到端 parity 通过（2026-11-18）
+
+- **权重来源（用户决策）**：魔塔 `OsaurusAI/Z-Image-Turbo-mflux-4bit` / `-8bit`（mflux 社区量化，合法 MLX affine，group_size 64）。小型 HF 标准布局仓库因病毒植入风险被否决。mflux 布局魔改已在 Rust 权重层归一化：VAE `conv_in.conv.*`/`conv_out.conv.*`/`conv_norm_out.norm.*` 键展开 + NHWC→OIHW kernel（upsamplers 的 `.conv` 子模块两侧一致，保留）；text encoder 补 `model.` 前缀。main 侧 fixture 脚本做同等键名归一化（保留 NHWC，main remap 按 `*.scales` 识别跳过 transpose）。
+- **量化 dtype 语义对齐**（关键修复，均按 main 的 slice-assign 保留 module-init F32 语义）：
+  1. 量化 DiT/VAE 的 dense norm/conv/pad-token 张量 widen 到 F32（`widen_dense_to_f32`），激活链随之提升 F32，与 main 逐位一致；dense fp16 路径不变。
+  2. Qwen3 量化塔：dense norm F32 → 塔提升 F32；rotary 表用 MLX 算子（arange/power/cos/sin）且保持 **embedding 的 BF16 dtype**（main 在 F32 提升前构建 rope）；caption 输出 cast BF16。
+  3. timestep MLP：F32 正弦嵌入**直接**进 QMM/dense matmul（不 cast 到 weight compute dtype）——此前 cast BF16 是 q4 首个分叉点（t_embedder 6.5e-4）。
+- **验收结果**（`real_zimage_create_matches_main_latents_and_pixels`，packed QMM 全程不解量化）：
+  - mlx-q4：16×16 与 768×1280、9 步默认 TeaCache，全部 velocity/递推 latent/VAE/RGB **逐位一致**（768×1280：0/2,949,120 RGB 通道差）；TeaCache gate kind/compute/skip 与 main 一致。
+  - mlx-q8：同上，全部逐位一致。
+  - 峰值显存（768×1280 单 run）：q4 Rust 14.71GB vs main 14.03GB（**104.86%**）；q8 14.71GB vs 14.08GB（**104.48%**），均 ≤105% 门。常驻 active：q4 331MB vs 419MB（79%）、q8 331MB vs 470MB（70.5%）。packed DiT 常驻 q4 3.47GB / q8 6.54GB（vs F32 dense 24.6GB）。
+  - 证据摘要 `tests/parity/evidence/zimage-published-quant-parity-2026-11-18.json`（fixture SHA + 显存报告）。
+- 矩阵 `z-image-turbo/mlx-q4/create`、`mlx-q8/create` 的 `metal_parity` 与 `metal_peak_memory` 标为 `passed`；量化版 warm 性能门、生产路由 E2E、CUDA 仍独立待办。fp16 全量回归无破坏（timestep 改动对 dense 路径数值等价）。
 
 #### 会话生命周期验收通过 + padding 语义修复（2026-11-18）
 
@@ -780,7 +794,7 @@ Assistant：
 | 文档复核 | done | 2026-11-17：纠正 Euler 归属、Z-Image 默认 9 步与 compile 策略、`dbcfaff` 提交边界、分支 registry 偏差；确立稠密权重原生 dtype 决策（§1.5.1，main F32 放大为错误设计）；增补 executor 状态模型、assistant 独立 worker、ggml 退役；推理进程隔离与 Python 训练去留标记为待确认 |
 | 共享资产盘点 | done | 复用/重写/算法归属与 family 扩展边界：`docs/rust_mlx_shared_asset_inventory.md` |
 | 全量 workspace 回归 | existing_failure | 373 项 engine 测试：370 通过、2 忽略、1 个既有 ggml Hunyuan smoke（随 `dbcfaff` 一并提交） 因缺少 `txt_in.individual_token_refiner.blocks.0.self_attn.qkv.weight` 失败；新增 MLX crate 的 CPU/Metal 测试均单独通过，不在 P0 修改该 ggml family |
-| P0 | in_progress | **源码 Metal 构建通过**；runtime、safetensors、>32K QMM、compile/eager、executor、seeded RNG 探针通过；官方 DiT/text/VAE/tokenizer 已下载；真实 Qwen3 与 VAE fixture 通过。`9859706` 已落地共享 `WeightDtype` 与全程 packed affine QMM。F32 parity 已通过 16×16、1024×1024、768×1280 9 步 eager/compile。checkpoint-Native 16×16 与 768×1280 完整切片、默认 9 步 TeaCache 及阈值 0.5 的 6 次 residual skip 均通过，latent/VAE/RGB 一致；官方 DiT 实测为 F32，VAE/Qwen3 为 BF16。Native Metal peak 26.15GB vs main 31.79GB（82.25%）。**2026-11-18 正式热性能门通过**：compiled TeaCache 生产路径（CaptionCache + CompiledCompute，gate eager）稳态复验 warm p50 denoise 92.9% / encode 99.7% / VAE 102.2% / total 93.0%，每 pass 逐位一致；稳态显存 99.3%；`metal_performance`/`metal_peak_memory` 标为 passed。**会话生命周期门通过**（连续生成/几何切换/跨线程取消/unload，真实权重 release）；修复 padding 语义（embed 前重复末行，小图 pad 参与注意力时 1 ULP 分叉），16×16 TeaCache 5c/4s 逐位一致。剩余：已发布量化 checkpoint 端到端、custom kernel、干净打包、CUDA runtime、executor 级 ModelCache（P2）|
+| P0 | in_progress | **源码 Metal 构建通过**；runtime、safetensors、>32K QMM、compile/eager、executor、seeded RNG 探针通过；官方 DiT/text/VAE/tokenizer 已下载；真实 Qwen3 与 VAE fixture 通过。`9859706` 已落地共享 `WeightDtype` 与全程 packed affine QMM。F32 parity 已通过 16×16、1024×1024、768×1280 9 步 eager/compile。checkpoint-Native 16×16 与 768×1280 完整切片、默认 9 步 TeaCache 及阈值 0.5 的 6 次 residual skip 均通过，latent/VAE/RGB 一致；官方 DiT 实测为 F32，VAE/Qwen3 为 BF16。Native Metal peak 26.15GB vs main 31.79GB（82.25%）。**2026-11-18 正式热性能门通过**：compiled TeaCache 生产路径（CaptionCache + CompiledCompute，gate eager）稳态复验 warm p50 denoise 92.9% / encode 99.7% / VAE 102.2% / total 93.0%，每 pass 逐位一致；稳态显存 99.3%；`metal_performance`/`metal_peak_memory` 标为 passed。**会话生命周期门通过**（连续生成/几何切换/跨线程取消/unload，真实权重 release）；修复 padding 语义（embed 前重复末行，小图 pad 参与注意力时 1 ULP 分叉），16×16 TeaCache 5c/4s 逐位一致。**已发布量化 checkpoint 端到端通过**：mflux mlx-q4/mlx-q8（魔塔 OsaurusAI 镜像，packed affine gs64）16×16 与 768×1280 默认 TeaCache 全链路逐位一致，峰值显存 104.86%/104.48% ≤105%；mflux 布局归一化 + 量化 F32 dtype 语义对齐。剩余：量化版 warm 性能门、custom kernel、干净打包、CUDA runtime、executor 级 ModelCache（P2）|
 | P0H | pending | main 收割独立进行 |
 | P1 | pending | Rust server 核心先行 |
 | P2 | pending | MLX runtime |

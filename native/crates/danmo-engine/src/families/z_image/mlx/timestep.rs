@@ -30,11 +30,9 @@ pub fn embed(
         .reshape(&[1, 1], stream)?;
     let angles = Array::multiply(&timestep, &frequencies, stream)?;
     let input = Array::concatenate_axis(&[angles.cos(stream)?, angles.sin(stream)?], 1, stream)?;
-    let input = if input.dtype() == w1.compute_dtype() {
-        input
-    } else {
-        input.astype(w1.compute_dtype(), stream)?
-    };
+    // main feeds the F32 sinusoidal embedding straight into the MLP: dense
+    // matmul and QMM both promote to the input dtype, so no cast to the
+    // weight's compute dtype happens here.
     let hidden = w1.apply(&input, Some(b1), stream)?.silu(stream)?;
     w2.apply(&hidden, Some(b2), stream)
 }

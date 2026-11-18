@@ -20,7 +20,37 @@ pub fn load_directory(
         config.patch,
     )
     .map_err(|error| Error::new("Z-Image remap", error.to_string()))?;
-    weights.rename(&names)
+    let weights = weights.rename(&names)?;
+    // main's quantized DiT keeps dense norms / pad tokens at the F32
+    // module-init dtype (slice assignment preserves it), which promotes the
+    // whole tower to F32 after the first norm. The dense fp16 path replaces
+    // params with BF16 and stays BF16. Widen dense floating tensors to F32 for
+    // quantized bundles so the activation dtype chain matches main exactly.
+    if quantization.is_some() {
+        return widen_dense_to_f32(weights);
+    }
+    Ok(weights)
+}
+
+fn widen_dense_to_f32(weights: MlxWeights) -> Result<MlxWeights> {
+    let stream = Stream::cpu()?;
+    let dense_names: Vec<String> = weights
+        .names()
+        .filter(|name| {
+            weights
+                .tensor(name)
+                .map(|t| t.dtype().is_floating() && t.dtype() != danmo_mlx::Dtype::Float32)
+                .unwrap_or(false)
+        })
+        .map(str::to_string)
+        .collect();
+    let mut output = weights;
+    for name in dense_names {
+        let tensor = output.tensor(&name)?;
+        let widened = tensor.astype(danmo_mlx::Dtype::Float32, &stream)?;
+        output = output.with_tensor_production(name, widened);
+    }
+    Ok(output)
 }
 
 fn embed_image(
@@ -1400,7 +1430,12 @@ mod tests {
         let io = Stream::cpu().unwrap();
         let stages = danmo_mlx::SafeTensors::load(&root.join("stages.safetensors"), &io).unwrap();
         let config = MlxZImageConfig::published();
-        let weights = load_directory(&dit, config, WeightDtype::F32, None).unwrap();
+        let quantization = payload["quantization_bits"].as_i64().map(|bits| {
+            let group_size = payload["quantization_group_size"].as_i64().unwrap_or(64);
+            AffineQuantization::new(bits as i32, group_size as i32).unwrap()
+        });
+        let weight_dtype = if quantization.is_some() { WeightDtype::Native } else { WeightDtype::F32 };
+        let weights = load_directory(&dit, config, weight_dtype, quantization).unwrap();
         let width = payload["width"].as_u64().unwrap() as u32;
         let height = payload["height"].as_u64().unwrap() as u32;
         let ids = payload["ids"].as_array().unwrap();
@@ -1558,9 +1593,10 @@ mod tests {
         let latent_h = (height / 8) as i32;
         let latent_w = (width / 8) as i32;
         let expected_denoised = values("denoised");
-        let quantization = payload["quantization_bits"]
-            .as_i64()
-            .map(|bits| AffineQuantization::new(bits as i32, 64).unwrap());
+        let quantization = payload["quantization_bits"].as_i64().map(|bits| {
+            let group_size = payload["quantization_group_size"].as_i64().unwrap_or(64);
+            AffineQuantization::new(bits as i32, group_size as i32).unwrap()
+        });
         let weight_dtype =
             if payload["native_dtype"].as_str() == Some("checkpoint") || quantization.is_some() {
                 danmo_mlx::reset_peak_memory().unwrap();
@@ -1601,6 +1637,8 @@ mod tests {
         )
         .unwrap()
         .squeeze_axis(0, &stream)
+        .unwrap()
+        .astype(Dtype::BFloat16, &stream)
         .unwrap();
         caption.eval().unwrap();
         drop(text_weights);
@@ -1627,10 +1665,13 @@ mod tests {
         .unwrap();
         let dit_weight_bytes = weights.nbytes();
         let packed_linear_count = weights.packed_names().count();
-        if quantization.is_some() {
+        if let Some(quant) = quantization {
             assert!(packed_linear_count > 100, "DiT did not stay packed");
+            // Packed DiT must stay well below the 24.6GB F32 dense resident
+            // size: ~3.5GB at 4-bit, ~6.6GB at 8-bit (plus dense norms).
+            let ceiling = if quant.bits == 4 { 5_000_000_000u64 } else { 9_000_000_000u64 };
             assert!(
-                dit_weight_bytes < 5_000_000_000,
+                (dit_weight_bytes as u64) < ceiling,
                 "packed DiT is unexpectedly large: {dit_weight_bytes}"
             );
         }
@@ -2715,6 +2756,8 @@ mod tests {
             )
             .unwrap()
             .squeeze_axis(0, &stream)
+            .unwrap()
+            .astype(Dtype::BFloat16, &stream)
             .unwrap();
             caption.eval().unwrap();
             let encode_seconds = started.elapsed().as_secs_f64();

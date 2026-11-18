@@ -7,6 +7,33 @@ from pathlib import Path
 import numpy as np
 
 
+def normalize_mflux_vae_keys(weights: dict) -> dict:
+    """Unwrap mflux's `.conv.`/`.norm.` module nesting to diffusers key names.
+    Conv kernels stay NHWC: main's remap_vae_weights detects the affine bundle
+    via *.scales and skips its diffusers->NHWC transpose, consuming NHWC
+    directly. The Rust loader normalizes keys AND transposes kernels to OIHW
+    (its conv graph transposes back to NHWC), so both sides end at NHWC.
+    """
+    if not any(".conv." in k for k in weights):
+        return weights
+    out = {}
+    for key, tensor in weights.items():
+        new_key = key
+        if new_key.startswith("decoder."):
+            rest = new_key[len("decoder."):]
+            # conv_in / conv_out wrap the Conv2d one level deeper in mflux;
+            # main's VAEDecoder exposes them flat. Upsamplers keep their .conv
+            # submodule on both sides, so leave those keys untouched.
+            if rest.startswith("conv_in.conv."):
+                rest = rest.replace("conv_in.conv.", "conv_in.", 1)
+            elif rest.startswith("conv_out.conv."):
+                rest = rest.replace("conv_out.conv.", "conv_out.", 1)
+            rest = rest.replace("conv_norm_out.norm.", "conv_norm_out.", 1)
+            new_key = "decoder." + rest
+        out[new_key] = tensor
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--main-root", required=True)
@@ -21,6 +48,7 @@ def main():
     parser.add_argument("--teacache-thresh", type=float)
     parser.add_argument("--native-dtype", action="store_true")
     parser.add_argument("--quantization-bits", type=int, choices=(4, 8))
+    parser.add_argument("--quantization-group-size", type=int, default=64)
     parser.add_argument(
         "--vae-config-dir",
         help="directory holding the published vae/config.json when the bundle omits it",
@@ -196,7 +224,9 @@ def main():
         )
 
         vae_dir = bundle / "vae"
-        vae_weights = load_vae_weight_dict(ctx, vae_dir, fail_if_config_only=True)
+        vae_weights = normalize_mflux_vae_keys(
+            load_vae_weight_dict(ctx, vae_dir, fail_if_config_only=True)
+        )
         vae_cfg, scaling_factor, shift_factor = read_vae_dir_config(vae_dir)
         if not vae_cfg and args.vae_config_dir:
             vae_cfg, scaling_factor, shift_factor = read_vae_dir_config(
@@ -253,6 +283,7 @@ def main():
         "cache_counts": cache_counts,
         "native_dtype": "checkpoint" if args.native_dtype else None,
         "quantization_bits": args.quantization_bits,
+        "quantization_group_size": args.quantization_group_size if args.quantization_bits else None,
         "caption_shape": [len(ids), 2560],
         "caption": caption_values.tolist(),
         "latent_shape": [1, 16, latent_h, latent_w],
