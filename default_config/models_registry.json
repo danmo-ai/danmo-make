@@ -2548,8 +2548,8 @@
             },
             "size": "5.5GB",
             "default": false,
-            "source": "huggingface",
-            "repo_id": "zimageapp/z-image-turbo-q4",
+            "source": "modelscope",
+            "repo_id": "OsaurusAI/Z-Image-Turbo-mflux-4bit",
             "local_path": "models/Image/z-image-turbo-mlx-q4",
             "source_type": "prequantized",
             "quantization": {
@@ -2564,8 +2564,8 @@
             },
             "size": "10GB",
             "default": false,
-            "source": "huggingface",
-            "repo_id": "mzbac/Z-Image-Turbo-8bit",
+            "source": "modelscope",
+            "repo_id": "OsaurusAI/Z-Image-Turbo-mflux-8bit",
             "local_path": "models/Image/z-image-turbo-mlx-q8",
             "source_type": "prequantized",
             "quantization": {

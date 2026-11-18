@@ -9894,7 +9894,7 @@
       "quant": "mlx-q4",
       "default_version": false,
       "source_type": "prequantized",
-      "repo_id": "zimageapp/z-image-turbo-q4",
+      "repo_id": "OsaurusAI/Z-Image-Turbo-mflux-4bit",
       "local_path": "models/Image/z-image-turbo-mlx-q4",
       "adapters_options": {
         "lora_support": true,
@@ -9932,7 +9932,8 @@
       "evidence": [],
       "notes": [
         "2026-11-18 user decision: registry repo switched from the main HF mflux repos to the same-layout ModelScope mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit / -8bit (source: modelscope); HF endpoints are unusable on this network; weight content identical, download performed by the user",
-        "2026-11-18 final repo decision: mflux bundles (HF filipstrand/carsenk and ModelScope OsaurusAI mirrors) use a modified VAE key layout (decoder.conv_in.conv.weight, conv_norm_out.norm.*) that main's remap_vae_weights does not handle; switched to standard diffusers-layout MLX affine quants on hf-mirror: zimageapp/z-image-turbo-q4 (4-bit gs32) and mzbac/Z-Image-Turbo-8bit (8-bit gs32); keys match the official fp16 names so the existing Rust remap applies; group_size 32 is inferred from shapes"
+        "2026-11-18 final repo decision: mflux bundles (HF filipstrand/carsenk and ModelScope OsaurusAI mirrors) use a modified VAE key layout (decoder.conv_in.conv.weight, conv_norm_out.norm.*) that main's remap_vae_weights does not handle; switched to standard diffusers-layout MLX affine quants on hf-mirror: zimageapp/z-image-turbo-q4 (4-bit gs32) and mzbac/Z-Image-Turbo-8bit (8-bit gs32); keys match the official fp16 names so the existing Rust remap applies; group_size 32 is inferred from shapes",
+        "2026-11-18 final: user rejected the small standard-layout HF repos (zimageapp/mzbac) over malware-implant risk; registry stays on the ModelScope mflux mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit/-8bit (source: modelscope), weights downloaded and verified by the user. mflux layout adaptation (VAE .conv./.norm. wrapper keys + NHWC kernels, text encoder without model. prefix) is implemented in the Rust weight layer and mirrored in the parity fixture script"
       ]
     },
     {
@@ -9945,7 +9946,7 @@
       "quant": "mlx-q4",
       "default_version": false,
       "source_type": "prequantized",
-      "repo_id": "zimageapp/z-image-turbo-q4",
+      "repo_id": "OsaurusAI/Z-Image-Turbo-mflux-4bit",
       "local_path": "models/Image/z-image-turbo-mlx-q4",
       "adapters_options": {
         "lora_support": true,
@@ -9983,7 +9984,8 @@
       "evidence": [],
       "notes": [
         "2026-11-18 user decision: registry repo switched from the main HF mflux repos to the same-layout ModelScope mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit / -8bit (source: modelscope); HF endpoints are unusable on this network; weight content identical, download performed by the user",
-        "2026-11-18 final repo decision: mflux bundles (HF filipstrand/carsenk and ModelScope OsaurusAI mirrors) use a modified VAE key layout (decoder.conv_in.conv.weight, conv_norm_out.norm.*) that main's remap_vae_weights does not handle; switched to standard diffusers-layout MLX affine quants on hf-mirror: zimageapp/z-image-turbo-q4 (4-bit gs32) and mzbac/Z-Image-Turbo-8bit (8-bit gs32); keys match the official fp16 names so the existing Rust remap applies; group_size 32 is inferred from shapes"
+        "2026-11-18 final repo decision: mflux bundles (HF filipstrand/carsenk and ModelScope OsaurusAI mirrors) use a modified VAE key layout (decoder.conv_in.conv.weight, conv_norm_out.norm.*) that main's remap_vae_weights does not handle; switched to standard diffusers-layout MLX affine quants on hf-mirror: zimageapp/z-image-turbo-q4 (4-bit gs32) and mzbac/Z-Image-Turbo-8bit (8-bit gs32); keys match the official fp16 names so the existing Rust remap applies; group_size 32 is inferred from shapes",
+        "2026-11-18 final: user rejected the small standard-layout HF repos (zimageapp/mzbac) over malware-implant risk; registry stays on the ModelScope mflux mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit/-8bit (source: modelscope), weights downloaded and verified by the user. mflux layout adaptation (VAE .conv./.norm. wrapper keys + NHWC kernels, text encoder without model. prefix) is implemented in the Rust weight layer and mirrored in the parity fixture script"
       ]
     },
     {
@@ -9996,7 +9998,7 @@
       "quant": "mlx-q8",
       "default_version": false,
       "source_type": "prequantized",
-      "repo_id": "mzbac/Z-Image-Turbo-8bit",
+      "repo_id": "OsaurusAI/Z-Image-Turbo-mflux-8bit",
       "local_path": "models/Image/z-image-turbo-mlx-q8",
       "adapters_options": {
         "lora_support": true,
@@ -10034,7 +10036,8 @@
       "evidence": [],
       "notes": [
         "2026-11-18 user decision: registry repo switched from the main HF mflux repos to the same-layout ModelScope mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit / -8bit (source: modelscope); HF endpoints are unusable on this network; weight content identical, download performed by the user",
-        "2026-11-18 final repo decision: mflux bundles (HF filipstrand/carsenk and ModelScope OsaurusAI mirrors) use a modified VAE key layout (decoder.conv_in.conv.weight, conv_norm_out.norm.*) that main's remap_vae_weights does not handle; switched to standard diffusers-layout MLX affine quants on hf-mirror: zimageapp/z-image-turbo-q4 (4-bit gs32) and mzbac/Z-Image-Turbo-8bit (8-bit gs32); keys match the official fp16 names so the existing Rust remap applies; group_size 32 is inferred from shapes"
+        "2026-11-18 final repo decision: mflux bundles (HF filipstrand/carsenk and ModelScope OsaurusAI mirrors) use a modified VAE key layout (decoder.conv_in.conv.weight, conv_norm_out.norm.*) that main's remap_vae_weights does not handle; switched to standard diffusers-layout MLX affine quants on hf-mirror: zimageapp/z-image-turbo-q4 (4-bit gs32) and mzbac/Z-Image-Turbo-8bit (8-bit gs32); keys match the official fp16 names so the existing Rust remap applies; group_size 32 is inferred from shapes",
+        "2026-11-18 final: user rejected the small standard-layout HF repos (zimageapp/mzbac) over malware-implant risk; registry stays on the ModelScope mflux mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit/-8bit (source: modelscope), weights downloaded and verified by the user. mflux layout adaptation (VAE .conv./.norm. wrapper keys + NHWC kernels, text encoder without model. prefix) is implemented in the Rust weight layer and mirrored in the parity fixture script"
       ]
     },
     {
@@ -10047,7 +10050,7 @@
       "quant": "mlx-q8",
       "default_version": false,
       "source_type": "prequantized",
-      "repo_id": "mzbac/Z-Image-Turbo-8bit",
+      "repo_id": "OsaurusAI/Z-Image-Turbo-mflux-8bit",
       "local_path": "models/Image/z-image-turbo-mlx-q8",
       "adapters_options": {
         "lora_support": true,
@@ -10085,7 +10088,8 @@
       "evidence": [],
       "notes": [
         "2026-11-18 user decision: registry repo switched from the main HF mflux repos to the same-layout ModelScope mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit / -8bit (source: modelscope); HF endpoints are unusable on this network; weight content identical, download performed by the user",
-        "2026-11-18 final repo decision: mflux bundles (HF filipstrand/carsenk and ModelScope OsaurusAI mirrors) use a modified VAE key layout (decoder.conv_in.conv.weight, conv_norm_out.norm.*) that main's remap_vae_weights does not handle; switched to standard diffusers-layout MLX affine quants on hf-mirror: zimageapp/z-image-turbo-q4 (4-bit gs32) and mzbac/Z-Image-Turbo-8bit (8-bit gs32); keys match the official fp16 names so the existing Rust remap applies; group_size 32 is inferred from shapes"
+        "2026-11-18 final repo decision: mflux bundles (HF filipstrand/carsenk and ModelScope OsaurusAI mirrors) use a modified VAE key layout (decoder.conv_in.conv.weight, conv_norm_out.norm.*) that main's remap_vae_weights does not handle; switched to standard diffusers-layout MLX affine quants on hf-mirror: zimageapp/z-image-turbo-q4 (4-bit gs32) and mzbac/Z-Image-Turbo-8bit (8-bit gs32); keys match the official fp16 names so the existing Rust remap applies; group_size 32 is inferred from shapes",
+        "2026-11-18 final: user rejected the small standard-layout HF repos (zimageapp/mzbac) over malware-implant risk; registry stays on the ModelScope mflux mirrors OsaurusAI/Z-Image-Turbo-mflux-4bit/-8bit (source: modelscope), weights downloaded and verified by the user. mflux layout adaptation (VAE .conv./.norm. wrapper keys + NHWC kernels, text encoder without model. prefix) is implemented in the Rust weight layer and mirrored in the parity fixture script"
       ]
     },
     {
