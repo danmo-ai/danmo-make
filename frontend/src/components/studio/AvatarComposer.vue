@@ -19,15 +19,31 @@
       />
     </div>
 
-    <div class="avatar-composer__refs">
-      <div class="avatar-composer__mode-switch studio-composer-mode-switch">
-        <DqSegmented
-          v-model="localMode"
+    <div class="studio-composer-setup">
+      <DqSegmented
+        v-model="localMode"
+        size="sm"
+        :options="modeOptions"
+        class="studio-composer-setup__mode"
+      />
+      <ModelSelect
+        v-model="localModel"
+        :options="modelOptions"
+        filterable
+        @change="$emit('model-change')"
+      />
+      <div v-if="resolutionOptions.length" class="avatar-composer__row">
+        <label class="avatar-composer__field-label">{{ $tt('create.resolution') }}</label>
+        <DqSelect
+          v-model="localResolution"
           size="sm"
-          :options="modeOptions"
+          :options="resolutionOptions"
+          class="avatar-composer__resolution"
         />
       </div>
+    </div>
 
+    <div class="avatar-composer__refs">
       <div class="avatar-composer__ref-block">
         <div class="avatar-composer__ref-label">{{ $tt('avatar.portrait') }}</div>
         <div v-if="portraitPreview" class="avatar-composer__ref-pill">
@@ -69,26 +85,6 @@
         />
         <p class="avatar-composer__script-hint">{{ $tt('avatar.scriptHint') }}</p>
       </div>
-    </div>
-
-    <div class="avatar-composer__row">
-      <label class="avatar-composer__field-label">{{ $tt('studio.model') }}</label>
-      <ModelSelect
-        v-model="localModel"
-        :options="modelOptions"
-        filterable
-        @change="$emit('model-change')"
-      />
-    </div>
-
-    <div v-if="resolutionOptions.length" class="avatar-composer__row">
-      <label class="avatar-composer__field-label">{{ $tt('create.resolution') }}</label>
-      <DqSelect
-        v-model="localResolution"
-        size="sm"
-        :options="resolutionOptions"
-        class="avatar-composer__resolution"
-      />
     </div>
 
     <div v-if="paramSchema.steps || paramSchema.num_frames || paramSchema.fps" class="avatar-composer__advanced">
@@ -143,18 +139,21 @@
       </div>
     </div>
 
-    <div class="avatar-composer__footer">
-      <DqButton
-        type="primary"
-        size="lg"
-        block
-        :loading="generating"
-        :disabled="!canGenerate"
-        @click="$emit('generate')"
-      >
-        {{ generateLabel }}
-      </DqButton>
-    </div>
+    <ComposerToolbar>
+      <template #actions>
+        <DqButton
+          type="primary"
+          size="sm"
+          class="studio-composer-toolbar__generate"
+          :loading="generating"
+          :disabled="!canGenerate"
+          @click="$emit('generate')"
+        >
+          <DqIcon :size="14"><MagicStick /></DqIcon>
+          <span>{{ generateLabel }}</span>
+        </DqButton>
+      </template>
+    </ComposerToolbar>
   </div>
 </template>
 
@@ -162,7 +161,8 @@
 // @ts-nocheck — registry param schema is dynamic
 import { computed } from 'vue';
 import { useComposerDefaultModel } from '@/composables/useComposerDefaultModel';
-import { Close, Microphone, Picture } from '@danqing/dq-shell';
+import { Close, MagicStick, Microphone, Picture } from '@danqing/dq-shell';
+import ComposerToolbar from './ComposerToolbar.vue';
 import { DqSegmented } from '@danqing/dq-ui';
 import { $tt } from '@/utils/i18n';
 import ModelSelect from '@/components/model/ModelSelect.vue';
@@ -436,11 +436,4 @@ function onPromptKeydown(e: KeyboardEvent) {
   margin-bottom: 0;
 }
 
-.avatar-composer__footer {
-  margin-top: 8px;
-}
-
-.avatar-composer__footer :deep(.dq-button) {
-  min-height: 36px;
-}
 </style>

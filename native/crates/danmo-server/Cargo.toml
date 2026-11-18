@@ -14,6 +14,9 @@ default = []
 cuda = ["danmo-engine/cuda"]
 vulkan = ["danmo-engine/vulkan"]
 metal = ["danmo-engine/metal"]
+mlx = ["danmo-engine/mlx"]
+mlx-metal = ["mlx", "metal", "danmo-engine/mlx-metal"]
+mlx-cuda = ["mlx", "cuda", "danmo-engine/mlx-cuda"]
 
 [dependencies]
 danmo-engine = { path = "../danmo-engine" }

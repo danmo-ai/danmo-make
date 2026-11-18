@@ -168,32 +168,29 @@
       </p>
     </div>
 
-    <!-- Toolbar -->
-    <ComposerToolbar>
-      <template #mode>
-        <DqSegmented
-          :model-value="localWorkMode"
-          size="sm"
-          :options="workModeOptions"
-          @update:model-value="localWorkMode = $event"
-        />
-      </template>
-      <template #controls>
-        <ModelSelect
-          v-model="localModel"
-          :options="modelOptions"
-          variant="ghost"
-          class="studio-composer-toolbar__select studio-composer-toolbar__select--model"
-          @change="(val: string) => emit('model-change', val)"
-        />
-
+    <div class="studio-composer-setup">
+      <DqSegmented
+        :model-value="localWorkMode"
+        size="sm"
+        :options="workModeOptions"
+        class="studio-composer-setup__mode"
+        @update:model-value="localWorkMode = $event"
+      />
+      <ModelSelect
+        v-model="localModel"
+        :options="modelOptions"
+        variant="ghost"
+        class="studio-composer-toolbar__select studio-composer-toolbar__select--model"
+        @change="(val: string) => emit('model-change', val)"
+      />
+      <div class="studio-composer-setup__basics">
         <DqSelect
           v-model="localDuration"
           size="sm"
           variant="ghost"
-          
+          :placeholder="$t('audio.duration')"
+          :disabled="durationOptions.length === 0"
           class="studio-composer-toolbar__select studio-composer-toolbar__select--duration"
-        
         >
           <DqOption
             v-for="opt in durationOptions"
@@ -202,15 +199,11 @@
             :value="opt.value"
           />
         </DqSelect>
-      </template>
-      <template #actions>
         <DqSelect
           v-model="localBatchCount"
           size="sm"
           variant="ghost"
-          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--batch"
-        
         >
           <DqOption
             v-for="n in 4"
@@ -219,7 +212,11 @@
             :value="n"
           />
         </DqSelect>
+      </div>
+    </div>
 
+    <ComposerToolbar>
+      <template #actions>
         <DqButton
           type="primary"
           size="sm"

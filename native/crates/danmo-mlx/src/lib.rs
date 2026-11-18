@@ -1,4 +1,5 @@
 mod array;
+mod cache;
 mod cancel;
 mod compile;
 mod device;
@@ -13,11 +14,12 @@ mod stream;
 use std::ffi::CStr;
 
 pub use array::{Array, Dtype, QuantizedArray};
+pub use cache::{CacheKey, CacheRevision, ModelCache};
 pub use cancel::CancelToken;
 pub use compile::{Closure, MultiClosure, UnaryClosure};
 pub use device::{Device, DeviceType};
 pub use error::{Error, Result};
-pub use executor::Executor;
+pub use executor::{EventSink, Executor, ExecutorEvent};
 pub use io::{save_safetensors, SafeTensors};
 pub use linear::{AffineQuantization, LinearWeight};
 pub use memory::{active_memory, clear_cache, peak_memory, reset_peak_memory};
@@ -301,23 +303,27 @@ mod tests {
     fn executor_reuses_one_thread_and_recovers_from_job_panics() {
         let executor = Executor::spawn(DeviceType::Cpu).unwrap();
         let first = executor
-            .execute("executor thread", |_, _| Ok(std::thread::current().id()))
+            .execute("executor thread", |_, _, _, _| {
+                Ok(std::thread::current().id())
+            })
             .unwrap();
         let second = executor
-            .execute("executor thread", |_, _| Ok(std::thread::current().id()))
+            .execute("executor thread", |_, _, _, _| {
+                Ok(std::thread::current().id())
+            })
             .unwrap();
         assert_eq!(first, second);
         assert_ne!(first, std::thread::current().id());
 
         let error = executor
-            .execute("executor panic", |_, _| -> Result<()> {
+            .execute("executor panic", |_, _, _, _| -> Result<()> {
                 panic!("probe panic")
             })
             .unwrap_err();
         assert!(error.to_string().contains("job panicked"));
         for _ in 0..2 {
             let output = executor
-                .execute("executor matmul", |_, stream| matmul_probe(stream))
+                .execute("executor matmul", |_, stream, _, _| matmul_probe(stream))
                 .unwrap();
             assert_close(
                 &output,
@@ -325,6 +331,70 @@ mod tests {
                 1e-6,
             );
         }
+    }
+
+    #[test]
+    fn executor_cache_keeps_arrays_on_its_thread_and_emits_events() {
+        let executor = Executor::spawn(DeviceType::Cpu).unwrap();
+        executor.set_budget(1_000_000).unwrap();
+        let events = executor.subscribe();
+        let key = CacheKey {
+            id: "probe".into(),
+            revision: CacheRevision {
+                length: 2,
+                modified_ns: 1,
+                mix: 0,
+            },
+        };
+        let stored = key.clone();
+        executor
+            .execute("cache put", move |_, stream, cache, events| {
+                let array = Array::from_f32_slice(&[1.0, 2.0], &[2])?;
+                let bytes = array.nbytes();
+                cache.insert(stored, array, bytes)?;
+                events.progress(1, 2);
+                events.log("info", "cached");
+                let _ = stream;
+                Ok(())
+            })
+            .unwrap();
+        let loaded = key.clone();
+        let values = executor
+            .execute("cache get", move |_, stream, cache, _| {
+                let array = cache.get::<Array>(&loaded)?.expect("resident array");
+                array.to_vec_f32(stream)
+            })
+            .unwrap();
+        assert_eq!(values, vec![1.0, 2.0]);
+        let stale = CacheKey {
+            id: "probe".into(),
+            revision: CacheRevision {
+                length: 2,
+                modified_ns: 9,
+                mix: 0,
+            },
+        };
+        let missed = executor
+            .execute("cache miss", move |_, _, cache, _| {
+                Ok(cache.get::<Array>(&stale)?.is_none())
+            })
+            .unwrap();
+        assert!(missed);
+        assert_eq!(
+            events
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap(),
+            ExecutorEvent::Progress { done: 1, total: 2 }
+        );
+        assert_eq!(
+            events
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap(),
+            ExecutorEvent::Log {
+                level: "info".into(),
+                message: "cached".into(),
+            }
+        );
     }
 
     #[cfg(feature = "metal")]
@@ -368,7 +438,9 @@ mod tests {
 
         let executor = Executor::spawn(DeviceType::Gpu).unwrap();
         let output = executor
-            .execute("Metal executor matmul", |_, stream| matmul_probe(stream))
+            .execute("Metal executor matmul", |_, stream, _, _| {
+                matmul_probe(stream)
+            })
             .unwrap();
         assert_close(
             &output,

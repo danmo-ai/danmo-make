@@ -1,4 +1,6 @@
-//! Z-Image create path. Tensor names are the unsloth / SD.cpp GGUF names.
+//! Z-Image. Image create runs on the MLX session. This module still owns the
+//! ggml helpers that edit uses: caption encode, the sigma schedule, and the
+//! smoke bundles. Tensor names are the unsloth / SD.cpp GGUF names.
 //!
 //! The block math follows Tongyi and `main`'s `transformer_mlx.py`. SD.cpp agrees
 //! on those ops. Two SD.cpp details are exact-arithmetic identities and are not
@@ -26,111 +28,14 @@ mod weights;
 pub(crate) use edit_session::ZImageEditFamily;
 pub(crate) use session::ZImageFamily;
 
-use crate::common::ops::{
-    empirical_mu_sigmas, flow_match_shift_sigmas, linear_sigmas, normal_latent,
-};
+use crate::common::ops::{empirical_mu_sigmas, flow_match_shift_sigmas, linear_sigmas};
 use crate::runtime::{GgmlContext, TYPE_F32};
 use crate::weights::{
-    assert_gguf_bundle, load_lora_factors, matmul_type, type_block, GgufWeights, LoraFile,
-    WeightError,
+    matmul_type, type_block, write_f32_tensors, F32Tensor, GgufWeights, WeightError,
 };
-use crate::weights::{write_f32_tensors, F32Tensor};
-use std::collections::HashMap;
 use std::path::Path;
 
-use transformer::ZImageDenoise;
-use weights::{config_from_weights, vector_param, weight_layout, ZImageConfig};
-
-#[cfg(test)]
-pub fn execute(
-    ctx: &GgmlContext,
-    bundle: &Path,
-    prompt: &str,
-    steps: u32,
-    width: u32,
-    height: u32,
-    guidance: f32,
-    seed: Option<i64>,
-    scheduler: Option<&str>,
-    scheduler_shift: Option<f32>,
-    empirical_mu: bool,
-    negative: &str,
-    loras: &[LoraFile],
-    on_progress: impl FnMut(u32, u32),
-) -> Result<crate::families::DitImageRun, WeightError> {
-    let files = assert_gguf_bundle(bundle)?;
-    let loaded = GgufWeights::open_parts(&files.transformer)?;
-    let config = config_from_weights(&loaded)?;
-    let (txt, cap_real) = encode_caption(ctx, bundle, &files.text_encoder, prompt, config.cap_dim)?;
-    let uncond = encode_negative(
-        ctx,
-        bundle,
-        &files.text_encoder,
-        negative,
-        config.cap_dim,
-        cap_real,
-        guidance,
-    )?;
-    let grid = geom::token_grid(width, height, cap_real, config.vae_scale)?;
-    let layout = weight_layout(config);
-    let factors = load_lora_factors(loras, &layout)?;
-    let mut types = HashMap::new();
-    for (name, ne0, _) in &layout {
-        let ggml_type = loaded.ggml_type_of(name)?;
-        check_stored_type(name, ggml_type, *ne0)?;
-        types.insert(name.clone(), ggml_type);
-    }
-    let mut denoise =
-        ZImageDenoise::build(ctx, config, width, height, cap_real, &types, &factors, None)?;
-    for (name, ne0, ne1) in &layout {
-        let raw = loaded.raw_exact(name, &[*ne0, *ne1])?;
-        denoise.load_bytes(name, &raw)?;
-    }
-    for (index, factor) in factors.iter().enumerate() {
-        denoise.load_f32(&format!("lora.{index}.a"), &factor.a)?;
-        denoise.load_f32(&format!("lora.{index}.b"), &factor.b)?;
-    }
-    let latent = match seed {
-        Some(seed) => normal_latent(seed, denoise.latent_len()),
-        None => vec![0.1f32; denoise.latent_len()],
-    };
-    let sigmas = schedule(
-        config,
-        steps,
-        width,
-        height,
-        scheduler,
-        scheduler_shift,
-        empirical_mu,
-    )?;
-    let latents = denoise.denoise(
-        latent,
-        &txt,
-        uncond.as_deref(),
-        &sigmas,
-        guidance,
-        None,
-        on_progress,
-    )?;
-    if let Some(detail) = crate::common::ops::non_finite("z-image latent", &latents) {
-        return Err(WeightError::NotBuilt(detail));
-    }
-    let png = vae::decode(
-        ctx,
-        &files.vae,
-        &latents,
-        config.in_channels,
-        grid.latent_w,
-        grid.latent_h,
-        width,
-        height,
-    )?;
-    Ok(crate::families::DitImageRun {
-        latents,
-        graph_computes: denoise.graph_computes(),
-        preview_png: png,
-    })
-}
+use weights::{vector_param, weight_layout, ZImageConfig};
 
 fn schedule(
     config: weights::ZImageConfig,
@@ -530,12 +435,12 @@ pub fn write_control_smoke_bundle(base: &Path, controlnet: &Path) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
+    use super::transformer::ZImageDenoise;
+    use super::weight_layout;
     use super::weights::ZImageConfig;
     use super::write_smoke_bundle;
-    use super::{weight_layout, ZImageDenoise};
     use crate::image_create;
     use crate::runtime::{BackendKind, GgmlContext, TYPE_F32};
-    use crate::weights::{write_f32_tensors, F32Tensor};
     use danmo_contracts::ImageGenerationRequest;
     use std::collections::HashMap;
 
@@ -572,155 +477,16 @@ mod tests {
     }
 
     #[test]
-    fn same_seed_repeats_and_flow_match_runs() {
-        let dir = scratch("z-image-seed");
+    fn gguf_create_fails_loud_without_the_ggml_graph() {
+        let dir = scratch("z-image-gguf-retired");
         write_smoke_bundle(&dir).unwrap();
-        let mut request = request();
-        request.guidance = Some(0.0);
-        request.seed = Some(7);
-        request.scheduler = Some("flow_match_euler".into());
-        request.scheduler_shift = Some(6.0);
-        let first = image_create(&request, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
-        let second = image_create(&request, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
-        assert_eq!(first.latents, second.latents);
-        request.seed = Some(8);
-        let other = image_create(&request, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
-        assert_ne!(first.latents, other.latents);
-        request.scheduler = Some("unipc".into());
-        let err = match image_create(&request, "z_image", &dir, BackendKind::Cpu, |_, _| ()) {
+        let err = match image_create(&request(), "z_image", &dir, BackendKind::Cpu, |_, _| ()) {
             Err(err) => err,
-            Ok(_) => panic!("unknown scheduler was accepted"),
-        };
-        assert!(err.to_string().contains("not built"), "{err}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn discrete_matches_static_shift_and_empirical_mu_decodes() {
-        let dir = scratch("z-image-schedule");
-        write_smoke_bundle(&dir).unwrap();
-        let mut euler = request();
-        euler.guidance = Some(0.0);
-        euler.steps = Some(4);
-        euler.scheduler = Some("flow_match_euler".into());
-        euler.scheduler_shift = Some(6.0);
-        let base = image_create(&euler, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
-        let mut discrete = euler.clone();
-        discrete.scheduler = Some("flow_match_euler_discrete".into());
-        let alias = image_create(&discrete, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
-        assert_eq!(base.latents, alias.latents);
-        discrete.use_empirical_mu = true;
-        let shifted =
-            image_create(&discrete, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
-        assert_ne!(base.latents, shifted.latents);
-        assert!(shifted.latents.iter().all(|v| v.is_finite()));
-        assert_eq!(&shifted.preview_png[..8], b"\x89PNG\r\n\x1a\n");
-        let mut linear = request();
-        linear.guidance = Some(0.0);
-        linear.steps = Some(4);
-        linear.scheduler = Some("linear".into());
-        let plain = image_create(&linear, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
-        linear.use_empirical_mu = true;
-        let flagged = image_create(&linear, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
-        assert_eq!(plain.latents, flagged.latents);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn smoke_create_is_one_forward_and_a_png() {
-        let dir = scratch("z-image-create");
-        write_smoke_bundle(&dir).unwrap();
-        let mut request = request();
-        request.guidance = Some(0.0);
-        let out = image_create(&request, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
-        assert_eq!(out.graph_computes, 1);
-        assert!(
-            out.latents.iter().all(|v| v.is_finite()),
-            "{:?}",
-            &out.latents[..8]
-        );
-        assert_eq!(&out.preview_png[..8], b"\x89PNG\r\n\x1a\n");
-        let width = u32::from_be_bytes(out.preview_png[16..20].try_into().unwrap());
-        let height = u32::from_be_bytes(out.preview_png[20..24].try_into().unwrap());
-        assert_eq!((width, height), (64, 64));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn prompt_changes_the_latent_and_a_same_length_negative_is_uncond() {
-        let dir = scratch("z-image-prompt");
-        write_smoke_bundle(&dir).unwrap();
-        let mut cat = request();
-        cat.guidance = Some(0.0);
-        cat.prompt = "a cat".into();
-        let cat_out = image_create(&cat, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
-        assert_eq!(cat_out.graph_computes, 1);
-        let mut dog = cat.clone();
-        dog.prompt = "a dog".into();
-        let dog_out = image_create(&dog, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
-        assert_ne!(cat_out.latents, dog_out.latents);
-        assert!(cat_out.latents.iter().all(|v| v.is_finite()));
-        assert!(dog_out.latents.iter().all(|v| v.is_finite()));
-
-        let mut guided = cat.clone();
-        guided.guidance = Some(2.0);
-        let zeros = image_create(&guided, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
-        assert_eq!(zeros.graph_computes, 2);
-        guided.negative_prompt = "a dog".into();
-        let negated = image_create(&guided, "z_image", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
-        assert_eq!(negated.graph_computes, 2);
-        assert_ne!(zeros.latents, negated.latents);
-        assert!(negated.latents.iter().all(|v| v.is_finite()));
-
-        guided.negative_prompt = "cat".into();
-        let mismatch = match image_create(&guided, "z_image", &dir, BackendKind::Cpu, |_, _| ()) {
-            Err(err) => err,
-            Ok(_) => panic!("a shorter negative prompt was accepted"),
+            Ok(_) => panic!("gguf create still ran the removed ggml graph"),
         };
         assert!(
-            mismatch.to_string().contains("tokenized to 1"),
-            "{mismatch}"
-        );
-        guided.guidance = Some(0.0);
-        guided.negative_prompt = "a dog".into();
-        let unguided = match image_create(&guided, "z_image", &dir, BackendKind::Cpu, |_, _| ()) {
-            Err(err) => err,
-            Ok(_) => panic!("guidance 0 accepted a negative prompt"),
-        };
-        assert!(
-            unguided
-                .to_string()
-                .contains("needs a guidance other than 0"),
-            "{unguided}"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn qwen_text_tower_fails_loud() {
-        let dir = scratch("z-image-qwen");
-        write_smoke_bundle(&dir).unwrap();
-        let row = vec![0.1f32; 8];
-        write_f32_tensors(
-            &dir.join("text_encoder.gguf"),
-            &[F32Tensor {
-                name: "layers.0.self_attn.q_proj.weight",
-                ne0: 8,
-                ne1: 1,
-                data: &row,
-            }],
-        )
-        .unwrap();
-        let mut request = request();
-        request.guidance = Some(0.0);
-        let err = match image_create(&request, "z_image", &dir, BackendKind::Cpu, |_, _| ()) {
-            Err(err) => err,
-            Ok(_) => panic!("qwen text tower was accepted"),
-        };
-        let message = err.to_string();
-        assert!(
-            message.contains("embed_tokens") || message.contains("not built"),
-            "{message}"
+            err.to_string().contains("no longer has a ggml graph"),
+            "{err}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

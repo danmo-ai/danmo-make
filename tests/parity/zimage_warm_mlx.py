@@ -42,6 +42,12 @@ def main():
     parser.add_argument("--teacache", action="store_true")
     parser.add_argument("--teacache-thresh", type=float)
     parser.add_argument("--native-dtype", action="store_true")
+    parser.add_argument("--quantization-bits", type=int, choices=(4, 8))
+    parser.add_argument("--quantization-group-size", type=int, default=64)
+    parser.add_argument(
+        "--vae-config-dir",
+        help="directory holding the published vae/config.json when the bundle omits it",
+    )
     args = parser.parse_args()
     if args.compile and args.teacache:
         raise SystemExit("--compile and --teacache are separate validation paths")
@@ -52,6 +58,7 @@ def main():
     latent_h, latent_w = height // 8, width // 8
 
     import mlx.core as mx
+    from backend.engine.common.bundle.quant_inference import WeightInferenceMode
     from backend.engine.common.codecs.text_encoders.qwen3_mlx import build_zimage_mlx_encoder
     from backend.engine.common.codecs.vae.decoder import (
         build_standard_vae_preview_session,
@@ -82,8 +89,22 @@ def main():
     weights = {}
     for shard in sorted((bundle / "transformer").glob("*.safetensors")):
         weights.update(mx.load(str(shard)))
-    model.load_weights(list(weights.items()), strict=True)
-    if args.native_dtype:
+    inference_mode = (
+        WeightInferenceMode(kind="quantized", bits=args.quantization_bits)
+        if args.quantization_bits
+        else None
+    )
+    model.load_weights(
+        list(weights.items()),
+        strict=True,
+        bundle_affine_bits=args.quantization_bits,
+        inference_mode=inference_mode,
+    )
+    # Quantized bundles already match the Rust production dtype chain
+    # (packed affine + dense norms widened to the module-init F32). The
+    # dense-checkpoint native rebind is a different path and must not run
+    # on top of packed linears.
+    if args.native_dtype and not args.quantization_bits:
         native_weights = model.sanitize(weights)
         for key, param in list(model._param_map.items()):
             native = native_weights[key]
@@ -93,10 +114,59 @@ def main():
             model._rebind_param_by_key(key, native)
     del weights
     mx.clear_cache()
-    session = build_standard_vae_preview_session(ctx, bundle / "vae")
-    if session is None:
-        raise RuntimeError("VAE preview session did not load")
-    if args.native_dtype:
+    if args.quantization_bits:
+        from backend.engine.common.bundle.quant_inference import (
+            resolve_inference_weight_mode_from_bundle,
+        )
+        from backend.engine.common.bundle.safetensors_affine_quant import (
+            read_bundle_affine_bits_if_quantized,
+        )
+        from backend.engine.common.codecs.vae.decoder import (
+            create_loaded_vae_decoder,
+            load_vae_weight_dict,
+            read_vae_dir_config,
+        )
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from zimage_real_mlx import normalize_mflux_vae_keys
+        vae_dir = bundle / "vae"
+        vae_weights = normalize_mflux_vae_keys(
+            load_vae_weight_dict(ctx, vae_dir, fail_if_config_only=True)
+        )
+        vae_cfg, scaling_factor, shift_factor = read_vae_dir_config(vae_dir)
+        if not vae_cfg and args.vae_config_dir:
+            vae_cfg, scaling_factor, shift_factor = read_vae_dir_config(
+                Path(args.vae_config_dir)
+            )
+        if not vae_cfg:
+            raise RuntimeError(
+                "quantized VAE needs the published config.json; pass --vae-config-dir"
+            )
+        bundle_affine_bits = read_bundle_affine_bits_if_quantized(vae_weights, vae_dir)
+        vae_mode = resolve_inference_weight_mode_from_bundle(
+            ctx,
+            weight_keys=frozenset(vae_weights.keys()),
+            bundle_affine_bits=bundle_affine_bits,
+        )
+        probe = mx.zeros((1, 16, latent_h, latent_w), dtype=mx.bfloat16)
+        vae, _decoder_w, _loaded, _skipped = create_loaded_vae_decoder(
+            ctx,
+            probe,
+            vae_weights,
+            scaling_factor,
+            shift_factor,
+            vae_cfg=vae_cfg,
+            bundle_affine_bits=bundle_affine_bits,
+            inference_mode=vae_mode,
+        )
+        del vae_weights, probe
+        mx.clear_cache()
+    else:
+        session = build_standard_vae_preview_session(ctx, bundle / "vae")
+        if session is None:
+            raise RuntimeError("VAE preview session did not load")
+        vae = session["vae"]
+    if args.native_dtype and not args.quantization_bits:
         # Restore each VAE parameter to its published checkpoint dtype
         # (all BF16 for this VAE), never a blanket downcast.
         vae = session["vae"]
@@ -209,13 +279,19 @@ def main():
                 model.step_callback(timestep, latents, velocity)
             mx.eval(velocity, latents)
             step_seconds.append(time.monotonic() - step_started)
-            step_velocities.append(
-                np.asarray(velocity.astype(mx.float32), dtype=np.float32).reshape(-1)
-            )
-            step_latents.append(
-                np.asarray(latents.astype(mx.float32), dtype=np.float32).reshape(-1)
-            )
-        mx.eval(latents)
+            step_velocities.append(velocity)
+            step_latents.append(latents)
+        denoise_seconds = time.monotonic() - dit_started
+        # Host exports stay outside the denoise clock. The gate compares GPU
+        # eval time; a full 768x1280 readback is tens of milliseconds.
+        step_velocities = [
+            np.asarray(value.astype(mx.float32), dtype=np.float32).reshape(-1)
+            for value in step_velocities
+        ]
+        step_latents = [
+            np.asarray(value.astype(mx.float32), dtype=np.float32).reshape(-1)
+            for value in step_latents
+        ]
         if velocities_reference is None:
             velocities_reference = step_velocities
             step_latents_reference = step_latents
@@ -227,7 +303,6 @@ def main():
             for actual, expected in zip(step_latents, step_latents_reference):
                 if not np.array_equal(actual, expected):
                     raise RuntimeError("warm passes produced different latents")
-        denoise_seconds = time.monotonic() - dit_started
         denoised_values = np.asarray(latents.astype(mx.float32), dtype=np.float32).reshape(-1)
         cache_counts = None
         if args.teacache:
@@ -245,12 +320,15 @@ def main():
             raise RuntimeError("warm passes diverged from the first pass")
 
         vae_started = time.monotonic()
-        output = session["vae"].forward(latents)
+        output = vae.forward(latents)
         mx.eval(output)
-        pixels = vae_output_to_uint8_hwc(
-            output.astype(mx.float32) if args.native_dtype else output, ctx
-        )
         vae_seconds = time.monotonic() - vae_started
+        pixels = vae_output_to_uint8_hwc(
+            output.astype(mx.float32)
+            if args.native_dtype or args.quantization_bits
+            else output,
+            ctx,
+        )
         output_values = np.asarray(output.astype(mx.float32), dtype=np.float32).reshape(-1)
         if output_reference is None:
             output_reference = output_values
@@ -266,7 +344,7 @@ def main():
                 "denoise": denoise_seconds,
                 "steps": step_seconds,
                 "vae": vae_seconds,
-                "total": time.monotonic() - started,
+                "total": encode_seconds + denoise_seconds + vae_seconds,
             }
         )
         print(
@@ -284,7 +362,9 @@ def main():
         "compile": args.compile,
         "teacache": args.teacache,
         "teacache_thresh": args.teacache_thresh,
-        "native_dtype": "checkpoint" if args.native_dtype else None,
+        "native_dtype": "checkpoint" if args.native_dtype or args.quantization_bits else None,
+        "quantization_bits": args.quantization_bits,
+        "quantization_group_size": args.quantization_group_size if args.quantization_bits else None,
         "load_seconds": load_seconds,
         "passes": passes,
         "warm_p50": {

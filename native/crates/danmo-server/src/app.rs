@@ -659,9 +659,12 @@ pub(crate) fn gguf_bundle(state: &AppState, model: &str) -> Result<PathBuf, Stri
         Some((bare, version)) if !bare.is_empty() && !version.is_empty() => (bare, Some(version)),
         _ => (model, None),
     };
-    if requested.is_some() {
-        let path = catalog.gguf_local_path(model).map_err(|e| e.to_string())?;
-        return Ok(download::resolve_model_path(&state.workspace, &path));
+    if let Some(version) = requested {
+        if danmo_catalog::GGUF_VERSION_KEYS.contains(&version) {
+            let path = catalog.gguf_local_path(model).map_err(|e| e.to_string())?;
+            return Ok(download::resolve_model_path(&state.workspace, &path));
+        }
+        return safetensors_bundle(&state.workspace, catalog.root(), bare, version);
     }
     if let Some(version) = installed_version(&state.workspace, catalog.root(), bare) {
         let path = catalog
@@ -669,8 +672,76 @@ pub(crate) fn gguf_bundle(state: &AppState, model: &str) -> Result<PathBuf, Stri
             .map_err(|e| e.to_string())?;
         return Ok(download::resolve_model_path(&state.workspace, &path));
     }
+    if let Some(version) = installed_safetensors_version(&state.workspace, catalog.root(), bare) {
+        return safetensors_bundle(&state.workspace, catalog.root(), bare, &version);
+    }
     let path = catalog.gguf_local_path(model).map_err(|e| e.to_string())?;
     Ok(download::resolve_model_path(&state.workspace, &path))
+}
+
+fn safetensors_bundle(
+    workspace: &std::path::Path,
+    root: &serde_json::Value,
+    model: &str,
+    version: &str,
+) -> Result<PathBuf, String> {
+    let path = version_local_path(root, model, version)?;
+    let resolved = download::resolve_model_path(workspace, &path);
+    if danmo_engine::is_safetensors_image_bundle(&resolved) {
+        return Ok(resolved);
+    }
+    Err(format!(
+        "{model}:{version} is not an installed safetensors image bundle at {}",
+        resolved.display()
+    ))
+}
+
+fn version_local_path(
+    root: &serde_json::Value,
+    model: &str,
+    version: &str,
+) -> Result<String, String> {
+    root.pointer(&format!(
+        "/models/{model}/distribution/versions/{version}/local_path"
+    ))
+    .and_then(|value| value.as_str())
+    .filter(|path| !path.is_empty())
+    .map(|path| path.to_string())
+    .ok_or_else(|| format!("{model}:{version} has no local_path"))
+}
+
+fn installed_safetensors_version(
+    workspace: &std::path::Path,
+    root: &serde_json::Value,
+    model_id: &str,
+) -> Option<String> {
+    let versions = root
+        .pointer(&format!("/models/{model_id}/distribution/versions"))?
+        .as_object()?;
+    let ready = |key: &str| {
+        let path = versions
+            .get(key)
+            .and_then(|version| version.get("local_path"))
+            .and_then(|value| value.as_str())
+            .filter(|path| !path.is_empty())?;
+        danmo_engine::is_safetensors_image_bundle(&download::resolve_model_path(workspace, path))
+            .then_some(key.to_string())
+    };
+    for key in danmo_catalog::SAFETENSORS_VERSION_KEYS {
+        if versions
+            .get(*key)
+            .and_then(|version| version.get("default"))
+            .and_then(|value| value.as_bool())
+            == Some(true)
+        {
+            if let Some(key) = ready(key) {
+                return Some(key);
+            }
+        }
+    }
+    danmo_catalog::SAFETENSORS_VERSION_KEYS
+        .iter()
+        .find_map(|key| ready(key))
 }
 
 /// First tier whose directory is a ready GGUF bundle, in bf16 / q8_0 / q4_k order.
@@ -732,7 +803,10 @@ async fn registry_route(
     let catalog = Catalog::from_value(
         serde_json::from_str(&text).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
     );
-    Ok(Json(catalog.public_registry()))
+    let projected = catalog
+        .public_registry()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(projected))
 }
 
 async fn queue(State(state): State<AppState>) -> Result<Json<Value>, product::ApiError> {
@@ -1662,7 +1736,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn z_image_controlnet_create_runs_end_to_end() {
+    async fn z_image_controlnet_create_fails_without_the_ggml_graph() {
         let dir = std::env::temp_dir().join(format!(
             "danmo-api-control-{}-{}",
             std::process::id(),
@@ -1677,6 +1751,7 @@ mod tests {
         let mut registry: Value =
             serde_json::from_str(&std::fs::read_to_string(factory_registry()).unwrap()).unwrap();
         let control_local = "models/ControlNet/z-image-turbo-fun-controlnet-union/q4_k";
+        let base_local = "models/Image/z-image/q4_k";
         registry["models"]["z-image-turbo-fun-controlnet-union"]["distribution"]["versions"] = json!({
             "q4_k": {
                 "name": { "zh": "Q4_K", "en": "Q4_K" },
@@ -1684,9 +1759,14 @@ mod tests {
                 "local_path": control_local
             }
         });
+        registry["models"]["z-image"]["distribution"]["versions"]["q4_k"] = json!({
+            "name": { "zh": "Q4_K", "en": "Q4_K" },
+            "size": "1GB",
+            "local_path": base_local
+        });
         let registry_path = dir.join("registry.json");
         std::fs::write(&registry_path, serde_json::to_string(&registry).unwrap()).unwrap();
-        let (model, base_local) = published_weight("z-image", "q4_k");
+        let model = "z-image:q4_k";
         danmo_engine::write_z_image_control_smoke_bundle(
             &dir.join(&base_local),
             &dir.join(control_local),
@@ -1717,14 +1797,56 @@ mod tests {
         assert_eq!(create.0, StatusCode::ACCEPTED, "{}", create.1);
         let id = create.1["id"].as_str().unwrap();
         let task = wait_terminal_for(&app, id, 300, 100).await;
-        assert_eq!(task["status"], "completed", "task {task}");
-        assert_eq!(task["result"]["width"], 64, "task {task}");
-        assert_eq!(task["result"]["height"], 64, "task {task}");
-        let ids = task["result"]["asset_ids"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        assert_eq!(ids.len(), 1, "task {task}");
+        assert_eq!(task["status"], "failed", "task {task}");
+        let err = task["error"].as_str().unwrap_or("");
+        assert!(err.contains("no longer has a ggml graph"), "task {task}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn z_image_safetensors_bundle_resolves_past_the_gguf_catalog() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-mlx-bundle-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut registry: Value =
+            serde_json::from_str(&std::fs::read_to_string(factory_registry()).unwrap()).unwrap();
+        let local = "models/Image/z-image-turbo-fp16";
+        registry["models"]["z-image-turbo"]["distribution"]["versions"]["fp16"]["local_path"] =
+            json!(local);
+        let bundle = dir.join(local);
+        for role in ["transformer", "text_encoder", "vae"] {
+            let role_dir = bundle.join(role);
+            std::fs::create_dir_all(&role_dir).unwrap();
+            std::fs::write(role_dir.join("model.safetensors"), b"not a real shard").unwrap();
+        }
+        let registry_path = dir.join("registry.json");
+        std::fs::write(&registry_path, serde_json::to_string(&registry).unwrap()).unwrap();
+        let app = router(&dir.join("studio.db"), &registry_path);
+        let mut body = vue_generate_body("z-image-turbo", "a cat");
+        body["guidance"] = json!(0);
+        let create = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(create.0, StatusCode::ACCEPTED, "{}", create.1);
+        let id = create.1["id"].as_str().unwrap();
+        let task = wait_terminal_for(&app, id, 300, 100).await;
+        assert_eq!(task["status"], "failed", "task {task}");
+        let err = task["error"].as_str().unwrap_or("");
+        assert!(
+            !err.contains("no GGUF"),
+            "safetensors bundle was rejected by the GGUF catalog: {task}"
+        );
+        assert!(
+            err.contains("no longer has a ggml graph")
+                || err.contains("safetensors")
+                || err.contains("missing tensor")
+                || err.contains("embed_tokens"),
+            "task {task}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2270,6 +2392,49 @@ mod tests {
         let payload = serde_json::from_slice(&bytes)
             .unwrap_or(json!({ "raw": String::from_utf8_lossy(&bytes).to_string() }));
         (status, payload)
+    }
+
+    #[tokio::test]
+    async fn registry_route_projects_v3_models() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-registry-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = router(&dir.join("studio.db"), &factory_registry());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/registry")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let listed: Value = serde_json::from_slice(&bytes).unwrap();
+        let turbo = &listed["models"]["z-image-turbo"];
+        assert_eq!(turbo["media"], "image");
+        assert_eq!(turbo["family"], "z_image");
+        assert_eq!(turbo["name"]["zh"], "Z-Image-Turbo");
+        assert_eq!(turbo["parameters"]["steps"]["default"], 9);
+        assert_eq!(turbo["parameters"]["supports_guidance"], false);
+        assert_eq!(
+            turbo["versions"]["mlx-q4"]["repo_id"],
+            "OsaurusAI/Z-Image-Turbo-mflux-4bit"
+        );
+        assert!(turbo.get("catalog").is_none());
+        assert_eq!(
+            listed["_index"]["z-image-turbo"]["actions"],
+            json!(["edit", "generate"])
+        );
+        assert!(listed["categories"]["base_models"].is_object());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -2876,6 +3041,16 @@ async fn image_edits(
     Ok((StatusCode::ACCEPTED, accepted))
 }
 
+fn random_seed() -> i64 {
+    (Uuid::new_v4().as_u128() % 2_147_483_647) as i64
+}
+
+fn ensure_seed(seed: &mut Option<i64>) {
+    if seed.is_none() {
+        *seed = Some(random_seed());
+    }
+}
+
 fn prepare_image_edit_request(
     state: &AppState,
     mut body: Value,
@@ -2896,11 +3071,12 @@ fn prepare_image_edit_request(
     reject_unbuilt_inference(&entry.family, &body, false)?;
     bind_installed_loras(state, &model, &mut body)?;
     fill_registry_defaults(&catalog, &entry.id, &mut body);
-    let request: ImageEditRequest = serde_json::from_value(body)
+    let mut request: ImageEditRequest = serde_json::from_value(body)
         .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
     if request.n == 0 {
         return Err(fail(StatusCode::BAD_REQUEST, "n must be at least 1"));
     }
+    ensure_seed(&mut request.seed);
     Ok(request)
 }
 
@@ -2965,11 +3141,12 @@ fn prepare_image_request(
     reject_unbuilt_inference(&entry.family, &body, true)?;
     bind_installed_loras(state, &model, &mut body)?;
     fill_registry_defaults(&catalog, &entry.id, &mut body);
-    let request: ImageGenerationRequest = serde_json::from_value(body)
+    let mut request: ImageGenerationRequest = serde_json::from_value(body)
         .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
     if request.n == 0 {
         return Err(fail(StatusCode::BAD_REQUEST, "n must be at least 1"));
     }
+    ensure_seed(&mut request.seed);
     if let Some(guide) = &request.structural_guide {
         validate_structural_guide(&catalog, &entry, guide)?;
     }
@@ -3224,6 +3401,8 @@ async fn video_generations(
     State(state): State<AppState>,
     Json(body): Json<VideoGenerationRequest>,
 ) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
+    let mut body = body;
+    ensure_seed(&mut body.seed);
     let accepted = accept(
         &state,
         TaskKind::VideoGeneration,
@@ -3238,8 +3417,9 @@ async fn video_edits(
     State(state): State<AppState>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
-    let request: VideoEditRequest = serde_json::from_value(body)
+    let mut request: VideoEditRequest = serde_json::from_value(body)
         .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    ensure_seed(&mut request.seed);
     if request.source_asset_id.trim().is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -3260,8 +3440,9 @@ async fn video_upscales(
     State(state): State<AppState>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
-    let request: VideoUpscaleRequest = serde_json::from_value(body)
+    let mut request: VideoUpscaleRequest = serde_json::from_value(body)
         .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    ensure_seed(&mut request.seed);
     if request.source_asset_id.trim().is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -3304,7 +3485,8 @@ async fn audio_edits(
     State(state): State<AppState>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<TaskAccepted>), ApiError> {
-    let body: AudioEditRequest = prepare_audio_request(&state, body)?;
+    let mut body: AudioEditRequest = prepare_audio_request(&state, body)?;
+    ensure_seed(&mut body.seed);
     let accepted = accept(
         &state,
         TaskKind::AudioEdit,
@@ -3342,6 +3524,12 @@ fn accept_value(
         .to_string();
     if model.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "model is required".into()));
+    }
+    let mut body = body.clone();
+    if matches!(body.get("seed"), None | Some(Value::Null)) {
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("seed".into(), json!(random_seed()));
+        }
     }
     let priority = body
         .get("priority")
@@ -3385,7 +3573,8 @@ async fn audio_generations(
     State(state): State<AppState>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<TaskAccepted>), ApiError> {
-    let body: AudioGenerationRequest = prepare_audio_request(&state, body)?;
+    let mut body: AudioGenerationRequest = prepare_audio_request(&state, body)?;
+    ensure_seed(&mut body.seed);
     let accepted = accept(
         &state,
         TaskKind::AudioGeneration,

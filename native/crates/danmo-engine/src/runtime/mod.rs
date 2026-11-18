@@ -4,6 +4,8 @@ mod capacity;
 mod context;
 mod extend;
 mod graph;
+#[cfg(feature = "mlx")]
+mod mlx_host;
 mod probe;
 mod selection;
 
@@ -19,6 +21,8 @@ pub use extend::{
     DiffusionTiming, RopeIn,
 };
 pub use graph::{shape, GraphBuilder, ReusedGraph};
+#[cfg(feature = "mlx")]
+pub use mlx_host::{executor as mlx_executor, set_budget as set_mlx_budget};
 pub use probe::{probe_attention, AttentionProbeReport};
 pub use selection::{select_from_env, BackendSelection};
 

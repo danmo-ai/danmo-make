@@ -3,6 +3,9 @@ import { computed, ref } from 'vue';
 import { $tt } from '@/utils/i18n';
 import PresetTemplateDialog from '@/components/settings/PresetTemplateDialog.vue';
 import PromptTemplatesCategoryNav from '@/components/settings/PromptTemplatesCategoryNav.vue';
+import WorkspaceLayout from '@/components/workspace/WorkspaceLayout.vue';
+import WorkspaceHeader from '@/components/workspace/WorkspaceHeader.vue';
+import WorkspaceSidebar from '@/components/workspace/WorkspaceSidebar.vue';
 
 const props = defineProps<{
   presets: Record<string, Record<string, unknown>>;
@@ -81,9 +84,23 @@ const presetList = computed(() => {
   return list;
 });
 
+function actionDisplayLabel(action: string, media = 'image'): string {
+  const scopes = media === 'video'
+    ? ['video', 'image', 'audio']
+    : media === 'audio'
+      ? ['audio', 'video', 'image']
+      : ['image', 'video', 'audio'];
+  for (const scope of scopes) {
+    const key = `action.${scope}.${action}`;
+    const label = $tt(key);
+    if (label && label !== key) return label;
+  }
+  return action;
+}
+
 const presetAppliesSummary = (preset: Record<string, unknown>) => {
   const actions = preset.applies_to as string[] || [];
-  return actions.map((a) => $tt(`action.image.${a}`) || $tt(`action.video.${a}`) || a);
+  return actions.map((action) => actionDisplayLabel(action, String(preset.media_scope || 'image')));
 };
 
 const presetMediaLabel = (preset: Record<string, unknown>) =>
@@ -106,18 +123,13 @@ function handleActionSelect(action: string) {
 </script>
 
 <template>
-  <div class="templates-page">
-    <!-- Left sidebar -->
-    <div class="templates-page__sidebar">
-      <DqSurfaceCard class="templates-page__sidebar-card">
-        <div class="card-title">
-          <DqIcon><collection /></DqIcon>
-          {{ $t('settings.promptTemplates') }}
-        </div>
-        <div class="templates-page__sidebar-intro">
-          {{ $t('settings.promptTemplatesDesc') }}
-        </div>
-
+  <WorkspaceLayout class="templates-page">
+    <template #sidebar>
+      <WorkspaceSidebar
+        :title="$t('settings.promptTemplates')"
+        :description="$t('settings.promptTemplatesDesc')"
+      >
+        <template #icon><DqIcon><collection /></DqIcon></template>
         <PromptTemplatesCategoryNav
           :active-category="activeCategory"
           :active-action="activeAction"
@@ -125,20 +137,19 @@ function handleActionSelect(action: string) {
           @select-category="handleCategorySelect"
           @select-action="handleActionSelect"
         />
-      </DqSurfaceCard>
-    </div>
+      </WorkspaceSidebar>
+    </template>
 
-    <!-- Right main area -->
     <div class="templates-page__main">
       <!-- Header -->
-      <div class="templates-page__header">
-        <div class="templates-page__header-title">
-          <DqIcon v-if="activeAction" class="templates-page__header-icon"><MagicStick /></DqIcon>
-          <span>{{ activeAction ? $tt(`action.image.${activeAction}`) || $tt(`action.video.${activeAction}`) : (activeCategory === 'all' ? $t('settings.allTemplates') : (activeCategory === 'video' ? $t('settings.presetMediaVideo') : $t('settings.presetMediaImage'))) }}</span>
-          <DqTag v-if="presetList.length > 0" size="sm" type="info" class="templates-page__count-tag">{{ presetList.length }}</DqTag>
-        </div>
-
-        <div class="templates-page__header-center">
+      <WorkspaceHeader
+        :title="activeAction ? actionDisplayLabel(activeAction, activeCategory) : (activeCategory === 'all' ? $t('settings.allTemplates') : (activeCategory === 'video' ? $t('settings.presetMediaVideo') : $t('settings.presetMediaImage')))"
+      >
+        <template v-if="activeAction" #icon><DqIcon><MagicStick /></DqIcon></template>
+        <template #title-meta>
+          <DqTag v-if="presetList.length > 0" size="sm" type="info">{{ presetList.length }}</DqTag>
+        </template>
+        <template #filters>
           <DqInput
             :model-value="searchQuery"
             :placeholder="$t('settings.searchTemplate')"
@@ -146,28 +157,19 @@ function handleActionSelect(action: string) {
             clearable
             @update:model-value="emit('update:searchQuery', $event)"
           >
-            <template #prefix>
-              <DqIcon><search /></DqIcon>
-            </template>
+            <template #prefix><DqIcon><search /></DqIcon></template>
           </DqInput>
-        </div>
-
-        <div class="templates-page__header-actions">
-          <DqButton
-            type="text"
-            size="sm"
-            class="settings-link-destructive"
-            :loading="restoreConfigBusy"
-            @click="emit('restore')"
-          >
+        </template>
+        <template #actions>
+          <DqButton type="text" size="sm" :loading="restoreConfigBusy" @click="emit('restore')">
             {{ $t('settings.restorePromptTemplates') }}
           </DqButton>
           <DqButton type="primary" @click="emit('add')">
             <DqIcon><plus /></DqIcon>
             {{ $t('settings.addTemplate') }}
           </DqButton>
-        </div>
-      </div>
+        </template>
+      </WorkspaceHeader>
 
       <!-- Empty state -->
       <DqInspectorEmpty v-if="presetList.length === 0" class="templates-page__empty">
@@ -223,7 +225,12 @@ function handleActionSelect(action: string) {
           </div>
 
           <!-- Card body: prompts -->
-          <div class="template-card__body" @click="toggleExpand(row.name)">
+          <button
+            type="button"
+            class="template-card__body"
+            :aria-expanded="isExpanded(row.name)"
+            @click="toggleExpand(row.name)"
+          >
             <div class="template-card__prompt-section">
               <div class="template-card__prompt-label">{{ $t('settings.positivePrompt') }}</div>
               <div
@@ -243,7 +250,7 @@ function handleActionSelect(action: string) {
                 {{ row.preset.negative }}
               </div>
             </div>
-          </div>
+          </button>
         </div>
       </div>
     </div>
@@ -255,5 +262,5 @@ function handleActionSelect(action: string) {
       @save="emit('save')"
       @cancel="dialogOpen = false"
     />
-  </div>
+  </WorkspaceLayout>
 </template>

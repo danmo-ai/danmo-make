@@ -15,7 +15,10 @@
     "prompts": "提示词",
     "settings": "设置",
     "assistant": "创作助手",
-    "lora_train": "LoRA 训练"
+    "lora_train": "LoRA 训练",
+    "collapseSidebar": "收起导航",
+    "expandSidebar": "展开导航",
+    "queuePending": "{count} 个待处理任务"
   },
   "loraTrain": {
     "title": "LoRA 训练",
@@ -1173,6 +1176,7 @@
     "useForImg2Img": "用作图生图",
     "openDir": "打开目录",
     "info": "图片信息",
+    "assetInfo": "资源信息",
     "prompt": "提示词",
     "model": "模型",
     "resolution": "分辨率",
@@ -2022,6 +2026,8 @@
     "info": "信息",
     "confirm": "确认",
     "cancel": "取消",
+    "close": "关闭",
+    "refresh": "刷新",
     "back": "上一步",
     "next": "下一步",
     "delete": "删除",

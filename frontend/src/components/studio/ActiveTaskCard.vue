@@ -170,23 +170,7 @@ function truncate(text: string, length: number): string {
   border-radius: var(--dq-radius-group);
   border: 0.5px solid color-mix(in srgb, var(--dq-accent) 35%, var(--dq-glass-border));
   background: var(--dq-surface-inset);
-  box-shadow:
-    var(--dq-shadow-sm),
-    0 0 0 1px color-mix(in srgb, var(--dq-accent) 12%, transparent);
-  animation: active-card-pulse 3s ease-in-out infinite;
-}
-
-@keyframes active-card-pulse {
-  0%, 100% {
-    box-shadow:
-      var(--dq-shadow-sm),
-      0 0 0 1px color-mix(in srgb, var(--dq-accent) 12%, transparent);
-  }
-  50% {
-    box-shadow:
-      var(--dq-shadow-md),
-      0 0 0 2px color-mix(in srgb, var(--dq-accent) 22%, transparent);
-  }
+  box-shadow: var(--dq-shadow-sm);
 }
 
 .active-task-card__preview {
@@ -282,8 +266,8 @@ function truncate(text: string, length: number): string {
 
 .active-task-card__cancel {
   flex-shrink: 0;
-  opacity: 0;
-  transition: opacity 0.2s ease;
+  opacity: 1;
+  transition: opacity 140ms ease;
 }
 
 .active-task-card:hover .active-task-card__cancel {

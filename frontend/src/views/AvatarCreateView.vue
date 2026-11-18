@@ -52,13 +52,6 @@
     </template>
   </StudioLayout>
 
-  <StudioComposeFab
-    v-if="!composerDrawerOpen"
-    media="video"
-    :busy="composerBusy"
-    @open="openComposerDrawer()"
-  />
-
   <StudioComposerHost v-model:open="composerDrawerOpen" :drawer-title="$t('avatar.composerTitle')">
     <AvatarComposer
       v-model="params.prompt"
@@ -121,13 +114,13 @@ import { warnIfRiskyMemory } from '@/composables/memoryHint';
 import { useStudioGallery } from '@/composables/useStudioGallery';
 import { useComposerDrawer } from '@/composables/useComposerDrawer';
 import { ACTIVE_COMPOSER_TASK_STATUSES } from '@/utils/composerQueue';
+import { seedForSubmit } from '@/utils/seed';
 import type { GalleryItem, SystemInfo, Task } from '@/types';
 import StudioLayout from '@/components/studio/StudioLayout.vue';
 import StudioCanvas from '@/components/studio/StudioCanvas.vue';
 import StudioGalleryFilters from '@/components/studio/StudioGalleryFilters.vue';
 import AvatarComposer from '@/components/studio/AvatarComposer.vue';
 import StudioComposerHost from '@/components/studio/StudioComposerHost.vue';
-import StudioComposeFab from '@/components/studio/StudioComposeFab.vue';
 import AssetPicker from '@/components/asset/AssetPicker.vue';
 import GalleryPreviewDialog from '@/components/gallery/GalleryPreviewDialog.vue';
 
@@ -500,7 +493,7 @@ async function onGenerate() {
       num_frames: params.num_frames,
       fps: params.fps,
       steps: params.steps,
-      seed: params.seed,
+      seed: seedForSubmit(params.seed),
     };
 
     let submitRes: unknown;

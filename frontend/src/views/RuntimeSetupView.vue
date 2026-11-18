@@ -183,26 +183,26 @@ defineExpose({ refresh, start, available, ready });
 .runtime-setup__bar {
   height: 8px;
   border-radius: 999px;
-  background: var(--dq-fill-secondary, #222);
+  background: var(--dq-fill-secondary);
   overflow: hidden;
 }
 .runtime-setup__bar > i {
   display: block;
   height: 100%;
-  background: var(--dq-accent, #5b8def);
+  background: var(--dq-accent);
 }
 .runtime-setup__log {
   margin-top: 0.75rem;
   max-height: 220px;
   overflow: auto;
-  font-size: 0.75rem;
+  font-size: var(--dq-font-size-caption);
   padding: 0.75rem;
-  border-radius: 8px;
-  background: var(--dq-fill-tertiary, #111);
+  border-radius: var(--dq-radius-control-sm);
+  background: var(--dq-fill-tertiary);
   white-space: pre-wrap;
 }
 .runtime-setup__err {
-  color: var(--dq-danger, #e57373);
+  color: var(--dq-danger);
   margin-top: 0.75rem;
   white-space: pre-wrap;
 }

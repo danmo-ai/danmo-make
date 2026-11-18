@@ -27,7 +27,7 @@ Hosts mount via `installDanQingFeedback` in `plugins/dq-ui.ts`.
 | Components | `@danqing/dq-ui` (`Dq*`, Reka UI) |
 | Shell | `@danqing/dq-shell` |
 | Icons | Lucide via `registerDqIcons` + `DqIcon` |
-| Layout CSS | `studio-*` / `settings-*` / `copilot-*` in `styles/theme.css` |
+| Layout CSS | Legacy layout in `styles/theme.css`; shared product UI in `styles/productivity.css` |
 
 ## Conventions
 
@@ -41,12 +41,18 @@ Hosts mount via `installDanQingFeedback` in `plugins/dq-ui.ts`.
 - **焦点 / 悬停**：`--dq-focus-ring`、`.dq-hoverable`；禁止自造 focus ring。
 - **禁止**全局 `html * { transition: ... }`。
 - 模板仅使用 `Dq*`（无 Element Plus）。
+- **共享工作区**：模型、提示词、设置、助手和训练页使用 `components/workspace/WorkspaceLayout.vue`、`WorkspaceSidebar.vue`、`WorkspaceHeader.vue`；二级导航保持平面，不再新增卡片式页面外壳。
+- **应用导航**：展开 208px / 紧凑 64px；折叠状态存于 `DQ_STORAGE.NAV_COLLAPSED`。当前路由使用 `aria-current="page"`，紧凑模式保留 tooltip。
+- **创作页**：页头只保留一个主创作按钮，不再添加重复悬浮 CTA；选择模式使用独立批量工具条。Composer 共用底部操作区，作品卡只直接展示高频动作，其余进入更多菜单。
+- **交互状态**：Hover 与 `:focus-within` 必须等价；可点击元素使用原生 button，或补齐角色、tabindex、Enter/Space 和 ARIA 状态。禁止只在 Hover 时暴露关键操作。
+- **动效**：常规反馈 120–180ms，不使用 `transition: all`、装饰性持续脉冲或普通工作区氛围渐变；必须兼容 `prefers-reduced-motion` 和 reduced-transparency。
+- **表面**：普通工作区以中性背景、细分隔线和轻边框为主；玻璃只用于有实际层级的浮动弹层，强调色只用于主操作、当前项和状态。
 
 ### Theme CSS
 
 Import palettes in `frontend/src/main.ts`; switch with `applyDqTheme` on `<html>`.
 
-Studio-only chrome（侧栏、创作页浮动条、gallery）留在 `frontend/src/styles/theme.css` — 不进 tokens。
+Studio-only chrome（侧栏、创作页工具条、gallery）留在产品层 `frontend/src/styles/productivity.css`；历史布局仍在 `theme.css`，新增页面不要继续向旧文件叠加覆盖。共享布局规则不进 tokens。
 
 `make check-consistency` runs `check_frontend_governance.py` (EP boundary, theme legacy, dq-ui compat).
 

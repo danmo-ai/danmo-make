@@ -13,7 +13,7 @@ case "$OS_NAME" in
     fi
     ;;
   Darwin)
-    FEATURES+=(metal)
+    FEATURES+=(metal mlx-metal)
     ;;
   Linux)
     if command -v nvcc >/dev/null 2>&1; then

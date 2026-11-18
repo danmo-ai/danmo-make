@@ -36,8 +36,8 @@ pub use ports::{ArtifactSink, PersistedAsset, ResolvePort};
 pub use runtime::{identity_probe, select_from_env, BackendKind, BackendSelection, GgmlContext};
 pub use session::ensure_available;
 pub use weights::{
-    assert_gguf_bundle, assert_upscale_bundle, lora_base_name, write_f32_gguf, GgufWeights,
-    UpscaleBundle, WeightError,
+    assert_gguf_bundle, assert_upscale_bundle, is_safetensors_image_bundle, lora_base_name,
+    write_f32_gguf, GgufWeights, UpscaleBundle, WeightError,
 };
 
 #[cfg(test)]

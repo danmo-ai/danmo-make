@@ -33,9 +33,7 @@ mod tests {
         let token = CancelToken::new();
         assert!(!token.is_cancelled());
         let control = token.clone();
-        std::thread::spawn(move || control.cancel())
-            .join()
-            .unwrap();
+        std::thread::spawn(move || control.cancel()).join().unwrap();
         assert!(token.is_cancelled());
         assert!(token.clone().is_cancelled());
     }

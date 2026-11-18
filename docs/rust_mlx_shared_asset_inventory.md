@@ -100,7 +100,7 @@ Rust 落点：`weights/mlx.rs` 提供共享 `WeightDtype::Native | F32`，已在
 
 main 的 `common/model/base.py::load_weights` **不区分家族/版本处理量化**：检测 `*.scales` 键即自动识别 MLX affine 打包（uint32 codes + scales + biases，4/8-bit 按形状与 shard metadata `quantization_level` 推断）；`inference_mode=quantized` 走 `QuantizedLinear` 不解量化（低显存），否则默认解量化回稠密 Linear（legacy/debug）。家族代码零量化分支。Rust 侧对应落点是 `weights/mlx.rs` 共享加载层 + `danmo-mlx` QMM（已有 >32K 行探针），**禁止**在 family 内写 `quant == ...` 分支。
 
-当前分支 `9859706` 已实现该共享边界：`LinearWeight` 私有表示统一 dense/affine `apply`，packed codes/scales/biases 不解量化常驻，QMM 在 kernel 内解量化；加载器严格推断并校验 bits/group size，dense 默认保持原生 dtype。CPU/Metal tiny DiT packed-vs-dequantized、compiled-vs-eager 与架构守卫已通过。已发布量化 checkpoint 的真实端到端 parity、显存与性能仍待验收；量化对照不得回退到 main 的非 packed 或错误权重行为。
+当前分支 `9859706` 已实现该共享边界：`LinearWeight` 私有表示统一 dense/affine `apply`，packed codes/scales/biases 不解量化常驻，QMM 在 kernel 内解量化；加载器严格推断并校验 bits/group size，dense 默认保持原生 dtype。CPU/Metal tiny DiT packed-vs-dequantized、compiled-vs-eager 与架构守卫已通过。已发布 mflux mlx-q4/mlx-q8 checkpoint 的端到端 parity 与单次峰值显存已通过。mlx-q4 / mlx-q8 常驻解码改为按 latent 形状编译的 `CompiledDecoder`。饱和相邻热窗 denoise、VAE、total 都在 105% 以内且逐步逐位一致（q4 VAE 92.4%，q8 VAE 86.1%）。q4 把 packed 词表在 GPU 上展开一次后常驻。饱和相邻热窗比值 encode 101.2%、denoise 97.9%、VAE 87.6%、total 97.7%，稳态 86.1%，但 Rust encode 绝对时间仍是 0.043s。q8 同一入口 encode 111.7%（0.052s vs 0.047s），denoise/VAE/total 在 105% 以内，稳态 91.2%。`metal_performance` 未点亮。编译 Qwen3 tower 会把 `clear_cache` 后的常驻显存抬到 main 的 108%，文本编码器保持 eager。量化对照不得回退到 main 的非 packed 或错误权重行为。
 
 ## 5. family 资产与算法归属
 
@@ -120,7 +120,7 @@ main 的 `common/model/base.py::load_weights` **不区分家族/版本处理量�
 - turbo registry 默认是 9 步、768×1280、`linear` scheduler。默认 `teacache_mode="auto"` 在 9 步启用 step cache并关闭 main 的 full-forward compile；显式关闭 TeaCache 且开启 `use_mlx_compile` 才走 compiled forward。`families/z_image/mlx/step_cache.rs` 已实现 gate/residual 复用，默认 0.11 全 compute 与阈值 0.5 的 3 compute/6 skip 均通过；8 步 DistillPatch、9 步无 TeaCache eager、9 步显式 compile、9 步默认 TeaCache 仍分别保留独立 fixture，不能用其中一条替代其他路径。
 - **Rust 生产优化路径（2026-11-18）**：`CaptionCache`（caption 分支每 run 预计算，对齐 main `before_denoise`）+ `CompiledCompute`（30 unified blocks + final layer 走 `mx.compile`，gate/residual/caption 预计算保持 eager，对齐 main gate-outside-compile 边界）。compiled TeaCache 与 eager cached 在默认与强制 skip 两条 fixture 上逐步逐位一致；稳态正式热门 denoise 92.9% / total 93.0%（同热态窗口、release、Native、5 warmup + 5 计量 pass）。性能测量必须 main/Rust 相邻同热态采样（M5 Max 热节流可致 2× 漂移、恢复需数分钟），parity 读回放在计时段外。
 - **padding 语义（2026-11-18 修复）**：image/caption 均在 embedder **之前**重复末行到 32 倍数（main `pad_tail_with_last`），embed 后用 checkpoint pad token 覆盖 pad 位置；小图 pad 行参与注意力时旧实现有 1 BF16 ULP 分叉。16×16 9 步 TeaCache（5 compute/4 skip）修复后逐位一致。
-- **生命周期（2026-11-18 验收）**：常驻权重连续生成、几何切换（compiled 重建）、`CancelToken` step 边界取消（`euler_cancellable`）、unload 显存回落均通过真实权重 release 测试；executor 级 ModelCache/字节预算仍是 P2 项。
+- **生命周期（2026-11-18 验收）**：常驻权重连续生成、几何切换（compiled 重建）、`CancelToken` step 边界取消（`euler_cancellable`）、unload 显存回落均通过真实权重 release 测试。executor 线程已有类型化 `ModelCache`。带 `mlx` feature 时，safetensors Z-Image create 把 transformer、文本编码器、VAE 按目录 revision 放进进程 executor，infer/decode 走常驻 CompiledCompute 与 CompiledDecoder。image create 的 ggml 图已删除，GGUF 显式失败；edit 仍用 ggml DiT。macOS 启动脚本编进 `mlx-metal`，已安装的 safetensors 三件套会解析进创建任务。
 - DistillPatch、starface、awportrait 等 LoRA card 无 action，目前不在能力矩阵中，需以组件条目登记。
 
 ### 5.2 flux2
@@ -217,7 +217,7 @@ main 的 `common/model/base.py::load_weights` **不区分家族/版本处理量�
 | GGUF parser/bundle/quant folding | 不迁移 |
 | ggml attention probe | 保留独立 host-reference 思路，改 MLX Metal/CUDA probe |
 | capacity | 保留接口思路，改 MLX active/cache/peak/limit/device bytes |
-| mmap weight cache | 不直接复用；MLX Array/model cache 归 executor（executor 目前无缓存位置，P2 前定状态模型） |
+| mmap weight cache | 不直接复用；MLX Array/model cache 归 executor。safetensors Z-Image 的三件套经 `load_transformer` / `load_text_encoder` / `load_vae` 写入，create session 在同一线程读取。image create 不再有 ggml 回退。macOS 启动脚本编进 `mlx-metal`，已安装的 safetensors 三件套会解析进创建任务 |
 | cache revision | 复用并扩展到所有 shard/config/tokenizer/manifest/LoRA，以及 `WeightDtype` 策略 |
 | safetensors 辅助代码 | 可复用严格解析思路，但与 `danmo-mlx` IO 统一，避免两套加载器；`weights/mlx.rs::load_directory` 的 `entry.unwrap()` 改为返回错误 |
 | 稠密权重 F32 放大（main 行为） | **不迁移**：生产保持原生 dtype，F32 仅限 parity 模式（见 §4「稠密权重 dtype」） |

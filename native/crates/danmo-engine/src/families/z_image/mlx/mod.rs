@@ -6,6 +6,8 @@ mod feed_forward;
 mod host;
 mod model;
 mod modulation;
+mod resident;
+pub(crate) mod session;
 mod step_cache;
 mod timestep;
 mod weights;

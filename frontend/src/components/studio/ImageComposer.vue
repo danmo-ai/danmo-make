@@ -46,7 +46,7 @@
               :aria-label="$t('create.reversePrompt')"
               @click="$emit('reverse-prompt')"
             >
-              <DqIcon :size="10"><Refresh /></DqIcon>
+              <DqIcon :size="14"><Refresh /></DqIcon>
             </DqIconButton>
           </ComposerIconTip>
           <ComposerIconTip :content="$t('create.composerTip.removeRef')">
@@ -56,7 +56,7 @@
               :aria-label="$t('common.delete')"
               @click="$emit('remove-reference')"
             >
-              <DqIcon :size="10"><Close /></DqIcon>
+              <DqIcon :size="14"><Close /></DqIcon>
             </DqIconButton>
           </ComposerIconTip>
         </div>
@@ -76,7 +76,7 @@
               :aria-label="$t('common.delete')"
               @click="$emit('remove-extra-reference', idx)"
             >
-              <DqIcon :size="10"><Close /></DqIcon>
+              <DqIcon :size="14"><Close /></DqIcon>
             </DqIconButton>
           </ComposerIconTip>
         </div>
@@ -168,33 +168,30 @@
     />
     </div>
 
-    <!-- Toolbar -->
-    <ComposerToolbar>
-      <template #mode>
-        <DqSegmented
-          v-if="modeOptions && modeOptions.length > 0"
-          v-model="localMode"
-          size="sm"
-          :options="modeOptions"
-        />
-      </template>
-      <template #controls>
-        <ModelSelect
-          v-model="localModel"
-          :options="modelOptions"
-          variant="ghost"
-          class="studio-composer-toolbar__select studio-composer-toolbar__select--model"
-          @change="(val: string) => emit('model-change', val)"
-        />
-
+    <div class="studio-composer-setup">
+      <DqSegmented
+        v-if="modeOptions && modeOptions.length > 0"
+        v-model="localMode"
+        size="sm"
+        :options="modeOptions"
+        class="studio-composer-setup__mode"
+      />
+      <ModelSelect
+        v-model="localModel"
+        :options="modelOptions"
+        variant="ghost"
+        class="studio-composer-toolbar__select studio-composer-toolbar__select--model"
+        @change="(val: string) => emit('model-change', val)"
+      />
+      <div class="studio-composer-setup__basics">
         <DqSelect
           v-if="!isImg2imgMode && !lockSize"
           v-model="localSize"
           size="sm"
           variant="ghost"
-          
+          :placeholder="$t('studio.resolution')"
+          :disabled="sizeOptions.length === 0"
           class="studio-composer-toolbar__select studio-composer-toolbar__select--size"
-        
         >
           <DqOption
             v-for="opt in sizeOptions"
@@ -203,15 +200,11 @@
             :label="formatResolutionOptionLabel(opt)"
           />
         </DqSelect>
-      </template>
-      <template #actions>
         <DqSelect
           v-model="localBatchCount"
           size="sm"
           variant="ghost"
-          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--batch"
-        
         >
           <DqOption
             v-for="n in 4"
@@ -220,7 +213,11 @@
             :value="n"
           />
         </DqSelect>
+      </div>
+    </div>
 
+    <ComposerToolbar>
+      <template #actions>
         <span
           v-if="generateBlockReason"
           class="studio-composer-toolbar__generate-reason"
@@ -537,10 +534,10 @@ function onStyleCommand(command: string) {
 <style scoped>
 .image-composer {
   border-radius: var(--dq-radius-group);
-  padding: 14px 16px 12px;
+  padding: 4px 0 16px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 16px;
   width: 100%;
   min-width: 0;
   container-type: inline-size;
@@ -571,9 +568,9 @@ function onStyleCommand(command: string) {
   border-radius: var(--dq-radius-group);
   font-size: var(--dq-font-size-body);
   line-height: 1.5;
-  padding: 10px 12px 32px;
-  min-height: 4.5rem;
-  max-height: 4.5rem;
+  padding: 12px 12px 36px;
+  min-height: 7.5rem;
+  max-height: 14rem;
   resize: none;
   overflow-y: auto;
   transition: border-color 0.15s ease, background 0.15s ease;
@@ -602,7 +599,7 @@ function onStyleCommand(command: string) {
 
 .image-composer__ref-index {
   min-width: 0.7rem;
-  font-size: 10px;
+  font-size: var(--dq-font-size-caption);
   line-height: 1;
   font-variant-numeric: tabular-nums;
   color: var(--dq-label-secondary);
@@ -758,9 +755,4 @@ function onStyleCommand(command: string) {
   gap: 4px;
 }
 
-/* Hint - compact inline */
-.image-composer__prompt :deep(.dq-input--textarea) {
-  min-height: 7.5rem;
-  max-height: 14rem;
-}
 </style>

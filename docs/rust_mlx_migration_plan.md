@@ -104,7 +104,7 @@ families/common/runtime → danmo-mlx → danmo-mlx-sys → mlx-c → MLX C++
 - 在 step、token、tile、chunk 和 eval 边界检查取消；无法中断的长算子必须记录。
 - panic、OOM、心跳超时和 worker 崩溃使当前任务失败，不触发跨引擎重试。
 
-现状（2026-11-17 复核）：`danmo-mlx/src/executor.rs` 目前只是「专用线程 + channel + panic 捕获」，闭包要求 `Send + 'static`，没有模型/条件缓存的存放位置、取消 token、进度回调和心跳。P2 前必须先确定 executor 状态模型：executor 线程内类型化 `ModelCache`（revision key、字节预算、unload）、step 边界取消 token、进度/日志事件通道；禁止各 family 自建 `thread_local` 缓存。
+现状（2026-11-18）：长期 executor 线程拥有 `ModelCache`（opaque id + `length`/`modified_ns`/`mix` revision、字节预算、LRU unload；单条超过预算的 insert 失败且不改缓存；revision 不符丢弃旧槽）。`Array` 只在该线程创建和读取。`subscribe` 把 `Progress` / `Log` 以普通数据送出线程。`CancelToken` 已在 Z-Image step 边界使用。默认预算是 `usize::MAX`，调用 `set_budget` 之后才淘汰。进程内只有一个 executor（`runtime::mlx_executor`）。`families/z_image/mlx/resident.rs` 把 transformer、文本编码器和 VAE 放进这个缓存：目录 canonicalize 为 id，shard 路径、长度、mtime 进 revision；第二次加载命中。引擎带 `mlx` feature 时，safetensors 三件套 bundle 的 `ZImageFamily::load` 走 MLX session（encode 常驻权重，infer/decode 在 executor 上走常驻 CompiledCompute（TeaCache gate 在 compile 外）和 CompiledDecoder，同一几何第二次生成复用编译结果）。Z-Image image create 的 ggml 图已删除：GGUF bundle 显式失败，不再回退。LoRA、guidance 不是 0 或 1、负向提示和 structural guide 显式失败。edit 仍用 ggml DiT。macOS 启动和 sidecar 脚本编进 `mlx-metal`。已安装的 safetensors 三件套（`fp16` / `mlx-q4` / `mlx-q8` 等）会解析到创建任务；没有 `mlx` feature 的二进制仍显式失败。guidance 0 和 1 走单次前向。2026-11-18 这条创建会话在真实 mlx-q4 上写出 `out/zimage-mlx-session-q4-512.png`（512×512、4 步、guidance 0、seed 1，release 2.2s）。心跳仍未做。禁止各 family 自建 `thread_local` 缓存。
 
 assistant 不与生成 DiT 共用同一串行 executor，否则聊天会排在分钟级视频任务后面。assistant 使用独立 worker（与 `main` 的 `backend_llm` sidecar 相同的隔离方式），显存预算由控制面统一分配并显式记录。
 
@@ -490,7 +490,35 @@ Z-Image Metal 固定注入噪声垂直切片已通过（提交于 `dbcfaff`）�
   - mlx-q8：同上，全部逐位一致。
   - 峰值显存（768×1280 单 run）：q4 Rust 14.71GB vs main 14.03GB（**104.86%**）；q8 14.71GB vs 14.08GB（**104.48%**），均 ≤105% 门。常驻 active：q4 331MB vs 419MB（79%）、q8 331MB vs 470MB（70.5%）。packed DiT 常驻 q4 3.47GB / q8 6.54GB（vs F32 dense 24.6GB）。
   - 证据摘要 `tests/parity/evidence/zimage-published-quant-parity-2026-11-18.json`（fixture SHA + 显存报告）。
-- 矩阵 `z-image-turbo/mlx-q4/create`、`mlx-q8/create` 的 `metal_parity` 与 `metal_peak_memory` 标为 `passed`；量化版 warm 性能门、生产路由 E2E、CUDA 仍独立待办。fp16 全量回归无破坏（timestep 改动对 dense 路径数值等价）。
+- 矩阵 `z-image-turbo/mlx-q4/create`、`mlx-q8/create` 的 `metal_parity` 与 `metal_peak_memory` 标为 `passed`。常驻词表展开后 q4 的相邻比值进了 105%，但 Rust encode 绝对时间仍是 0.043s；q8 encode 为 111.7%。`metal_performance` 未点亮。生产路由 E2E、CUDA 仍独立待办。fp16 全量回归无破坏（timestep 改动对 dense 路径数值等价）。
+
+#### mlx-q4 热性能门：encode/denoise/total 达标，VAE 贴着 105%（2026-11-18）
+
+- 同一套正式 warm 测试（`real_native_warm_passes_match_main_and_report_performance`）读 fixture 里的 `quantization_bits`，DiT 走 packed QMM。计时停在 `eval`：主机读回（`to_vec` / `to_raw_bytes` / uint8 像素环）不进 encode、denoise、VAE。`total` 是三段之和。mflux 卷积核保持 NHWC，不再加载时转成 OIHW 再在每次 conv 转回来。10 个常驻 pass 的 caption、逐步 velocity、递推 latent、RGB 与 main **逐位一致**。默认 TeaCache 在 768×1280 上是 9 compute / 0 skip。
+- 含主机读回、且拿偏冷 main 去比随后 Rust 的窗口（encode 117.6%、VAE 106.4%、denoise 103.2%）不是门读数。
+- 门读数是饱和热窗里 Rust 5 warmup + 5 计量，随后立刻 main 5 warmup + 5 计量：encode **102.0%**、denoise **92.4%**、VAE **105.03%**、total **92.6%**。VAE p50 是 0.481s vs 0.458s，比 105% 线多约 0.3ms。Rust denoise 从 20.4s 摊到 31.3s，门用 p50。`metal_performance` 保持 `pending`。
+- 稳态常驻（`clear_cache` 后）Rust 5.95GB vs main 7.47GB（**79.7%**）。证据摘要 `tests/parity/evidence/zimage-q4-warm-gate-2026-11-18.json`。
+
+#### mlx-q8 热性能门：encode/denoise/total 达标，VAE 同样过 105%（2026-11-18）
+
+- 同一条 warm 测试、同一套计时（停在 `eval`，mflux 卷积核保持 NHWC）。10 个常驻 pass 与 main **逐位一致**。默认 TeaCache 仍是 9 compute / 0 skip。
+- 先跑的 main 窗口偏冷。测试内部拿它做比得到 encode 114.4%、denoise 107.1%、total 106.9%，这不是门读数。
+- 门读数是 Rust 5 warmup + 5 计量之后立刻 main 5 warmup + 5 计量：encode **104.0%**、denoise **92.3%**、VAE **105.34%**（0.486s vs 0.462s）、total **92.5%**。稳态常驻 Rust 10.99GB vs main 12.36GB（**88.9%**）。`metal_performance` 保持 `pending`。证据摘要 `tests/parity/evidence/zimage-q8-warm-gate-2026-11-18.json`。
+- q4 与 q8 的 eager VAE 缺口同在约 5%，落在共享的 F32 解码路径上。
+
+#### 常驻 VAE 改为按形状编译（2026-11-18）
+
+- `common/vae/mlx.rs` 的 `CompiledDecoder` 用 `mx.compile`（shape-specialized）包住整段 decode。第一次 `apply` 按该 latent 形状建图，之后同形状重放。eager `decode` 仍留给单次 parity。warm 门在权重常驻后编译一次，5 次 warmup 吃掉建图，计量的是重放。
+- q4 饱和相邻热窗（Rust 计量后立刻 main）：denoise **102.0%**、VAE **92.4%**（0.405s vs 0.438s）、total **101.8%**、encode **109.3%**（0.043s vs 0.039s，大约 3.7ms）。caption、逐步 velocity、递推 latent、RGB 仍逐位一致。稳态常驻 5.88GB vs main 7.47GB（**78.7%**）。`metal_performance` 仍 pending，卡在 encode。
+- 把 Qwen3 tower 也放进 compile 后 caption 逐位一致，但 `clear_cache` 后常驻 8.08GB，是 main 的 108%，过了显存门。文本编码器保持 eager。
+- q8 同一条编译解码路径：denoise **91.6%**、VAE **86.1%**（0.382s vs 0.444s）、total **91.5%**、encode **105.5%**（0.049s vs 0.046s）。稳态常驻 10.91GB vs main 12.36GB（**88.3%**）。逐位一致。`metal_performance` 仍 pending。证据 `tests/parity/evidence/zimage-q8-warm-gate-2026-11-18.json`。
+
+#### 量化词表只展开一次（2026-11-18）
+
+- `MlxWeights::materialize_embedding` 在 GPU stream 上把 packed `model.embed_tokens.weight` 反量化成常驻 dense 表，之后 encode 只查行。Qwen3 tower 仍 eager。dense 词表大约比 packed 码多 0.56GB，q4 稳态从 5.88GB 升到 6.44GB，仍低于 main 的 7.47GB。
+- q4 饱和相邻热窗（Rust 5 warmup + 5 计量，随后立刻 main）：encode **101.2%**（0.043s vs 0.043s）、denoise **97.9%**、VAE **87.6%**（0.416s vs 0.475s）、total **97.7%**。稳态 6.44GB vs 7.47GB（**86.1%**）。caption、逐步 velocity、递推 latent、RGB 与 clocks fixture 逐位一致。Rust encode 的绝对 p50 仍是 **0.043s**，与此前 109.3% 那窗相同；这次 main 的 encode 从 0.039s 热到 0.043s，比值才进线。不据此点亮 `metal_performance`。
+- 同一改动的第一窗里 Rust denoise 还在爬升（p50 27.96s vs 随后 main 26.37s，106%），不是读数。测试内部对照偏冷 clocks fixture 会因比值退出 101，JSON 在比值断言前已写出。
+- q8 同一入口的饱和窗：denoise **101.0%**、VAE **89.5%**、total **100.9%**、encode **111.7%**（0.052s vs 0.047s）。稳态 11.28GB vs main 12.36GB（**91.2%**）。encode 仍过线。证据 `tests/parity/evidence/zimage-q4-warm-gate-2026-11-18.json`、`tests/parity/evidence/zimage-q8-warm-gate-2026-11-18.json`。
 
 #### 会话生命周期验收通过 + padding 语义修复（2026-11-18）
 
@@ -598,8 +626,8 @@ P1 出口后，家族迁移只改 engine/common/family/能力路由，不再改�
 
 状态：`pending`
 
-- executor/compile/shapeless/stream/memory；先定 executor 状态模型（§1.3：类型化 ModelCache、取消 token、进度事件）。
-- pipeline/session trait 去 ggml 类型，改为后端中立；MLX 路径接入 driver（目前 `families/z_image/mlx` 仅在测试中使用）。
+- executor/compile/shapeless/stream/memory。executor 状态模型已落地（§1.3）。带 `mlx` feature 时 safetensors Z-Image create 走 executor 上的常驻 CompiledCompute 与 CompiledDecoder；ggml create 图已删除，GGUF 显式失败。macOS 启动脚本编进 `mlx-metal`，并解析已安装的 safetensors 三件套。没有该 feature 的二进制仍显式失败。
+- pipeline/session trait 去 ggml 类型，改为后端中立。Z-Image image create 已接到 MLX session；edit 的 trait 仍带 `GgmlContext`。
 - attention 统一请求和原生/通用/custom/unavailable 分派。
 - 权重、remap、量化、LoRA、revision cache；共享 `WeightDtype` 策略（生产 Native，F32 仅 parity）。
 - conditioning/capacity/probe。
@@ -678,6 +706,7 @@ LongCat BSA 必须分别证明 Metal/CUDA 正确性和性能。
 - download/install/components/manifest/assert bundle/batch/setup。
 - workspace registry、user LoRA、Civitai、presets、gallery、metadata。
 - observability、diagnose/diagnostic、MCP、CLI。
+- **采集顺序（2026-11-18）**：先搭 OpenTelemetry SDK + 自有 SQLite exporter，埋点跟着 family 迁移走。诊断查询、MCP、UI 仍留在本阶段，不提前做成完整产品，也不等全部 family 迁完再补。SDK 只站在 server 的 `RunObserver` 后面；family 不引用 OpenTelemetry。span 名沿用 main `RunTrace` 的 phase 名（`resolve` / `load` / `encode` / `schedule` / `infer` / `decode` / `persist`，以及 `phase_trace_span` 已有名字）。`task_logs` 继续写给人看的行，span 表另存时长、父子关系和失败码。exporter 写现有 SQLite，不送外部 collector。
 
 Assistant：
 
@@ -794,7 +823,7 @@ Assistant：
 | 文档复核 | done | 2026-11-17：纠正 Euler 归属、Z-Image 默认 9 步与 compile 策略、`dbcfaff` 提交边界、分支 registry 偏差；确立稠密权重原生 dtype 决策（§1.5.1，main F32 放大为错误设计）；增补 executor 状态模型、assistant 独立 worker、ggml 退役；推理进程隔离与 Python 训练去留标记为待确认 |
 | 共享资产盘点 | done | 复用/重写/算法归属与 family 扩展边界：`docs/rust_mlx_shared_asset_inventory.md` |
 | 全量 workspace 回归 | existing_failure | 373 项 engine 测试：370 通过、2 忽略、1 个既有 ggml Hunyuan smoke（随 `dbcfaff` 一并提交） 因缺少 `txt_in.individual_token_refiner.blocks.0.self_attn.qkv.weight` 失败；新增 MLX crate 的 CPU/Metal 测试均单独通过，不在 P0 修改该 ggml family |
-| P0 | in_progress | **源码 Metal 构建通过**；runtime、safetensors、>32K QMM、compile/eager、executor、seeded RNG 探针通过；官方 DiT/text/VAE/tokenizer 已下载；真实 Qwen3 与 VAE fixture 通过。`9859706` 已落地共享 `WeightDtype` 与全程 packed affine QMM。F32 parity 已通过 16×16、1024×1024、768×1280 9 步 eager/compile。checkpoint-Native 16×16 与 768×1280 完整切片、默认 9 步 TeaCache 及阈值 0.5 的 6 次 residual skip 均通过，latent/VAE/RGB 一致；官方 DiT 实测为 F32，VAE/Qwen3 为 BF16。Native Metal peak 26.15GB vs main 31.79GB（82.25%）。**2026-11-18 正式热性能门通过**：compiled TeaCache 生产路径（CaptionCache + CompiledCompute，gate eager）稳态复验 warm p50 denoise 92.9% / encode 99.7% / VAE 102.2% / total 93.0%，每 pass 逐位一致；稳态显存 99.3%；`metal_performance`/`metal_peak_memory` 标为 passed。**会话生命周期门通过**（连续生成/几何切换/跨线程取消/unload，真实权重 release）；修复 padding 语义（embed 前重复末行，小图 pad 参与注意力时 1 ULP 分叉），16×16 TeaCache 5c/4s 逐位一致。**已发布量化 checkpoint 端到端通过**：mflux mlx-q4/mlx-q8（魔塔 OsaurusAI 镜像，packed affine gs64）16×16 与 768×1280 默认 TeaCache 全链路逐位一致，峰值显存 104.86%/104.48% ≤105%；mflux 布局归一化 + 量化 F32 dtype 语义对齐。剩余：量化版 warm 性能门、custom kernel、干净打包、CUDA runtime、executor 级 ModelCache（P2）|
+| P0 | in_progress | **源码 Metal 构建通过**；runtime、safetensors、>32K QMM、compile/eager、executor、seeded RNG 探针通过；官方 DiT/text/VAE/tokenizer 已下载；真实 Qwen3 与 VAE fixture 通过。`9859706` 已落地共享 `WeightDtype` 与全程 packed affine QMM。F32 parity 已通过 16×16、1024×1024、768×1280 9 步 eager/compile。checkpoint-Native 16×16 与 768×1280 完整切片、默认 9 步 TeaCache 及阈值 0.5 的 6 次 residual skip 均通过，latent/VAE/RGB 一致；官方 DiT 实测为 F32，VAE/Qwen3 为 BF16。Native Metal peak 26.15GB vs main 31.79GB（82.25%）。**2026-11-18 正式热性能门通过**：compiled TeaCache 生产路径（CaptionCache + CompiledCompute，gate eager）稳态复验 warm p50 denoise 92.9% / encode 99.7% / VAE 102.2% / total 93.0%，每 pass 逐位一致；稳态显存 99.3%；`metal_performance`/`metal_peak_memory` 标为 passed。**会话生命周期门通过**（连续生成/几何切换/跨线程取消/unload，真实权重 release）；修复 padding 语义（embed 前重复末行，小图 pad 参与注意力时 1 ULP 分叉），16×16 TeaCache 5c/4s 逐位一致。**已发布量化 checkpoint 端到端通过**：mflux mlx-q4/mlx-q8（魔塔 OsaurusAI 镜像，packed affine gs64）16×16 与 768×1280 默认 TeaCache 全链路逐位一致，峰值显存 104.86%/104.48% ≤105%；mflux 布局归一化 + 量化 F32 dtype 语义对齐。剩余：量化 encode 热门（词表一次展开后 q4 绝对时间仍 0.043s，q8 111.7%；denoise/VAE/total 已过）、custom kernel、干净打包、CUDA runtime、给 `danmo-server` 打开 `mlx` 后用真实 bundle 跑通 MLX create（会话已接上，LoRA/CFG/guide 仍失败）|
 | P0H | pending | main 收割独立进行 |
 | P1 | pending | Rust server 核心先行 |
 | P2 | pending | MLX runtime |

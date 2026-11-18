@@ -107,6 +107,21 @@ impl MlxWeights {
         self
     }
 
+    /// Dequantize one packed embedding into a resident dense table.
+    ///
+    /// `nn.Embedding` has no packed gather. Doing the full dequant inside
+    /// every encode rebuilds a vocab-sized tensor; the warm gate keeps that
+    /// table and gathers rows. Already-dense embeddings are unchanged.
+    pub fn materialize_embedding(self, name: &str, stream: &Stream) -> Result<Self> {
+        let packed = self.packed_names().any(|packed| packed == name);
+        if !packed {
+            return Ok(self);
+        }
+        let dense = self.linear(name)?.dequantize_embedding(stream)?;
+        dense.eval()?;
+        Ok(self.with_tensor_production(name.to_string(), dense))
+    }
+
     /// Replace a dense tensor in place (layout normalization such as the
     /// mflux NHWC conv kernels). Fails loud on packed or missing entries.
     pub fn with_tensor_production(mut self, name: String, tensor: Array) -> Self {

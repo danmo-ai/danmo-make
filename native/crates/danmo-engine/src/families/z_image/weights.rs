@@ -196,60 +196,6 @@ fn push_control_block(
     names.push((format!("{prefix}.after_proj.bias"), dim, 1));
 }
 
-pub fn control_config_from_weights(
-    config: ZImageConfig,
-    weights: &GgufWeights,
-) -> Result<ControlConfig, WeightError> {
-    let embed = weights.shape("control_all_x_embedder.2-1.weight")?;
-    let token = embed[0];
-    if embed[1] != config.dim || token % (PATCH * PATCH) != 0 {
-        return Err(WeightError::Shape {
-            name: "control_all_x_embedder.2-1.weight".into(),
-            expected: vec![PATCH * PATCH * (config.in_channels * 2 + 1), config.dim],
-            got: embed.to_vec(),
-        });
-    }
-    let in_channels = token / (PATCH * PATCH);
-    if in_channels != config.in_channels * 2 + 1 {
-        return Err(WeightError::NotBuilt(format!(
-            "control embedder in channels {in_channels} is not 2 * {} + 1",
-            config.in_channels
-        )));
-    }
-    let refiner_blocks = count_control_prefix(weights, "control_noise_refiner");
-    let layer_blocks = count_control_prefix(weights, "control_layers");
-    if refiner_blocks != config.refiners || layer_blocks < 1 {
-        return Err(WeightError::NotBuilt(format!(
-            "z-image controlnet has {refiner_blocks} refiner blocks (base has {}) and {layer_blocks} layer blocks",
-            config.refiners
-        )));
-    }
-    if (layer_blocks - 1) * 2 >= config.layers {
-        return Err(WeightError::NotBuilt(format!(
-            "control layer place {} is outside the {} base layers",
-            (layer_blocks - 1) * 2,
-            config.layers
-        )));
-    }
-    Ok(ControlConfig {
-        refiner_blocks,
-        layer_blocks,
-        in_channels,
-    })
-}
-
-fn count_control_prefix(weights: &GgufWeights, prefix: &str) -> i64 {
-    let mut n = 0i64;
-    loop {
-        let name = format!("{prefix}.{n}.attention.to_q.weight");
-        if !weights.contains(&name) {
-            break;
-        }
-        n += 1;
-    }
-    n
-}
-
 pub fn config_from_weights(weights: &GgufWeights) -> Result<ZImageConfig, WeightError> {
     let x = weights.shape("x_embedder.weight")?;
     let token_in = x[0];

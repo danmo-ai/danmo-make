@@ -286,25 +286,22 @@
     />
     </div>
 
-    <!-- Toolbar -->
-    <ComposerToolbar>
-      <template #mode>
-        <DqSegmented
-          :model-value="localWorkMode"
-          size="sm"
-          :options="workModeOptions"
-          @update:model-value="localWorkMode = $event"
-        />
-      </template>
-      <template #controls>
-        <ModelSelect
-          v-model="localModel"
-          :options="modelOptions"
-          variant="ghost"
-          class="studio-composer-toolbar__select studio-composer-toolbar__select--model"
-          @change="(val: string) => emit('model-change', val)"
-        />
-
+    <div class="studio-composer-setup">
+      <DqSegmented
+        :model-value="localWorkMode"
+        size="sm"
+        :options="workModeOptions"
+        class="studio-composer-setup__mode"
+        @update:model-value="localWorkMode = $event"
+      />
+      <ModelSelect
+        v-model="localModel"
+        :options="modelOptions"
+        variant="ghost"
+        class="studio-composer-toolbar__select studio-composer-toolbar__select--model"
+        @change="(val: string) => emit('model-change', val)"
+      />
+      <div class="studio-composer-setup__basics">
         <DqSelect
           v-if="sizeOptions.length > 0"
           v-model="localSize"
@@ -319,25 +316,22 @@
             :label="formatResolutionOptionLabel(opt)"
           />
         </DqSelect>
-
         <DqSelect
           v-model="localDuration"
           size="sm"
           variant="ghost"
+          :placeholder="$t('audio.duration')"
+          :disabled="durationOptions.length === 0"
           class="studio-composer-toolbar__select studio-composer-toolbar__select--duration"
         >
           <DqOption v-for="opt in durationOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
         </DqSelect>
-      </template>
-      <template #actions>
         <DqSelect
           v-if="showBatchCount"
           v-model="localBatchCount"
           size="sm"
           variant="ghost"
-          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--batch"
-        
         >
           <DqOption
             v-for="n in 4"
@@ -346,7 +340,11 @@
             :value="n"
           />
         </DqSelect>
+      </div>
+    </div>
 
+    <ComposerToolbar>
+      <template #actions>
         <DqButton
           type="primary"
           size="sm"
@@ -1062,7 +1060,7 @@ function onKeydown(e: KeyboardEvent) {
 
 .video-composer__ref-hint {
   flex: 1 0 100%;
-  font-size: 11px;
+  font-size: var(--dq-font-size-caption);
   line-height: 1.3;
   color: var(--dq-label-tertiary);
 }
@@ -1209,7 +1207,7 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 .video-composer__ref-kind {
-  font-size: 10px;
+  font-size: var(--dq-font-size-caption);
   line-height: 1;
   opacity: 0.75;
   padding: 0 2px;

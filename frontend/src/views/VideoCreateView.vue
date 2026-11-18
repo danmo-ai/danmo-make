@@ -83,13 +83,6 @@
     </template>
   </StudioLayout>
 
-  <StudioComposeFab
-    v-if="!composerDrawerOpen"
-    media="video"
-    :busy="composerBusy"
-    @open="openComposerDrawer()"
-  />
-
   <StudioComposerHost
     v-model:open="composerDrawerOpen"
     :drawer-title="$t('studio.composerDrawerTitle')"
@@ -271,6 +264,7 @@ import { modelSelectOption } from '@/utils/modelSelectOption';
 import AssetPicker from '@/components/asset/AssetPicker.vue';
 import GalleryPreviewDialog from '@/components/gallery/GalleryPreviewDialog.vue';
 import { previewDisplayCaption } from '@/utils/assetDisplay';
+import { seedForSubmit } from '@/utils/seed';
 
 // Studio components
 import StudioLayout from '@/components/studio/StudioLayout.vue';
@@ -279,7 +273,6 @@ import StudioGalleryFilters from '@/components/studio/StudioGalleryFilters.vue';
 import VideoComposer from '@/components/studio/VideoComposer.vue';
 import CreateUpscaleParams from '@/components/create/CreateUpscaleParams.vue';
 import StudioComposerHost from '@/components/studio/StudioComposerHost.vue';
-import StudioComposeFab from '@/components/studio/StudioComposeFab.vue';
 import InfiniteCanvas from '@/components/studio/InfiniteCanvas.vue';
 import StudioLineagePanel from '@/components/studio/StudioLineagePanel.vue';
 import { canvasAutoAddEnabled, useCanvasStore } from '@/composables/useCanvasStore';
@@ -2179,7 +2172,7 @@ const startGeneration = async (options: StartGenerationOptions = {}) => {
         steps: params.steps,
         guidance: params.guide_scale,
         shift: params.shift || undefined,
-        seed: params.seed ? parseInt(params.seed, 10) : null,
+        seed: seedForSubmit(params.seed),
         metadata: { ...meta },
         priority: 'normal',
         media_references: await resolveH3MediaReferences(),
@@ -2246,7 +2239,7 @@ const startGeneration = async (options: StartGenerationOptions = {}) => {
         steps: params.steps,
         guidance: params.guide_scale,
         shift: params.shift || undefined,
-        seed: params.seed ? parseInt(params.seed, 10) : null,
+        seed: seedForSubmit(params.seed),
         metadata: { ...meta },
         priority: 'normal',
       };
@@ -2281,7 +2274,7 @@ const startGeneration = async (options: StartGenerationOptions = {}) => {
         steps: params.steps,
         guidance: params.guide_scale,
         shift: params.shift || undefined,
-        seed: params.seed ? parseInt(params.seed, 10) : null,
+        seed: seedForSubmit(params.seed),
         metadata: { ...meta },
         priority: 'normal',
       };

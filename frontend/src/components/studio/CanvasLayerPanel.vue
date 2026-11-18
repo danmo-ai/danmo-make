@@ -111,7 +111,12 @@
             'canvas-layer__row--selected': entry.path === selectedPath,
             'canvas-layer__row--hidden': !entry.visible,
           }"
+          role="button"
+          tabindex="0"
+          :aria-pressed="entry.path === selectedPath"
           @click="$emit('select', entry.path)"
+          @keydown.enter.self.prevent="$emit('select', entry.path)"
+          @keydown.space.self.prevent="$emit('select', entry.path)"
         >
           <div class="canvas-layer__thumb">
             <div v-if="entry.isAudio" class="canvas-layer__thumb-audio" aria-hidden="true">

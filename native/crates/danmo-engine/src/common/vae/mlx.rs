@@ -18,9 +18,10 @@ pub fn load_dense(
 ///
 /// mflux-serialized bundles wrap conv/norm modules one level deeper
 /// (`decoder.conv_in.conv.weight`, `decoder.conv_norm_out.norm.weight`) and
-/// store conv kernels in MLX NHWC `[O, kH, kW, I]`; both are normalized here
-/// to the diffusers key names and the `[O, I, kH, kW]` kernel layout the
-/// decoder graph expects. Detection is by key shape, never by family id.
+/// store conv kernels in MLX NHWC `[O, kH, kW, I]`. Keys are unwrapped to the
+/// diffusers names; the kernels stay NHWC so each conv reads them directly.
+/// Diffusers checkpoints keep `[O, I, kH, kW]` and are transposed at the conv.
+/// Detection is by key shape, never by family id.
 pub fn load(directory: &std::path::Path, dtype: crate::weights::WeightDtype) -> Result<MlxWeights> {
     let weights = crate::weights::load_mlx_directory(directory, dtype, None)?;
     let weights = normalize_mflux_layout(weights)?;
@@ -60,7 +61,6 @@ fn normalize_mflux_layout(weights: MlxWeights) -> Result<MlxWeights> {
     if !mflux {
         return Ok(weights);
     }
-    let stream = Stream::cpu()?;
     let mut names = BTreeMap::new();
     for name in weights.names() {
         let mut target = name.to_string();
@@ -76,30 +76,29 @@ fn normalize_mflux_layout(weights: MlxWeights) -> Result<MlxWeights> {
         }
         names.insert(name.to_string(), target);
     }
-    let renamed = weights.rename(&names)?;
-    // NHWC [O, kH, kW, I] conv kernels -> [O, I, kH, kW]. Only dense conv
-    // kernels can be NHWC; packed linears are 2-D and never match.
-    let conv_names: Vec<String> = renamed
-        .names()
-        .filter(|name| name.ends_with(".weight"))
-        .filter(|name| {
-            renamed
-                .tensor(name)
-                .map(|tensor| {
-                    let shape = tensor.shape();
-                    shape.len() == 4 && shape[1] <= 7 && shape[2] <= 7 && shape[3] > 7
-                })
-                .unwrap_or(false)
-        })
-        .map(str::to_string)
-        .collect();
-    let mut output = renamed;
-    for name in conv_names {
-        let tensor = output.tensor(&name)?;
-        let oi_hw = tensor.transpose_axes(&[0, 3, 1, 2], &stream)?;
-        output = output.with_tensor_production(name, oi_hw);
+    weights.rename(&names)
+}
+
+/// MLX conv2d wants `[O, kH, kW, I]`. mflux already stores that. Diffusers
+/// stores `[O, I, kH, kW]`; transpose those once per call. Ambiguous ranks
+/// fail instead of guessing a layout.
+fn mlx_conv_kernel(kernel: &Array, stream: &Stream) -> Result<Array> {
+    let shape = kernel.shape();
+    if shape.len() != 4 {
+        return Err(Error::new("VAE MLX conv", "conv kernel rank is not 4"));
     }
-    Ok(output)
+    let nhwc = shape[1] <= 7 && shape[2] <= 7 && shape[3] > 7;
+    let oihw = shape[1] > 7 && shape[2] <= 7 && shape[3] <= 7;
+    if nhwc {
+        Ok(kernel.clone())
+    } else if oihw {
+        kernel.transpose_axes(&[0, 2, 3, 1], stream)
+    } else {
+        Err(Error::new(
+            "VAE MLX conv",
+            "conv kernel layout is ambiguous",
+        ))
+    }
 }
 
 pub fn decode(
@@ -109,6 +108,27 @@ pub fn decode(
     stream: &Stream,
 ) -> Result<Array> {
     decode_impl(weights, spec, latents, stream, None)
+}
+
+/// Shape-specialized compiled decode. The first `apply` traces the decoder
+/// for that latent shape; later calls with the same shape replay it. A new
+/// shape fails in MLX rather than silently retracing into a different graph.
+pub struct CompiledDecoder {
+    closure: danmo_mlx::UnaryClosure,
+}
+
+impl CompiledDecoder {
+    pub fn new(weights: MlxWeights, spec: VaeSpec, stream: Stream) -> Result<Self> {
+        let closure = danmo_mlx::UnaryClosure::new(stream, move |latent, stream| {
+            decode_impl(&weights, &spec, latent, stream, None)
+        })?
+        .compile(false)?;
+        Ok(Self { closure })
+    }
+
+    pub fn apply(&self, latent: &Array) -> Result<Array> {
+        self.closure.apply(latent)
+    }
 }
 
 fn decode_impl(
@@ -264,17 +284,29 @@ fn spatial_attention(
     let x = group_norm(weights, spec, &norm_name, input, stream)?;
     let q = weights
         .linear(&format!("{prefix}.to_q.weight"))?
-        .apply(&x, Some(weight(weights, &format!("{prefix}.to_q.bias"))?), stream)?
+        .apply(
+            &x,
+            Some(weight(weights, &format!("{prefix}.to_q.bias"))?),
+            stream,
+        )?
         .reshape(&[batch, height * width, 1, channels], stream)?
         .transpose_axes(&[0, 2, 1, 3], stream)?;
     let k = weights
         .linear(&format!("{prefix}.to_k.weight"))?
-        .apply(&x, Some(weight(weights, &format!("{prefix}.to_k.bias"))?), stream)?
+        .apply(
+            &x,
+            Some(weight(weights, &format!("{prefix}.to_k.bias"))?),
+            stream,
+        )?
         .reshape(&[batch, height * width, 1, channels], stream)?
         .transpose_axes(&[0, 2, 1, 3], stream)?;
     let v = weights
         .linear(&format!("{prefix}.to_v.weight"))?
-        .apply(&x, Some(weight(weights, &format!("{prefix}.to_v.bias"))?), stream)?
+        .apply(
+            &x,
+            Some(weight(weights, &format!("{prefix}.to_v.bias"))?),
+            stream,
+        )?
         .reshape(&[batch, height * width, 1, channels], stream)?
         .transpose_axes(&[0, 2, 1, 3], stream)?;
     let output = Array::scaled_dot_product_attention(
@@ -289,28 +321,23 @@ fn spatial_attention(
     .transpose_axes(&[0, 2, 1, 3], stream)?
     .reshape(&[batch, height, width, channels], stream)?;
     let output = linear_alias(
+        weights,
+        &format!("{prefix}.to_out.weight"),
+        &format!("{prefix}.to_out.0.weight"),
+    )?
+    .apply(
+        &output,
+        Some(weight_alias(
             weights,
-            &format!("{prefix}.to_out.weight"),
-            &format!("{prefix}.to_out.0.weight"),
-        )?
-        .apply(
-            &output,
-            Some(weight_alias(
-                weights,
-                &format!("{prefix}.to_out.bias"),
-                &format!("{prefix}.to_out.0.bias"),
-            )?),
-            stream,
-        )?;
+            &format!("{prefix}.to_out.bias"),
+            &format!("{prefix}.to_out.0.bias"),
+        )?),
+        stream,
+    )?;
     Array::add(input, &output, stream)
 }
 
-fn upsample(
-    weights: &MlxWeights,
-    prefix: &str,
-    input: &Array,
-    stream: &Stream,
-) -> Result<Array> {
+fn upsample(weights: &MlxWeights, prefix: &str, input: &Array, stream: &Stream) -> Result<Array> {
     let shape = input.shape();
     let (batch, height, width, channels) = (shape[0], shape[1], shape[2], shape[3]);
     let x = input.reshape(&[batch, height, 1, width, channels], stream)?;
@@ -372,20 +399,15 @@ fn linear_alias<'a>(
     }
 }
 
-fn conv(
-    weights: &MlxWeights,
-    prefix: &str,
-    input: &Array,
-    stream: &Stream,
-) -> Result<Array> {
+fn conv(weights: &MlxWeights, prefix: &str, input: &Array, stream: &Stream) -> Result<Array> {
     let kernel_weight = weight(weights, &format!("{prefix}.weight"))?;
-    let shape = kernel_weight.shape();
-    let padding = if shape.len() == 4 && shape[2] == 1 && shape[3] == 1 {
+    let kernel = mlx_conv_kernel(kernel_weight, stream)?;
+    let shape = kernel.shape();
+    let padding = if shape.len() == 4 && shape[1] == 1 && shape[2] == 1 {
         0
     } else {
         1
     };
-    let kernel = kernel_weight.transpose_axes(&[0, 2, 3, 1], stream)?;
     let mut output = Array::conv2d(
         input,
         &kernel,
@@ -405,11 +427,7 @@ fn scalar(value: f32, dtype: danmo_mlx::Dtype, stream: &Stream) -> Result<Array>
     Array::from_f32_slice(&[value], &[])?.astype(dtype, stream)
 }
 
-fn weight_alias<'a>(
-    weights: &'a MlxWeights,
-    primary: &str,
-    alias: &str,
-) -> Result<&'a Array> {
+fn weight_alias<'a>(weights: &'a MlxWeights, primary: &str, alias: &str) -> Result<&'a Array> {
     if weights.has(primary) {
         weights.tensor(primary)
     } else {
@@ -472,7 +490,10 @@ mod tests {
             let weight = make("weight", &[channels, channels], 19 + index);
             let bias = make("bias", &[channels], 23 + index);
             dense.insert(format!("{base}.bias"), bias);
-            packed_weights = packed_weights.with_tensor(format!("{base}.bias"), dense[&format!("{base}.bias")].clone());
+            packed_weights = packed_weights.with_tensor(
+                format!("{base}.bias"),
+                dense[&format!("{base}.bias")].clone(),
+            );
             let quantized = weight.quantize_affine(32, 4, &stream)?;
             dense.insert(
                 format!("{base}.weight"),
@@ -503,7 +524,10 @@ mod tests {
         for (actual, expected) in actual.iter().zip(&expected) {
             let error = (actual - expected).abs();
             max_error = max_error.max(error);
-            assert!(error <= 2e-2 * scale + 1e-3, "packed {actual} != dequantized {expected}");
+            assert!(
+                error <= 2e-2 * scale + 1e-3,
+                "packed {actual} != dequantized {expected}"
+            );
         }
         println!("quantized VAE attention max abs error {max_error} (scale {scale})");
         Ok(())

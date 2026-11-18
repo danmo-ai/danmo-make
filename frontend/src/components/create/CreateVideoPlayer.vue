@@ -58,7 +58,9 @@
         aria-valuemin="0"
         aria-valuemax="100"
         :aria-label="$t('audio.seek')"
+        tabindex="0"
         @click="onSeek"
+        @keydown="onSeekKeydown"
       >
         <div class="dq-music-player__progress-track">
           <div class="dq-music-player__progress-buffer" :style="{ width: bufferPct + '%' }" />
@@ -205,6 +207,20 @@ function onSeek(ev: MouseEvent) {
   const rect = track.getBoundingClientRect();
   const ratio = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
   el.currentTime = ratio * duration.value;
+  syncFromElement();
+}
+
+function onSeekKeydown(ev: KeyboardEvent) {
+  const el = videoEl.value;
+  if (!el || !duration.value) return;
+  let next = currentTime.value;
+  if (ev.key === 'ArrowLeft' || ev.key === 'ArrowDown') next -= 5;
+  else if (ev.key === 'ArrowRight' || ev.key === 'ArrowUp') next += 5;
+  else if (ev.key === 'Home') next = 0;
+  else if (ev.key === 'End') next = duration.value;
+  else return;
+  ev.preventDefault();
+  el.currentTime = Math.min(duration.value, Math.max(0, next));
   syncFromElement();
 }
 

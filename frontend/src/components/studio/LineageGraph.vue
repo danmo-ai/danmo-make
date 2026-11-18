@@ -14,9 +14,15 @@
 
     <template v-else>
       <!-- Floating reset-view button -->
-      <div v-if="isPanned" class="lineage-graph__reset-btn" @click="resetView">
+      <button
+        v-if="isPanned"
+        type="button"
+        class="lineage-graph__reset-btn"
+        :aria-label="$t('canvas.resetView')"
+        @click="resetView"
+      >
         <DqIcon :size="14"><Aim /></DqIcon>
-      </div>
+      </button>
 
       <div class="lineage-graph__viewport" :style="viewportStyle">
         <!-- SVG edges layer -->

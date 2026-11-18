@@ -15,7 +15,10 @@
     "prompts": "Prompts",
     "settings": "Settings",
     "assistant": "Creative Assistant",
-    "lora_train": "LoRA Train"
+    "lora_train": "LoRA Train",
+    "collapseSidebar": "Collapse navigation",
+    "expandSidebar": "Expand navigation",
+    "queuePending": "{count} pending tasks"
   },
   "loraTrain": {
     "title": "LoRA Training",
@@ -1172,6 +1175,7 @@
     "useForImg2Img": "Use for Img2Img",
     "openDir": "Open Directory",
     "info": "Image Info",
+    "assetInfo": "Resource info",
     "prompt": "Prompt",
     "model": "Model",
     "resolution": "Resolution",
@@ -2021,6 +2025,8 @@
     "info": "Info",
     "confirm": "Confirm",
     "cancel": "Cancel",
+    "close": "Close",
+    "refresh": "Refresh",
     "back": "Back",
     "next": "Next",
     "delete": "Delete",

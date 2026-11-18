@@ -13,7 +13,9 @@ pub fn load_directory(directory: &std::path::Path, dtype: WeightDtype) -> Result
     if has_prefix {
         return Ok(weights);
     }
-    let bare = weights.names().any(|name| name.starts_with("embed_tokens."));
+    let bare = weights
+        .names()
+        .any(|name| name.starts_with("embed_tokens."));
     if !bare {
         return Ok(weights);
     }
@@ -39,6 +41,20 @@ pub fn encode_ids(
             "empty or mismatched token inputs",
         ));
     }
+    let sequence = ids.len() as i32;
+    let indices = Array::from_i32_slice(ids, &[sequence])?;
+    encode_token_array(weights, config, prefix, &indices, valid, selected, stream)
+}
+
+fn encode_token_array(
+    weights: &MlxWeights,
+    config: Qwen3Config,
+    prefix: &str,
+    indices: &danmo_mlx::Array,
+    valid: &[bool],
+    selected: &[i64],
+    stream: &Stream,
+) -> Result<danmo_mlx::Array> {
     let last = selected.iter().max().copied().unwrap_or(0);
     if last < 1 || last > config.layers {
         return Err(Error::new(
@@ -46,8 +62,7 @@ pub fn encode_ids(
             "selected layer is outside the tower",
         ));
     }
-    let sequence = ids.len() as i32;
-    let indices = Array::from_i32_slice(ids, &[sequence])?;
+    let sequence = indices.shape()[0];
     let embedding = weights.embedding(&format!("{prefix}embed_tokens.weight"), stream)?;
     // main's quantized encoder keeps dense norms at the F32 module-init dtype
     // (slice assignment preserves it), so the whole tower promotes to F32;
@@ -99,11 +114,23 @@ fn layer_forward(
     stream: &Stream,
 ) -> Result<Array> {
     let path = format!("{prefix}layers.{layer}");
-    let input_norm = norm_weight(weights, &path, "input_layernorm.weight", hidden.dtype(), stream)?;
+    let input_norm = norm_weight(
+        weights,
+        &path,
+        "input_layernorm.weight",
+        hidden.dtype(),
+        stream,
+    )?;
     let normed = hidden.rms_norm(Some(&input_norm), 1e-6, stream)?;
     let attended = attention(weights, config, &path, &normed, mask, cos, sin, stream)?;
     let hidden = Array::add(hidden, &attended, stream)?;
-    let post_norm = norm_weight(weights, &path, "post_attention_layernorm.weight", hidden.dtype(), stream)?;
+    let post_norm = norm_weight(
+        weights,
+        &path,
+        "post_attention_layernorm.weight",
+        hidden.dtype(),
+        stream,
+    )?;
     let normed = hidden.rms_norm(Some(&post_norm), 1e-6, stream)?;
     let gate = linear(weights, &path, "mlp.gate_proj.weight")?
         .apply(&normed, None, stream)?
@@ -132,12 +159,24 @@ fn attention(
     let q_proj = linear(weights, prefix, "self_attn.q_proj.weight")?
         .apply(hidden, None, stream)?
         .reshape(&[batch, sequence, heads, head], stream)?;
-    let q_norm = norm_weight(weights, prefix, "self_attn.q_norm.weight", q_proj.dtype(), stream)?;
+    let q_norm = norm_weight(
+        weights,
+        prefix,
+        "self_attn.q_norm.weight",
+        q_proj.dtype(),
+        stream,
+    )?;
     let mut q = q_proj.rms_norm(Some(&q_norm), 1e-6, stream)?;
     let k_proj = linear(weights, prefix, "self_attn.k_proj.weight")?
         .apply(hidden, None, stream)?
         .reshape(&[batch, sequence, kv_heads, head], stream)?;
-    let k_norm = norm_weight(weights, prefix, "self_attn.k_norm.weight", k_proj.dtype(), stream)?;
+    let k_norm = norm_weight(
+        weights,
+        prefix,
+        "self_attn.k_norm.weight",
+        k_proj.dtype(),
+        stream,
+    )?;
     let mut k = k_proj.rms_norm(Some(&k_norm), 1e-6, stream)?;
     let mut v = linear(weights, prefix, "self_attn.v_proj.weight")?
         .apply(hidden, None, stream)?
@@ -205,8 +244,14 @@ fn position_embeddings(
     let inv_freq_row = inv_freq.expand_dims(0, stream)?;
     let freqs = Array::multiply(&positions_col, &inv_freq_row, stream)?;
     let emb = Array::concatenate_axis(&[freqs.clone(), freqs], -1, stream)?;
-    let cos = emb.cos(stream)?.expand_dims(0, stream)?.expand_dims(2, stream)?;
-    let sin = emb.sin(stream)?.expand_dims(0, stream)?.expand_dims(2, stream)?;
+    let cos = emb
+        .cos(stream)?
+        .expand_dims(0, stream)?
+        .expand_dims(2, stream)?;
+    let sin = emb
+        .sin(stream)?
+        .expand_dims(0, stream)?
+        .expand_dims(2, stream)?;
     Ok((cos.astype(dtype, stream)?, sin.astype(dtype, stream)?))
 }
 
@@ -261,7 +306,10 @@ fn linear<'a>(weights: &'a MlxWeights, prefix: &str, name: &str) -> Result<&'a L
 #[cfg(test)]
 mod tests {
     use super::Qwen3Config;
-    use super::{apply_rope, causal_padding_mask, encode_ids, load_directory, norm_weight, position_embeddings};
+    use super::{
+        apply_rope, causal_padding_mask, encode_ids, load_directory, norm_weight,
+        position_embeddings,
+    };
     use crate::weights::{MlxWeights, WeightDtype};
     use danmo_mlx::{Array, SafeTensors, Stream};
     use std::collections::BTreeMap;
@@ -352,39 +400,86 @@ mod tests {
         let stream = Stream::gpu().unwrap();
         let weights = load_directory(&encoder, WeightDtype::Native).unwrap();
         let config = Qwen3Config {
-            vocab: 151_936, hidden: 2560, layers: 36, heads: 32, kv_heads: 8,
-            head_dim: 128, intermediate: 9728, rope_theta: 1_000_000.0,
+            vocab: 151_936,
+            hidden: 2560,
+            layers: 36,
+            heads: 32,
+            kv_heads: 8,
+            head_dim: 128,
+            intermediate: 9728,
+            rope_theta: 1_000_000.0,
         };
-        let ids: Vec<i32> = vec![151644, 872, 198, 64, 2518, 23739, 151645, 198, 151644, 77091, 198];
+        let ids: Vec<i32> = vec![
+            151644, 872, 198, 64, 2518, 23739, 151645, 198, 151644, 77091, 198,
+        ];
         let sequence = ids.len() as i32;
         let values = |name: &str| -> Vec<f32> {
-            stages[name].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect()
+            stages[name]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_f64().unwrap() as f32)
+                .collect()
         };
         let compare = |name: &str, actual: &Array| {
             let actual = actual.to_vec_f32(&stream).unwrap();
             let expected = values(name);
-            let error = actual.iter().zip(&expected).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            let error = actual
+                .iter()
+                .zip(&expected)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
             println!("{name}: dtype {:?} max abs error {error}", actual.len());
         };
         let indices = danmo_mlx::Array::from_i32_slice(&ids, &[sequence]).unwrap();
-        let embedding = weights.embedding("model.embed_tokens.weight", &stream).unwrap();
-        let hidden = embedding.take_axis(&indices, 0, &stream).unwrap()
-            .reshape(&[1, sequence, config.hidden as i32], &stream).unwrap()
-            .astype(danmo_mlx::Dtype::Float32, &stream).unwrap();
+        let embedding = weights
+            .embedding("model.embed_tokens.weight", &stream)
+            .unwrap();
+        let hidden = embedding
+            .take_axis(&indices, 0, &stream)
+            .unwrap()
+            .reshape(&[1, sequence, config.hidden as i32], &stream)
+            .unwrap()
+            .astype(danmo_mlx::Dtype::Float32, &stream)
+            .unwrap();
         let path = "model.layers.0";
-        let input_norm = norm_weight(&weights, path, "input_layernorm.weight", hidden.dtype(), &stream).unwrap();
+        let input_norm = norm_weight(
+            &weights,
+            path,
+            "input_layernorm.weight",
+            hidden.dtype(),
+            &stream,
+        )
+        .unwrap();
         let normed = hidden.rms_norm(Some(&input_norm), 1e-6, &stream).unwrap();
         compare("input_norm", &normed);
-        let heads = config.heads as i32; let kv_heads = config.kv_heads as i32; let head = config.head_dim as i32;
-        let q_proj = weights.linear(&format!("{path}.self_attn.q_proj.weight")).unwrap()
-            .apply(&normed, None, &stream).unwrap()
-            .reshape(&[1, sequence, heads, head], &stream).unwrap();
+        let heads = config.heads as i32;
+        let kv_heads = config.kv_heads as i32;
+        let head = config.head_dim as i32;
+        let q_proj = weights
+            .linear(&format!("{path}.self_attn.q_proj.weight"))
+            .unwrap()
+            .apply(&normed, None, &stream)
+            .unwrap()
+            .reshape(&[1, sequence, heads, head], &stream)
+            .unwrap();
         compare("q_proj", &q_proj);
-        let v_proj = weights.linear(&format!("{path}.self_attn.v_proj.weight")).unwrap()
-            .apply(&normed, None, &stream).unwrap()
-            .reshape(&[1, sequence, kv_heads, head], &stream).unwrap();
+        let v_proj = weights
+            .linear(&format!("{path}.self_attn.v_proj.weight"))
+            .unwrap()
+            .apply(&normed, None, &stream)
+            .unwrap()
+            .reshape(&[1, sequence, kv_heads, head], &stream)
+            .unwrap();
         compare("v_proj", &v_proj);
-        let q_norm = norm_weight(&weights, path, "self_attn.q_norm.weight", q_proj.dtype(), &stream).unwrap();
+        let q_norm = norm_weight(
+            &weights,
+            path,
+            "self_attn.q_norm.weight",
+            q_proj.dtype(),
+            &stream,
+        )
+        .unwrap();
         let qn = q_proj.rms_norm(Some(&q_norm), 1e-6, &stream).unwrap();
         compare("q_norm", &qn);
         let (cos, sin) = position_embeddings(config, sequence, embedding.dtype(), &stream).unwrap();
@@ -392,10 +487,21 @@ mod tests {
         compare("sin", &sin);
         let qe = apply_rope(&qn, &cos, &sin, &stream).unwrap();
         compare("q_rope", &qe);
-        let k_proj = weights.linear(&format!("{path}.self_attn.k_proj.weight")).unwrap()
-            .apply(&normed, None, &stream).unwrap()
-            .reshape(&[1, sequence, kv_heads, head], &stream).unwrap();
-        let k_norm = norm_weight(&weights, path, "self_attn.k_norm.weight", k_proj.dtype(), &stream).unwrap();
+        let k_proj = weights
+            .linear(&format!("{path}.self_attn.k_proj.weight"))
+            .unwrap()
+            .apply(&normed, None, &stream)
+            .unwrap()
+            .reshape(&[1, sequence, kv_heads, head], &stream)
+            .unwrap();
+        let k_norm = norm_weight(
+            &weights,
+            path,
+            "self_attn.k_norm.weight",
+            k_proj.dtype(),
+            &stream,
+        )
+        .unwrap();
         let kn = k_proj.rms_norm(Some(&k_norm), 1e-6, &stream).unwrap();
         let ke = apply_rope(&kn, &cos, &sin, &stream).unwrap();
         compare("k_rope", &ke);
@@ -409,14 +515,29 @@ mod tests {
         let compute = qt.astype(danmo_mlx::Dtype::Float32, &stream).unwrap();
         let keys = kt.astype(danmo_mlx::Dtype::Float32, &stream).unwrap();
         let vals = vt.astype(danmo_mlx::Dtype::Float32, &stream).unwrap();
-        let sdpa = Array::scaled_dot_product_attention(&compute, &keys, &vals,
-            1.0 / (config.head_dim as f32).sqrt(), "", Some(&mask), &stream).unwrap()
-            .astype(qe.dtype(), &stream).unwrap();
+        let sdpa = Array::scaled_dot_product_attention(
+            &compute,
+            &keys,
+            &vals,
+            1.0 / (config.head_dim as f32).sqrt(),
+            "",
+            Some(&mask),
+            &stream,
+        )
+        .unwrap()
+        .astype(qe.dtype(), &stream)
+        .unwrap();
         compare("sdpa", &sdpa);
-        let sdpa_t = sdpa.transpose_axes(&[0, 2, 1, 3], &stream).unwrap()
-            .reshape(&[1, sequence, heads * head], &stream).unwrap();
-        let o = weights.linear(&format!("{path}.self_attn.o_proj.weight")).unwrap()
-            .apply(&sdpa_t, None, &stream).unwrap();
+        let sdpa_t = sdpa
+            .transpose_axes(&[0, 2, 1, 3], &stream)
+            .unwrap()
+            .reshape(&[1, sequence, heads * head], &stream)
+            .unwrap();
+        let o = weights
+            .linear(&format!("{path}.self_attn.o_proj.weight"))
+            .unwrap()
+            .apply(&sdpa_t, None, &stream)
+            .unwrap();
         compare("o_proj", &o);
     }
 
@@ -443,7 +564,9 @@ mod tests {
             intermediate: 9728,
             rope_theta: 1_000_000.0,
         };
-        let ids: Vec<i32> = vec![151644, 872, 198, 64, 2518, 23739, 151645, 198, 151644, 77091, 198];
+        let ids: Vec<i32> = vec![
+            151644, 872, 198, 64, 2518, 23739, 151645, 198, 151644, 77091, 198,
+        ];
         let valid = vec![true; ids.len()];
         let values = |name: &str| -> Vec<f32> {
             stages[name]
@@ -455,7 +578,9 @@ mod tests {
         };
         // Embedding probe: replicate encode_ids' first step.
         let indices = danmo_mlx::Array::from_i32_slice(&ids, &[ids.len() as i32]).unwrap();
-        let embedding = weights.embedding("model.embed_tokens.weight", &stream).unwrap();
+        let embedding = weights
+            .embedding("model.embed_tokens.weight", &stream)
+            .unwrap();
         let hidden = embedding
             .take_axis(&indices, 0, &stream)
             .unwrap()
@@ -465,17 +590,32 @@ mod tests {
             .unwrap();
         let embed_actual = hidden.to_vec_f32(&stream).unwrap();
         let embed_expected = values("embed");
-        let embed_error = embed_actual.iter().zip(&embed_expected)
-            .map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-        println!("embed: dtype {:?}, max abs error {embed_error}", embedding.dtype());
-        for (stage, layer) in [("layer0", 1_i64), ("layer1", 2), ("layer5", 6), ("layer17", 18), ("layer34", 35)] {
+        let embed_error = embed_actual
+            .iter()
+            .zip(&embed_expected)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        println!(
+            "embed: dtype {:?}, max abs error {embed_error}",
+            embedding.dtype()
+        );
+        for (stage, layer) in [
+            ("layer0", 1_i64),
+            ("layer1", 2),
+            ("layer5", 6),
+            ("layer17", 18),
+            ("layer34", 35),
+        ] {
             let actual = encode_ids(&weights, config, "model.", &ids, &valid, &[layer], &stream)
                 .unwrap()
                 .to_vec_f32(&stream)
                 .unwrap();
             let expected = values(stage);
-            let error = actual.iter().zip(&expected)
-                .map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            let error = actual
+                .iter()
+                .zip(&expected)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max);
             println!("{stage}: max abs error {error}");
         }
     }

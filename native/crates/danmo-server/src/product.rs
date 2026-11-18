@@ -10,7 +10,7 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use danmo_catalog::{Catalog, GGUF_VERSION_KEYS};
+use danmo_catalog::Catalog;
 use danmo_store::{AssetRow, CanvasRow, TaskRow};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -523,29 +523,45 @@ fn detailed_status(workspace: &FsPath, entry: &Value) -> Value {
     let mut ready = false;
     let mut listed = serde_json::Map::new();
     if let Some(versions) = versions {
-        for key in GGUF_VERSION_KEYS {
-            let Some(version) = versions.get(*key) else {
-                continue;
-            };
+        for (key, version) in versions {
             let path = version
                 .get("local_path")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let is_ready = download::version_ready(&download::resolve_model_path(workspace, path));
+            let resolved = download::resolve_model_path(workspace, path);
+            let is_ready = !path.is_empty() && download::version_ready(&resolved);
             if is_ready {
                 ready = true;
             }
+            let status = if is_ready {
+                "ready"
+            } else if !path.is_empty() && resolved.exists() {
+                "incomplete"
+            } else {
+                "not_downloaded"
+            };
             listed.insert(
-                (*key).to_string(),
+                key.clone(),
                 json!({
                     "ready": is_ready,
-                    "status": if is_ready { "ready" } else { "not_downloaded" },
+                    "status": status,
                     "local_path": path,
                 }),
             );
         }
     }
-    json!({ "ready": ready, "versions": listed })
+    let overall = if ready {
+        "ready"
+    } else if listed.is_empty()
+        || listed
+            .values()
+            .all(|row| row.get("status").and_then(|v| v.as_str()) == Some("not_downloaded"))
+    {
+        "not_downloaded"
+    } else {
+        "incomplete"
+    };
+    json!({ "ready": ready, "status": overall, "versions": listed })
 }
 
 fn model_ready(workspace: &FsPath, entry: &Value) -> bool {
@@ -566,12 +582,8 @@ async fn installed_models(State(state): State<AppState>) -> Result<Json<Value>, 
             else {
                 continue;
             };
-            for key in GGUF_VERSION_KEYS {
-                let Some(path) = versions
-                    .get(*key)
-                    .and_then(|v| v.get("local_path"))
-                    .and_then(|v| v.as_str())
-                else {
+            for (key, version) in versions {
+                let Some(path) = version.get("local_path").and_then(|v| v.as_str()) else {
                     continue;
                 };
                 if !download::version_ready(&download::resolve_model_path(&state.workspace, path)) {
@@ -1640,7 +1652,10 @@ async fn install_runtime() -> Json<Value> {
 
 async fn settings_registry(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     let catalog = open_catalog(&state)?;
-    Ok(Json(catalog.public_registry()))
+    let projected = catalog
+        .public_registry()
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    Ok(Json(projected))
 }
 
 async fn disk_space(State(state): State<AppState>) -> Json<Value> {

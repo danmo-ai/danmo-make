@@ -144,7 +144,10 @@ impl Array {
     pub fn eval_all(arrays: &[&Array]) -> Result<()> {
         initialize();
         let values = VectorArray::from_arrays(
-            &arrays.iter().map(|array| (*array).clone()).collect::<Vec<_>>(),
+            &arrays
+                .iter()
+                .map(|array| (*array).clone())
+                .collect::<Vec<_>>(),
         )?;
         clear_error();
         check(unsafe { sys::mlx_eval(values.raw) }, "mlx_eval")

@@ -102,6 +102,7 @@ function handleClick(entry: NavEntry) {
         type="button"
         class="dq-download-menu__item"
         :class="{ 'is-active': isActive(entry) }"
+        :aria-current="isActive(entry) ? 'page' : undefined"
         @click="handleClick(entry)"
       >
         <DqIcon class="dq-download-menu__icon"><component :is="entry.icon" /></DqIcon>
@@ -129,6 +130,7 @@ function handleClick(entry: NavEntry) {
         type="button"
         class="dq-download-menu__item"
         :class="{ 'is-active': isActive(entry) }"
+        :aria-current="isActive(entry) ? 'page' : undefined"
         @click="handleClick(entry)"
       >
         <DqIcon class="dq-download-menu__icon"><component :is="entry.icon" /></DqIcon>

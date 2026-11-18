@@ -74,13 +74,6 @@
     </template>
   </StudioLayout>
 
-  <StudioComposeFab
-    v-if="!composerDrawerOpen"
-    media="audio"
-    :busy="composerBusy"
-    @open="openComposerDrawer()"
-  />
-
   <StudioComposerHost
     v-model:open="composerDrawerOpen"
     :drawer-title="$t('studio.composerDrawerTitle')"
@@ -166,12 +159,12 @@ import { modelSelectOption } from '@/utils/modelSelectOption';
 import { warnIfRiskyMemory } from '@/composables/memoryHint';
 import type { SystemInfo, Task, GalleryItem } from '@/types';
 import { assetDisplayLabel, previewDisplayCaption } from '@/utils/assetDisplay';
+import { seedForSubmit } from '@/utils/seed';
 import StudioLayout from '@/components/studio/StudioLayout.vue';
 import StudioCanvas from '@/components/studio/StudioCanvas.vue';
 import StudioGalleryFilters from '@/components/studio/StudioGalleryFilters.vue';
 import AudioComposer from '@/components/studio/AudioComposer.vue';
 import StudioComposerHost from '@/components/studio/StudioComposerHost.vue';
-import StudioComposeFab from '@/components/studio/StudioComposeFab.vue';
 import InfiniteCanvas from '@/components/studio/InfiniteCanvas.vue';
 import StudioLineagePanel from '@/components/studio/StudioLineagePanel.vue';
 import GalleryPreviewDialog from '@/components/gallery/GalleryPreviewDialog.vue';
@@ -1055,7 +1048,7 @@ async function startCoverGeneration(options: AudioGenerationOptions = {}) {
       source_asset_id,
       prompt: String(params.prompt || '').trim(),
       source_fidelity: coverParams.source_fidelity ?? 1.0,
-      seed: params.seed ?? null,
+      seed: seedForSubmit(params.seed),
       n: params.n ?? 1,
       audio_format: params.audio_format || 'wav',
       duration: coverParams.duration ?? null,
@@ -1151,7 +1144,7 @@ async function startGeneration(options: AudioGenerationOptions = {}) {
       time_signature: params.time_signature || '',
       steps: params.steps ?? null,
       guidance: params.guidance ?? null,
-      seed: params.seed ?? null,
+      seed: seedForSubmit(params.seed),
       n: params.n ?? 1,
       audio_format: params.audio_format || 'wav',
       denoise: params.denoise || 'off',

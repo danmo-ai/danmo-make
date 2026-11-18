@@ -10,7 +10,7 @@ mod mlx;
 
 pub use bundle::{
     assert_gguf_bundle, assert_hunyuan_bundle, assert_ltx_bundle, assert_upscale_bundle,
-    HunyuanBundle, LtxBundle, UpscaleBundle,
+    is_safetensors_image_bundle, HunyuanBundle, LtxBundle, UpscaleBundle,
 };
 pub use cache::{resident_bytes, revision};
 pub(crate) use gguf::f16_to_f32;

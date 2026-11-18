@@ -116,14 +116,53 @@ pub fn resolve_model_path(workspace: &Path, path: &str) -> PathBuf {
 }
 
 pub fn version_ready(path: &Path) -> bool {
+    if path.is_file() {
+        return is_bundle_weight_name(path);
+    }
     let manifest = path.join("bundle.manifest.json");
     if manifest.is_file() {
         return manifest_ready(path, &manifest);
     }
-    let mut gguf = false;
+    let mut weight = false;
     let mut partial = false;
-    walk_marks(path, &mut gguf, &mut partial);
-    gguf && !partial
+    walk_bundle_weights(path, &mut weight, &mut partial);
+    weight && !partial
+}
+
+fn walk_bundle_weights(path: &Path, weight: &mut bool, partial: &mut bool) {
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_bundle_weights(&path, weight, partial);
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".partial"))
+        {
+            *partial = true;
+        } else if is_bundle_weight_name(&path) {
+            *weight = true;
+        }
+    }
+}
+
+/// A published weight file, matching the files main treats as an installed bundle.
+fn is_bundle_weight_name(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".gguf")
+        || lower.ends_with(".safetensors")
+        || lower.ends_with(".bin")
+        || lower.ends_with(".pt")
+        || lower.ends_with(".ckpt")
+        || name == "model_index.json"
+        || name == "config.json"
+        || name == "pytorch_model.bin.index.json"
 }
 
 fn manifest_ready(root: &Path, manifest: &Path) -> bool {

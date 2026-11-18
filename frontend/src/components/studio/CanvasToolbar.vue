@@ -61,6 +61,7 @@
         type="text"
         size="sm"
         :class="{ 'canvas-toolbar__btn--active': graphOpen }"
+        :aria-pressed="!!graphOpen"
         :label="$t('canvas.sessionGraph')"
         @click="$emit('toggle-graph')"
       >
@@ -70,6 +71,7 @@
         type="text"
         size="sm"
         :class="{ 'canvas-toolbar__btn--active': edgesOpen }"
+        :aria-pressed="!!edgesOpen"
         :label="$t('canvas.showEdges')"
         @click="$emit('toggle-edges')"
       >
@@ -79,6 +81,7 @@
         type="text"
         size="sm"
         :class="{ 'canvas-toolbar__btn--active': guidesOpen }"
+        :aria-pressed="!!guidesOpen"
         :label="$t('canvas.regionGuides')"
         @click="$emit('toggle-guides')"
       >

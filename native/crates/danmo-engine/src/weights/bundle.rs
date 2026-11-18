@@ -83,6 +83,17 @@ impl FileList {
     }
 }
 
+/// Safetensors image layout: `transformer/`, `text_encoder/`, and `vae/` each
+/// hold a `.safetensors` file, and the tree has no GGUF. A GGUF bundle with
+/// safetensors companions stays on the GGUF path.
+pub fn is_safetensors_image_bundle(dir: &Path) -> bool {
+    dir.is_dir()
+        && !contains_gguf(dir)
+        && ["transformer", "text_encoder", "vae"]
+            .iter()
+            .all(|role| contains_extension(&dir.join(role), "safetensors"))
+}
+
 pub fn assert_gguf_bundle(dir: &Path) -> Result<GgufBundle, WeightError> {
     let (root, manifest) = read_manifest(dir)?;
     if !tokenizer_ready(&root) {

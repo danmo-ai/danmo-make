@@ -86,13 +86,6 @@
     </template>
   </StudioLayout>
 
-  <StudioComposeFab
-    v-if="!composerDrawerOpen"
-    media="image"
-    :busy="composerBusy"
-    @open="openComposerDrawer()"
-  />
-
   <StudioComposerHost
     v-model:open="composerDrawerOpen"
     :drawer-title="$t('studio.composerDrawerTitle')"
@@ -275,6 +268,7 @@ import { applyModelVersionFilters } from '@/utils/modelPickerFilters';
 import { pickDefaultVersionKey } from '@/utils/defaultModelSettings';
 import { dismissSuccessorHint, isSuccessorHintDismissed } from '@/utils/modelSuccessor';
 import { ACTIVE_COMPOSER_TASK_STATUSES, splitComposerPromptLines } from '@/utils/composerQueue';
+import { seedForSubmit } from '@/utils/seed';
 // Studio components
 import StudioLayout from '@/components/studio/StudioLayout.vue';
 import StudioCanvas from '@/components/studio/StudioCanvas.vue';
@@ -283,7 +277,6 @@ import ImageComposer from '@/components/studio/ImageComposer.vue';
 import ModelSelect from '@/components/model/ModelSelect.vue';
 import { modelSelectOption } from '@/utils/modelSelectOption';
 import StudioComposerHost from '@/components/studio/StudioComposerHost.vue';
-import StudioComposeFab from '@/components/studio/StudioComposeFab.vue';
 import AssetPicker from '@/components/asset/AssetPicker.vue';
 import ImageEditor from '@/components/image/ImageEditor.vue';
 import CreateExtendParams from '@/components/create/CreateExtendParams.vue';
@@ -2003,7 +1996,7 @@ async function queuePromptsToServer() {
   if (queueSubmitting.value) return;
 
   queueSubmitting.value = true;
-  const baseSeed = params.seed ? parseInt(String(params.seed), 10) : null;
+  const baseSeed = seedForSubmit(params.seed);
   const title = String(params.title || '').trim();
 
   try {
@@ -2061,7 +2054,7 @@ const startGeneration = async () => {
       return;
     }
 
-    const seedNum = params.seed ? parseInt(String(params.seed), 10) : null;
+    const seedNum = seedForSubmit(params.seed);
     const submitRes = await submitImageGenerationTask(ctx, {
       prompt: params.prompt,
       title: String(params.title || '').trim(),
@@ -2416,7 +2409,7 @@ async function onEditorSubmit() {
       return;
     }
     const modelStr = versionKey ? `${modelKey}:${versionKey}` : modelKey;
-    const seedNum = params.seed ? parseInt(String(params.seed), 10) : null;
+    const seedNum = seedForSubmit(params.seed);
     const adapters: Array<{ id: string; weight: number }> = [];
     if (params.lora) adapters.push({ id: String(params.lora), weight: Number(params.lora_scale) || 0.8 });
 
@@ -2490,7 +2483,7 @@ async function onExtendSubmit() {
       return;
     }
     const modelStr = versionKey ? `${modelKey}:${versionKey}` : modelKey;
-    const seedNum = params.seed ? parseInt(String(params.seed), 10) : null;
+    const seedNum = seedForSubmit(params.seed);
     const adapters: Array<{ id: string; weight: number }> = [];
     if (params.lora) adapters.push({ id: String(params.lora), weight: Number(params.lora_scale) || 0.8 });
 

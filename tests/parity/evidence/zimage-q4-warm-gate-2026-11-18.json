@@ -1,0 +1,109 @@
+{
+  "date": "2026-11-18",
+  "model": "z-image-turbo",
+  "version": "mlx-q4",
+  "geometry": "768x1280",
+  "steps": 9,
+  "teacache": "default (9 compute / 0 skip)",
+  "path": "checkpoint-Native packed QMM, Rust CompiledCompute + eager gate, mflux conv kernels kept NHWC, resident VAE is shape-specialized CompiledDecoder",
+  "clocks": "encode, denoise, and VAE stop at mx.eval / Array::eval. Host readbacks (to_vec, to_raw_bytes, uint8 pixel loop) are outside every phase. total is the sum of the three phase clocks.",
+  "bit_exact": "10 resident Rust passes matched the main fixture on caption, every velocity, every recurrent latent, and every RGB channel. The adjacent main rerun matches that fixture on caption, step-0 velocity, and the denoised latent.",
+  "thermal_note": "An earlier window that included host readbacks and compared a hotter Rust run to a cooler main prefix is not the gate. The gate reading is Rust 5 warmup + 5 measured, then main 5 warmup + 5 measured immediately, both already on a saturated M5 Max. Rust denoise spread is wide (20.4s to 31.3s); the gate uses p50.",
+  "adjacent_window": {
+    "rust_p50": {
+      "encode": 0.040121708,
+      "denoise": 25.163360542,
+      "vae": 0.480992542,
+      "total": 25.6803455
+    },
+    "main_p50": {
+      "encode": 0.039339917,
+      "denoise": 27.245444833,
+      "vae": 0.457956584,
+      "total": 27.74110775
+    },
+    "rust_to_main": {
+      "encode": 1.0199,
+      "denoise": 0.9236,
+      "vae": 1.0503,
+      "total": 0.9257
+    },
+    "gate_105": {
+      "encode": "pass",
+      "denoise": "pass",
+      "vae": "miss",
+      "total": "pass"
+    }
+  },
+  "steady_active_bytes": {
+    "rust": 5951508728,
+    "main": 7470682315,
+    "ratio": 0.7966
+  },
+  "compiled_decoder_window": {
+    "rust_p50": {
+      "encode": 0.043162083,
+      "denoise": 26.695292792,
+      "vae": 0.404790542,
+      "total": 27.148121666
+    },
+    "main_p50": {
+      "encode": 0.039486042,
+      "denoise": 26.18498875,
+      "vae": 0.438074292,
+      "total": 26.665124126
+    },
+    "rust_to_main": {
+      "encode": 1.0931,
+      "denoise": 1.0195,
+      "vae": 0.9240,
+      "total": 1.0181
+    },
+    "gate_105": {
+      "encode": "miss",
+      "denoise": "pass",
+      "vae": "pass",
+      "total": "pass"
+    },
+    "steady_active_bytes": {
+      "rust": 5876396294,
+      "main": 7470715083,
+      "ratio": 0.7866
+    },
+    "note": "First warmup pass traces the decoder. Measured VAE passes are the replay. Bit-exact with the clocks fixture. Compiling the text encoder as well kept the caption bit-exact but left 8.08GB resident after clear_cache, 108% of main, so that path is not used."
+  },
+  "resident_embedding_window": {
+    "change": "Quantized Qwen3 embed_tokens is dequantized once on the GPU stream and kept as a dense table. Later encodes gather rows. The tower stays eager.",
+    "rust_p50": {
+      "encode": 0.043357,
+      "denoise": 28.544454,
+      "vae": 0.416075,
+      "total": 29.004397
+    },
+    "main_p50": {
+      "encode": 0.042834,
+      "denoise": 29.169614,
+      "vae": 0.475183,
+      "total": 29.688089
+    },
+    "rust_to_main": {
+      "encode": 1.0122,
+      "denoise": 0.9786,
+      "vae": 0.8756,
+      "total": 0.9770
+    },
+    "gate_105": {
+      "encode": "pass",
+      "denoise": "pass",
+      "vae": "pass",
+      "total": "pass"
+    },
+    "steady_active_bytes": {
+      "rust": 6435444998,
+      "main": 7470682315,
+      "ratio": 0.8614
+    },
+    "note": "Second adjacent window, chip already saturated: Rust 5 warmup + 5 measured, then main immediately. Ratios are inside 105%, but Rust encode absolute p50 is 0.043s, the same as the 109.3% window. Main encode moved from 0.039s to 0.043s in this hotter window, so the ratio is not a speedup. The first window still had Rust denoise climbing (106%) and is not a reading. q8 with the same resident table missed encode at 111.7% (0.052s vs 0.047s) while denoise/VAE/total passed. metal_performance stays pending. Reports: out/parity-zimage-q4-768x1280-warm-rust-embed-hot.json and out/parity-zimage-q4-768x1280-warm-main-embed-hot.json."
+  },
+  "metal_performance": "pending"
+}

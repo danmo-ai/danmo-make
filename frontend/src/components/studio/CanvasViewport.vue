@@ -483,7 +483,7 @@ defineExpose({ viewportRef });
   z-index: 0;
   pointer-events: none;
   background-color: var(--dq-fill-dim);
-  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.16) 1px, transparent 1px);
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--dq-label-tertiary) 24%, transparent) 1px, transparent 1px);
   background-repeat: repeat;
 }
 

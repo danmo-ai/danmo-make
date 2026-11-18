@@ -1,17 +1,9 @@
 <template>
-  <div class="copilot-page lora-train-page">
-    <div class="copilot-page__sidebar">
-      <DqSurfaceCard class="lv-sidebar-card lora-train-page__sidebar-card">
-        <div class="card-title">
-          <DqIcon><MagicStick /></DqIcon>
-          {{ $t('loraTrain.recentRuns') }}
-        </div>
-        <DqButton
-          type="primary"
-          block
-          class="lv-sidebar-card__new-btn"
-          @click="startNewTraining"
-        >
+  <WorkspaceLayout class="copilot-page lora-train-page">
+    <template #sidebar>
+      <WorkspaceSidebar :title="$t('loraTrain.recentRuns')">
+        <template #icon><DqIcon><MagicStick /></DqIcon></template>
+        <DqButton type="primary" block class="lv-sidebar-card__new-btn" @click="startNewTraining">
           + {{ $t('loraTrain.newTraining') }}
         </DqButton>
         <div class="lora-train-page__sidebar-body">
@@ -24,8 +16,8 @@
             @select="openRun"
           />
         </div>
-      </DqSurfaceCard>
-    </div>
+      </WorkspaceSidebar>
+    </template>
 
     <div class="copilot-page__main">
       <LoraTrainRunDetail
@@ -501,7 +493,7 @@
         </DqSurfaceCard>
       </template>
     </div>
-  </div>
+  </WorkspaceLayout>
 </template>
 
 <script setup lang="ts">
@@ -517,6 +509,8 @@ import LoraTrainRunDetail from '@/components/lora/LoraTrainRunDetail.vue';
 import LoraDatasetPanel from '@/components/lora/LoraDatasetPanel.vue';
 import LoraTrainHistory from '@/components/lora/LoraTrainHistory.vue';
 import LoraQualityHints from '@/components/lora/LoraQualityHints.vue';
+import WorkspaceLayout from '@/components/workspace/WorkspaceLayout.vue';
+import WorkspaceSidebar from '@/components/workspace/WorkspaceSidebar.vue';
 import { useLoraTrainLibrary } from '@/composables/useLoraTrainLibrary';
 import { useRegistryStore } from '@/stores/registry';
 import type { LoraDatasetHealthReport } from '@/utils/loraQuality';
@@ -1780,25 +1774,15 @@ onMounted(async () => {
   color: var(--dq-label-primary);
   background: var(--dq-fill-secondary);
   border: 1px solid var(--dq-border-subtle);
-  transition: all 0.2s ease;
+  transition: color 140ms ease, background-color 140ms ease, border-color 140ms ease;
 }
 
-.lora-train-page__base-tile.is-family-flux .lora-train-page__base-tile-icon {
-  color: #c4b5fd;
-  background: linear-gradient(135deg, color-mix(in srgb, #8b5cf6 15%, var(--dq-fill-secondary)), color-mix(in srgb, #8b5cf6 8%, var(--dq-fill-secondary)));
-  border-color: color-mix(in srgb, #8b5cf6 30%, transparent);
-}
-
-.lora-train-page__base-tile.is-family-zimage .lora-train-page__base-tile-icon {
-  color: #67e8f9;
-  background: linear-gradient(135deg, color-mix(in srgb, #06b6d4 15%, var(--dq-fill-secondary)), color-mix(in srgb, #06b6d4 8%, var(--dq-fill-secondary)));
-  border-color: color-mix(in srgb, #06b6d4 30%, transparent);
-}
-
+.lora-train-page__base-tile.is-family-flux .lora-train-page__base-tile-icon,
+.lora-train-page__base-tile.is-family-zimage .lora-train-page__base-tile-icon,
 .lora-train-page__base-tile.is-family-qwen .lora-train-page__base-tile-icon {
-  color: #fdba74;
-  background: linear-gradient(135deg, color-mix(in srgb, #f97316 15%, var(--dq-fill-secondary)), color-mix(in srgb, #f97316 8%, var(--dq-fill-secondary)));
-  border-color: color-mix(in srgb, #f97316 30%, transparent);
+  color: var(--dq-label-secondary);
+  background: var(--dq-fill-secondary);
+  border-color: var(--dq-border-subtle);
 }
 
 .lora-train-page__base-tile.is-selected .lora-train-page__base-tile-icon {
@@ -2062,12 +2046,12 @@ onMounted(async () => {
 }
 
 .lora-train-page__identity-checklist li.is-ok {
-  background: color-mix(in srgb, var(--dq-success, #34c759) 12%, var(--dq-fill-secondary));
+  background: color-mix(in srgb, var(--dq-success) 12%, var(--dq-fill-secondary));
   color: var(--dq-label-primary);
 }
 
 .lora-train-page__identity-checklist li.is-bad {
-  background: color-mix(in srgb, var(--dq-danger, #ff3b30) 10%, var(--dq-fill-secondary));
+  background: color-mix(in srgb, var(--dq-danger) 10%, var(--dq-fill-secondary));
   color: var(--dq-label-primary);
 }
 

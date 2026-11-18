@@ -191,7 +191,8 @@ mod tests {
     #[test]
     #[ignore]
     fn real_quantized_bundle_loads_packed_without_remap_collisions() {
-        let root = std::path::PathBuf::from(std::env::var("DANQING_TEST_ZIMAGE_QUANT_DIT_DIR").unwrap());
+        let root =
+            std::path::PathBuf::from(std::env::var("DANQING_TEST_ZIMAGE_QUANT_DIT_DIR").unwrap());
         let bits: i32 = std::env::var("DANQING_TEST_ZIMAGE_QUANT_BITS")
             .unwrap_or_else(|_| "4".into())
             .parse()
@@ -207,7 +208,11 @@ mod tests {
         .unwrap();
         assert_eq!(weights.quantization(), Some(quantization));
         let packed: Vec<&str> = weights.packed_names().collect();
-        assert!(packed.len() > 100, "expected the DiT linears to stay packed: {}", packed.len());
+        assert!(
+            packed.len() > 100,
+            "expected the DiT linears to stay packed: {}",
+            packed.len()
+        );
         // Every packed linear must answer through LinearWeight and keep the
         // checkpoint group size; spot-check the first block projections.
         for name in [

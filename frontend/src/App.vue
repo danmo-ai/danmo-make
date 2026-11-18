@@ -1,11 +1,16 @@
 <template>
-  <div class="main-container dq-app-shell dq-app-shell--sidebar">
-    <aside class="app-sidebar dq-app-sidebar dq-glass--sidebar">
+  <div
+    class="main-container dq-app-shell dq-app-shell--sidebar"
+    :class="{ 'is-sidebar-collapsed': sidebarCollapsed }"
+  >
+    <aside class="app-sidebar dq-app-sidebar">
       <TopNav
         :active-page="activePage"
         :queue-count="globalQueueCount"
+        :collapsed="sidebarCollapsed"
         @navigate="handleNavSelect"
         @open-queue="openTaskQueue"
+        @toggle-collapse="toggleSidebar"
       />
     </aside>
 
@@ -204,6 +209,23 @@ const activePage = ref<PageKey>('image_create');
 const showGlobalQueueDrawer = ref(false);
 const showQueueTaskLogs = ref(false);
 const queueLogTaskId = ref<string | null>(null);
+const storedSidebarState = getItem(DQ_STORAGE.NAV_COLLAPSED);
+const sidebarPreference = ref<boolean | null>(
+  storedSidebarState == null ? null : storedSidebarState === '1',
+);
+const compactViewport = ref(window.innerWidth <= 1180);
+const sidebarCollapsed = computed(
+  () => sidebarPreference.value ?? compactViewport.value,
+);
+
+function toggleSidebar() {
+  sidebarPreference.value = !sidebarCollapsed.value;
+  setItem(DQ_STORAGE.NAV_COLLAPSED, sidebarPreference.value ? '1' : '0');
+}
+
+function onViewportResize() {
+  compactViewport.value = window.innerWidth <= 1180;
+}
 
 function openQueueTaskLogs(taskId: string) {
   queueLogTaskId.value = taskId;
@@ -354,6 +376,7 @@ onMounted(async () => {
 
   appEvents.on('open-global-task-queue', onOpenGlobalTaskQueue);
   appEvents.on('open-task-log', onOpenTaskLog);
+  window.addEventListener('resize', onViewportResize);
 });
 
 function onOpenGlobalTaskQueue(_: void) {
@@ -367,6 +390,7 @@ function onOpenTaskLog(payload: { taskId: string }) {
 onBeforeUnmount(() => {
   appEvents.off('open-global-task-queue', onOpenGlobalTaskQueue);
   appEvents.off('open-task-log', onOpenTaskLog);
+  window.removeEventListener('resize', onViewportResize);
   if (sysInfoInterval) {
     clearInterval(sysInfoInterval);
   }

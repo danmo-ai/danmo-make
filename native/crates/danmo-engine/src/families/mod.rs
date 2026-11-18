@@ -315,22 +315,9 @@ pub fn run_dit_image(
             loras,
             on_progress,
         )?)),
-        "z_image" => Ok(Some(z_image::execute(
-            ctx,
-            bundle,
-            prompt,
-            steps,
-            width,
-            height,
-            guidance,
-            seed,
-            scheduler,
-            scheduler_shift,
-            empirical_mu,
-            negative,
-            loras,
-            on_progress,
-        )?)),
+        "z_image" => Err(crate::weights::WeightError::NotBuilt(
+            "z_image image create no longer has a ggml graph".into(),
+        )),
         _ => Ok(None),
     }
 }

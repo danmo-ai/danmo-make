@@ -1,62 +1,46 @@
 <!-- @ts-nocheck -->
 <template>
-  <div class="models-page">
-    <!-- Left sidebar: category navigation -->
-    <div class="models-page__sidebar">
-      <DqSurfaceCard class="models-page__sidebar-card">
-        <div class="card-title">
-          <DqIcon><box /></DqIcon>
-          {{ $t('download.modelLibrary') }}
-        </div>
-        <div class="models-page__sidebar-intro">
-          {{ $t('models.pageSubtitle') }}
-        </div>
-
+  <WorkspaceLayout class="models-page">
+    <template #sidebar>
+      <WorkspaceSidebar
+        :title="$t('download.modelLibrary')"
+        :description="$t('models.pageSubtitle')"
+      >
+        <template #icon><DqIcon><box /></DqIcon></template>
         <ModelsCategoryNav
           :active-category="activeCategory"
           :total-model-count="totalModelCount"
           :active-download-count="activeDownloadCount"
           @select="handleCategorySelect"
         />
-
-
-        <!-- Disk space -->
-        <div v-if="diskSpace" class="disk-space-panel">
-          <div class="disk-space-title">
-            <DqIcon><monitor /></DqIcon>
-            {{ $t('download.diskSpace') }}
-          </div>
-          <div class="disk-space-item">
-            <div class="disk-space-label">
-              <span>{{ $t('download.modelLabel') }}</span>
-              <span class="disk-space-value">{{ diskSpace.models?.size_human }}</span>
+        <template #footer>
+          <div v-if="diskSpace" class="disk-space-panel">
+            <div class="disk-space-title">
+              <DqIcon><monitor /></DqIcon>
+              {{ $t('download.diskSpace') }}
             </div>
-            <DqProgress
-              :percentage="getDiskPercent('models')"
-              :show-text="false"
-              :stroke-width="4"
-            />
-          </div>
-          <div class="disk-space-item">
-            <div class="disk-space-label">
-              <span>{{ $t('download.loraLabel') }}</span>
-              <span class="disk-space-value">{{ diskSpace.loras?.size_human }}</span>
+            <div class="disk-space-item">
+              <div class="disk-space-label">
+                <span>{{ $t('download.modelLabel') }}</span>
+                <span class="disk-space-value">{{ diskSpace.models?.size_human }}</span>
+              </div>
+              <DqProgress :percentage="getDiskPercent('models')" :show-text="false" :stroke-width="4" />
             </div>
-            <DqProgress
-              :percentage="getDiskPercent('loras')"
-              :show-text="false"
-              :stroke-width="4"
-              color="var(--dq-success)"
-            />
+            <div class="disk-space-item">
+              <div class="disk-space-label">
+                <span>{{ $t('download.loraLabel') }}</span>
+                <span class="disk-space-value">{{ diskSpace.loras?.size_human }}</span>
+              </div>
+              <DqProgress :percentage="getDiskPercent('loras')" :show-text="false" :stroke-width="4" color="var(--dq-success)" />
+            </div>
+            <div class="disk-space-footer">
+              {{ $t('download.free') }}: {{ diskSpace.models?.free_human }}
+            </div>
           </div>
-          <div class="disk-space-footer">
-            {{ $t('download.free') }}: {{ diskSpace.models?.free_human }}
-          </div>
-        </div>
-      </DqSurfaceCard>
-    </div>
+        </template>
+      </WorkspaceSidebar>
+    </template>
 
-    <!-- Right content area -->
     <div class="models-page__main">
       <!-- Model grid (category browsing) -->
       <div
@@ -76,67 +60,40 @@
         "
       >
         <!-- Category title -->
-        <div class="page-header models-page__page-header">
-          <h2 class="page-title models-page__category-title">
-            <DqIcon v-if="categoryPageIcon" class="models-page__title-icon" aria-hidden="true">
-              <component :is="categoryPageIcon" />
-            </DqIcon>
-            <span>{{ categoryTitleText }}</span>
-          </h2>
-          <div
-            v-if="
-              [
-                'all',
-                'image_models',
-                'video_models',
-                'music_models',
-                'llm_models',
-                'vlm_models',
-                'controlnets',
-                'upscalers',
-                'tools',
-                'loras',
-              ].includes(activeCategory)
-            "
-            class="models-page__header-center"
-          >
+        <WorkspaceHeader :title="categoryTitleText">
+          <template v-if="categoryPageIcon" #icon>
+            <DqIcon><component :is="categoryPageIcon" /></DqIcon>
+          </template>
+          <template #filters>
             <DqInput
               v-model="filterQuery"
               :placeholder="$t('download.searchModel')"
               class="models-page__search-input"
               clearable
             >
-              <template #prefix>
-                <DqIcon><search /></DqIcon>
-              </template>
+              <template #prefix><DqIcon><search /></DqIcon></template>
             </DqInput>
             <ModelPickerFilters
               v-model:installed-only="modelFilterInstalledOnly"
               v-model:commercial-only="modelFilterCommercialOnly"
               v-model:current-models-only="modelFilterCurrentModelsOnly"
             />
-          </div>
-          <div class="page-actions models-page__actions">
+          </template>
+          <template #actions>
             <DqButton
-              v-if="
-                activeCategory !== 'loras' && activeCategory !== 'installed'
-              "
-              class="models-toolbar-btn models-page__import-btn"
+              v-if="activeCategory !== 'loras' && activeCategory !== 'installed'"
+              class="models-toolbar-btn"
               @click="showImportDialog"
             >
-              <DqIcon class="models-toolbar-btn__icon"><upload /></DqIcon>
-              <span class="models-toolbar-btn__label">{{ $t('download.importLocal') }}</span>
+              <DqIcon><upload /></DqIcon>
+              <span>{{ $t('download.importLocal') }}</span>
             </DqButton>
-            <DqButton
-              class="models-toolbar-btn models-page__refresh-btn"
-              :loading="refreshing"
-              @click="refreshStatus"
-            >
-              <DqIcon class="models-toolbar-btn__icon"><refresh /></DqIcon>
-              <span class="models-toolbar-btn__label">{{ $t('gallery.refresh') }}</span>
+            <DqButton class="models-toolbar-btn" :loading="refreshing" @click="refreshStatus">
+              <DqIcon><refresh /></DqIcon>
+              <span>{{ $t('gallery.refresh') }}</span>
             </DqButton>
-          </div>
-        </div>
+          </template>
+        </WorkspaceHeader>
 
         <ModelsImportDialog
           v-model:open="importDialogVisible"
@@ -498,7 +455,7 @@
         </DqSurfaceCard>
       </div>
     </div>
-  </div>
+  </WorkspaceLayout>
 </template>
 
 <script setup lang="ts">
@@ -523,6 +480,9 @@ import UserLoraCard from '@/components/lora/UserLoraCard.vue';
 import ModelCardVersions from '@/components/models/ModelCardVersions.vue';
 import ModelVersionSourceBadge from '@/components/models/ModelVersionSourceBadge.vue';
 import ZImageMergePanel from '@/components/tools/ZImageMergePanel.vue';
+import WorkspaceLayout from '@/components/workspace/WorkspaceLayout.vue';
+import WorkspaceHeader from '@/components/workspace/WorkspaceHeader.vue';
+import WorkspaceSidebar from '@/components/workspace/WorkspaceSidebar.vue';
 import { uniformDownloadSource } from '@/utils/modelVersionLayout';
 import { formatDownloadDisplayName } from '@/utils/registryLabel';
 import { useModelRegistryFilters } from '@/composables/useModelRegistryFilters';

@@ -5,6 +5,7 @@ export const DQ_STORAGE = Object.freeze({
   LANG: 'dq-studio.lang.v4',
   THEME: 'dq-studio.theme.v4',
   ACTIVE_PAGE: 'dq-studio.activePage.v4',
+  NAV_COLLAPSED: 'dq-studio.navCollapsed.v4',
   SETTINGS_TAB: 'dq-studio.settingsTab.v4',
   IMG2IMG_REF: 'dq-studio.img2imgRef.v4',
   IMPORTED_MODELS: 'dq-studio.importedModels.v4',

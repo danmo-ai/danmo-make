@@ -21,7 +21,7 @@
           @timeupdate="onTimeUpdate"
         />
 
-        <template v-if="variant === 'lightbox'">
+        <template v-if="variant === 'lightbox' && showMeta">
           <GalleryAssetDetailMeta :item="item" show-prompt />
         </template>
       </div>
@@ -106,6 +106,7 @@ const props = defineProps({
   src: { type: String, required: true },
   variant: { type: String, default: 'sidebar' },
   durationLabel: { type: String, default: '' },
+  showMeta: { type: Boolean, default: true },
 
 });
 
@@ -266,7 +267,7 @@ function downloadLrc() {
   margin-left: 6px;
   padding: 1px 6px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: var(--dq-font-size-caption);
   font-weight: 600;
   letter-spacing: 0;
   text-transform: none;

@@ -1,6 +1,6 @@
 <template>
   <div class="studio-composer-toolbar">
-    <div class="studio-composer-toolbar__left">
+    <div v-if="$slots.mode || $slots.controls" class="studio-composer-toolbar__left">
       <div v-if="$slots.mode" class="studio-composer-toolbar__mode">
         <slot name="mode" />
       </div>

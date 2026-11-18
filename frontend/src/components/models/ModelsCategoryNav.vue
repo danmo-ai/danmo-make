@@ -91,6 +91,7 @@ const entries = computed<NavEntry[]>(() => [
         type="button"
         class="dq-download-menu__item"
         :class="{ 'is-active': activeCategory === entry.id }"
+        :aria-current="activeCategory === entry.id ? 'page' : undefined"
         @click="emit('select', entry.id)"
       >
         <DqIcon class="dq-download-menu__icon"><component :is="entry.icon" /></DqIcon>

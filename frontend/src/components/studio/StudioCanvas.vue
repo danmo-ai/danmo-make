@@ -101,8 +101,21 @@
       </div>
     </div>
 
+    <div
+      v-if="loading && displayItems.length === 0"
+      class="studio-canvas__grid studio-canvas__skeleton-grid"
+      aria-busy="true"
+      :aria-label="$t('common.loading')"
+    >
+      <div v-for="i in 8" :key="i" class="studio-canvas__skeleton">
+        <span class="studio-canvas__skeleton-media" />
+        <span class="studio-canvas__skeleton-line" />
+        <span class="studio-canvas__skeleton-line studio-canvas__skeleton-line--short" />
+      </div>
+    </div>
+
     <!-- Loading indicator -->
-    <div v-if="loading" class="studio-canvas__loading">
+    <div v-else-if="loading" class="studio-canvas__loading">
       <DqIcon class="is-loading" size="24"><Loading /></DqIcon>
     </div>
 
@@ -401,16 +414,10 @@ function handleCardClick(item: GalleryItem, event: MouseEvent) {
   height: 6px;
   border-radius: 50%;
   background: var(--dq-accent);
-  animation: studio-pulse 2s ease-in-out infinite;
 }
 
 .studio-canvas__section-dot--active {
   background: var(--dq-accent);
-}
-
-@keyframes studio-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
 }
 
 .studio-canvas__active-layout {
@@ -464,10 +471,9 @@ function handleCardClick(item: GalleryItem, event: MouseEvent) {
 }
 
 .studio-canvas__active-cards {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  max-width: 200px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 220px));
+  gap: 16px;
 }
 
 .studio-canvas__grid {
@@ -487,6 +493,40 @@ function handleCardClick(item: GalleryItem, event: MouseEvent) {
   .studio-canvas__grid {
     grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   }
+}
+
+.studio-canvas__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.studio-canvas__skeleton-media,
+.studio-canvas__skeleton-line {
+  display: block;
+  border-radius: var(--dq-radius-control-sm);
+  background: var(--dq-fill-secondary);
+  animation: studio-skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+.studio-canvas__skeleton-media {
+  aspect-ratio: 1;
+  border: 1px solid var(--dq-border-subtle);
+}
+
+.studio-canvas__skeleton-line {
+  width: 82%;
+  height: 12px;
+}
+
+.studio-canvas__skeleton-line--short {
+  width: 54%;
+  height: 10px;
+}
+
+@keyframes studio-skeleton-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
 }
 
 .studio-canvas__loading,
