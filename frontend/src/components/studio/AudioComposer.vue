@@ -8,6 +8,16 @@
       class="audio-composer__title"
     />
 
+    <DqSegmented
+      v-if="workModeOptions.length > 0"
+      :model-value="localWorkMode"
+      block
+      size="sm"
+      :options="workModeOptions"
+      class="studio-composer-setup__mode"
+      @update:model-value="localWorkMode = $event"
+    />
+
     <!-- Prompt -->
     <div class="audio-composer__prompt-block">
     <div class="audio-composer__prompt-wrap">
@@ -169,13 +179,6 @@
     </div>
 
     <div class="studio-composer-setup">
-      <DqSegmented
-        :model-value="localWorkMode"
-        size="sm"
-        :options="workModeOptions"
-        class="studio-composer-setup__mode"
-        @update:model-value="localWorkMode = $event"
-      />
       <ModelSelect
         v-model="localModel"
         :options="modelOptions"
@@ -354,7 +357,7 @@
 
               <!-- LoRA -->
               <div
-                v-if="workMode !== 'cover' && currentModelConfig?.parameters?.lora_support && compatibleLoras?.length"
+                v-if="currentModelConfig?.parameters?.lora_support"
                 class="audio-composer__advanced-row"
               >
                 <div class="audio-composer__field audio-composer__field--full" style="flex-direction: column; align-items: flex-start; gap: 8px;">
@@ -372,9 +375,11 @@
                         :key="String(l.id)"
                         :label="loraOptionLabel(l)"
                         :value="l.id"
+                        :disabled="l.ready === false"
                       />
                     </DqSelect>
                   </div>
+                  <p v-if="!installedLoraCount" class="audio-composer__fidelity-hint">{{ $tt('audio.loraNoneReady') }}</p>
                   <div v-if="localParams.lora" style="display: flex; align-items: center; gap: 10px; width: 100%;">
                     <label style="min-width: 60px;">{{ $tt('create.loraScale') }}</label>
                     <DqSlider v-model="localParams.lora_scale" :min="0" :max="2" :step="0.05" style="flex: 1;" />
@@ -683,12 +688,15 @@ function randomizeSeed() {
 }
 
 // Style / Preset
+const installedLoraCount = computed(
+  () => (props.compatibleLoras || []).filter((lora) => lora.ready !== false).length,
+);
+
 function loraOptionLabel(l: Record<string, unknown>): string {
   const base = String(l.name || l.id || '');
-  if (l.source === 'user_trained') {
-    return `${base} (${$t('studio.myLoraTag')})`;
-  }
-  return base;
+  const tagged = l.source === 'user_trained' ? `${base} (${$t('studio.myLoraTag')})` : base;
+  if (l.ready === false) return `${tagged} (${$tt('audio.loraNotInstalled')})`;
+  return tagged;
 }
 
 function presetLabel(name: string, preset: Record<string, unknown>): string {

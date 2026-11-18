@@ -1,8 +1,8 @@
 //! Z-Image image create. The ggml graph for this action is gone.
 //!
 //! Safetensors bundles run on the MLX session when the engine is built with
-//! `mlx`. A GGUF bundle fails here instead of falling back to ggml. Edit
-//! still uses the ggml DiT until that action is migrated.
+//! `mlx`. A GGUF bundle fails here instead of falling back to ggml. Rewrite
+//! edit uses the same MLX session.
 
 use crate::contract::ResolvedRun;
 use crate::error::EngineError;

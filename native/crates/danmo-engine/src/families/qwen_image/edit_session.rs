@@ -422,6 +422,7 @@ mod tests {
             scheduler: None,
             adapters: Vec::new(),
             metadata: json!({}),
+            preview: true,
             priority: "normal".into(),
         }
     }

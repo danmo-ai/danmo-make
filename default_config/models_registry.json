@@ -4014,22 +4014,6 @@
               "zh": "完整 bundle（VAE + DiT + Qwen2.5-VL）。",
               "en": "Full bundle (VAE + DiT + Qwen2.5-VL)."
             }
-          },
-          "fp8": {
-            "name": {
-              "zh": "FP8 版",
-              "en": "FP8"
-            },
-            "size": "12GB",
-            "default": false,
-            "repo_id": "meimeilook/Step1X-Edit-FP8",
-            "local_path": "models/Image/step1x-edit-fp8",
-            "source": "huggingface",
-            "source_type": "full",
-            "notes": {
-              "zh": "FP8 DiT 权重；需与完整 bundle 中 VAE + Qwen2.5-VL 目录一并安装。",
-              "en": "FP8 DiT weights; install alongside VAE + Qwen2.5-VL from the full bundle."
-            }
           }
         }
       }
@@ -4134,21 +4118,6 @@
             "notes": {
               "zh": "完整 bundle（DiT + FLUX VAE + Qwen3-VL-8B）。",
               "en": "Full bundle (DiT + FLUX VAE + Qwen3-VL-8B)."
-            }
-          },
-          "fp8": {
-            "name": {
-              "zh": "FP8 版",
-              "en": "FP8"
-            },
-            "size": "18GB",
-            "default": false,
-            "repo_id": "Boogu/Boogu-Image-0.1-Turbo-fp8",
-            "local_path": "models/Image/boogu-image-turbo-fp8",
-            "source_type": "full",
-            "notes": {
-              "zh": "官方 FP8 权重 bundle，显存占用更低。",
-              "en": "Official FP8 weight bundle; lower VRAM use."
             }
           },
           "int8": {
@@ -4361,21 +4330,6 @@
             "notes": {
               "zh": "完整 bundle（DiT + FLUX VAE + Qwen3-VL-8B）。",
               "en": "Full bundle (DiT + FLUX VAE + Qwen3-VL-8B)."
-            }
-          },
-          "fp8": {
-            "name": {
-              "zh": "FP8 版",
-              "en": "FP8"
-            },
-            "size": "18GB",
-            "default": false,
-            "repo_id": "Boogu/Boogu-Image-0.1-Edit-fp8",
-            "local_path": "models/Image/boogu-image-edit-fp8",
-            "source_type": "full",
-            "notes": {
-              "zh": "官方 FP8 编辑 bundle；参考图建议对齐 1K。",
-              "en": "Official FP8 edit bundle; align reference image to ~1K."
             }
           },
           "int8": {
@@ -7492,8 +7446,7 @@
                 "source": ".",
                 "quantize": 4,
                 "group_size": 64,
-                "cleanup_source": true,
-                "skip_completeness_if": "backend.engine.families.ltx25.ingest_mlx:ltx25_bundle_is_ready"
+                "cleanup_source": true
               }
             ],
             "note": {
@@ -7530,8 +7483,7 @@
                 "source": ".",
                 "quantize": 8,
                 "group_size": 64,
-                "cleanup_source": true,
-                "skip_completeness_if": "backend.engine.families.ltx25.ingest_mlx:ltx25_bundle_is_ready"
+                "cleanup_source": true
               }
             ],
             "note": {
@@ -9326,55 +9278,6 @@
         }
       }
     },
-    "minimax-h3-veda": {
-      "catalog": {
-        "media": "video",
-        "description": {
-          "zh": "MiniMax H3 Veda 稀疏注意力预测器（T2VA 8 步预览）：视频 token 只保留约 10% 的注意力块，文本和音频保持稠密。需已安装 minimax-h3-fl2va；可与 Turbo LoRA 叠加。",
-          "en": "MiniMax H3 Veda sparse-attention predictor (T2VA 8-step preview): video tokens keep about 10% of attention blocks; text and audio stay dense. Requires minimax-h3-fl2va; stacks with the Turbo LoRA."
-        },
-        "category": "tools",
-        "commercial_use_allowed": false,
-        "type": "tool",
-        "source": "huggingface",
-        "name": {
-          "zh": "MiniMax H3 Veda",
-          "en": "MiniMax H3 Veda"
-        },
-        "recommended": false,
-        "base_model": "minimax-h3-fl2va",
-        "engine": "danqing-video"
-      },
-      "runtime": {
-        "family": "minimax_h3",
-        "backends": [
-          "mlx"
-        ]
-      },
-      "actions": {},
-      "ui": {
-        "parameters": {}
-      },
-      "distribution": {
-        "versions": {
-          "fp8": {
-            "name": {
-              "zh": "FP8 版",
-              "en": "FP8"
-            },
-            "size": "280MB",
-            "default": true,
-            "source": "huggingface",
-            "repo_id": "Veda-Sparse/Minimax-H3-T2VA-Veda-8NFE-600Step-Preview",
-            "local_path": "models/Tools/minimax-h3-veda-fp8",
-            "source_type": "full",
-            "allow_patterns": [
-              "minimax_h3_t2va_veda_8nfe_600step_preview_fp8.safetensors"
-            ]
-          }
-        }
-      }
-    },
     "minimax-h3-fl2va": {
       "catalog": {
         "media": "video",
@@ -10386,6 +10289,7 @@
             "default": true,
             "repo_id": "AI-ModelScope/super_eurobeats_ACE_STEP-1.5-lora",
             "local_path": "models/Lora/ace-step-lora-super-eurobeats-fp16",
+            "source": "modelscope",
             "source_type": "full"
           }
         }
@@ -10438,6 +10342,7 @@
             "default": true,
             "repo_id": "DiffSynth-Studio/acestep15xlsft-lora-music",
             "local_path": "models/Lora/ace-step-lora-accompaniment-ms-fp16",
+            "source": "modelscope",
             "source_type": "full"
           }
         }
@@ -10447,8 +10352,8 @@
       "catalog": {
         "media": "audio",
         "description": {
-          "zh": "ACE-Step 官方春节主题 LoRA（1.5 XL），适合喜庆、节日氛围音乐。",
-          "en": "Official ACE-Step Chinese New Year theme LoRA (1.5 XL) for festive holiday music."
+          "zh": "ACE-Step 官方春节主题 LoRA。基座是 2B Turbo（acestep-v15-turbo，24 层，宽度 2048）。",
+          "en": "Official ACE-Step Chinese New Year LoRA. Base is the 2B Turbo DiT (acestep-v15-turbo, 24 layers, width 2048)."
         },
         "category": "loras",
         "commercial_use_allowed": true,
@@ -10460,7 +10365,7 @@
           "en": "Chinese New Year LoRA"
         },
         "recommended": false,
-        "base_model": "ace-step-xl-sft",
+        "base_model": "ace-step-turbo",
         "engine": "danqing-audio"
       },
       "runtime": {
@@ -10490,6 +10395,166 @@
             "default": true,
             "repo_id": "ACE-Step/ACE-Step-v1.5-chinese-new-year-LoRA",
             "local_path": "models/Lora/ace-step-lora-chinese-new-year-fp16",
+            "source": "modelscope",
+            "source_type": "full"
+          }
+        }
+      }
+    },
+    "ace-step-lora-guitar-ms": {
+      "catalog": {
+        "media": "audio",
+        "description": {
+          "zh": "DiffSynth 吉他增强 LoRA，适用于 ACE-Step 1.5 XL SFT。",
+          "en": "DiffSynth guitar enhancement LoRA for ACE-Step 1.5 XL SFT."
+        },
+        "category": "loras",
+        "commercial_use_allowed": null,
+        "type": "lora",
+        "nsfw": false,
+        "source": "modelscope",
+        "name": {
+          "zh": "ACE-Step 吉他 LoRA",
+          "en": "ACE-Step Guitar LoRA"
+        },
+        "recommended": false,
+        "base_model": "ace-step-xl-sft",
+        "engine": "danqing-audio"
+      },
+      "runtime": {
+        "family": "ace_step"
+      },
+      "actions": {},
+      "ui": {
+        "parameters": {
+          "lora_scale": {
+            "default": 0.8,
+            "min": 0.0,
+            "max": 2.0,
+            "step": 0.1,
+            "label": "LoRA强度",
+            "type": "float"
+          }
+        }
+      },
+      "distribution": {
+        "versions": {
+          "fp16": {
+            "name": {
+              "zh": "FP16",
+              "en": "FP16"
+            },
+            "size": "304MB",
+            "default": true,
+            "repo_id": "DiffSynth-Studio/acestep15xlsft-lora-guitar",
+            "local_path": "models/Lora/ace-step-lora-guitar-ms-fp16",
+            "source": "modelscope",
+            "source_type": "full"
+          }
+        }
+      }
+    },
+    "ace-step-lora-piano-ms": {
+      "catalog": {
+        "media": "audio",
+        "description": {
+          "zh": "DiffSynth 钢琴增强 LoRA，适用于 ACE-Step 1.5 XL SFT。",
+          "en": "DiffSynth piano enhancement LoRA for ACE-Step 1.5 XL SFT."
+        },
+        "category": "loras",
+        "commercial_use_allowed": null,
+        "type": "lora",
+        "nsfw": false,
+        "source": "modelscope",
+        "name": {
+          "zh": "ACE-Step 钢琴 LoRA",
+          "en": "ACE-Step Piano LoRA"
+        },
+        "recommended": false,
+        "base_model": "ace-step-xl-sft",
+        "engine": "danqing-audio"
+      },
+      "runtime": {
+        "family": "ace_step"
+      },
+      "actions": {},
+      "ui": {
+        "parameters": {
+          "lora_scale": {
+            "default": 0.8,
+            "min": 0.0,
+            "max": 2.0,
+            "step": 0.1,
+            "label": "LoRA强度",
+            "type": "float"
+          }
+        }
+      },
+      "distribution": {
+        "versions": {
+          "fp16": {
+            "name": {
+              "zh": "FP16",
+              "en": "FP16"
+            },
+            "size": "304MB",
+            "default": true,
+            "repo_id": "DiffSynth-Studio/acestep15xlsft-lora-piano",
+            "local_path": "models/Lora/ace-step-lora-piano-ms-fp16",
+            "source": "modelscope",
+            "source_type": "full"
+          }
+        }
+      }
+    },
+    "ace-step-lora-drums-ms": {
+      "catalog": {
+        "media": "audio",
+        "description": {
+          "zh": "DiffSynth 鼓组增强 LoRA，适用于 ACE-Step 1.5 XL SFT。",
+          "en": "DiffSynth drums enhancement LoRA for ACE-Step 1.5 XL SFT."
+        },
+        "category": "loras",
+        "commercial_use_allowed": null,
+        "type": "lora",
+        "nsfw": false,
+        "source": "modelscope",
+        "name": {
+          "zh": "ACE-Step 鼓组 LoRA",
+          "en": "ACE-Step Drums LoRA"
+        },
+        "recommended": false,
+        "base_model": "ace-step-xl-sft",
+        "engine": "danqing-audio"
+      },
+      "runtime": {
+        "family": "ace_step"
+      },
+      "actions": {},
+      "ui": {
+        "parameters": {
+          "lora_scale": {
+            "default": 0.8,
+            "min": 0.0,
+            "max": 2.0,
+            "step": 0.1,
+            "label": "LoRA强度",
+            "type": "float"
+          }
+        }
+      },
+      "distribution": {
+        "versions": {
+          "fp16": {
+            "name": {
+              "zh": "FP16",
+              "en": "FP16"
+            },
+            "size": "304MB",
+            "default": true,
+            "repo_id": "DiffSynth-Studio/acestep15xlsft-lora-drums",
+            "local_path": "models/Lora/ace-step-lora-drums-ms-fp16",
+            "source": "modelscope",
             "source_type": "full"
           }
         }

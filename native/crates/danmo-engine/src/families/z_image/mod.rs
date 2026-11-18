@@ -1,6 +1,7 @@
-//! Z-Image. Image create runs on the MLX session. This module still owns the
-//! ggml helpers that edit uses: caption encode, the sigma schedule, and the
-//! smoke bundles. Tensor names are the unsloth / SD.cpp GGUF names.
+//! Z-Image. Image create and rewrite edit run on the MLX session. This module
+//! still owns the sigma schedule and the GGUF smoke bundles that prove a
+//! removed ggml graph fails loud. Tensor names in those bundles are the
+//! unsloth / SD.cpp GGUF names.
 //!
 //! The block math follows Tongyi and `main`'s `transformer_mlx.py`. SD.cpp agrees
 //! on those ops. Two SD.cpp details are exact-arithmetic identities and are not
@@ -15,27 +16,21 @@
 
 mod edit_session;
 mod geom;
-mod graph;
 #[cfg(feature = "mlx")]
 mod mlx;
 #[cfg(test)]
 mod reference;
 mod session;
-mod transformer;
-mod vae;
 mod weights;
 
 pub(crate) use edit_session::ZImageEditFamily;
 pub(crate) use session::ZImageFamily;
 
 use crate::common::ops::{empirical_mu_sigmas, flow_match_shift_sigmas, linear_sigmas};
-use crate::runtime::{GgmlContext, TYPE_F32};
-use crate::weights::{
-    matmul_type, type_block, write_f32_tensors, F32Tensor, GgufWeights, WeightError,
-};
+use crate::weights::{write_f32_tensors, F32Tensor, WeightError};
 use std::path::Path;
 
-use weights::{vector_param, weight_layout, ZImageConfig};
+use weights::{weight_layout, ZImageConfig};
 
 fn schedule(
     config: weights::ZImageConfig,
@@ -78,98 +73,6 @@ fn schedule(
             "scheduler {other} is not built"
         ))),
     }
-}
-
-fn encode_caption(
-    ctx: &GgmlContext,
-    bundle: &Path,
-    paths: &[std::path::PathBuf],
-    prompt: &str,
-    cap_dim: i64,
-) -> Result<(Vec<f32>, i64), WeightError> {
-    let text = GgufWeights::open_parts(paths)?;
-    if text.names().any(|name| name.starts_with("blk.")) {
-        return Err(WeightError::NotBuilt(
-            "text encoder tensor names are blk.*; this graph reads layers.*".into(),
-        ));
-    }
-    if crate::common::qwen3::tower_present(&text) {
-        let tokenizer = crate::common::qwen3::load_tokenizer(bundle)?;
-        let loaded = crate::common::qwen3::Loaded::open(paths)?;
-        let config = loaded.config();
-        if config.layers < 2 {
-            return Err(WeightError::NotBuilt(
-                "penultimate text encoder needs at least 2 layers".into(),
-            ));
-        }
-        if config.hidden != cap_dim {
-            return Err(WeightError::NotBuilt(format!(
-                "text encoder hidden {} is not the caption width {cap_dim}",
-                config.hidden
-            )));
-        }
-        let layer = config.layers - 1;
-        return loaded.encode(ctx, &tokenizer, prompt, &[layer], true, cap_dim);
-    }
-    let shape = text.shape("token_embed.weight")?;
-    if shape[0] != cap_dim || shape[1] != 1 {
-        return Err(WeightError::NotBuilt(format!(
-            "text encoder graph is not built (token_embed.weight is {:?} not [{cap_dim}, 1])",
-            shape
-        )));
-    }
-    let _ = prompt;
-    Ok((text.f32_exact("token_embed.weight", &[cap_dim, 1])?, 1))
-}
-
-fn encode_negative(
-    ctx: &GgmlContext,
-    bundle: &Path,
-    paths: &[std::path::PathBuf],
-    negative: &str,
-    cap_dim: i64,
-    cap_real: i64,
-    guidance: f32,
-) -> Result<Option<Vec<f32>>, WeightError> {
-    if negative.trim().is_empty() {
-        return Ok(None);
-    }
-    if guidance.abs() < f32::EPSILON {
-        return Err(WeightError::NotBuilt(
-            "negative prompt needs a guidance other than 0".into(),
-        ));
-    }
-    let (encoded, seq) = encode_caption(ctx, bundle, paths, negative, cap_dim)?;
-    if seq != cap_real {
-        return Err(WeightError::NotBuilt(format!(
-            "negative prompt tokenized to {seq} tokens, prompt has {cap_real}"
-        )));
-    }
-    Ok(Some(encoded))
-}
-
-fn check_stored_type(name: &str, ggml_type: u32, ne0: i64) -> Result<(), WeightError> {
-    if vector_param(name) {
-        if ggml_type != TYPE_F32 {
-            return Err(WeightError::NotBuilt(format!(
-                "{name} is ggml type {ggml_type}. Norm, bias, and pad tokens stay F32"
-            )));
-        }
-        return Ok(());
-    }
-    if !matmul_type(ggml_type) {
-        return Err(WeightError::Type {
-            name: name.to_string(),
-            ggml_type,
-        });
-    }
-    let block = type_block(ggml_type);
-    if block > 1 && ne0 % block != 0 {
-        return Err(WeightError::NotBuilt(format!(
-            "{name} length {ne0} is not divisible by ggml block {block}"
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -435,46 +338,10 @@ pub fn write_control_smoke_bundle(base: &Path, controlnet: &Path) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use super::transformer::ZImageDenoise;
-    use super::weight_layout;
-    use super::weights::ZImageConfig;
     use super::write_smoke_bundle;
     use crate::image_create;
-    use crate::runtime::{BackendKind, GgmlContext, TYPE_F32};
+    use crate::runtime::BackendKind;
     use danmo_contracts::ImageGenerationRequest;
-    use std::collections::HashMap;
-
-    /// 30 layers and 2 refiner pairs. Same node count as the published DiT.
-    #[test]
-    fn published_depth_reserves() {
-        let config = ZImageConfig {
-            dim: 8,
-            heads: 1,
-            head_dim: 8,
-            axes: [2, 2, 4],
-            layers: 30,
-            refiners: 2,
-            in_channels: 4,
-            cap_dim: 8,
-            ffn: 16,
-            mid: 32,
-            freq: 8,
-            adaln: 8,
-            rope_theta: 256.0,
-            t_scale: 1000.0,
-            vae_scale: 8,
-            patch: 2,
-            requires_sigma_shift: true,
-        };
-        let mut types = HashMap::new();
-        for (name, _, _) in weight_layout(config) {
-            types.insert(name, TYPE_F32);
-        }
-        let ctx = GgmlContext::new(BackendKind::Cpu).expect("cpu");
-        let graph = ZImageDenoise::build(&ctx, config, 64, 64, 4, &types, &[], None)
-            .expect("published-depth z-image graph reserves");
-        drop(graph);
-    }
 
     #[test]
     fn gguf_create_fails_loud_without_the_ggml_graph() {
@@ -507,6 +374,7 @@ mod tests {
             use_empirical_mu: false,
             adapters: Vec::new(),
             structural_guide: None,
+            preview: true,
             priority: "normal".into(),
         }
     }

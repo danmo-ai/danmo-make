@@ -1,4 +1,4 @@
-//! Request DTOs aligned with `backend/core/contracts.py`.
+//! Request DTOs for the product API / engine boundary.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -81,12 +81,15 @@ pub struct ImageGenerationRequest {
     pub adapters: Vec<ImageAdapter>,
     #[serde(default)]
     pub structural_guide: Option<StructuralGuide>,
+    /// Mid-denoise step thumbnails. Omitted stays on.
+    #[serde(default = "default_true")]
+    pub preview: bool,
     #[serde(default = "default_priority")]
     pub priority: String,
 }
 
 /// ControlNet structural guide on an image create, aligned with
-/// `backend/core/contracts.py StructuralGuide`. `asset_id` is the preprocessed
+/// Structural guide conditioning. `asset_id` is the preprocessed
 /// control image. `model_id` is the registry controlnet entry. The inpaint
 /// pair is both-or-neither.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +105,10 @@ pub struct StructuralGuide {
     pub inpaint_source_asset_id: Option<String>,
     #[serde(default)]
     pub inpaint_mask_asset_id: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_guide_type() -> String {
@@ -151,6 +158,9 @@ pub struct ImageEditRequest {
     pub adapters: Vec<ImageAdapter>,
     #[serde(default)]
     pub metadata: Value,
+    /// Mid-denoise step thumbnails. Omitted stays on.
+    #[serde(default = "default_true")]
+    pub preview: bool,
     #[serde(default = "default_priority")]
     pub priority: String,
 }
@@ -356,6 +366,12 @@ pub struct AudioEditRequest {
     /// `cover-nofsq` (default), `cover`, `repaint`, `lego`, `extract`, or `complete`.
     #[serde(default = "default_cover_nofsq")]
     pub task: String,
+    /// Gallery asset id. Resolved to PCM before the edit session.
+    #[serde(default)]
+    pub source_asset_id: Option<String>,
+    /// Composer cover slider. Used as `audio_cover_strength` when that field is absent.
+    #[serde(default)]
+    pub source_fidelity: Option<f32>,
     /// Absolute or workspace-relative path to a PCM16 WAV source.
     pub source_audio: Option<String>,
     /// Optional base64-encoded PCM16 WAV (used when `source_audio` is absent).
@@ -479,6 +495,25 @@ pub fn parse_size(size: &str) -> Result<(u32, u32), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_preview_defaults_on_and_can_be_disabled() {
+        let on: ImageGenerationRequest = serde_json::from_value(serde_json::json!({
+            "model": "z-image-turbo",
+            "prompt": "red"
+        }))
+        .unwrap();
+        assert!(on.preview);
+        let off: ImageEditRequest = serde_json::from_value(serde_json::json!({
+            "model": "z-image-turbo",
+            "operation": "rewrite",
+            "source_asset_id": "ast",
+            "prompt": "red",
+            "preview": false
+        }))
+        .unwrap();
+        assert!(!off.preview);
+    }
 
     #[test]
     fn audio_generation_defaults_lm_expansion_auto() {

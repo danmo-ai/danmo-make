@@ -796,6 +796,66 @@ impl Array {
         Ok(output)
     }
 
+    pub fn conv1d(
+        input: &Self,
+        weight: &Self,
+        stride: i32,
+        padding: i32,
+        dilation: i32,
+        groups: i32,
+        stream: &Stream,
+    ) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe {
+                sys::mlx_conv1d(
+                    &mut output.raw,
+                    input.raw,
+                    weight.raw,
+                    stride,
+                    padding,
+                    dilation,
+                    groups,
+                    stream.raw,
+                )
+            },
+            "mlx_conv1d",
+        )?;
+        Ok(output)
+    }
+
+    pub fn conv_transpose1d(
+        input: &Self,
+        weight: &Self,
+        stride: i32,
+        padding: i32,
+        dilation: i32,
+        output_padding: i32,
+        groups: i32,
+        stream: &Stream,
+    ) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe {
+                sys::mlx_conv_transpose1d(
+                    &mut output.raw,
+                    input.raw,
+                    weight.raw,
+                    stride,
+                    padding,
+                    dilation,
+                    output_padding,
+                    groups,
+                    stream.raw,
+                )
+            },
+            "mlx_conv_transpose1d",
+        )?;
+        Ok(output)
+    }
+
     pub fn conv3d(
         input: &Self,
         weight: &Self,

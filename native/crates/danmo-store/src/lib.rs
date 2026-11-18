@@ -72,6 +72,12 @@ pub struct TaskStore {
 
 const TASK_COLS: &str = "id, kind, model_id, status, priority, progress, params, result, error_message, created_at, started_at, completed_at";
 
+/// Gallery order key. Local ISO timestamps compare as text. SQLite
+/// `datetime('now')` values are UTC `YYYY-MM-DD HH:MM:SS`; `T` sorts before
+/// space, so those rows would land behind older assets from the same day.
+const ASSET_TIME_KEY: &str = "CASE WHEN created_at GLOB '????-??-?? ??:??:??*' \
+    THEN strftime('%Y-%m-%dT%H:%M:%f', created_at, 'localtime') ELSE created_at END";
+
 impl TaskStore {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         if let Some(parent) = path.parent() {
@@ -293,7 +299,7 @@ impl TaskStore {
             "INSERT INTO assets (
                 id, kind, mime_type, file_path, thumbnail_path, width, height, duration_seconds,
                 source_task_id, source_action, metadata, created_at, parent_asset_id, relation_type, group_id
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,datetime('now'),?12,?13,?14)",
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,strftime('%Y-%m-%dT%H:%M:%f','now','localtime'),?12,?13,?14)",
             params![
                 row.id,
                 row.kind,
@@ -351,7 +357,7 @@ impl TaskStore {
         let sql = format!(
             "SELECT id, kind, mime_type, file_path, thumbnail_path, width, height, duration_seconds,
                     source_task_id, source_action, metadata, created_at, parent_asset_id, relation_type, group_id
-             FROM assets {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+             FROM assets {where_sql} ORDER BY {ASSET_TIME_KEY} DESC LIMIT ? OFFSET ?"
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = if let Some(kind) = arg {
@@ -374,11 +380,11 @@ impl TaskStore {
     }
 
     pub fn child_assets(&self, parent_id: &str) -> Result<Vec<AssetRow>, StoreError> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT id, kind, mime_type, file_path, thumbnail_path, width, height, duration_seconds,
                     source_task_id, source_action, metadata, created_at, parent_asset_id, relation_type, group_id
-             FROM assets WHERE parent_asset_id=?1 ORDER BY created_at ASC",
-        )?;
+             FROM assets WHERE parent_asset_id=?1 ORDER BY {ASSET_TIME_KEY} ASC"
+        ))?;
         let rows = stmt.query_map(params![parent_id], read_asset)?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)

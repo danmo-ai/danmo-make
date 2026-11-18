@@ -14,6 +14,8 @@ use crate::runtime::{flash_attend, shape, GgmlContext, GraphBuilder, RuntimeErro
 
 #[cfg(feature = "mlx")]
 pub mod mlx;
+#[cfg(feature = "mlx")]
+pub mod taesd;
 use crate::weights::{GgufWeights, WeightError};
 use std::collections::{BTreeSet, HashMap};
 

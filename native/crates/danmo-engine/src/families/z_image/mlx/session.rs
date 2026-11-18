@@ -140,6 +140,7 @@ impl DitImageSession for MlxSession {
                     width,
                     height,
                     seed as u64,
+                    None,
                     &sigmas,
                     &exec,
                     stream,
@@ -178,6 +179,7 @@ fn denoise(
     width: u32,
     height: u32,
     seed: u64,
+    initial: Option<&[f32]>,
     sigmas: &[f32],
     exec: &ExecutionContext,
     stream: &Stream,
@@ -215,49 +217,218 @@ fn denoise(
         let bytes = weights.nbytes();
         cache.insert(compiled_key.clone(), compiled, bytes)?;
     }
-    let compiled = cache
-        .get::<CompiledCompute>(&compiled_key)?
-        .ok_or_else(|| {
-            Error::new(
-                "Z-Image denoise",
-                "compiled DiT is not in the executor cache",
-            )
-        })?;
     let latent_h = (height as i64 / config.vae_scale) as i32;
     let latent_w = (width as i64 / config.vae_scale) as i32;
-    let latent = danmo_mlx::RandomKey::new(seed)?
-        .normal(&[1, 16, latent_h, latent_w], Dtype::Float32, stream)?
-        .squeeze_axis(0, stream)?
-        .astype(Dtype::BFloat16, stream)?;
-    let mut step_cache = StepCache::z_image(sigmas.len().saturating_sub(1));
-    let mut step = 0usize;
-    let total = (sigmas.len().saturating_sub(1)) as u32;
-    let denoised =
-        super::denoise::euler_cancellable(&latent, sigmas, stream, None, |current, sigma| {
-            if exec.check_cancelled().is_err() {
+    let noise = danmo_mlx::RandomKey::new(seed)?.normal(
+        &[1, 16, latent_h, latent_w],
+        Dtype::Float32,
+        stream,
+    )?;
+    let latent = match initial {
+        None => noise
+            .squeeze_axis(0, stream)?
+            .astype(Dtype::BFloat16, stream)?,
+        Some(reference) => {
+            let expected = (16 * latent_h * latent_w) as usize;
+            if reference.len() != expected {
                 return Err(Error::new(
                     "Z-Image denoise",
-                    format!("cancelled at step {step}"),
+                    format!(
+                        "reference latent has {} values, expected {expected}",
+                        reference.len()
+                    ),
                 ));
             }
-            exec.progress("denoise", step as u32, total)
-                .map_err(|error| Error::new("Z-Image denoise", error.to_string()))?;
+            if sigmas.is_empty() {
+                return Err(Error::new("Z-Image denoise", "sigma schedule is empty"));
+            }
+            let reference = Array::from_f32_slice(reference, &[1, 16, latent_h, latent_w])?
+                .astype(Dtype::BFloat16, stream)?;
+            let noise = noise.astype(Dtype::BFloat16, stream)?;
+            let sigma = sigmas[0];
+            let keep = Array::from_f32_slice(&[1.0 - sigma], &[])?.astype(Dtype::BFloat16, stream)?;
+            let mix = Array::from_f32_slice(&[sigma], &[])?.astype(Dtype::BFloat16, stream)?;
+            Array::add(
+                &Array::multiply(&reference, &keep, stream)?,
+                &Array::multiply(&noise, &mix, stream)?,
+                stream,
+            )?
+            .squeeze_axis(0, stream)?
+        }
+    };
+    let mut step_cache = StepCache::z_image(sigmas.len().saturating_sub(1));
+    let total = (sigmas.len().saturating_sub(1)) as u32;
+    let interval = exec.observer.preview_interval_steps();
+    let max_edge = exec.observer.preview_max_edge();
+    if sigmas.len() < 2 || sigmas.iter().any(|sigma| !sigma.is_finite()) {
+        return Err(Error::new(
+            "Z-Image denoise",
+            "scheduler needs finite sigma endpoints",
+        ));
+    }
+    let mut current = latent;
+    for step_index in 0..sigmas.len() - 1 {
+        if exec.check_cancelled().is_err() {
+            return Err(Error::new(
+                "Z-Image denoise",
+                format!("cancelled at step {step_index}"),
+            ));
+        }
+        exec.progress("denoise", step_index as u32, total)
+            .map_err(|error| Error::new("Z-Image denoise", error.to_string()))?;
+        let velocity = {
+            let compiled = cache
+                .get::<CompiledCompute>(&compiled_key)?
+                .ok_or_else(|| {
+                    Error::new(
+                        "Z-Image denoise",
+                        "compiled DiT is not in the executor cache",
+                    )
+                })?;
             let (velocity, _) = forward_compiled_with_step_cache(
                 &weights,
                 config,
                 compiled,
-                current,
+                &current,
                 &caption_cache,
-                sigma,
+                sigmas[step_index],
                 &mut step_cache,
-                step,
+                step_index,
                 stream,
             )?;
-            step += 1;
-            Ok(velocity)
-        })?;
-    denoised.eval()?;
-    denoised.to_vec_f32(stream)
+            velocity
+        };
+        let velocity = if velocity.dtype() == current.dtype() {
+            velocity
+        } else {
+            velocity.astype(current.dtype(), stream)?
+        };
+        let delta = sigmas[step_index + 1] - sigmas[step_index];
+        let delta = Array::from_f32_slice(&[delta], &[])?.astype(current.dtype(), stream)?;
+        current = Array::add(&current, &Array::multiply(&velocity, &delta, stream)?, stream)?;
+        if let Some(interval) = interval {
+            let step_1 = (step_index + 1) as u32;
+            if should_emit_preview(step_1, total, interval) {
+                let png = step_preview_png(
+                    cache,
+                    &current,
+                    width,
+                    height,
+                    latent_h,
+                    latent_w,
+                    max_edge,
+                    stream,
+                )?;
+                exec.observer
+                    .write_step_preview(&png)
+                    .map_err(|error| Error::new("Z-Image denoise", error.to_string()))?;
+            }
+        }
+    }
+    current.eval()?;
+    current.to_vec_f32(stream)
+}
+
+fn cached_decoder<'a>(
+    cache: &'a mut danmo_mlx::ModelCache,
+    vae_key: &danmo_mlx::CacheKey,
+    latent_h: i32,
+    latent_w: i32,
+    stream: &Stream,
+) -> danmo_mlx::Result<&'a crate::common::vae::mlx::CompiledDecoder> {
+    let weights = resident_weights(cache, vae_key, "vae")?.clone();
+    let decoder_key = danmo_mlx::CacheKey {
+        id: format!("{}#compiled-vae#{latent_h}x{latent_w}", vae_key.id),
+        revision: vae_key.revision,
+    };
+    if cache
+        .get::<crate::common::vae::mlx::CompiledDecoder>(&decoder_key)?
+        .is_none()
+    {
+        let decoder = crate::common::vae::mlx::CompiledDecoder::new(
+            weights.clone(),
+            vae_spec(),
+            stream.clone(),
+        )?;
+        let bytes = weights.nbytes();
+        cache.insert(decoder_key.clone(), decoder, bytes)?;
+    }
+    cache
+        .get::<crate::common::vae::mlx::CompiledDecoder>(&decoder_key)?
+        .ok_or_else(|| {
+            Error::new(
+                "Z-Image decode",
+                "compiled VAE is not in the executor cache",
+            )
+        })
+}
+
+fn step_preview_png(
+    cache: &mut danmo_mlx::ModelCache,
+    latent: &Array,
+    width: u32,
+    height: u32,
+    latent_h: i32,
+    latent_w: i32,
+    max_edge: u32,
+    stream: &Stream,
+) -> danmo_mlx::Result<Vec<u8>> {
+    let spec = vae_spec();
+    let image = {
+        let decoder = crate::common::vae::taesd::cached(
+            cache,
+            latent_h,
+            latent_w,
+            crate::common::vae::taesd::PreviewScale {
+                scaling: spec.scaling,
+                shift: spec.shift,
+            },
+            stream,
+        )?;
+        decoder.apply(latent)?
+    };
+    image.eval()?;
+    let shape = image.shape();
+    if shape.len() != 4 || shape[3] != 3 {
+        return Err(Error::new(
+            "Z-Image preview",
+            format!("TAEF1 output shape {shape:?} is not [1, H, W, 3]"),
+        ));
+    }
+    let (out_h, out_w) = (shape[1] as u32, shape[2] as u32);
+    if out_h != height || out_w != width {
+        return Err(Error::new(
+            "Z-Image preview",
+            format!("TAEF1 decoded {out_w}x{out_h}, expected {width}x{height}"),
+        ));
+    }
+    let values = image.to_vec_f32(stream)?;
+    let plane = (width as usize).saturating_mul(height as usize);
+    if values.len() != plane * 3 {
+        return Err(Error::new(
+            "Z-Image preview",
+            format!("TAEF1 returned {} values, expected {}", values.len(), plane * 3),
+        ));
+    }
+    // NHWC, then the same channel reversal main applies before saving the PNG.
+    let rgb: Vec<u8> = (0..plane)
+        .flat_map(|pixel| {
+            let base = pixel * 3;
+            [2, 1, 0].map(|channel| {
+                (values[base + channel] * 255.0)
+                    .clamp(0.0, 255.0)
+                    .round_ties_even() as u8
+            })
+        })
+        .collect();
+    let (dw, dh) = preview_edge(width, height, max_edge);
+    let rgb = if dw == width && dh == height {
+        rgb
+    } else {
+        crate::common::image::resize_bicubic(&rgb, width, height, dw, dh)
+            .map_err(|error| Error::new("Z-Image preview", error.to_string()))?
+    };
+    Ok(crate::common::png::encode_rgb(dw, dh, &rgb))
 }
 
 fn decode_pixels(
@@ -268,7 +439,6 @@ fn decode_pixels(
     height: u32,
     stream: &Stream,
 ) -> danmo_mlx::Result<Vec<u8>> {
-    let weights = resident_weights(cache, vae_key, "vae")?.clone();
     let config = MlxZImageConfig::published();
     let latent_h = (height as i64 / config.vae_scale) as i32;
     let latent_w = (width as i64 / config.vae_scale) as i32;
@@ -281,28 +451,7 @@ fn decode_pixels(
     }
     let latent = Array::from_f32_slice(latents, &[1, 16, latent_h, latent_w])?
         .astype(Dtype::BFloat16, stream)?;
-    let spec = vae_spec();
-    let decoder_key = danmo_mlx::CacheKey {
-        id: format!("{}#compiled-vae#{latent_h}x{latent_w}", vae_key.id),
-        revision: vae_key.revision,
-    };
-    if cache
-        .get::<crate::common::vae::mlx::CompiledDecoder>(&decoder_key)?
-        .is_none()
-    {
-        let decoder =
-            crate::common::vae::mlx::CompiledDecoder::new(weights.clone(), spec, stream.clone())?;
-        let bytes = weights.nbytes();
-        cache.insert(decoder_key.clone(), decoder, bytes)?;
-    }
-    let decoder = cache
-        .get::<crate::common::vae::mlx::CompiledDecoder>(&decoder_key)?
-        .ok_or_else(|| {
-            Error::new(
-                "Z-Image decode",
-                "compiled VAE is not in the executor cache",
-            )
-        })?;
+    let decoder = cached_decoder(cache, vae_key, latent_h, latent_w, stream)?;
     let decoded = decoder.apply(&latent)?;
     decoded.eval()?;
     let values = decoded.to_vec_f32(stream)?;
@@ -325,6 +474,109 @@ fn decode_pixels(
             ((value + 1.0) * 127.5).clamp(0.0, 255.0).round_ties_even() as u8
         })
         .collect())
+}
+
+/// Step 1, every `interval` steps, and the last step. Matches main
+/// `maybe_emit_image_step_preview`.
+pub(crate) fn should_emit_preview(step_1: u32, total: u32, interval: u32) -> bool {
+    let interval = interval.max(1);
+    let is_last = step_1 >= total && total > 0;
+    !(step_1 > 1 && step_1 % interval != 0 && !is_last)
+}
+
+fn preview_edge(width: u32, height: u32, max_edge: u32) -> (u32, u32) {
+    let long = width.max(height);
+    if max_edge == 0 || long <= max_edge {
+        return (width.max(1), height.max(1));
+    }
+    let scale = max_edge as f32 / long as f32;
+    (
+        ((width as f32) * scale).round().max(1.0) as u32,
+        ((height as f32) * scale).round().max(1.0) as u32,
+    )
+}
+
+pub(crate) fn encode_image(
+    bundle: &Path,
+    image: &[f32],
+    width: u32,
+    height: u32,
+) -> Result<Vec<f32>, EngineError> {
+    resident::load_vae(&bundle.join("vae")).map_err(from_mlx)?;
+    let vae_key = cache_key(&bundle.join("vae")).map_err(from_mlx)?;
+    let image = image.to_vec();
+    crate::runtime::mlx_executor()
+        .map_err(from_mlx)?
+        .execute("z_image mlx vae encode", move |_, stream, cache, _| {
+            let weights = resident_weights(cache, &vae_key, "vae")?.clone();
+            let pixels = Array::from_f32_slice(&image, &[1, 3, height as i32, width as i32])?;
+            let latent = crate::common::vae::mlx::encode(&weights, &vae_spec(), &pixels, stream)?;
+            latent.eval()?;
+            latent.to_vec_f32(stream)
+        })
+        .map_err(from_mlx)
+}
+
+pub(crate) fn denoise_reference(
+    bundle: &Path,
+    ids: &[i32],
+    width: u32,
+    height: u32,
+    seed: u64,
+    reference: &[f32],
+    sigmas: &[f32],
+    exec: &ExecutionContext,
+) -> Result<Vec<f32>, EngineError> {
+    resident::load_transformer(
+        &bundle.join("transformer"),
+        MlxZImageConfig::published(),
+        crate::weights::WeightDtype::Native,
+        None,
+    )
+    .map_err(from_mlx)?;
+    resident::load_text_encoder(&bundle.join("text_encoder")).map_err(from_mlx)?;
+    let text_key = cache_key(&bundle.join("text_encoder")).map_err(from_mlx)?;
+    let dit_key = cache_key(&bundle.join("transformer")).map_err(from_mlx)?;
+    let ids = ids.to_vec();
+    let reference = reference.to_vec();
+    let sigmas = sigmas.to_vec();
+    let exec = exec.clone();
+    crate::runtime::mlx_executor()
+        .map_err(from_mlx)?
+        .execute("z_image mlx edit denoise", move |_, stream, cache, _| {
+            denoise(
+                cache,
+                &text_key,
+                &dit_key,
+                &ids,
+                width,
+                height,
+                seed,
+                Some(&reference),
+                &sigmas,
+                &exec,
+                stream,
+            )
+        })
+        .map_err(from_mlx)
+}
+
+pub(crate) fn decode_latent(
+    bundle: &Path,
+    latents: &[f32],
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, EngineError> {
+    resident::load_vae(&bundle.join("vae")).map_err(from_mlx)?;
+    let vae_key = cache_key(&bundle.join("vae")).map_err(from_mlx)?;
+    let latents = latents.to_vec();
+    let pixels = crate::runtime::mlx_executor()
+        .map_err(from_mlx)?
+        .execute("z_image mlx edit decode", move |_, stream, cache, _| {
+            decode_pixels(cache, &vae_key, &latents, width, height, stream)
+        })
+        .map_err(from_mlx)?;
+    Ok(crate::common::png::encode_rgb(width, height, &pixels))
 }
 
 fn vae_spec() -> crate::common::vae::VaeSpec {
@@ -406,7 +658,7 @@ fn guidance_is_single_pass(guidance: Option<f32>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_mlx_bundle, MlxSession};
+    use super::{is_mlx_bundle, should_emit_preview, MlxSession};
     use crate::contract::{ExecutionContext, NoopObserver};
     use crate::families::DitImageSession;
     use crate::runtime::{BackendKind, GgmlContext};
@@ -414,6 +666,16 @@ mod tests {
     use danmo_mlx::{Array, Stream};
     use std::path::Path;
     use std::sync::Arc;
+
+    #[test]
+    fn preview_follows_the_main_interval() {
+        let emit: Vec<u32> = (1..=9)
+            .filter(|step| should_emit_preview(*step, 9, 2))
+            .collect();
+        assert_eq!(emit, vec![1, 2, 4, 6, 8, 9]);
+        assert!(should_emit_preview(2, 2, 2));
+        assert!(!should_emit_preview(3, 9, 2));
+    }
 
     fn write_shard(path: &Path) {
         let values = [0.5f32; 4];

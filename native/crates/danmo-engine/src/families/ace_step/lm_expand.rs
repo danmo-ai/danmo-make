@@ -1,7 +1,8 @@
 //! Product create-path 5Hz LM expansion (`lm_expansion` = auto | format | off).
 //!
 //! Official Custom path: run `format_sample` on caption+lyrics before DiT.
-//! Fail loud when expansion is requested but no LM GGUF is installed.
+//! The MLX path reads the in-bundle safetensors tower. A missing tower fails
+//! loud; `lm_expansion=off` skips the pass.
 
 use super::lm;
 use super::lm_prompt::LmMode;
@@ -203,81 +204,19 @@ pub fn maybe_expand_for_create_with_context(
     if mode.is_off() {
         return Ok(passthrough());
     }
-
-    let lm_path = resolve_lm_bundle_for_create(dit_bundle, request.lm_bundle)?;
-    // Prefer the LM directory (tokenizer lives beside GGUF).
-    let lm_root = if lm_path.is_file() {
-        lm_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| lm_path.clone())
-    } else {
-        lm_path.clone()
-    };
-
-    let use_fsm = super::text::load_tokenizer_json(&lm_root).is_ok();
-    let out = super::run_lm_with_context(
-        &lm_root,
-        &LmRequest {
-            mode: LmMode::Format,
-            caption: request.caption,
-            lyrics: request.lyrics,
-            duration: request.duration,
-            bpm: request.bpm,
-            keyscale: request.keyscale,
-            timesignature: request.timesignature,
-            vocal_language: request.vocal_language,
-            max_new_tokens: 512,
-            tokenizer_json: None,
-            temperature: 0.0,
-            top_p: 1.0,
-            top_k: 0,
-            seed: request.seed,
-            use_fsm,
-            cfg_scale: 1.0,
-            negative_prompt: "",
-        },
-        ctx,
-        &mut on_token,
-    )?;
-
-    let mut codes = out.audio_code_indices;
-    if codes.is_empty() {
-        if let Some(existing) = request.existing_codes {
-            codes = existing.to_vec();
-        }
+    #[cfg(feature = "mlx")]
+    {
+        let _ = ctx;
+        return super::mlx::expand_lm(dit_bundle, request, on_token);
     }
-
-    Ok(LmExpandOutput {
-        caption: out.caption,
-        lyrics: out.lyrics,
-        bpm: out.bpm.or_else(|| (request.bpm > 0).then_some(request.bpm)),
-        duration: out
-            .duration
-            .or_else(|| (request.duration > 0.0).then_some(request.duration.round() as i32)),
-        keyscale: if out.keyscale.is_empty() {
-            request.keyscale.to_string()
-        } else {
-            out.keyscale
-        },
-        timesignature: if out.timesignature.is_empty() {
-            request.timesignature.to_string()
-        } else {
-            out.timesignature
-        },
-        language: if out.language.is_empty() {
-            if request.vocal_language.is_empty() {
-                "en".into()
-            } else {
-                request.vocal_language.into()
-            }
-        } else {
-            out.language
-        },
-        audio_code_indices: codes,
-        did_expand: true,
-        pmi: out.pmi,
-    })
+    #[cfg(not(feature = "mlx"))]
+    {
+        let _ = (dit_bundle, ctx, &mut on_token);
+        Err(WeightError::NotBuilt(
+            "ACE-Step 5Hz LM generate has no MLX forward. Set lm_expansion to off; the ggml LM graph is not used."
+                .into(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -371,7 +310,7 @@ mod tests {
         let lm_dir = dit.join("companions/lm");
         std::fs::create_dir_all(&lm_dir).unwrap();
         write_smoke_lm(&lm_dir, AceLmConfig::smoke()).unwrap();
-        let out = maybe_expand_for_create(
+        let err = maybe_expand_for_create(
             &dit,
             &LmExpandRequest {
                 mode: "auto",
@@ -389,12 +328,11 @@ mod tests {
             crate::runtime::BackendKind::Cpu,
             |_, _| (),
         )
-        .unwrap();
-        assert!(out.did_expand);
-        // Smoke LM has no real tokenizer decode → keep user caption fallbacks via format assemble.
-        assert!(!out.caption.is_empty());
-        // Existing codes kept when format emits none.
-        assert_eq!(out.audio_code_indices, vec![1, 2, 3]);
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("MLX") || err.to_string().contains("5Hz LM"),
+            "{err}"
+        );
         let _ = std::fs::remove_dir_all(&dit);
     }
 

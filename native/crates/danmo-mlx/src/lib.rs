@@ -21,7 +21,7 @@ pub use device::{Device, DeviceType};
 pub use error::{Error, Result};
 pub use executor::{EventSink, Executor, ExecutorEvent};
 pub use io::{save_safetensors, SafeTensors};
-pub use linear::{AffineQuantization, LinearWeight};
+pub use linear::{AffineQuantization, LinearWeight, LoraResidual};
 pub use memory::{active_memory, clear_cache, peak_memory, reset_peak_memory};
 pub use random::RandomKey;
 pub use stream::Stream;

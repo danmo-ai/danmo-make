@@ -48,6 +48,20 @@ impl Decoder {
         Ok(Self { id_to_token })
     }
 
+    /// Raw vocab piece. Byte-level BPE (`Ġ`, `Ċ`, …) is mapped back to bytes so
+    /// the FSM sees real spaces and newlines. Special tokens stay in the string;
+    /// [`decode`] drops `<|...|>`.
+    pub fn piece(&self, id: i32) -> String {
+        self.id_to_token
+            .get(&id)
+            .map(|tok| {
+                let mut bytes = Vec::new();
+                append_token_bytes(tok, &mut bytes);
+                String::from_utf8_lossy(&bytes).into_owned()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn decode(&self, ids: &[i32]) -> String {
         let mut bytes = Vec::new();
         for &id in ids {
@@ -57,25 +71,65 @@ impl Decoder {
             if tok.starts_with("<|") && tok.ends_with("|>") {
                 continue;
             }
-            if let Some(hex) = tok.strip_prefix("<0x").and_then(|s| s.strip_suffix('>')) {
-                if let Ok(b) = u8::from_str_radix(hex, 16) {
-                    bytes.push(b);
-                }
-                continue;
-            }
-            for ch in tok.chars() {
-                if ch == 'Ġ' || ch == '▁' {
-                    bytes.push(b' ');
-                } else {
-                    let mut buf = [0u8; 4];
-                    for b in ch.encode_utf8(&mut buf).as_bytes() {
-                        bytes.push(*b);
-                    }
-                }
-            }
+            append_token_bytes(tok, &mut bytes);
         }
         String::from_utf8_lossy(&bytes).into_owned()
     }
+}
+
+fn append_token_bytes(tok: &str, bytes: &mut Vec<u8>) {
+    if let Some(hex) = tok
+        .strip_prefix("<0x")
+        .and_then(|suffix| suffix.strip_suffix('>'))
+    {
+        if let Ok(byte) = u8::from_str_radix(hex, 16) {
+            bytes.push(byte);
+            return;
+        }
+    }
+    for ch in tok.chars() {
+        if ch == '▁' {
+            bytes.push(b' ');
+            continue;
+        }
+        if let Some(byte) = gpt2_byte(ch) {
+            bytes.push(byte);
+        } else {
+            let mut buf = [0u8; 4];
+            bytes.extend(ch.encode_utf8(&mut buf).as_bytes());
+        }
+    }
+}
+
+/// Inverse of the GPT-2 byte-to-unicode map. Printable bytes stay themselves;
+/// the rest (`\n` → `Ċ`, space → `Ġ`) use the extra codepoints.
+fn gpt2_byte(ch: char) -> Option<u8> {
+    use std::sync::OnceLock;
+    static MAP: OnceLock<[Option<u8>; 512]> = OnceLock::new();
+    let map = MAP.get_or_init(|| {
+        let mut table = [None; 512];
+        let mut direct = Vec::with_capacity(256);
+        direct.extend(b'!'..=b'~');
+        direct.extend(0xA1..=0xAC);
+        direct.extend(0xAE..=0xFF);
+        for byte in direct.iter().copied() {
+            table[byte as usize] = Some(byte);
+        }
+        let mut extra = 0usize;
+        for byte in 0..=255u16 {
+            if direct.contains(&(byte as u8)) {
+                continue;
+            }
+            let point = 256 + extra;
+            if point < table.len() {
+                table[point] = Some(byte as u8);
+            }
+            extra += 1;
+        }
+        table
+    });
+    let point = ch as usize;
+    map.get(point).copied().flatten()
 }
 
 /// Pure lyric token span inside the lyric prompt (header stripped, endoftext dropped).
@@ -107,5 +161,12 @@ mod tests {
         let ids = [1, 2, 3, 4, QWEN_ENDOFTEXT_ID, 9];
         assert_eq!(pure_lyric_range(&ids, 2), Some((2, 4)));
         assert!(pure_lyric_range(&ids, 4).is_none());
+    }
+
+    #[test]
+    fn gpt2_maps_newline_and_space() {
+        assert_eq!(gpt2_byte('Ċ'), Some(b'\n'));
+        assert_eq!(gpt2_byte('Ġ'), Some(b' '));
+        assert_eq!(gpt2_byte('A'), Some(b'A'));
     }
 }

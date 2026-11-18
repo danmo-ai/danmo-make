@@ -1428,7 +1428,9 @@ const loadCompatibleLoras = async () => {
   }
   try {
     const loras = await api.settings.getCompatibleLoras(params.model);
-    compatibleLoras.value = (loras as typeof compatibleLoras.value) || [];
+    compatibleLoras.value = ((loras as typeof compatibleLoras.value) || []).filter(
+      (lora) => lora.ready !== false,
+    );
     syncVideoLoraSelection();
   } catch (e) {
     console.error('Failed to load compatible loras:', e);

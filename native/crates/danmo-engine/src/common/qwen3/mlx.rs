@@ -227,6 +227,16 @@ fn position_embeddings(
     dtype: danmo_mlx::Dtype,
     stream: &Stream,
 ) -> Result<(Array, Array)> {
+    position_embeddings_from(config, 0, sequence, dtype, stream)
+}
+
+fn position_embeddings_from(
+    config: Qwen3Config,
+    start: i32,
+    length: i32,
+    dtype: danmo_mlx::Dtype,
+    stream: &Stream,
+) -> Result<(Array, Array)> {
     // main computes inv_freq / outer / cos / sin with MLX operators in F32,
     // then casts to the activation dtype; host-side powf/cosf drifts by ~2e-3
     // and amplifies through the tower. Reproduce the exact operator sequence.
@@ -238,7 +248,14 @@ fn position_embeddings(
     let power = Array::power(&base, &exponent, stream)?;
     let one = Array::from_f32_slice(&[1.0], &[])?;
     let inv_freq = Array::divide(&one, &power, stream)?;
-    let positions = Array::arange(0.0, sequence as f64, 1.0, danmo_mlx::Dtype::Float32, stream)?;
+    let end = i32::saturating_add(start, length);
+    let positions = Array::arange(
+        start as f64,
+        end as f64,
+        1.0,
+        danmo_mlx::Dtype::Float32,
+        stream,
+    )?;
     // outer(positions, inv_freq) == positions[:, None] * inv_freq[None, :]
     let positions_col = positions.expand_dims(1, stream)?;
     let inv_freq_row = inv_freq.expand_dims(0, stream)?;
@@ -301,6 +318,222 @@ fn weight<'a>(weights: &'a MlxWeights, prefix: &str, name: &str) -> Result<&'a A
 
 fn linear<'a>(weights: &'a MlxWeights, prefix: &str, name: &str) -> Result<&'a LinearWeight> {
     weights.linear(&qualified(prefix, name))
+}
+
+/// RoPE'd K/V for one Qwen3 layer, sequence axis already transposed to
+/// `[batch, kv_heads, time, head]`.
+pub(crate) struct LmLayerCache {
+    key: Array,
+    value: Array,
+}
+
+pub(crate) struct LmCache {
+    layers: Vec<LmLayerCache>,
+    length: i32,
+}
+
+/// One LM step. `cache` empty means `ids` is the prefill. A populated cache
+/// appends `ids` (normally one token) and attends over the stored keys.
+pub(crate) fn step_logits(
+    weights: &MlxWeights,
+    config: Qwen3Config,
+    prefix: &str,
+    ids: &[i32],
+    cache: &mut Option<LmCache>,
+    stream: &Stream,
+) -> Result<Vec<f32>> {
+    if ids.is_empty() {
+        return Err(Error::new("Qwen3 LM", "token step is empty"));
+    }
+    let start = cache.as_ref().map(|item| item.length).unwrap_or(0);
+    let sequence = ids.len() as i32;
+    let indices = Array::from_i32_slice(ids, &[sequence])?;
+    let embedding = weights.embedding(&format!("{prefix}embed_tokens.weight"), stream)?;
+    let quantized_tower = weights.quantization().is_some();
+    let tower_dtype = if quantized_tower {
+        danmo_mlx::Dtype::Float32
+    } else {
+        embedding.dtype()
+    };
+    let mut hidden = embedding
+        .take_axis(&indices, 0, stream)?
+        .reshape(&[1, sequence, config.hidden as i32], stream)?
+        .astype(tower_dtype, stream)?;
+    let (cos, sin) = position_embeddings_from(config, start, sequence, embedding.dtype(), stream)?;
+    let mut next = Vec::with_capacity(config.layers as usize);
+    for layer in 0..config.layers {
+        let past = cache
+            .as_ref()
+            .and_then(|item| item.layers.get(layer as usize));
+        let (updated, key, value) = layer_step(
+            weights,
+            config,
+            prefix,
+            layer,
+            &hidden,
+            past.map(|item| &item.key),
+            past.map(|item| &item.value),
+            &cos,
+            &sin,
+            stream,
+        )?;
+        hidden = updated;
+        next.push(LmLayerCache { key, value });
+    }
+    let norm = norm_weight(weights, prefix, "norm.weight", hidden.dtype(), stream)?;
+    let last = hidden.slice(
+        &[0, sequence - 1, 0],
+        &[1, sequence, hidden.shape()[2]],
+        &[1, 1, 1],
+        stream,
+    )?;
+    let normed = last
+        .rms_norm(Some(&norm), 1e-6, stream)?
+        .reshape(&[1, config.hidden as i32], stream)?;
+    let table = embedding.transpose_axes(&[1, 0], stream)?;
+    let logits =
+        Array::matmul(&normed, &table, stream)?.astype(danmo_mlx::Dtype::Float32, stream)?;
+    let mut held = Vec::with_capacity(next.len() * 2 + 1);
+    held.push(&logits);
+    for layer in &next {
+        held.push(&layer.key);
+        held.push(&layer.value);
+    }
+    Array::eval_all(&held)?;
+    *cache = Some(LmCache {
+        layers: next,
+        length: start + sequence,
+    });
+    logits.to_vec_f32(stream)
+}
+
+fn layer_step(
+    weights: &MlxWeights,
+    config: Qwen3Config,
+    prefix: &str,
+    layer: i64,
+    hidden: &Array,
+    past_key: Option<&Array>,
+    past_value: Option<&Array>,
+    cos: &Array,
+    sin: &Array,
+    stream: &Stream,
+) -> Result<(Array, Array, Array)> {
+    let path = format!("{prefix}layers.{layer}");
+    let input_norm = norm_weight(
+        weights,
+        &path,
+        "input_layernorm.weight",
+        hidden.dtype(),
+        stream,
+    )?;
+    let normed = hidden.rms_norm(Some(&input_norm), 1e-6, stream)?;
+    let (attended, key, value) = attention_step(
+        weights, config, &path, &normed, past_key, past_value, cos, sin, stream,
+    )?;
+    let hidden = Array::add(hidden, &attended, stream)?;
+    let post_norm = norm_weight(
+        weights,
+        &path,
+        "post_attention_layernorm.weight",
+        hidden.dtype(),
+        stream,
+    )?;
+    let normed = hidden.rms_norm(Some(&post_norm), 1e-6, stream)?;
+    let gate = linear(weights, &path, "mlp.gate_proj.weight")?
+        .apply(&normed, None, stream)?
+        .silu(stream)?;
+    let up = linear(weights, &path, "mlp.up_proj.weight")?.apply(&normed, None, stream)?;
+    let mid = Array::multiply(&gate, &up, stream)?;
+    let mlp = linear(weights, &path, "mlp.down_proj.weight")?.apply(&mid, None, stream)?;
+    Ok((Array::add(&hidden, &mlp, stream)?, key, value))
+}
+
+fn attention_step(
+    weights: &MlxWeights,
+    config: Qwen3Config,
+    prefix: &str,
+    hidden: &Array,
+    past_key: Option<&Array>,
+    past_value: Option<&Array>,
+    cos: &Array,
+    sin: &Array,
+    stream: &Stream,
+) -> Result<(Array, Array, Array)> {
+    let shape = hidden.shape();
+    let (batch, sequence) = (shape[0], shape[1]);
+    let head = config.head_dim as i32;
+    let heads = config.heads as i32;
+    let kv_heads = config.kv_heads as i32;
+    let q_proj = linear(weights, prefix, "self_attn.q_proj.weight")?
+        .apply(hidden, None, stream)?
+        .reshape(&[batch, sequence, heads, head], stream)?;
+    let q_norm = norm_weight(
+        weights,
+        prefix,
+        "self_attn.q_norm.weight",
+        q_proj.dtype(),
+        stream,
+    )?;
+    let mut q = q_proj.rms_norm(Some(&q_norm), 1e-6, stream)?;
+    let k_proj = linear(weights, prefix, "self_attn.k_proj.weight")?
+        .apply(hidden, None, stream)?
+        .reshape(&[batch, sequence, kv_heads, head], stream)?;
+    let k_norm = norm_weight(
+        weights,
+        prefix,
+        "self_attn.k_norm.weight",
+        k_proj.dtype(),
+        stream,
+    )?;
+    let mut k = k_proj.rms_norm(Some(&k_norm), 1e-6, stream)?;
+    let v = linear(weights, prefix, "self_attn.v_proj.weight")?
+        .apply(hidden, None, stream)?
+        .reshape(&[batch, sequence, kv_heads, head], stream)?;
+    q = apply_rope(&q, cos, sin, stream)?;
+    k = apply_rope(&k, cos, sin, stream)?;
+    q = q.transpose_axes(&[0, 2, 1, 3], stream)?;
+    let mut k = k.transpose_axes(&[0, 2, 1, 3], stream)?;
+    let mut v = v.transpose_axes(&[0, 2, 1, 3], stream)?;
+    if let (Some(past_key), Some(past_value)) = (past_key, past_value) {
+        k = Array::concatenate_axis(&[past_key.clone(), k], 2, stream)?;
+        v = Array::concatenate_axis(&[past_value.clone(), v], 2, stream)?;
+    }
+    let groups = heads / kv_heads;
+    let mut key_attn = k.clone();
+    let mut value_attn = v.clone();
+    if groups > 1 {
+        key_attn = key_attn.repeat_axis(groups, 1, stream)?;
+        value_attn = value_attn.repeat_axis(groups, 1, stream)?;
+    }
+    let total = k.shape()[2];
+    let mask = if past_key.is_none() {
+        let valid = vec![true; sequence as usize];
+        causal_padding_mask(&valid, stream)?
+    } else {
+        Array::from_f32_slice(
+            &vec![0.0; (sequence * total) as usize],
+            &[1, 1, sequence, total],
+        )?
+    };
+    let compute = q.astype(danmo_mlx::Dtype::Float32, stream)?;
+    let keys = key_attn.astype(danmo_mlx::Dtype::Float32, stream)?;
+    let values = value_attn.astype(danmo_mlx::Dtype::Float32, stream)?;
+    let output = Array::scaled_dot_product_attention(
+        &compute,
+        &keys,
+        &values,
+        1.0 / (config.head_dim as f32).sqrt(),
+        "",
+        Some(&mask),
+        stream,
+    )?
+    .astype(q.dtype(), stream)?
+    .transpose_axes(&[0, 2, 1, 3], stream)?
+    .reshape(&[batch, sequence, heads * head], stream)?;
+    let projected =
+        linear(weights, prefix, "self_attn.o_proj.weight")?.apply(&output, None, stream)?;
+    Ok((projected, k, v))
 }
 
 #[cfg(test)]

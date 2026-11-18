@@ -63,25 +63,59 @@ fn normalize_mflux_layout(weights: MlxWeights) -> Result<MlxWeights> {
     }
     let mut names = BTreeMap::new();
     for name in weights.names() {
-        let mut target = name.to_string();
-        if let Some(rest) = name.strip_prefix("decoder.") {
-            // conv_in / conv_out wrap the Conv2d one level deeper in mflux;
-            // the decoder graph reads them flat. Upsamplers keep their .conv
-            // submodule in both layouts, so those keys stay untouched.
-            let rest = rest
-                .replacen("conv_in.conv.", "conv_in.", 1)
-                .replacen("conv_out.conv.", "conv_out.", 1)
-                .replacen("conv_norm_out.norm.", "conv_norm_out.", 1);
-            target = format!("decoder.{rest}");
-        }
-        names.insert(name.to_string(), target);
+        names.insert(name.to_string(), unwrap_mflux_key(name));
     }
-    weights.rename(&names)
+    let mut weights = weights.rename(&names)?;
+    // mflux conv_in is [O, kH, kW, I] with I = 3, the same rank as diffusers
+    // [O, I, kH, kW]. Fold those kernels to OIHW here so the conv reader can
+    // treat every ambiguous 3×3 as diffusers. Wider kernels stay NHWC.
+    let stream = Stream::cpu()?;
+    let ambiguous: Vec<String> = weights
+        .names()
+        .filter(|name| {
+            weights
+                .tensor(name)
+                .ok()
+                .is_some_and(|tensor| ambiguous_square_kernel(&tensor.shape()))
+        })
+        .map(str::to_string)
+        .collect();
+    for name in ambiguous {
+        let tensor = weights.tensor(&name)?;
+        let oihw = tensor.transpose_axes(&[0, 3, 1, 2], &stream)?;
+        weights = weights.with_tensor_production(name, oihw);
+    }
+    Ok(weights)
+}
+
+fn unwrap_mflux_key(name: &str) -> String {
+    let Some((prefix, rest)) = name
+        .strip_prefix("decoder.")
+        .map(|rest| ("decoder.", rest))
+        .or_else(|| name.strip_prefix("encoder.").map(|rest| ("encoder.", rest)))
+    else {
+        return name.to_string();
+    };
+    // conv_in / conv_out wrap the Conv2d one level deeper in mflux. The
+    // encoder file spells that wrapper conv2d; the decoder spells it conv.
+    // Upsamplers and downsamplers keep their .conv submodule in both layouts.
+    let rest = rest
+        .replacen("conv_in.conv2d.", "conv_in.", 1)
+        .replacen("conv_in.conv.", "conv_in.", 1)
+        .replacen("conv_out.conv2d.", "conv_out.", 1)
+        .replacen("conv_out.conv.", "conv_out.", 1)
+        .replacen("conv_norm_out.norm.", "conv_norm_out.", 1);
+    format!("{prefix}{rest}")
+}
+
+fn ambiguous_square_kernel(shape: &[i32]) -> bool {
+    shape.len() == 4 && shape[1] <= 7 && shape[2] <= 7 && shape[3] <= 7 && shape[2] == shape[3]
 }
 
 /// MLX conv2d wants `[O, kH, kW, I]`. mflux already stores that. Diffusers
-/// stores `[O, I, kH, kW]`; transpose those once per call. Ambiguous ranks
-/// fail instead of guessing a layout.
+/// stores `[O, I, kH, kW]`; transpose those once per call. A square kernel
+/// with a small input channel is treated as diffusers OIHW; mflux copies of
+/// that shape are folded to OIHW when the bundle is normalized.
 fn mlx_conv_kernel(kernel: &Array, stream: &Stream) -> Result<Array> {
     let shape = kernel.shape();
     if shape.len() != 4 {
@@ -91,7 +125,10 @@ fn mlx_conv_kernel(kernel: &Array, stream: &Stream) -> Result<Array> {
     let oihw = shape[1] > 7 && shape[2] <= 7 && shape[3] <= 7;
     if nhwc {
         Ok(kernel.clone())
-    } else if oihw {
+    } else if oihw || ambiguous_square_kernel(&shape) {
+        // A square kernel whose input channel is also small (conv_in is
+        // [128, 3, 3, 3]) cannot be told from NHWC by rank. mflux copies of
+        // those kernels are folded to OIHW while the bundle is normalized.
         kernel.transpose_axes(&[0, 2, 3, 1], stream)
     } else {
         Err(Error::new(
@@ -99,6 +136,107 @@ fn mlx_conv_kernel(kernel: &Array, stream: &Stream) -> Result<Array> {
             "conv kernel layout is ambiguous",
         ))
     }
+}
+
+/// Encode an NCHW image in `[-1, 1]` to the scaled latent `[1, C, H/f, W/f]`.
+///
+/// `spec.resnets` is `layers_per_block`: each down block runs that many
+/// resnets, then a stride-2 conv on every block but the last. The mean half
+/// of `conv_out` is `(mean - shift) * scaling`. Z-Image has no quant conv.
+pub fn encode(
+    weights: &MlxWeights,
+    spec: &VaeSpec,
+    image: &Array,
+    stream: &Stream,
+) -> Result<Array> {
+    if spec.latent_channels < 1 || spec.groups < 1 || spec.resnets < 1 || spec.block_out.len() < 2
+    {
+        return Err(Error::new("VAE MLX encode", "invalid VaeSpec"));
+    }
+    if image.shape().len() != 4 || image.shape()[0] != 1 || image.shape()[1] != 3 {
+        return Err(Error::new(
+            "VAE MLX encode",
+            "expected NCHW image [1, 3, H, W]",
+        ));
+    }
+    let factor = 1i32 << (spec.block_out.len() as i32 - 1);
+    let height = image.shape()[2];
+    let width = image.shape()[3];
+    if height < factor || width < factor || height % factor != 0 || width % factor != 0 {
+        return Err(Error::new(
+            "VAE MLX encode",
+            format!("image {width}x{height} is not divisible by scale {factor}"),
+        ));
+    }
+    let mut x = image.transpose_axes(&[0, 2, 3, 1], stream)?;
+    x = conv(weights, "encoder.conv_in", &x, stream)?;
+    for (index, channels) in spec.block_out.iter().enumerate() {
+        for block in 0..spec.resnets {
+            x = resnet(
+                weights,
+                spec,
+                &format!("encoder.down_blocks.{index}.resnets.{block}"),
+                &x,
+                stream,
+                &mut None,
+            )?;
+        }
+        if index + 1 < spec.block_out.len() {
+            x = downsample(
+                weights,
+                &format!("encoder.down_blocks.{index}.downsamplers.0.conv"),
+                &x,
+                stream,
+            )?;
+        }
+        if x.shape()[3] != *channels as i32 {
+            return Err(Error::new("VAE MLX encode", "down block channel mismatch"));
+        }
+    }
+    x = resnet(
+        weights,
+        spec,
+        "encoder.mid_block.resnets.0",
+        &x,
+        stream,
+        &mut None,
+    )?;
+    if spec.attention {
+        x = spatial_attention(weights, spec, "encoder.mid_block.attentions.0", &x, stream)?;
+    }
+    x = resnet(
+        weights,
+        spec,
+        "encoder.mid_block.resnets.1",
+        &x,
+        stream,
+        &mut None,
+    )?;
+    let norm_name = if weights.has("encoder.conv_norm_out.weight") {
+        "encoder.conv_norm_out"
+    } else {
+        "encoder.norm_out"
+    };
+    x = group_norm(weights, spec, norm_name, &x, stream)?;
+    x = x.silu(stream)?;
+    x = conv(weights, "encoder.conv_out", &x, stream)?;
+    let x = x.transpose_axes(&[0, 3, 1, 2], stream)?;
+    let channels = spec.latent_channels as i32;
+    if x.shape()[1] != channels * 2 {
+        return Err(Error::new(
+            "VAE MLX encode",
+            "conv_out is not mean and logvar",
+        ));
+    }
+    let mean = x.slice(
+        &[0, 0, 0, 0],
+        &[x.shape()[0], channels, x.shape()[2], x.shape()[3]],
+        &[1, 1, 1, 1],
+        stream,
+    )?;
+    let scaling = scalar(spec.scaling, mean.dtype(), stream)?;
+    let shift = scalar(spec.shift, mean.dtype(), stream)?;
+    Array::multiply(&Array::subtract(&mean, &shift, stream)?, &scaling, stream)
 }
 
 pub fn decode(
@@ -337,6 +475,24 @@ fn spatial_attention(
     Array::add(input, &output, stream)
 }
 
+/// Pad the bottom and right edges by one, then a 3×3 stride-2 conv with no
+/// extra padding. That is diffusers `Downsample2D` and main's VAE encoder.
+fn downsample(weights: &MlxWeights, prefix: &str, input: &Array, stream: &Stream) -> Result<Array> {
+    let shape = input.shape();
+    let (batch, height, width, channels) = (shape[0], shape[1], shape[2], shape[3]);
+    let row = zeros(&[batch, 1, width, channels], input.dtype(), stream)?;
+    let x = Array::concatenate_axis(&[input.clone(), row], 1, stream)?;
+    let column = zeros(&[batch, height + 1, 1, channels], input.dtype(), stream)?;
+    let x = Array::concatenate_axis(&[x, column], 2, stream)?;
+    conv_sized(weights, prefix, &x, [2, 2], [0, 0], stream)
+}
+
+fn zeros(shape: &[i32], dtype: danmo_mlx::Dtype, stream: &Stream) -> Result<Array> {
+    Array::from_f32_slice(&[0.0], &[])?
+        .astype(dtype, stream)?
+        .broadcast_to(shape, stream)
+}
+
 fn upsample(weights: &MlxWeights, prefix: &str, input: &Array, stream: &Stream) -> Result<Array> {
     let shape = input.shape();
     let (batch, height, width, channels) = (shape[0], shape[1], shape[2], shape[3]);
@@ -408,15 +564,32 @@ fn conv(weights: &MlxWeights, prefix: &str, input: &Array, stream: &Stream) -> R
     } else {
         1
     };
-    let mut output = Array::conv2d(
-        input,
-        &kernel,
-        [1, 1],
-        [padding, padding],
-        [1, 1],
-        1,
-        stream,
-    )?;
+    conv_kernel(weights, prefix, input, &kernel, [1, 1], [padding, padding], stream)
+}
+
+fn conv_sized(
+    weights: &MlxWeights,
+    prefix: &str,
+    input: &Array,
+    stride: [i32; 2],
+    padding: [i32; 2],
+    stream: &Stream,
+) -> Result<Array> {
+    let kernel_weight = weight(weights, &format!("{prefix}.weight"))?;
+    let kernel = mlx_conv_kernel(kernel_weight, stream)?;
+    conv_kernel(weights, prefix, input, &kernel, stride, padding, stream)
+}
+
+fn conv_kernel(
+    weights: &MlxWeights,
+    prefix: &str,
+    input: &Array,
+    kernel: &Array,
+    stride: [i32; 2],
+    padding: [i32; 2],
+    stream: &Stream,
+) -> Result<Array> {
+    let mut output = Array::conv2d(input, kernel, stride, padding, [1, 1], 1, stream)?;
     if weights.has(&format!("{prefix}.bias")) {
         output = Array::add(&output, weight(weights, &format!("{prefix}.bias"))?, stream)?;
     }
@@ -698,5 +871,79 @@ mod tests {
             "real VAE decode: {:.3}s, max abs error {max_error}",
             started.elapsed().as_secs_f64()
         );
+    }
+
+    fn fill_const(
+        tensors: &mut BTreeMap<String, Array>,
+        prefix: &str,
+        oc: i32,
+        ic: i32,
+        value: f32,
+    ) {
+        let weight = oc as usize * ic as usize * 9;
+        tensors.insert(
+            format!("{prefix}.weight"),
+            Array::from_f32_slice(&vec![value; weight], &[oc, ic, 3, 3]).unwrap(),
+        );
+        tensors.insert(
+            format!("{prefix}.bias"),
+            Array::from_f32_slice(&vec![value; oc as usize], &[oc]).unwrap(),
+        );
+    }
+
+    fn fill_affine(tensors: &mut BTreeMap<String, Array>, prefix: &str, scale: f32) {
+        tensors.insert(
+            format!("{prefix}.weight"),
+            Array::from_f32_slice(&vec![scale; 8], &[8]).unwrap(),
+        );
+        tensors.insert(
+            format!("{prefix}.bias"),
+            Array::from_f32_slice(&vec![0.0; 8], &[8]).unwrap(),
+        );
+    }
+
+    #[test]
+    fn encoder_downsamples_once_and_returns_the_scaled_mean() {
+        let stream = Stream::cpu().unwrap();
+        let spec = VaeSpec {
+            latent_channels: 4,
+            block_out: vec![8, 8],
+            resnets: 1,
+            groups: 8,
+            scaling: 2.0,
+            shift: 0.5,
+            attention: false,
+        };
+        let mut tensors = BTreeMap::new();
+        fill_const(&mut tensors, "encoder.conv_in", 8, 3, 0.0);
+        for prefix in [
+            "encoder.down_blocks.0.resnets.0",
+            "encoder.down_blocks.1.resnets.0",
+            "encoder.mid_block.resnets.0",
+            "encoder.mid_block.resnets.1",
+        ] {
+            fill_affine(&mut tensors, &format!("{prefix}.norm1"), 1.0);
+            fill_const(&mut tensors, &format!("{prefix}.conv1"), 8, 8, 0.0);
+            fill_affine(&mut tensors, &format!("{prefix}.norm2"), 1.0);
+            fill_const(&mut tensors, &format!("{prefix}.conv2"), 8, 8, 0.0);
+        }
+        fill_const(
+            &mut tensors,
+            "encoder.down_blocks.0.downsamplers.0.conv",
+            8,
+            8,
+            0.0,
+        );
+        fill_affine(&mut tensors, "encoder.conv_norm_out", 1.0);
+        // conv_out bias is the mean. shift 0.5 and scaling 2 turn it into 1.
+        fill_const(&mut tensors, "encoder.conv_out", 8, 8, 0.0);
+        let bias = Array::from_f32_slice(&vec![1.0; 8], &[8]).unwrap();
+        tensors.insert("encoder.conv_out.bias".into(), bias);
+        let weights = MlxWeights::from_dense(tensors);
+        let image = Array::from_f32_slice(&vec![0.0; 8 * 8 * 3], &[1, 3, 8, 8]).unwrap();
+        let latent = super::encode(&weights, &spec, &image, &stream).unwrap();
+        assert_eq!(latent.shape(), vec![1, 4, 4, 4]);
+        let values = latent.to_vec_f32(&stream).unwrap();
+        assert!(values.iter().all(|value| (value - 1.0).abs() < 1e-4), "{values:?}");
     }
 }

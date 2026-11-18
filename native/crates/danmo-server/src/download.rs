@@ -1,9 +1,9 @@
 //! Pure HTTP download client for the models page.
 //! File URLs come from the registry or from a hub file listing. Names are not invented.
-//! The DiT weight must be GGUF. A version may also list `components`: the text encoder,
-//! VAE, and tokenizer published beside that GGUF. Those files land in the version
+//! The weight is safetensors. A version may also list `components`: the text encoder,
+//! VAE, and tokenizer published beside that weight. Those files land in the version
 //! directory. When the last file lands, that install writes `bundle.manifest.json`
-//! there. The engine still loads GGUF only.
+//! there.
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -129,6 +129,134 @@ pub fn version_ready(path: &Path) -> bool {
     weight && !partial
 }
 
+/// One safetensors adapter inside a registry LoRA install.
+/// A directory with several weight files and no single preferred name fails.
+pub fn lora_weight_file(root: &Path) -> Result<PathBuf, String> {
+    if root.is_file() {
+        let safetensors = root
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("safetensors"));
+        if safetensors {
+            return Ok(root.to_path_buf());
+        }
+        return Err(format!(
+            "lora weight {} is not a safetensors file",
+            root.display()
+        ));
+    }
+    if !root.is_dir() {
+        return Err(format!("lora weight {} is missing", root.display()));
+    }
+    let mut files = Vec::new();
+    collect_safetensors(root, &mut files);
+    if files.is_empty() {
+        return Err(format!(
+            "lora directory {} has no safetensors file",
+            root.display()
+        ));
+    }
+    if files.len() == 1 {
+        return Ok(files.remove(0));
+    }
+    const PREFERRED: &[&str] = &[
+        "adapter_model.safetensors",
+        "pytorch_lora_weights.safetensors",
+        "model.safetensors",
+    ];
+    for name in PREFERRED {
+        let mut hits = files
+            .iter()
+            .filter(|path| path.file_name().and_then(|file| file.to_str()) == Some(*name));
+        let Some(first) = hits.next() else {
+            continue;
+        };
+        if hits.next().is_some() {
+            return Err(format!(
+                "lora directory {} has more than one {name}",
+                root.display()
+            ));
+        }
+        return Ok(first.clone());
+    }
+    Err(format!(
+        "lora directory {} has {} safetensors files",
+        root.display(),
+        files.len()
+    ))
+}
+
+fn collect_safetensors(path: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_safetensors(&path, files);
+        } else if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("safetensors"))
+        {
+            files.push(path);
+        }
+    }
+}
+
+/// Installed weight for one registry LoRA card. `Ok(None)` means that version is not on disk.
+pub fn registry_lora_weight(
+    workspace: &Path,
+    entry: &Value,
+    version: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
+    let versions = entry
+        .pointer("/distribution/versions")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| "lora card has no versions".to_string())?;
+    let spec = if let Some(version) = version.filter(|version| !version.is_empty()) {
+        versions
+            .get(version)
+            .cloned()
+            .ok_or_else(|| format!("lora version {version} is not published"))?
+    } else {
+        let ready: Vec<Value> = versions
+            .values()
+            .filter(|spec| version_spec_ready(workspace, spec))
+            .cloned()
+            .collect();
+        if ready.is_empty() {
+            return Ok(None);
+        }
+        if let Some(spec) = ready
+            .iter()
+            .find(|spec| spec.get("default").and_then(|value| value.as_bool()) == Some(true))
+        {
+            spec.clone()
+        } else if ready.len() == 1 {
+            ready.into_iter().next().expect("one ready version")
+        } else {
+            return Err("lora has more than one installed version; select id:version".into());
+        }
+    };
+    let local = spec
+        .get("local_path")
+        .and_then(|value| value.as_str())
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "lora version has no local_path".to_string())?;
+    let root = resolve_model_path(workspace, local);
+    if !version_ready(&root) {
+        return Ok(None);
+    }
+    lora_weight_file(&root).map(Some)
+}
+
+fn version_spec_ready(workspace: &Path, spec: &Value) -> bool {
+    spec.get("local_path")
+        .and_then(|value| value.as_str())
+        .is_some_and(|path| version_ready(&resolve_model_path(workspace, path)))
+}
+
 fn walk_bundle_weights(path: &Path, weight: &mut bool, partial: &mut bool) {
     let Ok(entries) = fs::read_dir(path) else {
         return;
@@ -172,18 +300,19 @@ fn manifest_ready(root: &Path, manifest: &Path) -> bool {
     let Ok(body) = serde_json::from_str::<Value>(&text) else {
         return false;
     };
+    let listing = body.get("files").or_else(|| {
+        body.get("components")
+            .filter(|components| components.is_object())
+    });
     let mut weights = Vec::new();
-    let mut partial = false;
-    collect_manifest_weights(body.get("files"), &mut weights);
+    collect_manifest_weights(listing, &mut weights);
     if weights.is_empty() {
         return false;
     }
-    let mut gguf = false;
-    walk_marks(root, &mut gguf, &mut partial);
-    if partial || !gguf {
+    if has_partial(root) {
         return false;
     }
-    body.get("files")
+    listing
         .and_then(|files| files.get("transformer"))
         .is_some_and(|transformer| {
             let mut required = Vec::new();
@@ -216,21 +345,25 @@ fn collect_manifest_weights(value: Option<&Value>, out: &mut Vec<String>) {
     }
 }
 
-fn walk_marks(path: &Path, gguf: &mut bool, partial: &mut bool) {
+fn has_partial(path: &Path) -> bool {
     let Ok(entries) = fs::read_dir(path) else {
-        return;
+        return false;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
         if path.is_dir() {
-            walk_marks(&path, gguf, partial);
-        } else if name.ends_with(".partial") {
-            *partial = true;
-        } else if name.to_ascii_lowercase().ends_with(".gguf") {
-            *gguf = true;
+            if has_partial(&path) {
+                return true;
+            }
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".partial"))
+        {
+            return true;
         }
     }
+    false
 }
 
 impl Downloads {
@@ -331,11 +464,8 @@ impl Downloads {
         if filename.is_empty() {
             return Err("download file name is empty".into());
         }
-        if kind != "lora"
-            && !filename.to_ascii_lowercase().ends_with(".gguf")
-            && !url_path_is_gguf(url)
-        {
-            return Err(format!("download URL is not a GGUF file: {url}"));
+        if kind != "lora" && !is_safetensors(&filename) && !url_path_is_safetensors(url) {
+            return Err(format!("download URL is not a safetensors file: {url}"));
         }
         let dest = self.resolve("models/Lora/imports").join(&filename);
         let file = PlannedFile {
@@ -753,8 +883,8 @@ impl Downloads {
             .find(|task| task.id == id)
             .map(|task| task.version.clone())
             .unwrap_or_default();
-        if !matches!(version.as_str(), "bf16" | "q8_0" | "q4_k") {
-            return Err(format!("version {version} is not bf16, q8_0, or q4_k"));
+        if version.is_empty() {
+            return Err("version key is empty".into());
         }
         Ok(version)
     }
@@ -842,7 +972,7 @@ impl Downloads {
         cancel: &AtomicBool,
     ) -> Result<Done, String> {
         if files.is_empty() {
-            return Err("no GGUF file is published for this download".into());
+            return Err("no safetensors file is published for this download".into());
         }
         let known: u64 = files.iter().filter_map(|file| file.size).sum();
         let all_known = files.iter().all(|file| file.size.is_some());
@@ -1319,18 +1449,15 @@ fn plan_version(
         repos.push(spec.clone());
     }
     if repos.is_empty() {
-        return Err(
-            "no GGUF download URL is published for this model. Re-download when a bf16, q8_0, or q4_k package is listed"
-                .into(),
-        );
+        return Err("no download is published for this model".into());
     }
     let mut files = Vec::new();
     for repo in &repos {
         append_files(&mut files, plan_repo(repo, spec, list, resolve)?)?;
     }
     append_files(&mut files, plan_components(spec, list, resolve)?)?;
-    if !files.iter().any(|file| is_gguf(&file.dest)) {
-        return Err("no GGUF file is published for this model".into());
+    if !files.iter().any(|file| is_safetensors(&file.dest)) {
+        return Err("no safetensors weight is published for this model".into());
     }
     Ok(Plan::Files(files))
 }
@@ -1469,8 +1596,8 @@ fn plan_repo(
         .and_then(|v| v.as_str())
         .filter(|url| !url.is_empty())
     {
-        if !url_path_is_gguf(url) {
-            return Err(format!("download URL is not a GGUF file: {url}"));
+        if !url_path_is_safetensors(url) {
+            return Err(format!("download URL is not a safetensors file: {url}"));
         }
         let name = file_name_from_url(url);
         return Ok(vec![PlannedFile {
@@ -1510,8 +1637,8 @@ fn plan_repo(
                 let revision = revision_of(repo, parent, source);
                 resolve_file_url(source, repo_id, &revision, path)?
             };
-            if !path.to_ascii_lowercase().ends_with(".gguf") && !url_path_is_gguf(&url) {
-                return Err(format!("registry file is not GGUF: {path}"));
+            if !is_safetensors(path) && !url_path_is_safetensors(&url) && !is_sidecar(path) {
+                return Err(format!("registry file is not a safetensors weight: {path}"));
             }
             files.push(PlannedFile {
                 url,
@@ -1525,7 +1652,7 @@ fn plan_repo(
         .get("repo_id")
         .and_then(|v| v.as_str())
         .filter(|id| !id.is_empty())
-        .ok_or_else(|| "no GGUF download URL is published for this model".to_string())?;
+        .ok_or_else(|| "no download is published for this model".to_string())?;
     let source = repo
         .get("source")
         .and_then(|v| v.as_str())
@@ -1595,43 +1722,33 @@ fn select_weight_files(
     if !patterns.is_empty() && matched.is_empty() {
         return Err("allow_patterns matched no published files".into());
     }
-    let gguf: Vec<RemoteEntry> = matched
-        .iter()
-        .filter(|entry| is_gguf(&entry.path))
-        .map(|entry| RemoteEntry {
+    let mut out = Vec::new();
+    for entry in &matched {
+        let gguf = entry.path.to_ascii_lowercase().ends_with(".gguf");
+        if gguf {
+            continue;
+        }
+        if patterns.is_empty() && !is_safetensors(&entry.path) && !is_sidecar(&entry.path) {
+            continue;
+        }
+        out.push(RemoteEntry {
             path: entry.path.clone(),
             size: entry.size,
-        })
-        .collect();
-    if gguf.is_empty() {
-        return Err(
-            "no GGUF file is published. This runtime downloads GGUF only and does not fetch safetensors"
-                .into(),
-        );
+        });
     }
-    let mut out = gguf;
-    for entry in &matched {
-        if is_sidecar(&entry.path) {
-            out.push(RemoteEntry {
-                path: entry.path.clone(),
-                size: entry.size,
-            });
-        }
+    if out.is_empty()
+        || (patterns.is_empty() && !out.iter().any(|entry| is_safetensors(&entry.path)))
+    {
+        return Err("no safetensors weight is published".into());
     }
     Ok(out)
 }
 
 fn pick_lora_file(entries: &[RemoteEntry]) -> Result<String, String> {
-    if let Some(file) = entries.iter().find(|entry| is_gguf(&entry.path)) {
+    if let Some(file) = entries.iter().find(|entry| is_safetensors(&entry.path)) {
         return Ok(file.path.clone());
     }
-    if let Some(file) = entries
-        .iter()
-        .find(|entry| entry.path.to_ascii_lowercase().ends_with(".safetensors"))
-    {
-        return Ok(file.path.clone());
-    }
-    Err("no downloadable LoRA file is published".into())
+    Err("no safetensors LoRA file is published".into())
 }
 
 fn select_component_files(
@@ -1686,15 +1803,14 @@ fn pattern_requires_published_file(pattern: &str) -> bool {
 
 fn is_component_file(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
-    lower.ends_with(".gguf")
-        || lower.ends_with(".safetensors")
+    lower.ends_with(".safetensors")
         || lower.ends_with(".json")
         || lower.ends_with(".txt")
         || lower.ends_with(".jinja")
 }
 
-fn is_gguf(path: &str) -> bool {
-    path.to_ascii_lowercase().ends_with(".gguf")
+fn is_safetensors(path: &str) -> bool {
+    path.to_ascii_lowercase().ends_with(".safetensors")
 }
 
 fn is_sidecar(path: &str) -> bool {
@@ -1703,11 +1819,12 @@ fn is_sidecar(path: &str) -> bool {
         || lower.ends_with(".txt")
         || lower.ends_with(".md")
         || lower.ends_with(".jinja")
+        || lower.ends_with(".pt")
 }
 
-fn url_path_is_gguf(url: &str) -> bool {
+fn url_path_is_safetensors(url: &str) -> bool {
     let path = url.split('?').next().unwrap_or(url);
-    is_gguf(path)
+    is_safetensors(path)
 }
 
 fn list_url(source: &str, repo_id: &str, revision: &str) -> Result<String, String> {
@@ -1750,7 +1867,7 @@ fn file_name_from_url(url: &str) -> String {
     let path = url.split('?').next().unwrap_or(url);
     path.rsplit('/')
         .find(|part| !part.is_empty())
-        .unwrap_or("download.gguf")
+        .unwrap_or("download.safetensors")
         .to_string()
 }
 
@@ -1918,20 +2035,8 @@ fn parse_hf_search(value: &Value, nsfw: bool) -> Result<Vec<Value>, String> {
             .and_then(|files| {
                 files.iter().find_map(|file| {
                     let name = file.get("rfilename").and_then(|v| v.as_str())?;
-                    is_gguf(name).then_some(name)
+                    is_safetensors(name).then_some(name)
                 })
-            })
-            .or_else(|| {
-                row.get("siblings")
-                    .and_then(|v| v.as_array())
-                    .and_then(|files| {
-                        files.iter().find_map(|file| {
-                            let name = file.get("rfilename").and_then(|v| v.as_str())?;
-                            name.to_ascii_lowercase()
-                                .ends_with(".safetensors")
-                                .then_some(name)
-                        })
-                    })
             })
             .unwrap_or("");
         items.push(json!({
@@ -2216,19 +2321,20 @@ mod component_role_tests {
             size: None,
         };
         let files = vec![
-            file("ltx-2.3-22b-distilled-BF16.gguf"),
-            file("text_encoder/gemma-3-12b-it-BF16.gguf"),
+            file("ltx-2.3-22b-distilled.safetensors"),
+            file("text_encoder/gemma-3-12b-it.safetensors"),
             file("vae/ltx-2.3-22b-distilled_video_vae.safetensors"),
             file("audio_vae/ltx-2.3-22b-distilled_audio_vae.safetensors"),
             file("connectors/ltx-2.3-22b-distilled_embeddings_connectors.safetensors"),
             file("upscaler/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"),
-            file("transformer_stage2/ltx-2.3-22b-distilled-BF16.gguf"),
+            file("transformer_stage2/ltx-2.3-22b-distilled.safetensors"),
         ];
-        let manifest = bundle_manifest_value("bf16", root, &files).unwrap();
+        let manifest = bundle_manifest_value("mlx-bf16", root, &files).unwrap();
         let files = &manifest["files"];
+        assert_eq!(manifest["format"], "safetensors");
         assert_eq!(
             files["transformer"].as_str().unwrap(),
-            "ltx-2.3-22b-distilled-BF16.gguf"
+            "ltx-2.3-22b-distilled.safetensors"
         );
         assert_eq!(
             files["audio_vae"].as_str().unwrap(),
@@ -2244,11 +2350,10 @@ mod component_role_tests {
         );
         assert_eq!(
             files["transformer_stage2"].as_str().unwrap(),
-            "transformer_stage2/ltx-2.3-22b-distilled-BF16.gguf"
+            "transformer_stage2/ltx-2.3-22b-distilled.safetensors"
         );
-        // Without the distilled-only slots they stay out of the map.
-        let files = vec![file("ltx-2.3-22b-distilled-BF16.gguf")];
-        let manifest = bundle_manifest_value("bf16", root, &files).unwrap();
+        let files = vec![file("ltx-2.3-22b-distilled.safetensors")];
+        let manifest = bundle_manifest_value("mlx-bf16", root, &files).unwrap();
         assert!(manifest["files"].get("upscaler").is_none());
         assert!(manifest["files"].get("audio_vae").is_none());
     }
@@ -2263,8 +2368,8 @@ fn write_bundle_manifest(root: &Path, quant: &str, files: &[PlannedFile]) -> Res
 }
 
 fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Result<Value, String> {
-    if !matches!(quant, "bf16" | "q8_0" | "q4_k") {
-        return Err(format!("version {quant} is not bf16, q8_0, or q4_k"));
+    if quant.is_empty() {
+        return Err("version key is empty".into());
     }
     let mut transformer = Vec::new();
     let mut text_encoder = Vec::new();
@@ -2305,6 +2410,12 @@ fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Res
     if transformer.is_empty() {
         return Err("bundle manifest has no transformer file".into());
     }
+    if transformer
+        .iter()
+        .any(|path| !path.to_ascii_lowercase().ends_with(".safetensors"))
+    {
+        return Err("bundle transformer is not a safetensors weight".into());
+    }
     let mut files_map = json!({
         "transformer": role_value(transformer),
     });
@@ -2330,7 +2441,7 @@ fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Res
         files_map["image_encoder"] = role_value(image_encoder);
     }
     Ok(json!({
-        "format": "gguf",
+        "format": "safetensors",
         "quant": quant,
         "files": files_map,
     }))
@@ -2361,7 +2472,7 @@ fn rel_under(root: &Path, dest: &str) -> Result<String, String> {
 
 fn manifest_role(rel: &str) -> Option<&'static str> {
     let lower = rel.to_ascii_lowercase();
-    let weight = lower.ends_with(".gguf") || lower.ends_with(".safetensors");
+    let weight = lower.ends_with(".safetensors");
     if !weight {
         return None;
     }
@@ -2379,10 +2490,8 @@ fn manifest_role(rel: &str) -> Option<&'static str> {
         Some("transformer_stage2")
     } else if rel.starts_with("image_encoder/") {
         Some("image_encoder")
-    } else if lower.ends_with(".gguf") {
-        Some("transformer")
     } else {
-        None
+        Some("transformer")
     }
 }
 
@@ -2408,7 +2517,7 @@ fn write_receipts(files: &[PlannedFile]) -> Result<(), String> {
             })
             .collect();
         let body = json!({
-            "format": "gguf-http",
+            "format": "safetensors-http",
             "files": listed,
             "completed_at": now_rfc3339(),
         });
@@ -2558,20 +2667,70 @@ mod tests {
     }
 
     #[test]
-    fn keeps_gguf_and_refuses_safetensors_only() {
+    fn registry_lora_weight_reads_the_installed_adapter() {
+        let root = std::env::temp_dir().join(format!(
+            "danmo-lora-weight-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let install = root.join("models/Lora/ace-step-lora-chinese-new-year-fp16");
+        fs::create_dir_all(&install).unwrap();
+        fs::write(install.join("adapter_model.safetensors"), b"st").unwrap();
+        fs::write(install.join("README.md"), b"notes").unwrap();
+        let entry = json!({
+            "distribution": {
+                "versions": {
+                    "fp16": {
+                        "default": true,
+                        "local_path": "models/Lora/ace-step-lora-chinese-new-year-fp16"
+                    }
+                }
+            }
+        });
+        let path = registry_lora_weight(&root, &entry, None)
+            .unwrap()
+            .expect("installed");
+        assert_eq!(path, install.join("adapter_model.safetensors"));
+        let missing = registry_lora_weight(&root.join("empty"), &entry, None).unwrap();
+        assert!(missing.is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn selects_safetensors_and_skips_gguf() {
         let mixed = vec![
             entry("model.safetensors", 10),
             entry("model.gguf", 4),
             entry("tokenizer.json", 2),
+            entry("silence_latent.pt", 3),
             entry("preview.png", 1),
         ];
         let files = select_weight_files(&mixed, &[]).unwrap();
         let names: Vec<_> = files.iter().map(|file| file.path.as_str()).collect();
-        assert_eq!(names, ["model.gguf", "tokenizer.json"]);
+        assert_eq!(
+            names,
+            ["model.safetensors", "tokenizer.json", "silence_latent.pt"]
+        );
 
-        let weights = vec![entry("model.safetensors", 10)];
-        let err = select_weight_files(&weights, &[]).unwrap_err();
-        assert!(err.contains("GGUF"), "{err}");
+        let weights = vec![
+            entry("model.safetensors", 10),
+            entry("config.json", 1),
+            entry("README.md", 2),
+        ];
+        let files = select_weight_files(
+            &weights,
+            &["model.safetensors".into(), "config.json".into()],
+        )
+        .unwrap();
+        let names: Vec<_> = files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(names, ["model.safetensors", "config.json"]);
+
+        let gguf_only = vec![entry("model.gguf", 4)];
+        let err = select_weight_files(&gguf_only, &[]).unwrap_err();
+        assert!(err.contains("safetensors"), "{err}");
     }
 
     #[test]
@@ -2604,22 +2763,43 @@ mod tests {
     }
 
     #[test]
-    fn allow_patterns_keep_only_the_published_subtree() {
-        let entries = vec![
-            entry("vae/config.json", 1),
-            entry("vae/diffusion.gguf", 2),
-            entry("text/model.gguf", 3),
-        ];
-        let files = select_weight_files(&entries, &["vae/**".into()]).unwrap();
-        let names: Vec<_> = files.iter().map(|file| file.path.as_str()).collect();
-        assert_eq!(names, ["vae/diffusion.gguf", "vae/config.json"]);
+    fn manifest_ready_accepts_a_safetensors_components_bundle() {
+        let dir = std::env::temp_dir().join(format!("danmo-ready-sft-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("transformer")).unwrap();
+        std::fs::create_dir_all(dir.join("text_encoder")).unwrap();
+        std::fs::create_dir_all(dir.join("vae")).unwrap();
+        std::fs::write(dir.join("transformer/0.safetensors"), b"dit").unwrap();
+        std::fs::write(dir.join("text_encoder/0.safetensors"), b"text").unwrap();
+        std::fs::write(dir.join("vae/0.safetensors"), b"vae").unwrap();
+        std::fs::write(
+            dir.join("bundle.manifest.json"),
+            r#"{"components":{"transformer":["transformer/0.safetensors"],"text_encoder":["text_encoder/0.safetensors"],"vae":["vae/0.safetensors"]},"detected":{"weight_format":"safetensors"}}"#,
+        )
+        .unwrap();
+        assert!(version_ready(&dir));
+        std::fs::remove_file(dir.join("vae/0.safetensors")).unwrap();
+        assert!(!version_ready(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn explicit_url_is_used_and_safetensors_urls_fail() {
+    fn allow_patterns_keep_only_the_published_subtree() {
+        let entries = vec![
+            entry("vae/config.json", 1),
+            entry("vae/diffusion.safetensors", 2),
+            entry("text/model.safetensors", 3),
+        ];
+        let files = select_weight_files(&entries, &["vae/**".into()]).unwrap();
+        let names: Vec<_> = files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(names, ["vae/config.json", "vae/diffusion.safetensors"]);
+    }
+
+    #[test]
+    fn explicit_safetensors_url_is_used_and_gguf_urls_fail() {
         let spec = json!({
             "local_path": "/tmp/danmo-demo",
-            "url": "https://example.com/weights/demo.gguf"
+            "url": "https://example.com/weights/model.safetensors"
         });
         let plan = plan_version(&spec, &mut |_| panic!("listed"), &|path| {
             PathBuf::from(path.to_string())
@@ -2627,17 +2807,21 @@ mod tests {
         .unwrap();
         let Plan::Files(files) = plan;
         assert_eq!(files.len(), 1);
-        assert!(files[0].dest.ends_with("demo.gguf"), "{}", files[0].dest);
-        assert!(files[0].url.ends_with("demo.gguf"));
+        assert!(
+            files[0].dest.ends_with("model.safetensors"),
+            "{}",
+            files[0].dest
+        );
+        assert!(files[0].url.ends_with("model.safetensors"));
         let blocked = json!({
             "local_path": "/tmp/danmo-demo",
-            "url": "https://example.com/model.safetensors"
+            "url": "https://example.com/weights/demo.gguf"
         });
         let err = plan_version(&blocked, &mut |_| panic!("listed"), &|path| {
             PathBuf::from(path.to_string())
         })
         .unwrap_err();
-        assert!(err.contains("GGUF"), "{err}");
+        assert!(err.contains("safetensors"), "{err}");
     }
 
     fn published_version(model: &str, weight: &str) -> Value {
@@ -2662,6 +2846,14 @@ mod tests {
         {
             patterns.extend(patterns_of(component));
         }
+        for repo in spec
+            .get("bundle_repos")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            patterns.extend(patterns_of(repo));
+        }
         for pattern in patterns {
             match pattern.as_str() {
                 "text_encoder/**" => {
@@ -2681,9 +2873,17 @@ mod tests {
                     }
                 }
                 other => {
-                    paths.insert(other.to_string());
+                    if let Some(prefix) = other.strip_suffix("/**") {
+                        paths.insert(format!("{prefix}/model.safetensors"));
+                        paths.insert(format!("{prefix}/config.json"));
+                    } else {
+                        paths.insert(other.to_string());
+                    }
                 }
             }
+        }
+        if paths.is_empty() {
+            paths.insert("model.safetensors".to_string());
         }
         paths.into_iter().map(|path| entry(&path, 1)).collect()
     }
@@ -2708,13 +2908,14 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{model_id}:{quant}: {error}"));
                 let Plan::Files(files) = plan;
                 assert!(!files.is_empty(), "{model_id}:{quant} has no files");
-                let root = resolve_model_path(
-                    &workspace,
-                    spec["local_path"].as_str().expect("local_path"),
-                );
                 for file in &files {
                     assert!(
-                        Path::new(&file.dest).starts_with(&root),
+                        Path::new(&file.dest).starts_with(&workspace),
+                        "{model_id}:{quant} left the workspace: {}",
+                        file.dest
+                    );
+                    assert!(
+                        !file.dest.contains(".."),
                         "{model_id}:{quant} escaped the bundle: {}",
                         file.dest
                     );
@@ -2725,149 +2926,83 @@ mod tests {
                     );
                 }
                 if version_lists_components(spec) {
+                    let local = spec["local_path"].as_str().unwrap_or_else(|| {
+                        panic!("{model_id}:{quant} component version has no local_path")
+                    });
+                    let root = resolve_model_path(&workspace, local);
                     bundle_manifest_value(quant, &root, &files)
                         .unwrap_or_else(|error| panic!("{model_id}:{quant} manifest: {error}"));
                 }
                 checked += 1;
             }
         }
-        assert_eq!(checked, 84);
-    }
-
-    fn published_listing(query: &RepoQuery) -> Result<Vec<RemoteEntry>, String> {
-        assert_eq!(query.source, "modelscope", "{}", query.repo_id);
-        assert_eq!(query.revision, "master", "{}", query.repo_id);
-        let files: &[&str] = match query.repo_id.as_str() {
-            "unsloth/FLUX.2-klein-4B-GGUF" => &[
-                "not-selected.gguf",
-                "flux-2-klein-4b-BF16.gguf",
-                "flux-2-klein-4b-Q8_0.gguf",
-                "flux-2-klein-4b-Q4_K_M.gguf",
-            ],
-            "black-forest-labs/FLUX.2-klein-4B" => &[
-                "text_encoder",
-                "text_encoder/config.json",
-                "text_encoder/generation_config.json",
-                "text_encoder/model-00001-of-00002.safetensors",
-                "text_encoder/model-00002-of-00002.safetensors",
-                "text_encoder/model.safetensors.index.json",
-                "tokenizer/added_tokens.json",
-                "tokenizer/chat_template.jinja",
-                "tokenizer/merges.txt",
-                "tokenizer/special_tokens_map.json",
-                "tokenizer/tokenizer.json",
-                "tokenizer/tokenizer_config.json",
-                "tokenizer/vocab.json",
-                "vae/config.json",
-                "vae/diffusion_pytorch_model.safetensors",
-                "transformer/diffusion_pytorch_model.safetensors",
-                "flux-2-klein-4b.safetensors",
-                "scheduler/scheduler_config.json",
-            ],
-            "unsloth/Z-Image-GGUF" => &[
-                "z-image-BF16.gguf",
-                "z-image-Q8_0.gguf",
-                "z-image-Q4_K_M.gguf",
-                "z-image-Q2_K.gguf",
-                "text_encoder",
-                "text_encoder/config.json",
-                "text_encoder/generation_config.json",
-                "text_encoder/model-00001-of-00003.safetensors",
-                "text_encoder/model-00002-of-00003.safetensors",
-                "text_encoder/model-00003-of-00003.safetensors",
-                "text_encoder/model.safetensors.index.json",
-                "tokenizer/merges.txt",
-                "tokenizer/tokenizer.json",
-                "tokenizer/tokenizer_config.json",
-                "tokenizer/vocab.json",
-                "vae/config.json",
-                "vae/diffusion_pytorch_model.safetensors",
-                "transformer/diffusion_pytorch_model-00001-of-00002.safetensors",
-                "transformer/config.json",
-                "scheduler/scheduler_config.json",
-            ],
-            other => return Err(format!("unexpected repo {other}")),
-        };
-        Ok(files
-            .iter()
-            .enumerate()
-            .map(|(index, path)| entry(path, (index as u64) + 1))
-            .collect())
-    }
-
-    fn planned_names(spec: &Value, workspace: &Path) -> Vec<String> {
-        let plan = plan_version(spec, &mut published_listing, &|path| {
-            resolve_model_path(workspace, path)
-        })
-        .unwrap();
-        let Plan::Files(files) = plan;
-        files
-            .into_iter()
-            .map(|file| {
-                let dest = PathBuf::from(&file.dest);
-                let rel = dest
-                    .strip_prefix(workspace)
-                    .unwrap_or_else(|_| panic!("dest left the workspace: {}", file.dest));
-                let rel = rel.display().to_string();
-                assert!(
-                    file.url.contains("https://www.modelscope.cn/models/"),
-                    "{}",
-                    file.url
-                );
-                assert!(file.url.contains("/resolve/master/"), "{}", file.url);
-                rel
-            })
-            .collect()
+        assert!(checked > 0, "registry published no downloadable versions");
     }
 
     #[test]
-    fn smallest_quant_lands_in_the_download_directory() {
-        let spec = published_version("flux2-klein-4b", "q4_k");
-        let local = spec["local_path"].as_str().expect("local_path");
+    fn safetensors_packages_plan_into_their_directories() {
         let workspace = PathBuf::from("/tmp/danmo-weight-root");
-        let names = planned_names(&spec, &workspace);
-        assert!(names
+        let esrgan = published_version("real-esrgan-x4plus", "fp16");
+        let plan = plan_version(
+            &esrgan,
+            &mut |query| {
+                assert_eq!(query.source, "modelscope");
+                assert_eq!(query.repo_id, "mlx-community/Real-ESRGAN-x4plus");
+                Ok(vec![
+                    entry("model.safetensors", 32),
+                    entry("config.json", 1),
+                    entry("README.md", 2),
+                    entry("model.gguf", 4),
+                ])
+            },
+            &|path| resolve_model_path(&workspace, path),
+        )
+        .unwrap();
+        let Plan::Files(files) = plan;
+        let names: Vec<_> = files
             .iter()
-            .any(|name| name == &format!("{local}/flux-2-klein-4b-Q4_K_M.gguf")));
-        for suffix in [
-            "text_encoder/model-00001-of-00002.safetensors",
-            "text_encoder/model-00002-of-00002.safetensors",
-            "tokenizer/tokenizer.json",
-            "tokenizer/chat_template.jinja",
-            "tokenizer/merges.txt",
-            "vae/diffusion_pytorch_model.safetensors",
-        ] {
-            assert!(
-                names
-                    .iter()
-                    .any(|name| name == &format!("{local}/{suffix}")),
-                "missing {suffix} in {names:?}"
-            );
-        }
-        assert!(
-            names
-                .iter()
-                .all(|name| name.starts_with(&format!("{local}/"))),
-            "{names:?}"
-        );
-        assert!(!names.iter().any(|name| name.contains("transformer/")));
-        assert!(!names
-            .iter()
-            .any(|name| name.ends_with("flux-2-klein-4b.safetensors")));
-        assert!(!names.iter().any(|name| name.ends_with("not-selected.gguf")));
-        assert_eq!(names.len(), 15, "{names:?}");
+            .map(|file| file.dest.rsplit('/').next().unwrap())
+            .collect();
+        assert_eq!(names, ["model.safetensors", "config.json"]);
+        assert!(files.iter().all(|file| file.url.contains("modelscope.cn")));
+        assert!(files.iter().all(|file| !file.url.ends_with(".gguf")));
 
-        let bf16 = published_version("flux2-klein-4b", "bf16");
-        let bf16_names = planned_names(&bf16, &workspace);
-        assert!(bf16_names
+        let flux = published_version("flux2-klein-4b", "fp16");
+        let plan = plan_version(
+            &flux,
+            &mut |_| {
+                Ok(vec![
+                    entry("transformer/diffusion_pytorch_model.safetensors", 20),
+                    entry("vae/diffusion_pytorch_model.safetensors", 2),
+                    entry("tokenizer/tokenizer.json", 1),
+                    entry("flux-2-klein-4b.gguf", 9),
+                ])
+            },
+            &|path| resolve_model_path(&workspace, path),
+        )
+        .unwrap();
+        let Plan::Files(files) = plan;
+        let local = flux["local_path"].as_str().unwrap();
+        let names: Vec<_> = files
             .iter()
-            .any(|name| name.ends_with("flux-2-klein-4b-BF16.gguf")));
-        assert!(bf16_names
-            .iter()
-            .all(|name| name.starts_with("models/Image/flux2-klein-4b/bf16/")));
+            .map(|file| {
+                PathBuf::from(&file.dest)
+                    .strip_prefix(&workspace)
+                    .unwrap()
+                    .display()
+                    .to_string()
+            })
+            .collect();
+        assert!(names.iter().any(
+            |name| name == &format!("{local}/transformer/diffusion_pytorch_model.safetensors")
+        ));
         assert!(names
             .iter()
-            .all(|name| name.starts_with("models/Image/flux2-klein-4b/q4_k/")));
+            .any(|name| name == &format!("{local}/vae/diffusion_pytorch_model.safetensors")));
+        assert!(names
+            .iter()
+            .all(|name| name.starts_with(&format!("{local}/"))));
+        assert!(!names.iter().any(|name| name.ends_with(".gguf")));
 
         let err = plan_version(
             &json!({ "graph_pack": "flux2-chain" }),
@@ -2875,50 +3010,15 @@ mod tests {
             &|path| PathBuf::from(path.to_string()),
         )
         .unwrap_err();
-        assert!(err.contains("no GGUF download"), "{err}");
+        assert!(err.contains("no download is published"), "{err}");
     }
 
-    #[test]
-    fn z_image_quant_copies_companions_into_its_own_directory() {
-        let spec = published_version("z-image", "q4_k");
-        let workspace = PathBuf::from("/tmp/danmo-weight-root");
-        let names = planned_names(&spec, &workspace);
-        assert!(names
-            .iter()
-            .any(|name| name == "models/Image/z-image/q4_k/z-image-Q4_K_M.gguf"));
-        assert_eq!(
-            names.iter().filter(|name| name.ends_with(".gguf")).count(),
-            1,
-            "{names:?}"
-        );
-        for suffix in [
-            "text_encoder/model-00001-of-00003.safetensors",
-            "text_encoder/model-00003-of-00003.safetensors",
-            "tokenizer/vocab.json",
-            "vae/diffusion_pytorch_model.safetensors",
-        ] {
-            assert!(
-                names
-                    .iter()
-                    .any(|name| name == &format!("models/Image/z-image/q4_k/{suffix}")),
-                "missing {suffix} in {names:?}"
-            );
-        }
-        assert!(!names.iter().any(|name| name.contains("transformer/")));
-        assert!(!names.iter().any(|name| name.contains("Q2_K")));
-        assert!(!names
-            .iter()
-            .any(|name| name.starts_with("models/Image/flux2-klein-4b/")));
-        assert_eq!(names.len(), 13, "{names:?}");
-    }
-
-    #[test]
     fn component_pattern_must_match_a_published_file() {
         let spec = json!({
             "local_path": "models/Image/demo/q4_k",
             "source": "modelscope",
             "repo_id": "acme/dit",
-            "allow_patterns": ["demo-Q4_K_M.gguf"],
+            "allow_patterns": ["model.safetensors"],
             "components": [{
                 "source": "modelscope",
                 "repo_id": "acme/aux",
@@ -2929,7 +3029,7 @@ mod tests {
             &spec,
             &mut |query| {
                 if query.repo_id == "acme/dit" {
-                    Ok(vec![entry("demo-Q4_K_M.gguf", 1)])
+                    Ok(vec![entry("model.safetensors", 1)])
                 } else {
                     Ok(vec![entry("text_encoder/model.safetensors", 2)])
                 }
@@ -2946,7 +3046,7 @@ mod tests {
             "local_path": "models/Image/demo/q4_k",
             "source": "modelscope",
             "repo_id": "acme/dit",
-            "allow_patterns": ["demo-Q4_K_M.gguf"],
+            "allow_patterns": ["model.safetensors"],
             "components": [{
                 "source": "modelscope",
                 "repo_id": "acme/aux",
@@ -2955,7 +3055,7 @@ mod tests {
         });
         let err = plan_version(
             &empty,
-            &mut |_| Ok(vec![entry("demo-Q4_K_M.gguf", 1)]),
+            &mut |_| Ok(vec![entry("model.safetensors", 1)]),
             &|path| PathBuf::from(path.to_string()),
         )
         .unwrap_err();
@@ -2965,70 +3065,57 @@ mod tests {
     #[test]
     fn component_install_writes_manifest_from_the_planned_files() {
         let workspace = PathBuf::from("/tmp/danmo-weight-root");
-        let spec = published_version("flux2-klein-4b", "q4_k");
+        let spec = json!({
+            "local_path": "models/Image/demo/fp16",
+            "source": "huggingface",
+            "repo_id": "acme/dit",
+            "allow_patterns": ["model.safetensors"],
+            "components": [{
+                "role": "text_encoder",
+                "source": "huggingface",
+                "repo_id": "acme/text",
+                "allow_patterns": ["model.safetensors"]
+            }, {
+                "role": "vae",
+                "source": "huggingface",
+                "repo_id": "acme/vae",
+                "allow_patterns": ["diffusion_pytorch_model.safetensors"]
+            }]
+        });
         assert!(version_lists_components(&spec));
         let root = resolve_model_path(&workspace, spec["local_path"].as_str().unwrap());
-        let Plan::Files(files) = plan_version(&spec, &mut published_listing, &|path| {
-            resolve_model_path(&workspace, path)
-        })
+        let Plan::Files(files) = plan_version(
+            &spec,
+            &mut |query| match query.repo_id.as_str() {
+                "acme/dit" => Ok(vec![entry("model.safetensors", 4)]),
+                "acme/text" => Ok(vec![entry("model.safetensors", 8)]),
+                "acme/vae" => Ok(vec![entry("diffusion_pytorch_model.safetensors", 2)]),
+                other => Err(format!("unexpected repo {other}")),
+            },
+            &|path| resolve_model_path(&workspace, path),
+        )
         .unwrap();
-        let body = bundle_manifest_value("q4_k", &root, &files).unwrap();
-        assert_eq!(body["format"], "gguf");
-        assert_eq!(body["quant"], "q4_k");
-        assert_eq!(body["files"]["transformer"], "flux-2-klein-4b-Q4_K_M.gguf");
+        let body = bundle_manifest_value("fp16", &root, &files).unwrap();
+        assert_eq!(body["format"], "safetensors");
+        assert_eq!(body["quant"], "fp16");
+        assert_eq!(body["files"]["transformer"], "model.safetensors");
+        assert_eq!(
+            body["files"]["text_encoder"],
+            "text_encoder/model.safetensors"
+        );
         assert_eq!(
             body["files"]["vae"],
             "vae/diffusion_pytorch_model.safetensors"
         );
-        let text: Vec<_> = body["files"]["text_encoder"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|value| value.as_str().unwrap())
-            .collect();
-        assert_eq!(
-            text,
-            [
-                "text_encoder/model-00001-of-00002.safetensors",
-                "text_encoder/model-00002-of-00002.safetensors"
-            ]
-        );
-        assert!(!body.to_string().contains("tokenizer.json"));
-        assert!(!body.to_string().contains("transformer/"));
-
-        let z = published_version("z-image", "bf16");
-        let zroot = resolve_model_path(&workspace, z["local_path"].as_str().unwrap());
-        let Plan::Files(zfiles) = plan_version(&z, &mut published_listing, &|path| {
-            resolve_model_path(&workspace, path)
-        })
-        .unwrap();
-        let zbody = bundle_manifest_value("bf16", &zroot, &zfiles).unwrap();
-        assert_eq!(zbody["files"]["transformer"], "z-image-BF16.gguf");
-        assert_eq!(
-            zbody["files"]["vae"],
-            "vae/diffusion_pytorch_model.safetensors"
-        );
-        assert!(zbody["files"]["text_encoder"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|value| value == "text_encoder/model-00001-of-00003.safetensors"));
-        assert!(!zbody.to_string().contains("models/Image/flux2-klein-4b"));
-
-        let bare = json!({
-            "local_path": "models/Image/demo/q4_k",
+        assert!(!version_lists_components(&json!({
+            "local_path": "models/Image/demo/fp16",
             "repo_id": "acme/dit",
-            "allow_patterns": ["a.gguf"]
-        });
-        assert!(!version_lists_components(&bare));
-        let err = bundle_manifest_value("fp16", &root, &files).unwrap_err();
-        assert!(err.contains("fp16"), "{err}");
-        // A transformer-only bundle is valid for LM/LLM models.
-        let bare_only = bundle_manifest_value("q4_k", &root, &files[..1]).unwrap();
-        assert_eq!(
-            bare_only["files"]["transformer"],
-            "flux-2-klein-4b-Q4_K_M.gguf"
-        );
+            "allow_patterns": ["model.safetensors"]
+        })));
+        let err = bundle_manifest_value("", &root, &files).unwrap_err();
+        assert!(err.contains("empty"), "{err}");
+        let bare_only = bundle_manifest_value("fp16", &root, &files[..1]).unwrap();
+        assert_eq!(bare_only["files"]["transformer"], "model.safetensors");
         assert!(bare_only["files"].get("text_encoder").is_none());
         assert!(bare_only["files"].get("vae").is_none());
 
@@ -3042,8 +3129,8 @@ mod tests {
         ));
         let files = vec![
             PlannedFile {
-                url: "https://example.com/dit.gguf".into(),
-                dest: scratch.join("dit.gguf").display().to_string(),
+                url: "https://example.com/dit.safetensors".into(),
+                dest: scratch.join("model.safetensors").display().to_string(),
                 size: Some(4),
             },
             PlannedFile {
@@ -3071,11 +3158,11 @@ mod tests {
                 size: Some(3),
             },
         ];
-        write_bundle_manifest(&scratch, "q8_0", &files).unwrap();
+        write_bundle_manifest(&scratch, "fp16", &files).unwrap();
         let text = fs::read_to_string(scratch.join("bundle.manifest.json")).unwrap();
         let written: Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(written["quant"], "q8_0");
-        assert_eq!(written["files"]["transformer"], "dit.gguf");
+        assert_eq!(written["quant"], "fp16");
+        assert_eq!(written["files"]["transformer"], "model.safetensors");
         assert_eq!(
             written["files"]["text_encoder"],
             "text_encoder/model.safetensors"
@@ -3102,6 +3189,7 @@ mod tests {
                 Ok(vec![
                     entry("demo-q4.gguf", 8),
                     entry("weights.safetensors", 9),
+                    entry("config.json", 1),
                 ])
             },
             &|path| PathBuf::from(path.to_string()),
@@ -3110,7 +3198,7 @@ mod tests {
         let Plan::Files(files) = plan;
         assert_eq!(
             files[0].url,
-            "https://huggingface.co/acme/demo/resolve/main/demo-q4.gguf"
+            "https://huggingface.co/acme/demo/resolve/main/weights.safetensors"
         );
     }
 
@@ -3130,10 +3218,10 @@ mod tests {
             "id": "acme/lora",
             "downloads": 4,
             "likes": 1,
-            "siblings": [{"rfilename": "adapter.gguf"}]
+            "siblings": [{"rfilename": "adapter.safetensors"}]
         }]);
         let items = parse_hf_search(&hf, false).unwrap();
-        assert_eq!(items[0]["filename"], "adapter.gguf");
+        assert_eq!(items[0]["filename"], "adapter.safetensors");
         let ms = json!({"Success": true, "Data": {"Model": {"Models": [{
             "Path": "black-forest-labs",
             "Name": "FLUX.2-klein-9B",

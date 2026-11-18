@@ -94,6 +94,25 @@ pub fn is_safetensors_image_bundle(dir: &Path) -> bool {
             .all(|role| contains_extension(&dir.join(role), "safetensors"))
 }
 
+/// ACE-Step 1.5 safetensors tree: `vae/`, `Qwen3-Embedding-0.6B/`, and an XL
+/// DiT directory (this directory or one child) with `model.safetensors.index.json`.
+pub fn is_ace_step_safetensors_bundle(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    let text = dir.join("Qwen3-Embedding-0.6B");
+    let vae = dir.join("vae");
+    text.join("config.json").is_file()
+        && text.join("tokenizer.json").is_file()
+        && contains_safetensors(&vae)
+        && (dir.join("model.safetensors.index.json").is_file()
+            || std::fs::read_dir(dir).ok().is_some_and(|entries| {
+                entries.flatten().any(|entry| {
+                    entry.path().join("model.safetensors.index.json").is_file()
+                })
+            }))
+}
+
 pub fn assert_gguf_bundle(dir: &Path) -> Result<GgufBundle, WeightError> {
     let (root, manifest) = read_manifest(dir)?;
     if !tokenizer_ready(&root) {

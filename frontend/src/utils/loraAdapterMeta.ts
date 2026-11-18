@@ -10,6 +10,8 @@ export type CompatibleLoraRow = {
   hint_key?: string;
   /** `[min, max]` inference weight the trainer recommends (e.g. Turbo-trained LoRAs: 0.8–1.0). */
   recommended_lora_scale?: [number, number];
+  /** False when the registry card has no installed weight. */
+  ready?: boolean;
 };
 
 export function loraRecommendedScale(

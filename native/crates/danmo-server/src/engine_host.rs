@@ -61,6 +61,24 @@ impl ResolvePort for EngineHost<'_> {
         if let Some(encoded) = source.strip_prefix("base64:") {
             return product::base64_decode(encoded).map_err(EngineError::Resolve);
         }
+        if let Some(asset_id) = source.strip_prefix("asset:") {
+            let row = self
+                .state
+                .scheduler
+                .get_asset(asset_id)
+                .map_err(|error| EngineError::Resolve(error.to_string()))?
+                .ok_or_else(|| {
+                    EngineError::Resolve(format!("source asset {asset_id} is missing"))
+                })?;
+            let path = product::resolve_asset_fs_path(
+                &self.state.outputs,
+                &self.state.workspace,
+                &row.file_path,
+            );
+            return std::fs::read(&path).map_err(|error| {
+                EngineError::Resolve(format!("source audio {}: {error}", path.display()))
+            });
+        }
         let path = Path::new(source);
         let resolved = if path.is_absolute() {
             path.to_path_buf()
@@ -260,6 +278,8 @@ struct TaskObserver {
     scheduler: danmo_schedule::Scheduler,
     task_id: String,
     backend: danmo_engine::BackendKind,
+    preview_dir: PathBuf,
+    preview: bool,
 }
 
 impl RunObserver for TaskObserver {
@@ -292,6 +312,27 @@ impl RunObserver for TaskObserver {
     fn phase(&self, phase: &str) -> Result<(), EngineError> {
         self.log("info", &format!("phase {phase}"))
     }
+
+    fn preview_interval_steps(&self) -> Option<u32> {
+        if self.preview && !self.task_id.is_empty() {
+            Some(2)
+        } else {
+            None
+        }
+    }
+
+    fn preview_max_edge(&self) -> u32 {
+        512
+    }
+
+    fn write_step_preview(&self, png: &[u8]) -> Result<(), EngineError> {
+        if png.len() < 8 || &png[..8] != b"\x89PNG\r\n\x1a\n" {
+            return Err(EngineError::Observer("step preview is not a PNG".into()));
+        }
+        std::fs::create_dir_all(&self.preview_dir)
+            .map_err(|error| EngineError::Observer(error.to_string()))?;
+        atomic_write(&self.preview_dir.join(format!("{}.png", self.task_id)), png)
+    }
 }
 
 pub fn execute(
@@ -309,11 +350,20 @@ pub fn execute(
         scheduler: state.scheduler.clone(),
         task_id: task_id.into(),
         backend: state.backend,
+        preview_dir: state.outputs.join("previews"),
+        preview: request_preview(params),
     });
     let exec = ExecutionContext::new(task_id, observer).with_cancellation(cancellation);
     engine
         .execute(request, exec)
         .map(|result| result.task_json())
+}
+
+fn request_preview(params: &Value) -> bool {
+    match params.pointer("/request/preview") {
+        Some(value) => value.as_bool().unwrap_or(true),
+        None => true,
+    }
 }
 
 fn engine_request(kind: &str, model: &str, params: &Value) -> Result<EngineRequest, EngineError> {
@@ -375,13 +425,22 @@ fn engine_request(kind: &str, model: &str, params: &Value) -> Result<EngineReque
                 guidance: request.guidance.unwrap_or(1.0),
                 steps: request.steps,
                 vocal_language: request.vocal_language,
-                source_audio: request.source_audio,
+                source_audio: request.source_audio.clone().or_else(|| {
+                    request
+                        .source_asset_id
+                        .as_ref()
+                        .filter(|id| !id.trim().is_empty())
+                        .map(|id| format!("asset:{id}"))
+                }),
                 source_audio_base64: request.source_audio_base64,
                 adapters: request.adapters,
                 family_options: json!({
                     "task": request.task,
                     "source_latents": request.source_latents,
-                    "audio_cover_strength": request.audio_cover_strength.unwrap_or(1.0),
+                    "audio_cover_strength": request
+                        .audio_cover_strength
+                        .or(request.source_fidelity)
+                        .unwrap_or(1.0),
                     "cover_noise_strength": request.cover_noise_strength.unwrap_or(0.0),
                     "region_start_sec": request.region_start_sec,
                     "region_end_sec": request.region_end_sec,

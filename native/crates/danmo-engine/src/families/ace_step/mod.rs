@@ -8,15 +8,11 @@
 
 mod apg;
 mod audio_codec;
-mod ca_capture;
-mod cond;
 mod cover;
 mod create;
 mod dcw;
 mod facade;
-mod fsq;
 mod fsq_quant;
-mod graph;
 mod lm;
 mod lm_codes;
 mod lm_expand;
@@ -26,14 +22,12 @@ mod lm_prompt;
 mod lm_sample;
 mod lyrics;
 mod lyrics_dtw;
+mod mlx;
 mod quality;
 mod repaint;
 mod schedule;
 mod text;
 mod token_decode;
-mod transformer;
-mod vae;
-mod vae_enc;
 mod vocal;
 pub(crate) mod wav;
 mod weights;
@@ -54,8 +48,6 @@ pub use schedule::{
     TURBO_SHIFT, TURBO_TIMESTEPS,
 };
 use std::path::{Path, PathBuf};
-#[allow(unused_imports)]
-pub use transformer::{prove_smoke_denoise, AceStepDit};
 pub use weights::{
     check_layout, config_from_weights, layout_matches, weight_layout, AceStepConfig, TIME_FREQ_DIM,
 };
@@ -84,20 +76,16 @@ pub fn run_cover_edit(
     backend: BackendKind,
 ) -> Result<CreateOutput, WeightError> {
     let ctx = GgmlContext::new(backend).map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-    run_cover_edit_with_context(bundle, request, &ctx)
+    run_cover_edit_with_context(bundle, request, &ctx, |_, _| {})
 }
 
 pub fn run_cover_edit_with_context(
     bundle: &Path,
     request: &CoverRequest<'_>,
     ctx: &GgmlContext,
+    on_step: impl FnMut(u32, u32),
 ) -> Result<CreateOutput, WeightError> {
-    if crate::weights::assert_gguf_bundle(bundle).is_ok() {
-        return cover::run_full_cover_with_context(bundle, request, ctx);
-    }
-    Err(WeightError::NotBuilt(
-        "ACE-Step cover needs a GGUF bundle with text encoder + VAE + FSQ weights".into(),
-    ))
+    cover::run_full_cover_with_context(bundle, request, ctx, on_step)
 }
 
 /// Alias kept for call sites that only want the no-FSQ path name.
@@ -185,231 +173,10 @@ pub fn run_lm_with_context(
     ctx: &GgmlContext,
     on_token: &mut dyn FnMut(usize, usize),
 ) -> Result<LmOutput, WeightError> {
-    let prompt = AcePrompt {
-        caption: request.caption.to_string(),
-        lyrics: request.lyrics.to_string(),
-        duration: request.duration,
-        bpm: request.bpm,
-        keyscale: request.keyscale.to_string(),
-        timesignature: request.timesignature.to_string(),
-        vocal_language: request.vocal_language.to_string(),
-    };
-    // Prefer caller tokenizer; else load from bundle/tokenizer (product layout).
-    let owned_tokenizer = if request.tokenizer_json.is_none() {
-        text::load_tokenizer_json(bundle).ok()
-    } else {
-        None
-    };
-    let tokenizer = request.tokenizer_json.or(owned_tokenizer.as_deref());
-    let mut encode = |text: &str| -> Result<Vec<i32>, WeightError> {
-        if let Some(json) = tokenizer {
-            crate::common::qwen3::tokenize_plain(json, text, 200_000)
-        } else {
-            // Synthetic byte ids for prompt-structure tests without a tokenizer.
-            Ok(text.bytes().map(|b| i32::from(b)).collect())
-        }
-    };
-    let need_lyrics = prompt.lyrics.trim().is_empty();
-    let has_metas = prompt.bpm > 0
-        && prompt.duration > 0.0
-        && !prompt.keyscale.is_empty()
-        && !prompt.timesignature.is_empty();
-    // Generate with full metas → phase-2 CoT prompt + constrained codes.
-    let phase2 = request.mode == LmMode::Generate && !need_lyrics && has_metas;
-    let mut prompt_ids = if phase2 {
-        let cot = lm_prompt::build_cot_yaml(&prompt);
-        lm_prompt::build_lm_prompt_with_cot(&mut encode, &prompt, &cot)?
-    } else {
-        lm_prompt::build_phase1_prompt(&mut encode, request.mode, &prompt)?
-    };
-
-    let (weights, config) = lm::open_lm_gguf(bundle)?;
-    // Synthetic byte-encode (no tokenizer) can emit ChatML specials above a
-    // smoke vocab — fold them so prefill stays in-range.
-    if tokenizer.is_none() {
-        prompt_ids = prompt_ids
-            .into_iter()
-            .map(|id| {
-                if (id as i64) < config.vocab {
-                    id
-                } else {
-                    (id as i64).rem_euclid(config.vocab) as i32
-                }
-            })
-            .collect();
-    }
-    if phase2 {
-        let max_codes = request.max_new_tokens.max(1).min(2048).min(
-            ((prompt.duration * 5.0) as usize)
-                .saturating_add(100)
-                .max(1),
-        );
-        let mut uncond_ids = if request.cfg_scale > 1.0 {
-            let mut enc = |text: &str| -> Result<Vec<i32>, WeightError> {
-                if let Some(json) = tokenizer {
-                    crate::common::qwen3::tokenize_plain(json, text, 200_000)
-                } else {
-                    Ok(text.bytes().map(|b| i32::from(b)).collect())
-                }
-            };
-            let mut ids = lm_prompt::build_lm_prompt_uncond_with_cot(
-                &mut enc,
-                &prompt,
-                request.negative_prompt,
-            )?;
-            if tokenizer.is_none() {
-                ids = ids
-                    .into_iter()
-                    .map(|id| {
-                        if (id as i64) < config.vocab {
-                            id
-                        } else {
-                            (id as i64).rem_euclid(config.vocab) as i32
-                        }
-                    })
-                    .collect();
-            }
-            Some(ids)
-        } else {
-            None
-        };
-        let codes = lm_codes::sample_audio_codes_cfg(
-            &ctx,
-            &weights,
-            config,
-            &prompt_ids,
-            uncond_ids.as_deref(),
-            request.cfg_scale,
-            max_codes,
-            lm_prompt::AUDIO_CODE_BASE,
-            lm_prompt::AUDIO_CODE_COUNT,
-            lm_prompt::TOKEN_IM_END,
-            request.temperature,
-            request.top_p,
-            request.top_k,
-            request.seed,
-        )?;
-        let _ = uncond_ids.take();
-        return Ok(LmOutput {
-            mode: request.mode.name().into(),
-            prompt_tokens: prompt_ids.len(),
-            generated_ids: lm_prompt::audio_code_token_ids(&codes)?,
-            text: String::new(),
-            caption: prompt.caption,
-            lyrics: prompt.lyrics,
-            bpm: (prompt.bpm > 0).then_some(prompt.bpm),
-            duration: (prompt.duration > 0.0).then_some(prompt.duration as i32),
-            keyscale: prompt.keyscale,
-            timesignature: prompt.timesignature,
-            language: prompt.vocal_language,
-            audio_code_indices: codes,
-            pmi: None,
-        });
-    }
-
-    let stop: Vec<i32> = [lm_prompt::TOKEN_IM_END, lm_prompt::TOKEN_THINK_END]
-        .into_iter()
-        .filter(|&id| (id as i64) < config.vocab)
-        .collect();
-    let max_new = request.max_new_tokens.max(1).min(2048);
-    let collect_logprob = quality::pmi_scoring_enabled();
-    let (generated, mean_logprob) = if request.use_fsm {
-        let json = tokenizer.ok_or_else(|| {
-            WeightError::NotBuilt(
-                "ACE-Step LM MetadataFSM needs tokenizer.json (set use_fsm=false to skip)".into(),
-            )
-        })?;
-        let user_metas = lm_fsm::UserMetas {
-            // Structured overrides only — do not force caption (inspire expands it).
-            bpm: (request.bpm > 0).then_some(request.bpm),
-            caption: None,
-            duration: (request.duration > 0.0).then_some(request.duration as i32),
-            keyscale: (!request.keyscale.is_empty()).then(|| request.keyscale.to_string()),
-            language: (!request.vocal_language.is_empty())
-                .then(|| request.vocal_language.to_string()),
-            timesignature: (!request.timesignature.is_empty())
-                .then(|| request.timesignature.to_string()),
-        };
-        let mut fsm_session =
-            lm_fsm::MetadataFsmSession::open(json, config.vocab)?.with_user_metas(user_metas);
-        // Build the id→text table once. Parsing tokenizer.json per decoded token
-        // rebuilt a 24 MB JSON and a full vocab map inside the sampling loop.
-        let decoder = token_decode::Decoder::from_tokenizer_json(json).ok();
-        let decode_token = |id: i32| -> String {
-            decoder
-                .as_ref()
-                .map(|d| d.decode(&[id]))
-                .unwrap_or_default()
-        };
-        let fsm = lm::Phase1FsmMask {
-            session: &mut fsm_session,
-            decode_token: &decode_token,
-        };
-        lm::sample_generate_fsm_with_stats(
-            &ctx,
-            &weights,
-            config,
-            &prompt_ids,
-            max_new,
-            &stop,
-            request.temperature,
-            request.top_p,
-            request.top_k,
-            request.seed,
-            Some(fsm),
-            collect_logprob,
-            on_token,
-        )?
-    } else {
-        lm::sample_generate_with_stats(
-            &ctx,
-            &weights,
-            config,
-            &prompt_ids,
-            max_new,
-            &stop,
-            request.temperature,
-            request.top_p,
-            request.top_k,
-            request.seed,
-            collect_logprob,
-            on_token,
-        )?
-    };
-    let new_ids = generated[prompt_ids.len()..].to_vec();
-    let text = if let Some(json) = tokenizer {
-        token_decode::Decoder::from_tokenizer_json(json)?.decode(&new_ids)
-    } else {
-        String::new()
-    };
-    let meta = lm_format::parse_lm_output(&text);
-    let formatted = lm_format::build_lm_format_result(
-        &meta,
-        request.caption,
-        request.lyrics,
-        (request.duration > 0.0).then_some(request.duration),
-        (request.bpm > 0).then_some(request.bpm),
-        request.keyscale,
-        request.timesignature,
-        request.vocal_language,
-        !request.lyrics.trim().is_empty() && request.lyrics.trim() != "[Instrumental]",
-        true,
-    );
-    Ok(LmOutput {
-        mode: request.mode.name().into(),
-        prompt_tokens: prompt_ids.len(),
-        generated_ids: new_ids,
-        text,
-        caption: formatted.caption,
-        lyrics: formatted.lyrics,
-        bpm: formatted.bpm,
-        duration: formatted.duration,
-        keyscale: formatted.keyscale,
-        timesignature: formatted.timesignature,
-        language: formatted.language,
-        audio_code_indices: formatted.audio_code_indices,
-        pmi: mean_logprob.and_then(quality::PmiAssessment::from_mean_logprob),
-    })
+    let _ = (bundle, request, ctx, on_token);
+    return Err(WeightError::NotBuilt(
+        "ACE-Step 5Hz LM generate has no MLX forward. Set lm_expansion to off.".into(),
+    ));
 }
 
 /// Back-compat alias: inspire expand on an LM bundle.
@@ -459,20 +226,8 @@ pub fn run_create_with_context(
     ctx: &GgmlContext,
     on_step: impl FnMut(u32, u32),
 ) -> Result<CreateOutput, WeightError> {
-    if crate::weights::assert_gguf_bundle(bundle).is_ok() {
-        return create::run_full_create_with_context(bundle, request, ctx, on_step);
-    }
-    let config = probe_layout(bundle)?;
-    if config == AceStepConfig::smoke() {
-        let _ = prove_smoke_denoise(ctx, bundle, config)?;
-        return Err(WeightError::NotBuilt(
-            "ACE-Step needs text_encoder/, vae/, and tokenizer/ companions (install the registry components)".into(),
-        ));
-    }
-    Err(WeightError::NotBuilt(
-        "ACE-Step XL create needs a GGUF bundle with text encoder + VAE (see registry components)"
-            .into(),
-    ))
+    let _ = ctx;
+    create::run_full_create_with_context(bundle, request, ctx, on_step)
 }
 
 pub(crate) fn dit_gguf(bundle: &Path) -> Result<PathBuf, WeightError> {
@@ -674,7 +429,9 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            err.to_string().contains("companions") || err.to_string().contains("text_encoder"),
+            err.to_string().contains("safetensors")
+                || err.to_string().contains("MLX")
+                || err.to_string().contains("mlx"),
             "{err}"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -732,7 +489,7 @@ mod tests {
     fn lm_inspire_smoke_runs_greedy_prefill() {
         let dir = scratch("lm-inspire");
         super::write_smoke_lm(&dir, super::AceLmConfig::smoke()).unwrap();
-        let out = super::run_lm(
+        let err = super::run_lm(
             &dir,
             &super::LmRequest {
                 mode: super::LmMode::Inspire,
@@ -756,10 +513,11 @@ mod tests {
             BackendKind::Cpu,
             &mut |_, _| (),
         )
-        .unwrap();
-        assert_eq!(out.mode, "inspire");
-        assert!(out.prompt_tokens > 0);
-        assert!(!out.generated_ids.is_empty());
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("MLX") || err.to_string().contains("5Hz LM"),
+            "{err}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -793,7 +551,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            err.to_string().contains("vocab") || err.to_string().contains("audio code"),
+            err.to_string().contains("MLX") || err.to_string().contains("5Hz LM"),
             "{err}"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -828,7 +586,9 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            err.to_string().contains("companions") || err.to_string().contains("text_encoder"),
+            err.to_string().contains("safetensors")
+                || err.to_string().contains("MLX")
+                || err.to_string().contains("mlx"),
             "{err}"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -928,6 +688,46 @@ mod e2e_real_turbo {
             out.steps,
             out.frames
         );
+        assert!(out.wav.len() > 44);
+    }
+
+    #[test]
+    #[ignore = "loads the XL turbo safetensors bundle and denoises"]
+    fn lyric_alignment_times_sung_lines() {
+        let bundle = std::path::Path::new(
+            "/Users/nil.luo/Workspace/studio-workspace/models/Audio/acestep-v15-xl-turbo",
+        );
+        if !bundle.join("acestep-v15-xl-turbo/config.json").is_file() {
+            eprintln!("skip: XL turbo safetensors missing");
+            return;
+        }
+        let out = crate::pipeline::legacy::audio_create(
+            "ace_step",
+            bundle,
+            &crate::pipeline::legacy::AudioCreateRequest {
+                prompt: "quiet piano",
+                lyrics: "你好\n世界",
+                duration_sec: 10.0,
+                seed: Some(7),
+                guidance: 1.0,
+                steps: Some(2),
+                vocal_language: "zh",
+                bpm: Some(90),
+                keyscale: "C major",
+                timesignature: "4",
+                lm_expansion: "off",
+                lm_bundle: None,
+                audio_code_indices: None,
+                timbre_latents: None,
+            },
+            BackendKind::Cpu,
+            |_, _, _| (),
+        )
+        .expect("aligned create");
+        println!("{}", out.lyrics_alignment_json);
+        println!("{}", out.lyrics_lrc.as_deref().unwrap_or(""));
+        assert!(out.lyrics_alignment_json.contains("dit_cross_attention"));
+        assert!(out.lyrics_lrc.is_some());
         assert!(out.wav.len() > 44);
     }
 }

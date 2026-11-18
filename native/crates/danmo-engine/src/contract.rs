@@ -80,6 +80,21 @@ pub trait RunObserver: Send + Sync {
     fn progress(&self, phase: &str, step: u32, total: u32) -> Result<(), EngineError>;
     fn log(&self, level: &str, message: &str) -> Result<(), EngineError>;
     fn phase(&self, phase: &str) -> Result<(), EngineError>;
+
+    /// Denoise steps between living-canvas previews. `None` writes nothing.
+    fn preview_interval_steps(&self) -> Option<u32> {
+        None
+    }
+
+    /// Longest edge of a step preview. Ignored when previews are off.
+    fn preview_max_edge(&self) -> u32 {
+        512
+    }
+
+    fn write_step_preview(&self, png: &[u8]) -> Result<(), EngineError> {
+        let _ = png;
+        Ok(())
+    }
 }
 
 #[derive(Clone)]

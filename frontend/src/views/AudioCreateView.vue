@@ -358,7 +358,12 @@ async function loadCompatibleAdapters(modelKey: string) {
   try {
     const loras = await api.settings.getCompatibleLoras(modelKey);
     compatibleLoras.value = (loras as Record<string, unknown>[]) || [];
-    if (params.lora && !compatibleLoras.value.some((l) => String(l.id) === String(params.lora))) {
+    if (
+      params.lora &&
+      !compatibleLoras.value.some(
+        (l) => String(l.id) === String(params.lora) && l.ready !== false,
+      )
+    ) {
       params.lora = '';
     }
   } catch (e) {
@@ -1042,10 +1047,16 @@ async function startCoverGeneration(options: AudioGenerationOptions = {}) {
       return;
     }
 
+    const adapters: Array<{ id: string; weight: number }> = [];
+    if (params.lora) {
+      adapters.push({ id: String(params.lora), weight: Number(params.lora_scale) || 0.8 });
+    }
     const body = {
       model: params.model,
       operation: 'cover',
+      task: 'cover',
       source_asset_id,
+      adapters,
       prompt: String(params.prompt || '').trim(),
       source_fidelity: coverParams.source_fidelity ?? 1.0,
       seed: seedForSubmit(params.seed),

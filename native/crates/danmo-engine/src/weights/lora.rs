@@ -190,7 +190,11 @@ fn load_file(
             });
         }
         let rank = down.ne1;
-        let alpha = group.alpha.or(default_alpha).unwrap_or(rank as f32);
+        let alpha = group
+            .alpha
+            .or(default_alpha)
+            .or(adapter_alpha(&file.path)?)
+            .unwrap_or(rank as f32);
         if !alpha.is_finite() {
             return Err(WeightError::NotBuilt(format!(
                 "lora {target} alpha is not a finite number"
@@ -258,14 +262,65 @@ fn read_alpha(weights: &GgufWeights, key: &str) -> Result<f32, WeightError> {
     Ok(value)
 }
 
+fn adapter_alpha(path: &std::path::Path) -> Result<Option<f32>, WeightError> {
+    let Some(dir) = path.parent() else {
+        return Ok(None);
+    };
+    for name in ["adapter_config.json", "lora_config.json"] {
+        let config = dir.join(name);
+        if !config.is_file() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&config).map_err(|error| WeightError::Open {
+            path: config.display().to_string(),
+            detail: error.to_string(),
+        })?;
+        let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+            WeightError::NotBuilt(format!(
+                "lora config {} is not json: {error}",
+                config.display()
+            ))
+        })?;
+        let Some(alpha) = value.get("lora_alpha").or_else(|| value.get("alpha")) else {
+            return Ok(None);
+        };
+        let number = alpha.as_f64().ok_or_else(|| {
+            WeightError::NotBuilt(format!(
+                "lora config {} alpha is not a number",
+                config.display()
+            ))
+        })? as f32;
+        if !number.is_finite() || number <= 0.0 {
+            return Err(WeightError::NotBuilt(format!(
+                "lora config {} alpha {number} is not a positive finite number",
+                config.display()
+            )));
+        }
+        return Ok(Some(number));
+    }
+    Ok(None)
+}
+
 fn split_lora_suffix(key: &str) -> Result<(String, Part), WeightError> {
     const MARKS: &[(&str, Part)] = &[
+        (".lora_down.default.weight", Part::Down),
+        (".lora_up.default.weight", Part::Up),
+        (".lora_A.default.weight", Part::Down),
+        (".lora_B.default.weight", Part::Up),
+        (".lora_a.default.weight", Part::Down),
+        (".lora_b.default.weight", Part::Up),
         (".lora_down.weight", Part::Down),
         (".lora_up.weight", Part::Up),
         (".lora_A.weight", Part::Down),
         (".lora_B.weight", Part::Up),
         (".lora_a.weight", Part::Down),
         (".lora_b.weight", Part::Up),
+        (".lora_down.default", Part::Down),
+        (".lora_up.default", Part::Up),
+        (".lora_A.default", Part::Down),
+        (".lora_B.default", Part::Up),
+        (".lora_a.default", Part::Down),
+        (".lora_b.default", Part::Up),
         (".lora_down", Part::Down),
         (".lora_up", Part::Up),
         (".lora_A", Part::Down),
@@ -385,6 +440,50 @@ mod tests {
         assert_eq!(factors.len(), 1);
         assert_eq!(factors[0].target, layout[0].0);
         assert_eq!(factors[0].scale, 64.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn peft_default_suffix_uses_adapter_config_alpha() {
+        let dir = std::env::temp_dir().join(format!("danmo-peft-lora-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("adapter_model.safetensors");
+        let down = f32_bytes(&[1.0, 0.0, 0.0, 1.0]);
+        write_safetensors(
+            &path,
+            &[
+                SafeTensor {
+                    name:
+                        "base_model.model.decoder.layers.0.self_attn.q_proj.lora_A.default.weight",
+                    dtype: "F32",
+                    shape: &[1, 4],
+                    data: &down,
+                },
+                SafeTensor {
+                    name:
+                        "base_model.model.decoder.layers.0.self_attn.q_proj.lora_B.default.weight",
+                    dtype: "F32",
+                    shape: &[4, 1],
+                    data: &down,
+                },
+            ],
+        )
+        .unwrap();
+        std::fs::write(dir.join("adapter_config.json"), r#"{"lora_alpha": 32}"#).unwrap();
+        let layout = [("decoder.layers.0.self_attn.q_proj.weight".into(), 4, 4)];
+        let factors = load_lora_factors(
+            &[LoraFile {
+                id: "peft".into(),
+                path,
+                weight: 0.5,
+            }],
+            &layout,
+        )
+        .unwrap();
+        assert_eq!(factors.len(), 1);
+        assert_eq!(factors[0].target, layout[0].0);
+        assert_eq!(factors[0].scale, 16.0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

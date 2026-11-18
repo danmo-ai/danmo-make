@@ -687,11 +687,13 @@ fn safetensors_bundle(
 ) -> Result<PathBuf, String> {
     let path = version_local_path(root, model, version)?;
     let resolved = download::resolve_model_path(workspace, &path);
-    if danmo_engine::is_safetensors_image_bundle(&resolved) {
+    if danmo_engine::is_safetensors_image_bundle(&resolved)
+        || danmo_engine::is_ace_step_safetensors_bundle(&resolved)
+    {
         return Ok(resolved);
     }
     Err(format!(
-        "{model}:{version} is not an installed safetensors image bundle at {}",
+        "{model}:{version} is not an installed safetensors bundle at {}",
         resolved.display()
     ))
 }
@@ -724,8 +726,12 @@ fn installed_safetensors_version(
             .and_then(|version| version.get("local_path"))
             .and_then(|value| value.as_str())
             .filter(|path| !path.is_empty())?;
-        danmo_engine::is_safetensors_image_bundle(&download::resolve_model_path(workspace, path))
+        {
+            let resolved = download::resolve_model_path(workspace, path);
+            (danmo_engine::is_safetensors_image_bundle(&resolved)
+                || danmo_engine::is_ace_step_safetensors_bundle(&resolved))
             .then_some(key.to_string())
+        }
     };
     for key in danmo_catalog::SAFETENSORS_VERSION_KEYS {
         if versions
@@ -1226,11 +1232,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn z_image_edit_runs_end_to_end() {
-        rewrite_edit_runs_end_to_end("z-image", |bundle| {
-            danmo_engine::write_z_image_edit_smoke_bundle(bundle).unwrap()
-        })
+    async fn z_image_edit_fails_without_the_ggml_graph() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-zedit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut registry: Value =
+            serde_json::from_str(&std::fs::read_to_string(factory_registry()).unwrap()).unwrap();
+        let local = "models/Image/z-image/q4_k";
+        registry["models"]["z-image"]["distribution"]["versions"]["q4_k"] = json!({
+            "name": { "zh": "Q4_K", "en": "Q4_K" },
+            "size": "1GB",
+            "local_path": local
+        });
+        let registry_path = dir.join("registry.json");
+        std::fs::write(&registry_path, serde_json::to_string(&registry).unwrap()).unwrap();
+        danmo_engine::write_z_image_edit_smoke_bundle(&dir.join(local)).unwrap();
+        let app = router(&dir.join("studio.db"), &registry_path);
+        let model = "z-image:q4_k";
+        let rgb = vec![128u8; 32 * 32 * 3];
+        let png = danmo_engine::png::encode_rgb(32, 32, &rgb);
+        let upload = post_json(
+            &app,
+            "/api/assets",
+            &json!({
+                "filename": "source.png",
+                "data_base64": base64_encode(&png),
+            }),
+        )
         .await;
+        assert_eq!(upload.0, StatusCode::OK, "{}", upload.1);
+        let source_id = upload.1["id"].as_str().unwrap().to_string();
+        let edit = post_json(
+            &app,
+            "/api/images/edits",
+            &json!({
+                "model": model,
+                "operation": "rewrite",
+                "source_asset_id": source_id,
+                "title": "smoke edit",
+                "prompt": "make it blue",
+                "steps": 4,
+                "guidance": 1.0,
+                "seed": 1,
+                "priority": "normal"
+            }),
+        )
+        .await;
+        assert_eq!(edit.0, StatusCode::ACCEPTED, "{}", edit.1);
+        let id = edit.1["id"].as_str().unwrap();
+        let task = wait_terminal_for(&app, id, 50, 40).await;
+        assert_eq!(task["status"], "failed", "task {task}");
+        let err = task["error"].as_str().unwrap_or("");
+        assert!(err.contains("no longer has a ggml graph"), "task {task}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -2691,12 +2751,12 @@ mod tests {
                         "versions": {
                             "bf16": {
                                 "local_path": "models/demo-http",
-                                "url": format!("http://127.0.0.1:{port}/demo.gguf"),
+                                "url": format!("http://127.0.0.1:{port}/model.safetensors"),
                                 "source": "huggingface"
                             },
                             "q4_k": {
                                 "local_path": "models/demo-http/q4",
-                                "url": format!("http://127.0.0.1:{port}/model.safetensors"),
+                                "url": format!("http://127.0.0.1:{port}/model.gguf"),
                                 "source": "huggingface"
                             }
                         }
@@ -2785,7 +2845,10 @@ mod tests {
             }
         }
         assert_eq!(status, "completed", "{error}");
-        assert_eq!(std::fs::read(bundle.join("demo.gguf")).unwrap(), payload);
+        assert_eq!(
+            std::fs::read(bundle.join("model.safetensors")).unwrap(),
+            payload
+        );
 
         let detailed = app
             .clone()
@@ -2828,7 +2891,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(removed.status(), StatusCode::OK, "{removed:?}");
-        assert!(!bundle.join("demo.gguf").exists());
+        assert!(!bundle.join("model.safetensors").exists());
 
         let batch = app
             .clone()
@@ -2873,7 +2936,10 @@ mod tests {
             }
         }
         assert_eq!(batch_status, "completed");
-        assert_eq!(std::fs::read(bundle.join("demo.gguf")).unwrap(), payload);
+        assert_eq!(
+            std::fs::read(bundle.join("model.safetensors")).unwrap(),
+            payload
+        );
         let removed_batch = app
             .clone()
             .oneshot(
@@ -2928,10 +2994,10 @@ mod tests {
                 break;
             }
             if task["status"] == "completed" {
-                panic!("safetensors URL was downloaded: {task}");
+                panic!("gguf URL was downloaded: {task}");
             }
         }
-        assert!(refused_error.contains("GGUF"), "{refused_error}");
+        assert!(refused_error.contains("safetensors"), "{refused_error}");
         let _ = std::fs::remove_dir_all(&bundle);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3312,6 +3378,82 @@ fn reject_unbuilt_inference(family: &str, body: &Value, allow_guide: bool) -> Re
     Ok(())
 }
 
+fn reject_foreign_lora(state: &AppState, model: &str, id: &str) -> Result<(), ApiError> {
+    let bare = id.split(':').next().unwrap_or(id);
+    let catalog = danmo_catalog::Catalog::open(&state.registry)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let Some(entry) = catalog.root().pointer(&format!("/models/{bare}")) else {
+        return Ok(());
+    };
+    let lora_card = entry
+        .pointer("/catalog/category")
+        .and_then(|value| value.as_str())
+        == Some("loras")
+        || entry
+            .pointer("/catalog/type")
+            .and_then(|value| value.as_str())
+            == Some("lora");
+    if !lora_card {
+        return Ok(());
+    }
+    let base = entry
+        .pointer("/catalog/base_model")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if product::lora_compatible(model, base) {
+        return Ok(());
+    }
+    Err(fail(
+        StatusCode::BAD_REQUEST,
+        format!("lora {id} is for {base}"),
+    ))
+}
+
+fn installed_lora_path(state: &AppState, id: &str) -> Result<PathBuf, ApiError> {
+    if let Some(path) = state
+        .downloads
+        .lora_path(id)
+        .map_err(|detail| fail(StatusCode::BAD_REQUEST, detail))?
+    {
+        return Ok(path);
+    }
+    let (bare, version) = match id.split_once(':') {
+        Some((bare, version)) => (bare, Some(version)),
+        None => (id, None),
+    };
+    let catalog = danmo_catalog::Catalog::open(&state.registry)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let Some(entry) = catalog.root().pointer(&format!("/models/{bare}")) else {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!("lora {id} is not installed"),
+        ));
+    };
+    let lora_card = entry
+        .pointer("/catalog/category")
+        .and_then(|value| value.as_str())
+        == Some("loras")
+        || entry
+            .pointer("/catalog/type")
+            .and_then(|value| value.as_str())
+            == Some("lora");
+    if !lora_card {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!("lora {id} is not a LoRA"),
+        ));
+    }
+    match download::registry_lora_weight(&state.workspace, entry, version)
+        .map_err(|detail| fail(StatusCode::BAD_REQUEST, detail))?
+    {
+        Some(path) => Ok(path),
+        None => Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!("lora {id} is not installed"),
+        )),
+    }
+}
+
 fn bind_installed_loras(state: &AppState, model: &str, body: &mut Value) -> Result<(), ApiError> {
     let Some(rows) = body.get_mut("adapters").and_then(|v| v.as_array_mut()) else {
         return Ok(());
@@ -3330,6 +3472,7 @@ fn bind_installed_loras(state: &AppState, model: &str, body: &mut Value) -> Resu
         if id.is_empty() {
             return Err(fail(StatusCode::BAD_REQUEST, "lora id is required"));
         }
+        reject_foreign_lora(state, bare, &id)?;
         if bare == "z-image-turbo" {
             match state.downloads.turbo_sft(&id) {
                 Ok(true) => {
@@ -3342,16 +3485,7 @@ fn bind_installed_loras(state: &AppState, model: &str, body: &mut Value) -> Resu
                 Err(detail) => return Err(fail(StatusCode::BAD_REQUEST, detail)),
             }
         }
-        let path = state
-            .downloads
-            .lora_path(&id)
-            .map_err(|detail| fail(StatusCode::BAD_REQUEST, detail))?;
-        let Some(path) = path else {
-            return Err(fail(
-                StatusCode::BAD_REQUEST,
-                format!("lora {id} is not installed"),
-            ));
-        };
+        let path = installed_lora_path(state, &id)?;
         let Some(obj) = row.as_object_mut() else {
             return Err(fail(
                 StatusCode::BAD_REQUEST,
@@ -3483,8 +3617,14 @@ async fn video_avatar_script(
 
 async fn audio_edits(
     State(state): State<AppState>,
-    Json(body): Json<Value>,
+    Json(mut body): Json<Value>,
 ) -> Result<(StatusCode, Json<TaskAccepted>), ApiError> {
+    if let Some(obj) = body.as_object_mut() {
+        let task_missing = obj.get("task").map(|value| value.is_null()).unwrap_or(true);
+        if task_missing && obj.get("operation").and_then(|value| value.as_str()) == Some("cover") {
+            obj.insert("task".into(), json!("cover"));
+        }
+    }
     let mut body: AudioEditRequest = prepare_audio_request(&state, body)?;
     ensure_seed(&mut body.seed);
     let accepted = accept(

@@ -100,7 +100,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/settings/models/status", get(models_status))
         .route("/api/settings/models/status/detailed", get(models_detailed))
         .route("/api/settings/disk-space", get(disk_space))
-        .route("/api/settings/loras/compatible/:model", get(empty_list))
+        .route(
+            "/api/settings/loras/compatible/:model",
+            get(compatible_loras),
+        )
         .route(
             "/api/settings/controlnets/compatible/:model",
             get(empty_list),
@@ -653,7 +656,7 @@ async fn install_batch(
             let version = default_version(catalog.root(), model_id).ok_or_else(|| {
                 fail(
                     StatusCode::BAD_REQUEST,
-                    format!("{model_id} has no bf16, q8_0, or q4_k version"),
+                    format!("{model_id} has no downloadable version"),
                 )
             })?;
             pairs.push((model_id.to_string(), version));
@@ -670,12 +673,6 @@ async fn install_batch(
 }
 
 fn enqueue_install(state: &AppState, model_id: &str, version: &str) -> Result<String, ApiError> {
-    if !danmo_catalog::GGUF_VERSION_KEYS.contains(&version) {
-        return Err(fail(
-            StatusCode::BAD_REQUEST,
-            "version must be bf16, q8_0, or q4_k",
-        ));
-    }
     let catalog = open_catalog(state)?;
     let spec = catalog
         .root()
@@ -689,43 +686,76 @@ fn enqueue_install(state: &AppState, model_id: &str, version: &str) -> Result<St
                 format!("{model_id} has no {version} package"),
             )
         })?;
+    if spec.get("source_type").and_then(|value| value.as_str()) == Some("derived") {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "{model_id}:{version} is generated from the full version and is not a download"
+            ),
+        ));
+    }
+    if !version_is_download(&spec) {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!("{model_id}:{version} has no published download"),
+        ));
+    }
     state
         .downloads
         .install_model(model_id, version, &spec)
         .map_err(|err| fail(StatusCode::BAD_REQUEST, err))
 }
 
+fn version_is_download(version: &Value) -> bool {
+    let nonempty = |key: &str| {
+        version
+            .get(key)
+            .and_then(|value| value.as_str())
+            .is_some_and(|text| !text.is_empty())
+    };
+    let listed = |key: &str| {
+        version
+            .get(key)
+            .and_then(|value| value.as_array())
+            .is_some_and(|rows| !rows.is_empty())
+    };
+    nonempty("repo_id")
+        || nonempty("url")
+        || listed("files")
+        || listed("bundle_repos")
+        || listed("components")
+}
+
 fn default_version(root: &Value, model_id: &str) -> Option<String> {
     let versions = root
         .pointer(&format!("/models/{model_id}/distribution/versions"))?
         .as_object()?;
-    for key in danmo_catalog::GGUF_VERSION_KEYS {
-        if let Some(version) = versions.get(*key) {
-            if version
-                .get("default")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                return Some((*key).to_string());
-            }
+    let mut fallback = None;
+    for (key, version) in versions {
+        if version.get("source_type").and_then(|value| value.as_str()) == Some("derived") {
+            continue;
+        }
+        if !version_is_download(version) {
+            continue;
+        }
+        if version
+            .get("default")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            return Some(key.clone());
+        }
+        if fallback.is_none() {
+            fallback = Some(key.clone());
         }
     }
-    danmo_catalog::GGUF_VERSION_KEYS
-        .iter()
-        .find(|key| versions.contains_key(**key))
-        .map(|key| (*key).to_string())
+    fallback
 }
 
 async fn delete_model_version(
     State(state): State<AppState>,
     Path((id, version)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
-    if !danmo_catalog::GGUF_VERSION_KEYS.contains(&version.as_str()) {
-        return Err(fail(
-            StatusCode::BAD_REQUEST,
-            "version must be bf16, q8_0, or q4_k",
-        ));
-    }
     let catalog = open_catalog(&state)?;
     let spec = catalog
         .root()
@@ -780,6 +810,161 @@ async fn empty_list() -> Json<Value> {
     Json(json!([]))
 }
 
+/// Installed and registry LoRAs whose `base_model` matches the selected model.
+/// ACE-Step XL SFT, Turbo, and base share one LoRA set.
+async fn compatible_loras(
+    State(state): State<AppState>,
+    Path(model): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let models = catalog
+        .root()
+        .get("models")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| fail(StatusCode::INTERNAL_SERVER_ERROR, "registry has no models"))?;
+    let mut rows = Vec::new();
+    for (id, entry) in models {
+        if entry
+            .pointer("/catalog/category")
+            .and_then(|value| value.as_str())
+            != Some("loras")
+            && entry
+                .pointer("/catalog/type")
+                .and_then(|value| value.as_str())
+                != Some("lora")
+        {
+            continue;
+        }
+        let base = entry
+            .pointer("/catalog/base_model")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if !lora_compatible(&model, base) {
+            continue;
+        }
+        rows.push(json!({
+            "kind": "lora",
+            "id": id,
+            "name": lora_display_name(entry, id),
+            "base_model": base,
+            "source": "registry",
+            "ready": lora_versions_ready(&state.workspace, entry),
+        }));
+    }
+    let user_path = state.workspace.join("config").join("user_loras.json");
+    if user_path.is_file() {
+        let text = std::fs::read_to_string(&user_path).map_err(|error| {
+            fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{}: {error}", user_path.display()),
+            )
+        })?;
+        let value: Value = serde_json::from_str(&text).map_err(|error| {
+            fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{} is not json: {error}", user_path.display()),
+            )
+        })?;
+        for item in value
+            .get("items")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let id = item
+                .get("id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let base = item
+                .get("base_model")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let path = item
+                .get("local_path")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            if id.is_empty() || !lora_compatible(&model, base) {
+                continue;
+            }
+            let file = download::resolve_model_path(&state.workspace, path);
+            if !file.is_file() {
+                continue;
+            }
+            if rows
+                .iter()
+                .any(|row| row.get("id").and_then(|value| value.as_str()) == Some(id))
+            {
+                continue;
+            }
+            rows.insert(
+                    0,
+                    json!({
+                        "kind": "lora",
+                        "id": id,
+                        "name": item.get("name").and_then(|value| value.as_str()).unwrap_or(id),
+                        "base_model": base,
+                        "source": item.get("source").and_then(|value| value.as_str()).unwrap_or("user_trained"),
+                        "ready": true,
+                    }),
+                );
+        }
+    }
+    rows.sort_by(|left, right| {
+        let name = |row: &Value| {
+            row.get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        name(left).cmp(&name(right))
+    });
+    Ok(Json(Value::Array(rows)))
+}
+
+fn lora_display_name(entry: &Value, id: &str) -> String {
+    match entry.pointer("/catalog/name") {
+        Some(Value::String(text)) => text.clone(),
+        Some(value) => value
+            .get("zh")
+            .and_then(|item| item.as_str())
+            .filter(|text| !text.is_empty())
+            .or_else(|| value.get("en").and_then(|item| item.as_str()))
+            .unwrap_or(id)
+            .to_string(),
+        None => id.to_string(),
+    }
+}
+
+pub(crate) fn lora_compatible(model: &str, base: &str) -> bool {
+    let model = model.split(':').next().unwrap_or(model).trim();
+    let base = base.split(':').next().unwrap_or(base).trim();
+    if model.is_empty() || base.is_empty() {
+        return false;
+    }
+    if model == base {
+        return true;
+    }
+    const ACE_XL: &[&str] = &["ace-step-xl-sft", "ace-step-xl-turbo", "ace-step-xl-base"];
+    ACE_XL.contains(&model) && ACE_XL.contains(&base)
+}
+
+fn lora_versions_ready(workspace: &FsPath, entry: &Value) -> bool {
+    let Some(versions) = entry
+        .pointer("/distribution/versions")
+        .and_then(|value| value.as_object())
+    else {
+        return false;
+    };
+    versions.values().any(|version| {
+        version
+            .get("local_path")
+            .and_then(|value| value.as_str())
+            .is_some_and(|path| {
+                download::version_ready(&download::resolve_model_path(workspace, path))
+            })
+    })
+}
+
 async fn list_downloads(State(state): State<AppState>) -> Json<Value> {
     Json(Value::Array(state.downloads.list()))
 }
@@ -823,7 +1008,7 @@ async fn resume_download(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let version = snap.get("version").and_then(|v| v.as_str()).unwrap_or("");
-            if !model_id.is_empty() && danmo_catalog::GGUF_VERSION_KEYS.contains(&version) {
+            if !model_id.is_empty() && !version.is_empty() {
                 let catalog = open_catalog(&state)?;
                 if let Some(spec) = catalog
                     .root()
@@ -1029,8 +1214,8 @@ async fn empty_models() -> Json<Value> {
 async fn recommendations() -> Json<Value> {
     Json(json!({
         "runtime": "ggml",
-        "weights": "gguf",
-        "versions": ["bf16", "q8_0", "q4_k"],
+        "weights": "safetensors",
+        "versions": ["fp16", "bf16", "mlx-bf16", "mlx-q8", "mlx-q4"],
     }))
 }
 
@@ -1726,14 +1911,14 @@ async fn delete_preset(
 async fn reject_training() -> Result<Json<Value>, ApiError> {
     Err(fail(
         StatusCode::NOT_IMPLEMENTED,
-        "lora training graph is not built",
+        "LoRA training is temporarily unavailable: Python trainer removed; Rust MLX trainer not landed yet",
     ))
 }
 
 async fn training_requirements() -> Json<Value> {
     Json(json!({
         "ready": false,
-        "detail": "lora training graph is not built",
+        "detail": "LoRA training is temporarily unavailable: Python trainer removed; Rust MLX trainer not landed yet",
     }))
 }
 
@@ -2535,6 +2720,28 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
     let year = if month <= 2 { y + 1 } else { y };
     (year, month, day)
+}
+
+#[cfg(test)]
+mod lora_base_tests {
+    use super::lora_compatible;
+
+    #[test]
+    fn xl_loras_stay_inside_the_xl_family() {
+        assert!(lora_compatible("ace-step-xl-turbo", "ace-step-xl-sft"));
+        assert!(lora_compatible(
+            "ace-step-xl-sft:xl-sft",
+            "ace-step-xl-turbo"
+        ));
+        assert!(lora_compatible("ace-step-turbo", "ace-step-turbo"));
+    }
+
+    #[test]
+    fn two_b_lora_stays_off_xl() {
+        assert!(!lora_compatible("ace-step-xl-turbo", "ace-step-turbo"));
+        assert!(!lora_compatible("ace-step-xl-sft", "ace-step-turbo"));
+        assert!(!lora_compatible("ace-step-xl-base", ""));
+    }
 }
 
 #[cfg(test)]

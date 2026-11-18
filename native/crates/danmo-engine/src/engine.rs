@@ -175,6 +175,7 @@ mod tests {
             use_empirical_mu: false,
             adapters: Vec::new(),
             structural_guide: None,
+            preview: true,
             priority: "normal".into(),
         }
     }

@@ -1,7 +1,8 @@
 //! Lyrics timeline helpers from main `vocals/lyrics_alignment.py` + `lm/lm_format.py`.
 //!
-//! Product create starts from **structure_estimate** (even line allocation → LRC),
-//! then upgrades to [`DIT_ALIGNMENT_MODE`] when DiT CA capture + DTW succeeds.
+//! Vocal create and cover replace the structure estimate with
+//! [`DIT_ALIGNMENT_MODE`] after the DiT cross-attention pass. Instrumental
+//! tracks stay on the estimate and carry no timed lines.
 
 use serde_json::{json, Value};
 use std::borrow::Cow;

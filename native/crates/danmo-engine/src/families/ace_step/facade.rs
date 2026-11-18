@@ -167,15 +167,18 @@ impl FacadeFamily for AceStepFamily {
     ) -> Result<Box<dyn FacadeSession>, EngineError> {
         let prepared = match request {
             EngineRequest::AudioCreate(request) => {
-                let request = normalize_create_vocals(request, exec)?;
+                let mut request = normalize_create_vocals(request, exec)?;
+                if request.seed.is_none() {
+                    request.seed = Some(drawn_seed());
+                }
                 let options: CreateOptions = parse_options(&request.family_options)?;
                 let expanded = if options.lm_expansion.eq_ignore_ascii_case("off") {
                     None
                 } else {
-                    let lm_bundle = match super::resolve_lm_bundle_for_create(&run.bundle, None) {
-                        Ok(path) => Some(path),
-                        Err(_) => Some(resolver.resolve_component(run, "lm", "ace-step-5hz-lm")?),
-                    };
+                    // The 5Hz LM is not a registry card. Its safetensors live
+                    // inside the ACE bundle (acestep-5Hz-lm-*). A GGUF companion
+                    // is ignored; maybe_expand fails loud when the tower is missing.
+                    let lm_bundle = super::resolve_lm_bundle_for_create(&run.bundle, None).ok();
                     let mut callback_error = None;
                     let expanded = super::maybe_expand_for_create_with_context(
                         &run.bundle,
@@ -188,7 +191,10 @@ impl FacadeFamily for AceStepFamily {
                             keyscale: &options.keyscale,
                             timesignature: &options.timesignature,
                             vocal_language: &request.vocal_language,
-                            seed: request.seed.unwrap_or(0) as u64,
+                            seed: request
+                                .seed
+                                .expect("create seed is drawn before LM expansion")
+                                as u64,
                             lm_bundle: lm_bundle.as_deref(),
                             existing_codes: options.audio_code_indices.as_deref(),
                         },
@@ -351,6 +357,7 @@ impl FacadeSession for AceStepSession {
                 let batch = validate_batch(request.n)?;
                 let mut outputs = Vec::with_capacity(batch);
                 for index in 0..batch {
+                    let mut callback_error = None;
                     let out = super::run_cover_edit_with_context(
                         &self.run.bundle,
                         &CoverRequest {
@@ -379,7 +386,18 @@ impl FacadeSession for AceStepSession {
                             dcw,
                         },
                         ctx,
-                    )?;
+                        |step, total| {
+                            if callback_error.is_none() {
+                                if let Err(error) = exec.progress("denoise", step, total) {
+                                    callback_error = Some(error);
+                                }
+                            }
+                        },
+                    );
+                    if let Some(error) = callback_error {
+                        return Err(error);
+                    }
+                    let out = out?;
                     if let Some(message) = out.quality.log_message() {
                         exec.log("warning", &message)?;
                     }
@@ -545,6 +563,14 @@ fn dcw_settings(
     }
     .validate()
     .map_err(EngineError::from)
+}
+
+fn drawn_seed() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as i64)
+        .unwrap_or(1)
+        & 0x7fff_ffff
 }
 
 fn create_request<'a>(

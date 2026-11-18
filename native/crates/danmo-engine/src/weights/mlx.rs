@@ -37,6 +37,12 @@ enum Entry {
 }
 
 impl Entry {
+    fn as_linear(&self) -> &LinearWeight {
+        match self {
+            Self::Dense { linear, .. } | Self::Packed(linear) => linear,
+        }
+    }
+
     fn dense(tensor: Array) -> Self {
         let linear = LinearWeight::dense(tensor.clone());
         Self::Dense { tensor, linear }
@@ -191,6 +197,74 @@ impl MlxWeights {
             .collect()
     }
 
+    /// Attach LoRA residuals onto the linears those files name.
+    ///
+    /// The base matrices stay shared with the caller. The returned map is a
+    /// new slot whose `apply` adds `scale * B(Ax)`, the same residual the
+    /// ggml graph attaches. An empty file list returns `self`.
+    pub fn attach_lora(
+        self,
+        files: &[super::LoraFile],
+        stream: &Stream,
+    ) -> std::result::Result<Self, super::WeightError> {
+        if files.is_empty() {
+            return Ok(self);
+        }
+        let layout = self.linear_layout();
+        let factors = super::load_lora_factors(files, &layout)?;
+        let mut grouped: BTreeMap<String, Vec<danmo_mlx::LoraResidual>> = BTreeMap::new();
+        for factor in factors {
+            let dtype = self
+                .linear(&factor.target)
+                .map_err(|error| super::WeightError::NotBuilt(error.to_string()))?
+                .compute_dtype();
+            let a = lora_matrix(&factor.a, factor.rank, factor.in_dim, dtype, stream)?;
+            let b = lora_matrix(&factor.b, factor.out_dim, factor.rank, dtype, stream)?;
+            grouped
+                .entry(factor.target)
+                .or_default()
+                .push(danmo_mlx::LoraResidual {
+                    a,
+                    b,
+                    scale: factor.scale,
+                });
+        }
+        let mut weights = self;
+        for (name, residuals) in grouped {
+            let linear = weights
+                .linear(&name)
+                .map_err(|error| super::WeightError::NotBuilt(error.to_string()))?
+                .with_loras(residuals);
+            weights = weights
+                .replace_linear(name, linear)
+                .map_err(|error| super::WeightError::NotBuilt(error.to_string()))?;
+        }
+        Ok(weights)
+    }
+
+    fn linear_layout(&self) -> Vec<(String, i64, i64)> {
+        self.tensors
+            .iter()
+            .filter_map(|(name, entry)| {
+                let (out, inn) = entry.as_linear().out_in().ok().flatten()?;
+                if out < 1 || inn < 1 {
+                    return None;
+                }
+                Some((name.clone(), inn, out))
+            })
+            .collect()
+    }
+
+    fn replace_linear(mut self, name: String, linear: LinearWeight) -> Result<Self> {
+        let entry = match self.tensors.remove(&name) {
+            Some(Entry::Dense { tensor, .. }) => Entry::Dense { tensor, linear },
+            Some(Entry::Packed(_)) => Entry::Packed(linear),
+            None => return Err(Error::new("MLX LoRA", format!("missing linear {name}"))),
+        };
+        self.tensors.insert(name, entry);
+        Ok(self)
+    }
+
     /// Dense map for consumers that have no linear layers to quantize.
     pub fn into_dense(self) -> Result<BTreeMap<String, Array>> {
         self.tensors
@@ -206,6 +280,35 @@ impl MlxWeights {
             })
             .collect()
     }
+}
+
+fn lora_matrix(
+    data: &[f32],
+    rows: i64,
+    cols: i64,
+    dtype: Dtype,
+    stream: &Stream,
+) -> std::result::Result<Array, super::WeightError> {
+    if rows < 1
+        || cols < 1
+        || rows > i32::MAX as i64
+        || cols > i32::MAX as i64
+        || data.len() != (rows * cols) as usize
+    {
+        return Err(super::WeightError::NotBuilt(format!(
+            "lora matrix {rows}x{cols} has {} values",
+            data.len()
+        )));
+    }
+    let array = Array::from_f32_slice(data, &[rows as i32, cols as i32])
+        .map_err(|error| super::WeightError::NotBuilt(error.to_string()))?;
+    let array = array
+        .astype(dtype, stream)
+        .map_err(|error| super::WeightError::NotBuilt(error.to_string()))?;
+    array
+        .eval()
+        .map_err(|error| super::WeightError::NotBuilt(error.to_string()))?;
+    Ok(array)
 }
 
 /// Load every `*.safetensors` shard in `directory`.
@@ -693,5 +796,61 @@ mod tests {
         let missing = scratch.0.join("absent");
         assert!(load_directory(&missing, WeightDtype::Native, None).is_err());
         assert!(load_directory(&scratch.0, WeightDtype::Native, None).is_err());
+    }
+
+    #[test]
+    fn attach_lora_adds_the_residual() {
+        let stream = Stream::cpu().unwrap();
+        let weight = Array::from_f32_slice(&[1.0, 0.0, 0.0, 1.0], &[2, 2]).unwrap();
+        let mut tensors = std::collections::BTreeMap::new();
+        tensors.insert("proj.weight".into(), weight);
+        let weights = super::MlxWeights::from_dense(tensors);
+        let scratch = Scratch::new();
+        let path = scratch.0.join("adapter_model.safetensors");
+        let down: Vec<u8> = [1.0f32, 0.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let up: Vec<u8> = [1.0f32, 0.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        crate::weights::write_safetensors(
+            &path,
+            &[
+                crate::weights::SafeTensor {
+                    name: "proj.lora_A.weight",
+                    dtype: "F32",
+                    shape: &[1, 2],
+                    data: &down,
+                },
+                crate::weights::SafeTensor {
+                    name: "proj.lora_B.weight",
+                    dtype: "F32",
+                    shape: &[2, 1],
+                    data: &up,
+                },
+            ],
+        )
+        .unwrap();
+        let adapted = weights
+            .attach_lora(
+                &[crate::weights::LoraFile {
+                    id: "unit".into(),
+                    path,
+                    weight: 1.0,
+                }],
+                &stream,
+            )
+            .unwrap();
+        let input = Array::from_f32_slice(&[1.0, 0.0], &[1, 2]).unwrap();
+        let output = adapted
+            .linear("proj.weight")
+            .unwrap()
+            .apply(&input, None, &stream)
+            .unwrap();
+        output.eval().unwrap();
+        let values = output.to_vec_f32(&stream).unwrap();
+        assert_eq!(values, vec![2.0, 0.0]);
     }
 }

@@ -1,36 +1,17 @@
-//! ACE-Step cover / cover-nofsq / repaint (acestep.cpp synth ops + sampler-repaint).
+//! ACE-Step cover request types and host context packing.
 //!
-//! Encode source audio (or accept latents) → optional FSQ (cover only) →
-//! context (src[64]+mask[64]) → DiT Euler → optional latent splice/blend →
-//! VAE decode → WAV.
+//! cover, cover-nofsq, repaint, lego, extract, and complete run on the MLX
+//! session. `cover` quantizes the source latents through the FSQ codec.
+//! Region masks and source-context packing stay here.
 
-use super::apg::broadcast_null_enc;
-use super::cond;
-use super::create::{
-    duration_to_latent_frames, load_null_condition, load_silence_latent, silence_context,
-    snap_latent_frames, CreateOutput, SILENCE_MAX_FRAMES,
-};
+use super::create::CreateOutput;
 use super::dcw::DcwSettings;
-use super::fsq;
-use super::lyrics;
-use super::quality;
 use super::repaint;
-use super::schedule::{shift_schedule, TURBO_SHIFT, TURBO_TIMESTEPS};
 use super::text::{
-    build_prompt_strings, dit_instr_complete, dit_instr_extract, dit_instr_lego, embed_lyrics,
-    encode_caption, load_tokenizer_json, DIT_INSTR_COVER, DIT_INSTR_REPAINT, DIT_INSTR_TEXT2MUSIC,
+    dit_instr_complete, dit_instr_extract, dit_instr_lego, DIT_INSTR_COVER, DIT_INSTR_REPAINT,
 };
-use super::transformer::{
-    dit_graph_types, load_weights, AceStepDit, DenoiseContextSwitch, DenoiseRepaint,
-};
-use super::vae::{AUDIO_UPSAMPLE, LATENT_CHANNELS};
-use super::wav::{self, SAMPLE_RATE};
-use super::weights::{check_layout, config_from_weights};
-use crate::common::ops::normal_latent;
 use crate::runtime::{BackendKind, GgmlContext};
-use crate::weights::{
-    self, load_lora_factors_with_default_alpha, GgufWeights, LoraFile, WeightError,
-};
+use crate::weights::{LoraFile, WeightError};
 use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +45,7 @@ impl CoverMode {
         }
     }
 
-    fn dit_instruction(self, track: &str) -> Result<String, WeightError> {
+    pub(crate) fn dit_instruction(self, track: &str) -> Result<String, WeightError> {
         match self {
             Self::Cover | Self::CoverNofsq => Ok(DIT_INSTR_COVER.into()),
             Self::Repaint => Ok(DIT_INSTR_REPAINT.into()),
@@ -74,11 +55,11 @@ impl CoverMode {
         }
     }
 
-    fn is_region_task(self) -> bool {
+    pub(crate) fn is_region_task(self) -> bool {
         matches!(self, Self::Repaint | Self::Lego)
     }
 
-    fn is_base_only(self) -> bool {
+    pub(crate) fn is_base_only(self) -> bool {
         matches!(self, Self::Lego | Self::Extract | Self::Complete)
     }
 
@@ -139,408 +120,30 @@ pub fn run_full_cover(
     backend: BackendKind,
 ) -> Result<CreateOutput, WeightError> {
     let ctx = GgmlContext::new(backend).map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-    run_full_cover_with_context(bundle, request, &ctx)
+    run_full_cover_with_context(bundle, request, &ctx, |_, _| {})
 }
 
 pub fn run_full_cover_with_context(
     bundle: &Path,
     request: &CoverRequest<'_>,
     ctx: &GgmlContext,
+    mut on_step: impl FnMut(u32, u32),
 ) -> Result<CreateOutput, WeightError> {
-    let started = std::time::Instant::now();
-    if !request.guidance.is_finite() || request.guidance < 1.0 {
-        return Err(WeightError::NotBuilt(format!(
-            "ACE-Step guidance {} must be >= 1",
-            request.guidance
-        )));
-    }
-    if !request.audio_cover_strength.is_finite()
-        || !(0.0..=1.0).contains(&request.audio_cover_strength)
+    let _ = ctx;
+    #[cfg(feature = "mlx")]
     {
-        return Err(WeightError::NotBuilt(format!(
-            "ACE-Step audio_cover_strength {} must be in [0, 1]",
-            request.audio_cover_strength
-        )));
+        return super::mlx::session::cover(bundle, request, on_step);
     }
-    if !request.cover_noise_strength.is_finite()
-        || !(0.0..=1.0).contains(&request.cover_noise_strength)
+    #[cfg(not(feature = "mlx"))]
     {
-        return Err(WeightError::NotBuilt(format!(
-            "ACE-Step cover_noise_strength {} must be in [0, 1]",
-            request.cover_noise_strength
-        )));
-    }
-
-    let gguf = weights::assert_gguf_bundle(bundle)?;
-    let dit_path = gguf.transformer.first().ok_or_else(|| {
-        WeightError::NotBuilt("ACE-Step DiT GGUF is missing from the bundle".into())
-    })?;
-    let dit = GgufWeights::open(dit_path)?;
-    let config = config_from_weights(&dit)?;
-    check_layout(&dit, config)?;
-
-    let mut cover_latents = resolve_cover_latents(bundle, request, ctx)?;
-    let frames_pre = cover_latents.len() as i64 / LATENT_CHANNELS;
-    if frames_pre < 1 || cover_latents.len() as i64 != frames_pre * LATENT_CHANNELS {
-        return Err(WeightError::NotBuilt(
-            "ACE-Step cover latents must be a non-empty multiple of 64".into(),
-        ));
-    }
-    if frames_pre > SILENCE_MAX_FRAMES {
-        return Err(WeightError::NotBuilt(format!(
-            "ACE-Step cover frames {frames_pre} exceed silence_latent max {SILENCE_MAX_FRAMES}"
-        )));
-    }
-
-    // Timbre samples clean VAE latents (before FSQ), matching MLX cover path.
-    let timbre_source = if request.timbre_from_source {
-        Some(cover_latents.clone())
-    } else {
-        None
-    };
-
-    let silence_full = load_silence_latent(&dit, config.out_channels)?;
-    // Full cover: FSQ tokenize/detokenize degrades micro-timing (acestep.cpp ops_fsq_roundtrip).
-    // cover-nofsq skips this and feeds clean 25Hz VAE latents.
-    if request.mode == CoverMode::Cover {
-        cover_latents = fsq::roundtrip(ctx, &dit, &cover_latents, &silence_full)?;
-    }
-
-    let mut frames = cover_latents.len() as i64 / LATENT_CHANNELS;
-    if frames < 1 || cover_latents.len() as i64 != frames * LATENT_CHANNELS {
-        return Err(WeightError::NotBuilt(
-            "ACE-Step cover latents after FSQ must be a non-empty multiple of 64".into(),
-        ));
-    }
-    if let Some(duration) = request.duration_sec {
-        let requested = snap_latent_frames(duration_to_latent_frames(duration)?);
-        let target = requested.max(snap_latent_frames(frames));
-        if target > frames {
-            let start = cover_latents.len();
-            cover_latents.extend_from_slice(
-                &silence_full[..(target - frames) as usize * LATENT_CHANNELS as usize],
-            );
-            debug_assert_eq!(cover_latents.len(), start + (target - frames) as usize * 64);
-            frames = target;
-        }
-    }
-    let is_turbo = config.is_turbo
-        || dit_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n.to_ascii_lowercase().contains("turbo"))
-            .unwrap_or(false);
-    if is_turbo && request.mode.is_base_only() {
-        return Err(WeightError::NotBuilt(format!(
-            "ACE-Step task '{}' requires the base/SFT DiT (turbo cards omit lego/extract/complete)",
-            request.mode.task_name()
-        )));
-    }
-
-    let mut steps = request.steps.unwrap_or(if is_turbo { 8 } else { 50 });
-    let mut schedule = if is_turbo && steps == 8 {
-        TURBO_TIMESTEPS.to_vec()
-    } else {
-        let shift = if is_turbo { TURBO_SHIFT } else { 1.0 };
-        shift_schedule(steps, shift)?
-    };
-
-    let duration_sec = frames as f32 / 25.0;
-    let (lyrics_effective, lyrics_alignment, lyrics_txt, lyrics_lrc) =
-        lyrics::prepare_create_lyrics(request.lyrics, duration_sec)
-            .map_err(WeightError::NotBuilt)?;
-
-    let is_repaint = request.mode == CoverMode::Repaint;
-    let is_lego = request.mode == CoverMode::Lego;
-    let is_region = request.mode.is_region_task();
-    let (repaint_t0, repaint_t1) = if is_region {
-        resolve_region_frames(request, duration_sec, frames, is_repaint)?
-    } else {
-        (0, 0)
-    };
-    if is_region {
-        if !(0.0..=1.0).contains(&request.repaint_injection_ratio)
-            || !request.repaint_injection_ratio.is_finite()
-        {
-            return Err(WeightError::NotBuilt(format!(
-                "ACE-Step repaint_injection_ratio {} must be in [0, 1]",
-                request.repaint_injection_ratio
-            )));
-        }
-        if request.repaint_crossfade_frames < 0 {
-            return Err(WeightError::NotBuilt(
-                "ACE-Step repaint_crossfade_frames must be >= 0".into(),
-            ));
-        }
-    }
-
-    let instruction = request.mode.dit_instruction(request.track)?;
-    let tokenizer = load_tokenizer_json(&gguf.root)?;
-    let pair_cover = build_prompt_strings(
-        request.prompt,
-        lyrics_effective.as_ref(),
-        &instruction,
-        duration_sec,
-        request.bpm,
-        request.keyscale,
-        request.timesignature,
-        request.vocal_language,
-    );
-
-    let seed = request.seed.unwrap_or(0);
-    let timbre_owned = if let Some(src) = timbre_source.as_ref() {
-        let src_frames = src.len() as i64 / LATENT_CHANNELS;
-        cond::sample_timbre_reference_latents(src, src_frames, LATENT_CHANNELS, seed)?
-    } else {
-        silence_full[..cond::TIMBRE_IN as usize].to_vec()
-    };
-    let timbre_feats: &[f32] = &timbre_owned;
-
-    let (text_hidden, s_text) =
-        encode_caption(&ctx, &gguf.text_encoder, &tokenizer, &pair_cover.text)?;
-    let (lyric_embed, s_lyric) = embed_lyrics(&gguf.text_encoder, &tokenizer, &pair_cover.lyric)?;
-    let (enc_hidden, enc_seq) = cond::encode(
-        &ctx,
-        &dit,
-        &text_hidden,
-        s_text,
-        &lyric_embed,
-        s_lyric,
-        Some(timbre_feats),
-    )?;
-
-    // Repaint/lego never switch to silence context mid-run (mask handles the zone).
-    let need_switch = !is_region && request.audio_cover_strength < 1.0 - f32::EPSILON;
-    let (enc_text2music, enc_seq_t2m) = if need_switch {
-        let pair_t2m = build_prompt_strings(
-            request.prompt,
-            lyrics_effective.as_ref(),
-            DIT_INSTR_TEXT2MUSIC,
-            duration_sec,
-            request.bpm,
-            request.keyscale,
-            request.timesignature,
-            request.vocal_language,
-        );
-        let (th, st) = encode_caption(&ctx, &gguf.text_encoder, &tokenizer, &pair_t2m.text)?;
-        let (le, sl) = embed_lyrics(&gguf.text_encoder, &tokenizer, &pair_t2m.lyric)?;
-        let (enc, seq) = cond::encode(&ctx, &dit, &th, st, &le, sl, Some(timbre_feats))?;
-        (Some(enc), seq)
-    } else {
-        (None, enc_seq)
-    };
-    let enc_seq_graph = enc_seq.max(enc_seq_t2m);
-    let context = if is_repaint {
-        repaint_context(
-            &cover_latents,
-            &silence_full,
-            frames,
-            config.out_channels,
-            config.in_channels,
-            repaint_t0,
-            repaint_t1,
-        )?
-    } else if is_lego {
-        lego_context(
-            &cover_latents,
-            frames,
-            config.out_channels,
-            config.in_channels,
-            repaint_t0,
-            repaint_t1,
-        )?
-    } else {
-        cover_context(
-            &cover_latents,
-            frames,
-            config.out_channels,
-            config.in_channels,
-        )?
-    };
-    let context_silence = if need_switch {
-        Some(silence_context(
-            &dit,
-            frames,
-            config.out_channels,
-            config.in_channels,
-        )?)
-    } else {
-        None
-    };
-
-    let factors = load_lora_factors_with_default_alpha(
-        request.loras,
-        &super::graph::graph_weight_layout(config),
-        Some(128.0),
-    )?;
-    let types = dit_graph_types(&dit, config);
-    let mut model =
-        AceStepDit::build_typed_with_loras(&ctx, config, frames, enc_seq_graph, &types, &factors)
-            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-    load_weights(&mut model, &dit, config)?;
-    for (index, factor) in factors.iter().enumerate() {
-        model
-            .load_f32(&format!("lora.{index}.a"), &factor.a)
-            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-        model
-            .load_f32(&format!("lora.{index}.b"), &factor.b)
-            .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-    }
-
-    let enc_hidden = pad_enc(&enc_hidden, enc_seq, enc_seq_graph, config.condition_dim)?;
-    let enc_text2music = enc_text2music
-        .map(|e| pad_enc(&e, enc_seq_t2m, enc_seq_graph, config.condition_dim))
-        .transpose()?;
-
-    let null_enc = if request.guidance > 1.0 + f32::EPSILON {
-        let emb = load_null_condition(&dit, config.condition_dim)?;
-        Some(broadcast_null_enc(&emb, enc_seq_graph).map_err(WeightError::NotBuilt)?)
-    } else {
-        None
-    };
-
-    let mut xt = normal_latent(seed, model.xt_len());
-    let noise = xt.clone();
-    if request.cover_noise_strength > 0.0 {
-        apply_cover_noise_blend(
-            &mut xt,
-            &cover_latents,
-            frames,
-            config.out_channels,
-            &mut schedule,
-            request.cover_noise_strength,
-        )?;
-        steps = schedule.len() as u32;
-    }
-
-    let cover_steps = if need_switch {
-        ((schedule.len() as f32) * request.audio_cover_strength) as u32
-    } else {
-        u32::MAX
-    };
-    let switch = match (&context_silence, &enc_text2music) {
-        (Some(silence), Some(enc_t2m)) if need_switch => Some(DenoiseContextSwitch {
-            context_silence: silence.as_slice(),
-            enc_hidden_text2music: enc_t2m.as_slice(),
-            cover_steps,
-        }),
-        _ => None,
-    };
-    let repaint_hook = if is_region {
-        Some(DenoiseRepaint {
-            noise: noise.as_slice(),
-            src: cover_latents.as_slice(),
-            t0: repaint_t0,
-            t1: repaint_t1,
-            injection_ratio: request.repaint_injection_ratio,
-        })
-    } else {
-        None
-    };
-
-    let mut latents = model
-        .denoise(
-            &xt,
-            &context,
-            &enc_hidden,
-            &schedule,
-            request.guidance,
-            null_enc.as_deref(),
-            switch,
-            repaint_hook,
-            Some(request.dcw),
-            |_, _| (),
-        )
-        .map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-
-    if is_region {
-        repaint::blend_boundaries(
-            &mut latents,
-            &cover_latents,
-            frames,
-            config.out_channels,
-            repaint_t0,
-            repaint_t1,
-            request.repaint_crossfade_frames,
-        );
-        repaint::splice_latents(
-            &mut latents,
-            &cover_latents,
-            frames,
-            config.out_channels,
-            repaint_t0,
-            repaint_t1,
-        );
-    }
-
-    let vae_path = gguf
-        .vae
-        .first()
-        .ok_or_else(|| WeightError::NotBuilt("ACE-Step VAE GGUF is missing".into()))?;
-    let vae = GgufWeights::open(vae_path)?;
-    let audio = super::vae::decode(&ctx, &vae, &latents, frames)?;
-    let audio = quality::normalize_planar_stereo(&audio, frames)?;
-    let quality =
-        quality::assess_output(&latents, &cover_latents, &audio, SAMPLE_RATE, false, 0.0, 1)?;
-    let wav = wav::write_planar_stereo_pcm16(&audio, SAMPLE_RATE)?;
-
-    Ok(CreateOutput {
-        wav,
-        sample_rate: SAMPLE_RATE,
-        frames,
-        steps,
-        enc_seq: enc_seq_graph,
-        graph_computes: model.graph_computes(),
-        dcw: request.dcw,
-        dcw_active: request.dcw.active(is_turbo),
-        quality,
-        timings: vec![("total", started.elapsed().as_secs_f64())],
-        lyrics_effective: lyrics_effective.into_owned(),
-        lyrics_alignment,
-        lyrics_txt,
-        lyrics_lrc,
-    })
-}
-
-fn resolve_cover_latents(
-    bundle: &Path,
-    request: &CoverRequest<'_>,
-    ctx: &GgmlContext,
-) -> Result<Vec<f32>, WeightError> {
-    if let Some(latents) = request.source_latents {
-        if latents.is_empty() || latents.len() as i64 % LATENT_CHANNELS != 0 {
-            return Err(WeightError::NotBuilt(
-                "ACE-Step source_latents must be a non-empty multiple of 64".into(),
-            ));
-        }
-        return Ok(latents.to_vec());
-    }
-    let Some(audio) = request.source_audio else {
-        return Err(WeightError::NotBuilt(
-            "ACE-Step audio.edit needs source_audio or source_latents".into(),
-        ));
-    };
-    if audio.len() < 2 || audio.len() % 2 != 0 {
-        return Err(WeightError::NotBuilt(
-            "ACE-Step source_audio must be interleaved stereo".into(),
-        ));
-    }
-    let t_audio = (audio.len() / 2) as i64;
-    let gguf = weights::assert_gguf_bundle(bundle)?;
-    let vae_path = gguf
-        .vae
-        .first()
-        .ok_or_else(|| WeightError::NotBuilt("ACE-Step VAE GGUF is missing".into()))?;
-    let vae = GgufWeights::open(vae_path)?;
-    // Short clips encode directly; longer use tiled path (chunk=256, overlap=64).
-    if t_audio <= 256 * AUDIO_UPSAMPLE {
-        super::vae_enc::encode(&ctx, &vae, audio, t_audio)
-    } else {
-        super::vae_enc::encode_tiled(&ctx, &vae, audio, t_audio, 256, 64)
+        let _ = (bundle, request, on_step);
+        Err(WeightError::NotBuilt(
+            "ACE-Step cover runs on MLX. Rebuild danqing-api with the mlx feature.".into(),
+        ))
     }
 }
 
-fn resolve_region_frames(
+pub(crate) fn resolve_region_frames(
     request: &CoverRequest<'_>,
     duration_sec: f32,
     frames: i64,
@@ -754,49 +357,9 @@ fn apply_cover_noise_blend(
     Ok(())
 }
 
-/// Encode helper used by tests / callers that already hold interleaved PCM.
-#[allow(dead_code)]
-pub fn encode_source_audio(
-    bundle: &Path,
-    interleaved: &[f32],
-    backend: BackendKind,
-) -> Result<Vec<f32>, WeightError> {
-    let ctx = GgmlContext::new(backend).map_err(|err| WeightError::NotBuilt(err.to_string()))?;
-    resolve_cover_latents(
-        bundle,
-        &CoverRequest {
-            prompt: "",
-            lyrics: "[inst]",
-            duration_sec: None,
-            seed: None,
-            guidance: 1.0,
-            steps: None,
-            vocal_language: "en",
-            bpm: None,
-            keyscale: "",
-            timesignature: "",
-            mode: CoverMode::CoverNofsq,
-            source_audio: Some(interleaved),
-            source_latents: None,
-            audio_cover_strength: 1.0,
-            cover_noise_strength: 0.0,
-            region_start_sec: None,
-            region_end_sec: None,
-            repaint_injection_ratio: 1.0,
-            repaint_crossfade_frames: 8,
-            timbre_from_source: false,
-            track: "",
-            loras: &[],
-            dcw: Default::default(),
-        },
-        &ctx,
-    )
-}
-
-#[cfg(test)]
 mod tests {
     use super::{cover_context, lego_context, repaint_context, CoverMode};
-    use crate::families::ace_step::vae::LATENT_CHANNELS;
+    const LATENT_CHANNELS: i64 = 64;
 
     #[test]
     fn cover_mode_parse() {

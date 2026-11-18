@@ -1086,7 +1086,9 @@ async function loadCompatibleAdapters(modelKey: string) {
   try {
     const loras = await api.settings.getCompatibleLoras(modelKey);
     if (String(params.model || '') !== modelKey) return;
-    compatibleLoras.value = (loras as CompatibleLoraRow[]) || [];
+    compatibleLoras.value = ((loras as CompatibleLoraRow[]) || []).filter(
+      (lora) => lora.ready !== false,
+    );
     syncImageLoraSelection();
     await loadCompatibleControlNets(modelKey);
     clearControlNetIfIncompatible(params, () => {

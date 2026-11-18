@@ -3,11 +3,9 @@
 //! Caption tokens run the full causal stack. Lyric tokens use the embedding
 //! table only (`qwen3_embed_lookup`). Prompts are plain BPE (no ChatML wrap).
 
-use crate::common::ops::non_finite;
 use crate::common::qwen3;
-use crate::runtime::GgmlContext;
-use crate::weights::{GgufWeights, WeightError};
-use std::path::{Path, PathBuf};
+use crate::weights::WeightError;
+use std::path::Path;
 
 /// acestep.cpp `DIT_INSTR_TEXT2MUSIC`.
 pub const DIT_INSTR_TEXT2MUSIC: &str =
@@ -155,114 +153,8 @@ pub fn build_prompt_strings(
     PromptPair { text, lyric }
 }
 
-pub fn encode_caption(
-    ctx: &GgmlContext,
-    paths: &[PathBuf],
-    tokenizer_json: &str,
-    caption_prompt: &str,
-) -> Result<(Vec<f32>, i64), WeightError> {
-    let loaded = qwen3::Loaded::open(paths)?;
-    let config = loaded.config();
-    if config.hidden != EMBED_HIDDEN {
-        return Err(WeightError::NotBuilt(format!(
-            "ACE-Step text encoder hidden is {}, expected {EMBED_HIDDEN}",
-            config.hidden
-        )));
-    }
-    let (mut embed, seq) = loaded.encode_plain(
-        ctx,
-        tokenizer_json,
-        caption_prompt,
-        &[config.layers],
-        config.hidden,
-    )?;
-    let weights = GgufWeights::open_parts(paths)?;
-    if let Some(gamma) = final_norm_gamma(&weights, config.hidden)? {
-        embed = rms_norm_rows(&embed, &gamma, config.hidden as usize, 1e-6);
-    }
-    if let Some(detail) = non_finite("ACE-Step text hidden", &embed) {
-        return Err(WeightError::NotBuilt(detail));
-    }
-    Ok((embed, seq))
-}
-
-/// Vocab lookup only (lyric path). Returns `[hidden * seq]`.
-pub fn embed_lyrics(
-    paths: &[PathBuf],
-    tokenizer_json: &str,
-    lyric_prompt: &str,
-) -> Result<(Vec<f32>, i64), WeightError> {
-    let (out, ids) = embed_lyrics_with_ids(paths, tokenizer_json, lyric_prompt)?;
-    Ok((out, ids.len() as i64))
-}
-
-/// Same as [`embed_lyrics`] but also returns the token ids (for CA+DTW).
-pub fn embed_lyrics_with_ids(
-    paths: &[PathBuf],
-    tokenizer_json: &str,
-    lyric_prompt: &str,
-) -> Result<(Vec<f32>, Vec<i32>), WeightError> {
-    let loaded = qwen3::Loaded::open(paths)?;
-    let config = loaded.config();
-    let ids = loaded.plain_ids(tokenizer_json, lyric_prompt)?;
-    if ids.is_empty() {
-        return Err(WeightError::NotBuilt(
-            "ACE-Step lyric prompt produced no tokens".into(),
-        ));
-    }
-    let table = loaded.embed_table()?;
-    let hidden = config.hidden as usize;
-    let mut out = Vec::with_capacity(ids.len() * hidden);
-    for id in &ids {
-        let row = *id as usize;
-        let start = row * hidden;
-        let end = start + hidden;
-        if end > table.len() {
-            return Err(WeightError::NotBuilt(format!(
-                "lyric token id {id} is outside the embedding table"
-            )));
-        }
-        out.extend_from_slice(&table[start..end]);
-    }
-    Ok((out, ids))
-}
-
-/// Tokenize a plain prompt (no ChatML) — used for lyric header length.
-pub fn plain_token_ids(
-    paths: &[PathBuf],
-    tokenizer_json: &str,
-    prompt: &str,
-) -> Result<Vec<i32>, WeightError> {
-    let loaded = qwen3::Loaded::open(paths)?;
-    loaded.plain_ids(tokenizer_json, prompt)
-}
-
 pub fn load_tokenizer_json(bundle: &Path) -> Result<String, WeightError> {
     qwen3::load_tokenizer(bundle)
-}
-
-fn final_norm_gamma(weights: &GgufWeights, hidden: i64) -> Result<Option<Vec<f32>>, WeightError> {
-    for name in ["norm.weight", "model.norm.weight"] {
-        if weights.contains(name) {
-            return Ok(Some(weights.f32_widened(name, &[hidden, 1])?));
-        }
-    }
-    Ok(None)
-}
-
-fn rms_norm_rows(data: &[f32], gamma: &[f32], hidden: usize, eps: f32) -> Vec<f32> {
-    let mut out = vec![0f32; data.len()];
-    let rows = data.len() / hidden;
-    for r in 0..rows {
-        let start = r * hidden;
-        let row = &data[start..start + hidden];
-        let mean_sq = row.iter().map(|v| v * v).sum::<f32>() / hidden as f32;
-        let inv = (mean_sq + eps).sqrt().recip();
-        for i in 0..hidden {
-            out[start + i] = row[i] * inv * gamma[i];
-        }
-    }
-    out
 }
 
 #[cfg(test)]

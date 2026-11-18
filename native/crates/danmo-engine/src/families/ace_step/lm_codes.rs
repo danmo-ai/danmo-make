@@ -3,7 +3,7 @@
 //! After CoT metadata, logits are masked to `{IM_END} ∪ audio_code_*` and
 //! greedily sampled until EOS or `max_codes`.
 
-use super::lm::{AceLmConfig, LmSetRowsSession};
+use super::lm::AceLmConfig;
 use super::lm_prompt::{AUDIO_CODE_BASE, AUDIO_CODE_COUNT, TOKEN_IM_END};
 use crate::runtime::GgmlContext;
 use crate::weights::{GgufWeights, WeightError};
@@ -35,6 +35,41 @@ pub fn mask_audio_code_logits(
     for (i, logit) in logits.iter_mut().enumerate() {
         let id = i as i32;
         let allow = id == eos || (id >= code_base && id < code_base + code_count);
+        if !allow {
+            *logit = f32::NEG_INFINITY;
+        }
+    }
+    Ok(())
+}
+
+/// Codes-phase step mask. Before `target` codes only the 64000-entry book is
+/// legal; at `target` the next token is forced to `<|im_end|>`.
+pub fn mask_planner_code_step(
+    logits: &mut [f32],
+    produced: usize,
+    target: usize,
+) -> Result<(), WeightError> {
+    if target < 1 {
+        return Err(WeightError::NotBuilt(
+            "ACE-Step LM planner target must be >= 1".into(),
+        ));
+    }
+    let book = super::fsq_quant::FSQ_CODEBOOK_SIZE;
+    let last = AUDIO_CODE_BASE as i64 + book as i64;
+    if logits.len() as i64 <= last || TOKEN_IM_END as i64 >= logits.len() as i64 {
+        return Err(WeightError::NotBuilt(format!(
+            "ACE-Step LM vocab {} cannot hold audio codes through {last} and eos {TOKEN_IM_END}",
+            logits.len()
+        )));
+    }
+    let force_eos = produced >= target;
+    for (index, logit) in logits.iter_mut().enumerate() {
+        let id = index as i32;
+        let allow = if force_eos {
+            id == TOKEN_IM_END
+        } else {
+            (AUDIO_CODE_BASE..AUDIO_CODE_BASE + book).contains(&id)
+        };
         if !allow {
             *logit = f32::NEG_INFINITY;
         }
@@ -180,41 +215,19 @@ pub fn sample_audio_codes_cfg(
             config.vocab
         )));
     }
-    let max_seq = (cot_prompt.len() + max_codes).max(1) as i64;
-    let mut cond = LmSetRowsSession::open(ctx, weights, config, max_seq)?;
-    let mut logits = cond.prefill(cot_prompt)?;
-    let (mut uncond, mut uncond_logits) = if use_cfg {
-        let up = uncond_prompt.unwrap();
-        let max_u = (up.len() + max_codes).max(1) as i64;
-        let mut s = LmSetRowsSession::open(ctx, weights, config, max_u)?;
-        let ul = s.prefill(up)?;
-        (Some(s), Some(ul))
-    } else {
-        (None, None)
-    };
-    let mut codes = Vec::new();
-    let mut rng = super::lm_sample::XorShift64::new(seed);
-    for _ in 0..max_codes {
-        if let Some(ul) = uncond_logits.as_ref() {
-            super::lm_sample::cfg_blend(&mut logits, ul, cfg_scale)?;
-        }
-        mask_audio_code_logits(&mut logits, code_base, code_count, eos)?;
-        let next = super::lm_sample::sample_top_k_p(&logits, temperature, top_p, top_k, &mut rng)?;
-        if next == eos {
-            break;
-        }
-        if next < code_base || next >= code_base + code_count {
-            return Err(WeightError::NotBuilt(format!(
-                "ACE-Step LM phase-2 sampled id {next} outside audio codes"
-            )));
-        }
-        codes.push(next - code_base);
-        logits = cond.decode(next)?;
-        if let Some(s) = uncond.as_mut() {
-            uncond_logits = Some(s.decode(next)?);
-        }
-    }
-    Ok(codes)
+    let _ = (
+        ctx,
+        weights,
+        cot_prompt,
+        uncond_prompt,
+        temperature,
+        top_p,
+        top_k,
+        seed,
+    );
+    return Err(WeightError::NotBuilt(
+        "ACE-Step 5Hz LM phase-2 has no MLX forward".into(),
+    ));
 }
 
 #[cfg(test)]
@@ -223,6 +236,27 @@ mod tests {
     use crate::families::ace_step::lm::{write_smoke_lm, AceLmConfig};
     use crate::runtime::{BackendKind, GgmlContext};
     use crate::weights::GgufWeights;
+
+    #[test]
+    fn planner_step_blocks_eos_until_the_target() {
+        let mut logits = vec![
+            0.5f32;
+            (AUDIO_CODE_BASE + super::super::fsq_quant::FSQ_CODEBOOK_SIZE + 2)
+                as usize
+        ];
+        // The fixture vocab must also cover eos, which sits below the code base.
+        mask_planner_code_step(&mut logits, 0, 2).unwrap();
+        assert!(logits[TOKEN_IM_END as usize].is_infinite());
+        assert_eq!(logits[AUDIO_CODE_BASE as usize], 0.5);
+        assert!(
+            logits[(AUDIO_CODE_BASE + super::super::fsq_quant::FSQ_CODEBOOK_SIZE) as usize]
+                .is_infinite()
+        );
+        logits.fill(0.5);
+        mask_planner_code_step(&mut logits, 2, 2).unwrap();
+        assert_eq!(logits[TOKEN_IM_END as usize], 0.5);
+        assert!(logits[AUDIO_CODE_BASE as usize].is_infinite());
+    }
 
     #[test]
     fn mask_keeps_eos_and_code_band() {
@@ -285,9 +319,8 @@ mod tests {
         let weights = GgufWeights::open(&dir.join("acestep-lm-smoke.gguf")).unwrap();
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
         let prompt = vec![1i32, 2, 3];
-        let codes = greedy_audio_codes_ex(&ctx, &weights, config, &prompt, 4, 16, 8, 15).unwrap();
-        // Zero weights → argmax picks lowest allowed id (eos=15) first → empty codes.
-        assert!(codes.len() <= 4);
+        let err = greedy_audio_codes_ex(&ctx, &weights, config, &prompt, 4, 16, 8, 15).unwrap_err();
+        assert!(err.to_string().contains("MLX"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

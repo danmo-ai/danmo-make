@@ -26,14 +26,26 @@ impl AffineQuantization {
     }
 }
 
+/// One low-rank residual `scale * B(Ax)` added after the base matmul.
+/// `a` is `[rank, in]`, `b` is `[out, rank]`.
+#[derive(Clone)]
+pub struct LoraResidual {
+    pub a: Array,
+    pub b: Array,
+    pub scale: f32,
+}
+
 /// Weight of a linear layer `[out, in]`. Packed affine weights stay packed:
 /// `apply` runs `quantized_matmul`, which dequantizes inside the kernel.
 ///
 /// The representation is private on purpose: callers can only `apply` the
 /// layer, so a model cannot branch on the storage format or dequantize the
-/// table back into a dense resident copy.
+/// table back into a dense resident copy. LoRA residuals share that `apply`.
 #[derive(Clone)]
-pub struct LinearWeight(Repr);
+pub struct LinearWeight {
+    repr: Repr,
+    loras: Vec<LoraResidual>,
+}
 
 #[derive(Clone)]
 enum Repr {
@@ -46,7 +58,42 @@ enum Repr {
 
 impl LinearWeight {
     pub fn dense(weight: Array) -> Self {
-        Self(Repr::Dense(weight))
+        Self {
+            repr: Repr::Dense(weight),
+            loras: Vec::new(),
+        }
+    }
+
+    /// Replace the residual list. The base matrix is the same buffer.
+    pub fn with_loras(&self, loras: Vec<LoraResidual>) -> Self {
+        Self {
+            repr: self.repr.clone(),
+            loras,
+        }
+    }
+
+    /// `(out, in)` of a matrix linear. Higher-rank tensors are not linears.
+    pub fn out_in(&self) -> Result<Option<(i64, i64)>> {
+        match &self.repr {
+            Repr::Dense(weight) => {
+                let shape = weight.shape();
+                if shape.len() != 2 {
+                    return Ok(None);
+                }
+                Ok(Some((shape[0] as i64, shape[1] as i64)))
+            }
+            Repr::Affine {
+                packed,
+                quantization,
+            } => {
+                let weight = packed.weight.shape();
+                if weight.len() != 2 {
+                    return Ok(None);
+                }
+                let inn = weight[1] as i64 * 32 / quantization.bits as i64;
+                Ok(Some((weight[0] as i64, inn)))
+            }
+        }
     }
 
     pub fn affine(packed: QuantizedArray, quantization: AffineQuantization) -> Result<Self> {
@@ -89,19 +136,22 @@ impl LinearWeight {
                 ),
             ));
         }
-        Ok(Self(Repr::Affine {
-            packed,
-            quantization,
-        }))
+        Ok(Self {
+            repr: Repr::Affine {
+                packed,
+                quantization,
+            },
+            loras: Vec::new(),
+        })
     }
 
     pub fn apply(&self, input: &Array, bias: Option<&Array>, stream: &Stream) -> Result<Array> {
-        match &self.0 {
+        let output = match &self.repr {
             Repr::Dense(weight) => {
                 let weight = weight.matrix_transpose(stream)?;
                 match bias {
-                    Some(bias) => Array::addmm(bias, input, &weight, 1.0, 1.0, stream),
-                    None => Array::matmul(input, &weight, stream),
+                    Some(bias) => Array::addmm(bias, input, &weight, 1.0, 1.0, stream)?,
+                    None => Array::matmul(input, &weight, stream)?,
                 }
             }
             Repr::Affine {
@@ -117,16 +167,34 @@ impl LinearWeight {
                     stream,
                 )?;
                 match bias {
-                    Some(bias) => Array::add(&output, bias, stream),
-                    None => Ok(output),
+                    Some(bias) => Array::add(&output, bias, stream)?,
+                    None => output,
                 }
             }
+        };
+        self.add_loras(input, output, stream)
+    }
+
+    fn add_loras(&self, input: &Array, output: Array, stream: &Stream) -> Result<Array> {
+        let mut output = output;
+        for lora in &self.loras {
+            if !lora.scale.is_finite() {
+                return Err(Error::new("MLX LoRA", "scale is not a finite number"));
+            }
+            let a = lora.a.matrix_transpose(stream)?;
+            let ax = Array::matmul(input, &a, stream)?;
+            let b = lora.b.matrix_transpose(stream)?;
+            let delta = Array::matmul(&ax, &b, stream)?;
+            let scale = Array::from_f32_slice(&[lora.scale], &[1])?;
+            let delta = Array::multiply(&delta, &scale, stream)?;
+            output = Array::add(&output, &delta, stream)?;
         }
+        Ok(output)
     }
 
     /// Dtype activations should carry into this layer.
     pub fn compute_dtype(&self) -> Dtype {
-        match &self.0 {
+        match &self.repr {
             Repr::Dense(weight) => weight.dtype(),
             Repr::Affine { packed, .. } => packed.scales.dtype(),
         }
@@ -136,7 +204,7 @@ impl LinearWeight {
     /// matmul linears (embeddings) and for explicit test/debug dequantized
     /// references — never for the production quantized matmul path.
     pub fn dequantize_embedding(&self, stream: &Stream) -> Result<Array> {
-        match &self.0 {
+        match &self.repr {
             Repr::Dense(weight) => Ok(weight.clone()),
             Repr::Affine {
                 packed,
@@ -146,10 +214,16 @@ impl LinearWeight {
     }
 
     /// Resident bytes: packed codes plus scales and biases for affine layers.
+    /// LoRA factors are extra buffers and are included.
     pub fn nbytes(&self) -> usize {
-        match &self.0 {
+        let base = match &self.repr {
             Repr::Dense(weight) => weight.nbytes(),
             Repr::Affine { packed, .. } => packed.nbytes(),
-        }
+        };
+        base + self
+            .loras
+            .iter()
+            .map(|lora| lora.a.nbytes() + lora.b.nbytes())
+            .sum::<usize>()
     }
 }
