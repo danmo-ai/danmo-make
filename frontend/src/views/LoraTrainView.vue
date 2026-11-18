@@ -3,7 +3,13 @@
     <template #sidebar>
       <WorkspaceSidebar :title="$t('loraTrain.recentRuns')">
         <template #icon><DqIcon><MagicStick /></DqIcon></template>
-        <DqButton type="primary" block class="lv-sidebar-card__new-btn" @click="startNewTraining">
+        <DqButton
+          type="primary"
+          block
+          class="lv-sidebar-card__new-btn"
+          :disabled="trainingUnavailable"
+          @click="startNewTraining"
+        >
           + {{ $t('loraTrain.newTraining') }}
         </DqButton>
         <div class="lora-train-page__sidebar-body">
@@ -20,8 +26,19 @@
     </template>
 
     <div class="copilot-page__main">
+      <DqSurfaceCard
+        v-if="trainingUnavailable && !activeRunId"
+        class="copilot-page__workspace-card studio-surface-card lora-train-page__unavailable"
+      >
+        <h2>{{ $t('loraTrain.unavailableTitle') }}</h2>
+        <p>{{ $t('loraTrain.unavailableBody') }}</p>
+        <p v-if="requirements?.detail" class="lora-train-page__unavailable-detail">
+          {{ requirements.detail }}
+        </p>
+      </DqSurfaceCard>
+
       <LoraTrainRunDetail
-        v-if="activeRunId"
+        v-else-if="activeRunId"
         :task-id="activeRunId"
         @back="onRunBack"
         @verify="onVerifyGenerate"
@@ -539,6 +556,10 @@ const presetsByModel = ref<Record<string, Record<string, Record<string, unknown>
 const datasetPanelRef = ref<InstanceType<typeof LoraDatasetPanel> | null>(null);
 const historyRef = ref<InstanceType<typeof LoraTrainHistory> | null>(null);
 const { loading: historyLoading, refresh: refreshHistory } = useLoraTrainLibrary();
+/** Rust MLX trainer not landed yet — API returns ready:false / 501. */
+const trainingUnavailable = computed(
+  () => requirements.value == null || requirements.value.ready === false,
+);
 function recommendedPresetFor(model: string) {
   return model === 'z-image' ? 'scheme4' : 'standard';
 }
@@ -1585,6 +1606,24 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.lora-train-page__unavailable {
+  max-width: 40rem;
+  margin: 2rem auto;
+  padding: 1.5rem 1.75rem;
+}
+.lora-train-page__unavailable h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.25rem;
+}
+.lora-train-page__unavailable p {
+  margin: 0 0 0.75rem;
+  line-height: 1.5;
+  opacity: 0.9;
+}
+.lora-train-page__unavailable-detail {
+  font-size: 0.875rem;
+  opacity: 0.7;
+}
 .lora-train-page__sidebar-card {
   height: 100%;
   display: flex;

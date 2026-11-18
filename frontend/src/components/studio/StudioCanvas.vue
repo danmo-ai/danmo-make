@@ -34,15 +34,6 @@
               {{ activeProgressHint }}
             </span>
           </div>
-          <DqButton
-            v-if="logTaskId"
-            type="text"
-            size="sm"
-            class="studio-canvas__logs-btn"
-            @click="openTaskLogs"
-          >
-            {{ $t('studio.viewLogs') }}
-          </DqButton>
         </div>
         <div class="studio-canvas__active-cards">
           <ActiveTaskCard
@@ -53,16 +44,6 @@
           />
         </div>
       </div>
-    </div>
-
-    <!-- Recent task logs (after completion / failure) -->
-    <div
-      v-if="activeTasks.length === 0 && logTaskId && hasPersistedLogs"
-      class="studio-canvas__section studio-canvas__section--log-recall"
-    >
-      <DqButton type="text" size="sm" class="studio-canvas__logs-btn" @click="openTaskLogs">
-        {{ $t('studio.viewLogs') }}
-      </DqButton>
     </div>
 
     <GenTaskLogDialog
@@ -144,6 +125,7 @@ import {
   latestProgressItem,
 } from '@/utils/genTaskLog';
 import type { GalleryGroup, GalleryItem, Task } from '@/types';
+import { parseGalleryTimestamp } from '@/utils/galleryAssetMeta';
 import StudioCard from './StudioCard.vue';
 import StudioGroupCard from './StudioGroupCard.vue';
 import ActiveTaskCard from './ActiveTaskCard.vue';
@@ -194,12 +176,6 @@ const primaryRunningTaskId = computed(() => {
   return first?.id || null;
 });
 
-const hasPersistedLogs = computed(() => {
-  const id = logTaskId.value;
-  if (!id) return false;
-  return (tasksStore.taskLogs[id]?.length ?? 0) > 0;
-});
-
 watch(primaryRunningTaskId, (id) => {
   if (id) {
     logTaskId.value = id;
@@ -226,13 +202,6 @@ watch(
     }
   },
 );
-
-function openTaskLogs() {
-  const id = primaryRunningTaskId.value || logTaskId.value;
-  if (!id) return;
-  logTaskId.value = id;
-  showTaskLogs.value = true;
-}
 
 const activeProgressHint = computed(() => {
   const id = primaryRunningTaskId.value;
@@ -272,8 +241,7 @@ interface CanvasTimeSection {
 }
 
 function parseSortTime(iso: string | undefined): number {
-  if (!iso) return 0;
-  const t = new Date(iso).getTime();
+  const t = parseGalleryTimestamp(iso);
   return Number.isFinite(t) ? t : 0;
 }
 
@@ -457,17 +425,6 @@ function handleCardClick(item: GalleryItem, event: MouseEvent) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.studio-canvas__logs-btn {
-  flex-shrink: 0;
-  font-size: var(--dq-font-size-caption);
-}
-
-.studio-canvas__section--log-recall {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 12px;
 }
 
 .studio-canvas__active-cards {

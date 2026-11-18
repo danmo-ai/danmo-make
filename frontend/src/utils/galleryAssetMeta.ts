@@ -70,13 +70,29 @@ export function formatGalleryResolution(item: GalleryItem | null | undefined): s
   return '';
 }
 
-export function formatGalleryDate(dateStr: string | null | undefined): string {
-  if (!dateStr) return '';
-  try {
-    return new Date(dateStr).toLocaleString();
-  } catch {
-    return String(dateStr);
+/** SQLite `datetime('now')` is UTC, written as `YYYY-MM-DD HH:MM:SS`. */
+const SQLITE_UTC_STAMP = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})(\.\d+)?$/;
+
+/**
+ * Gallery timestamps come from two writers.
+ * Older rows are local ISO (`2026-11-18T16:22:24`). Rust rows from
+ * `datetime('now')` are UTC with a space (`2026-11-18 09:03:58`).
+ * Parsing the UTC form as local time drops those assets behind older ones.
+ */
+export function parseGalleryTimestamp(dateStr: string | null | undefined): number {
+  if (!dateStr) return NaN;
+  const raw = dateStr.trim();
+  const sqlite = raw.match(SQLITE_UTC_STAMP);
+  if (sqlite) {
+    return Date.parse(`${sqlite[1]}T${sqlite[2]}${sqlite[3] || ''}Z`);
   }
+  return Date.parse(raw);
+}
+
+export function formatGalleryDate(dateStr: string | null | undefined): string {
+  const ms = parseGalleryTimestamp(dateStr);
+  if (!Number.isFinite(ms)) return dateStr ? String(dateStr) : '';
+  return new Date(ms).toLocaleString();
 }
 
 export function formatGalleryClock(sec: number | null | undefined): string {

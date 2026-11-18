@@ -5,6 +5,7 @@ export interface ModelVersion {
   size?: string;
   source?: string;
   source_type?: string;
+  from_version?: string;
   default?: boolean;
 }
 
@@ -27,7 +28,15 @@ export interface VersionRow {
   vstatus: string;
 }
 
-export interface FullVersionBlock extends VersionRow {}
+export interface FullVersionBlock extends VersionRow {
+  derivedVariants: VersionRow[];
+  parentReady: boolean;
+}
+
+/** Official FP8 bundles are a CUDA dtype. The MLX runtime loads F32, F16, and BF16. */
+export function isUnsupportedRuntimeVersion(verKey: string): boolean {
+  return verKey === 'fp8' || verKey.endsWith('-fp8');
+}
 
 export interface ModelVersionLayout {
   fullBlocks: FullVersionBlock[];
@@ -45,9 +54,11 @@ export function resolveVersionSource(
 
 export function uniformDownloadSource(model: ModelVersionLayoutInput): string {
   if (!model.versions) return model.source || '';
-  const downloadable = Object.values(model.versions);
+  const downloadable = Object.entries(model.versions).filter(
+    ([verKey, ver]) => ver.source_type !== 'derived' && !isUnsupportedRuntimeVersion(verKey),
+  );
   if (downloadable.length === 0) return model.source || '';
-  const sources = downloadable.map((ver) => resolveVersionSource(model, ver));
+  const sources = downloadable.map(([, ver]) => resolveVersionSource(model, ver));
   const unique = [...new Set(sources.filter(Boolean))];
   return unique.length === 1 ? unique[0] : '';
 }
@@ -77,14 +88,21 @@ export function buildModelVersionLayout(
 
   const fullRows: VersionRow[] = [];
   const lightweightRows: VersionRow[] = [];
+  const derivedByParent: Record<string, VersionRow[]> = {};
 
   for (const [verKey, ver] of Object.entries(model.versions)) {
+    if (isUnsupportedRuntimeVersion(verKey)) continue;
     const row: VersionRow = {
       verKey,
       ver,
       vstatus: getVersionStatus(model.id, verKey),
     };
-    if (ver.source_type === 'prequantized') {
+    if (ver.source_type === 'derived') {
+      const parent = ver.from_version;
+      if (!parent) continue;
+      if (!derivedByParent[parent]) derivedByParent[parent] = [];
+      derivedByParent[parent].push(row);
+    } else if (ver.source_type === 'prequantized') {
       lightweightRows.push(row);
     } else {
       fullRows.push(row);
@@ -101,7 +119,13 @@ export function buildModelVersionLayout(
     versionNamePlain(a.ver.name).localeCompare(versionNamePlain(b.ver.name))
   );
 
-  const fullBlocks: FullVersionBlock[] = fullRows;
+  const fullBlocks: FullVersionBlock[] = fullRows.map((row) => ({
+    ...row,
+    parentReady: row.vstatus === 'ready',
+    derivedVariants: (derivedByParent[row.verKey] || []).sort((a, b) =>
+      a.verKey.localeCompare(b.verKey),
+    ),
+  }));
 
   return {
     fullBlocks,
@@ -109,6 +133,15 @@ export function buildModelVersionLayout(
     fullBlockSource: uniformBlockSource(model, fullRows),
     lightweightBlockSource: uniformBlockSource(model, lightweightRows),
   };
+}
+
+export function shortDerivedLabel(verKey: string, name: string): string {
+  const key = verKey.toLowerCase();
+  if (key === 'int8' || key.endsWith('-int8')) return 'INT8';
+  if (key === 'int4' || key.endsWith('-int4')) return 'INT4';
+  const match = name.match(/INT[48]/i);
+  if (match) return match[0].toUpperCase();
+  return name.replace(/\s*量化版\s*/u, '').trim() || name;
 }
 
 export function simplifyPrequantizedName(name: string, source: string): string {

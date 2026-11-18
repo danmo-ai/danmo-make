@@ -590,11 +590,15 @@ select {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .studio-composer-setup__mode,
 .studio-composer-setup .dq-segmented {
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .studio-composer-setup__basics {

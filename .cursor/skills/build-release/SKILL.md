@@ -57,7 +57,10 @@ When the user asks to build/release:
 - `desktop/src-tauri/Cargo.lock` → `danqing-desktop` package version only
 - `desktop/src-tauri/tauri.conf.json` → `version`
 
-CI (`release.yml` on `v*` tags) publishes a macOS `.dmg` and a Linux ggml server `.tar.gz`.
+CI (`release.yml` on `v*` tags) publishes:
+- macOS desktop `.dmg` (`metal,mlx-metal`)
+- Linux desktop `.AppImage` + `.deb` (`mlx-cuda`, toolkit+cuDNN, no GPU)
+- Linux server `.tar.gz` (`mlx-cuda`)
 
 ## Notes
 

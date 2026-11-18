@@ -33,7 +33,9 @@ elif git -C "$DQ_ROOT" describe --exact-match --tags HEAD >/dev/null 2>&1; then
   bash "$SCRIPT_DIR/set_desktop_version.sh"
 fi
 bash "$SCRIPT_DIR/prepare_tauri_resources.sh"
+bash "$SCRIPT_DIR/ensure_tauri_resource_stub.sh"
 rustup target add x86_64-unknown-linux-gnu
+export CI="${CI:-true}"
 (cd "$DQ_ROOT/desktop" && npm install && npm exec tauri build -- --target x86_64-unknown-linux-gnu -b appimage -b deb)
 bash "$SCRIPT_DIR/stage_desktop_bundle.sh"
 

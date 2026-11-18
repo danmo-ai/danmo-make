@@ -4,7 +4,10 @@
       v-for="block in layout.fullBlocks"
       :key="block.verKey"
       class="model-version-entry"
-      :class="{ 'is-ready': block.vstatus === 'ready' }"
+      :class="{
+        'is-expanded': isParentExpanded(block),
+        'is-ready': block.vstatus === 'ready',
+      }"
     >
       <ModelVersionDownloadRow
         :ver-key="block.verKey"
@@ -12,12 +15,22 @@
         :vstatus="block.vstatus"
         :model-source="model.source"
         :hide-source="Boolean(uniformSource)"
+        :expandable="block.derivedVariants.length > 0"
+        :expanded="isParentExpanded(block)"
+        :has-local-quant="block.derivedVariants.length > 0"
         :can-download="canDownload"
         :dependency-hint="dependencyHint"
         :loading="Boolean(loadingKeys[`${model.id}-${block.verKey}`])"
         :bundle-components="bundleComponents(block.verKey)"
         @download="$emit('download', block.verKey)"
         @delete="$emit('delete', block.verKey)"
+        @toggle-expand="toggleParent(block.verKey)"
+      />
+      <ModelVersionLocalQuantPanel
+        v-if="block.derivedVariants.length && isParentExpanded(block)"
+        :parent-ready="block.parentReady"
+        :derived-variants="block.derivedVariants"
+        @delete-derived="$emit('delete', $event)"
       />
     </div>
 
@@ -41,10 +54,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import ModelVersionDownloadRow from '@/components/models/ModelVersionDownloadRow.vue';
+import ModelVersionLocalQuantPanel from '@/components/models/ModelVersionLocalQuantPanel.vue';
 import {
   buildModelVersionLayout,
+  type FullVersionBlock,
   type ModelVersionLayoutInput,
 } from '@/utils/modelVersionLayout';
 
@@ -63,11 +78,33 @@ defineEmits<{
   delete: [verKey: string];
 }>();
 
+const expandedParents = ref<Set<string>>(new Set());
+
 const layout = computed(() =>
   buildModelVersionLayout(props.model, props.getVersionStatus),
 );
 
+watch(
+  () => props.model.id,
+  () => {
+    expandedParents.value = new Set();
+  },
+);
+
 function bundleComponents(verKey: string) {
   return props.bundleComponentsFor(verKey);
+}
+
+function isParentExpanded(block: FullVersionBlock): boolean {
+  return expandedParents.value.has(block.verKey);
+}
+
+function toggleParent(verKey: string) {
+  const block = layout.value.fullBlocks.find((item) => item.verKey === verKey);
+  if (!block || block.derivedVariants.length === 0) return;
+  const next = new Set(expandedParents.value);
+  if (next.has(verKey)) next.delete(verKey);
+  else next.add(verKey);
+  expandedParents.value = next;
 }
 </script>

@@ -1,4 +1,12 @@
-# ggml desktop and headless server. The sidecar is the Rust danqing-api binary.
+# Build Danmo Make release artifacts:
+#   - macOS desktop (.dmg) — danqing-api --features metal,mlx-metal
+#   - Linux desktop (AppImage + .deb) — danqing-api --features mlx-cuda (toolkit + cuDNN; no GPU)
+#   - Linux server (.tar.gz) — same mlx-cuda sidecar + frontend
+#
+# MLX/mlx-c: git submodules; compiled by danmo-mlx-sys. Linux installs CUDA 12.9 + cuDNN via
+# scripts/ci_install_cuda_ubuntu.sh (compile-only; physical GPU not required).
+#
+# Trigger: v* tags, or workflow_dispatch.
 name: Build Release Artifacts
 
 on:
@@ -15,146 +23,346 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build-desktop:
-    name: macOS desktop (ggml Metal)
-    runs-on: macos-latest
+  build-macos-desktop:
+    name: macOS desktop (Metal + MLX)
+    runs-on: macos-14
+    timeout-minutes: 240
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           path: danmo-make
-          submodules: true
+          submodules: recursive
+          fetch-depth: 0
 
       - name: Checkout dq-ui
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           repository: danmo-ai/dq-ui
           path: dq-ui
 
+      - name: Select Xcode + build tools
+        run: |
+          # MLX Metal needs the full Xcode metal compiler (not only CLT).
+          if [[ -d /Applications/Xcode.app ]]; then
+            sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          fi
+          xcodebuild -version
+          xcrun -sdk macosx metal -v
+          brew install cmake ninja
+          command -v cmake
+          cmake --version
+
+      - name: Verify mlx / mlx-c submodules
+        working-directory: danmo-make
+        run: |
+          test -f native/third_party/mlx/CMakeLists.txt
+          test -f native/third_party/mlx-c/CMakeLists.txt
+          test -f native/third_party/ggml/CMakeLists.txt
+          test -f native/third_party/fmt/CMakeLists.txt
+          test -f native/third_party/json/CMakeLists.txt
+          echo "vendored MLX/ggml sources OK"
+
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - name: Install and build dq-ui
+        working-directory: ${{ github.workspace }}/dq-ui
         run: |
           npm install
           npm run build
-        working-directory: ${{ github.workspace }}/dq-ui
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
 
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            danmo-make/native -> target
+            danmo-make/desktop/src-tauri -> target
+          shared-key: macos-desktop-mlx
+
       - name: Set release version
         working-directory: danmo-make
         run: |
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-            echo "DANQING_DESKTOP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+            ver="${GITHUB_REF_NAME#v}"
           elif [[ -n "${{ inputs.version }}" ]]; then
-            echo "RELEASE_VERSION=${{ inputs.version }}" >> "$GITHUB_ENV"
-            echo "DANQING_DESKTOP_VERSION=${{ inputs.version }}" >> "$GITHUB_ENV"
+            ver="${{ inputs.version }}"
           else
-            echo "RELEASE_VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
+            ver="$(git describe --tags --always --dirty)"
           fi
+          echo "RELEASE_VERSION=${ver}" >> "$GITHUB_ENV"
+          echo "DANQING_DESKTOP_VERSION=${ver}" >> "$GITHUB_ENV"
+          echo "version=${ver}"
 
-      - name: Build desktop bundle
+      - name: Build macOS desktop
         working-directory: danmo-make
+        env:
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+          DANQING_DESKTOP_VERSION: ${{ env.DANQING_DESKTOP_VERSION }}
+          # Fail loud if Metal toolchain is missing mid-build.
+          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
         run: make pack-macos-desktop
 
-      - name: Verify DMG was produced
+      - name: Verify DMG
         working-directory: danmo-make
         run: |
-          ls -la out/desktop/bundle/ || true
+          ls -laR out/desktop/bundle || true
           test -n "$(find out/desktop/bundle -name '*.dmg' -print -quit)"
 
       - name: Upload macOS artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: danmo-make-desktop-macos
           path: danmo-make/out/desktop/bundle/**/*.dmg
           if-no-files-found: error
 
-  build-linux-server:
-    name: Linux ggml server (tar.gz)
-    runs-on: ubuntu-latest
+  build-linux-desktop:
+    name: Linux desktop (mlx-cuda)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           path: danmo-make
-          submodules: true
+          submodules: recursive
+          fetch-depth: 0
 
       - name: Checkout dq-ui
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           repository: danmo-ai/dq-ui
           path: dq-ui
 
-      - name: Install libstdc++
-        run: sudo apt-get update && sudo apt-get install -y g++ cmake
+      - name: Extra swap (MLX CUDA link memory)
+        uses: pierotofy/set-swap-space@fc79b3f67fa8a838184ce84a674ca12238d2c761
+        with:
+          swap-size-gb: 16
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            g++ \
+            pkg-config \
+            libclang-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libxdo-dev \
+            patchelf \
+            file \
+            wget \
+            curl \
+            libfuse2
+
+      - name: Install CUDA toolkit + cuDNN (compile-only)
+        working-directory: danmo-make
+        run: bash scripts/ci_install_cuda_ubuntu.sh
+
+      - name: Verify mlx / mlx-c / ggml + nvcc
+        working-directory: danmo-make
+        run: |
+          test -f native/third_party/mlx/CMakeLists.txt
+          test -f native/third_party/mlx-c/CMakeLists.txt
+          test -f native/third_party/ggml/CMakeLists.txt
+          command -v nvcc
+          nvcc --version
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - name: Install and build dq-ui
+        working-directory: ${{ github.workspace }}/dq-ui
         run: |
           npm install
           npm run build
-        working-directory: ${{ github.workspace }}/dq-ui
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            danmo-make/native -> target
+            danmo-make/desktop/src-tauri -> target
+          shared-key: linux-desktop-mlx-cuda
 
       - name: Set release version
         working-directory: danmo-make
         run: |
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+            ver="${GITHUB_REF_NAME#v}"
           elif [[ -n "${{ inputs.version }}" ]]; then
-            echo "RELEASE_VERSION=${{ inputs.version }}" >> "$GITHUB_ENV"
+            ver="${{ inputs.version }}"
           else
-            echo "RELEASE_VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
+            ver="$(git describe --tags --always --dirty)"
           fi
+          echo "RELEASE_VERSION=${ver}" >> "$GITHUB_ENV"
+          echo "DANQING_DESKTOP_VERSION=${ver}" >> "$GITHUB_ENV"
+          echo "version=${ver}"
 
-      - name: Build Linux ggml archive
+      - name: Build Linux desktop (mlx-cuda)
         working-directory: danmo-make
+        env:
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+          DANQING_DESKTOP_VERSION: ${{ env.DANQING_DESKTOP_VERSION }}
+          DANQING_SIDECAR_FEATURES: mlx-cuda
+          CI: true
+        run: make pack-linux-desktop
+
+      - name: Verify AppImage / deb
+        working-directory: danmo-make
+        run: |
+          ls -laR out/desktop/bundle || true
+          test -n "$(find out/desktop/bundle -name '*.AppImage' -print -quit)"
+          test -n "$(find out/desktop/bundle -name '*.deb' -print -quit)"
+
+      - name: Upload Linux desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: danmo-make-desktop-linux-mlx-cuda
+          path: |
+            danmo-make/out/desktop/bundle/**/*.AppImage
+            danmo-make/out/desktop/bundle/**/*.deb
+          if-no-files-found: error
+
+  build-linux-server:
+    name: Linux server (mlx-cuda tar.gz)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: danmo-make
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Checkout dq-ui
+        uses: actions/checkout@v4
+        with:
+          repository: danmo-ai/dq-ui
+          path: dq-ui
+
+      - name: Extra swap (MLX CUDA link memory)
+        uses: pierotofy/set-swap-space@fc79b3f67fa8a838184ce84a674ca12238d2c761
+        with:
+          swap-size-gb: 16
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build g++ pkg-config libclang-dev wget
+
+      - name: Install CUDA toolkit + cuDNN (compile-only)
+        working-directory: danmo-make
+        run: bash scripts/ci_install_cuda_ubuntu.sh
+
+      - name: Verify mlx / mlx-c + nvcc
+        working-directory: danmo-make
+        run: |
+          test -f native/third_party/mlx/CMakeLists.txt
+          test -f native/third_party/mlx-c/CMakeLists.txt
+          command -v nvcc
+          nvcc --version
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install and build dq-ui
+        working-directory: ${{ github.workspace }}/dq-ui
+        run: |
+          npm install
+          npm run build
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: danmo-make/native -> target
+          shared-key: linux-server-mlx-cuda
+
+      - name: Set release version
+        working-directory: danmo-make
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            ver="${GITHUB_REF_NAME#v}"
+          elif [[ -n "${{ inputs.version }}" ]]; then
+            ver="${{ inputs.version }}"
+          else
+            ver="$(git describe --tags --always --dirty)"
+          fi
+          echo "RELEASE_VERSION=${ver}" >> "$GITHUB_ENV"
+          echo "version=${ver}"
+
+      - name: Build Linux server archive (mlx-cuda)
+        working-directory: danmo-make
+        env:
+          RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+          DANQING_SIDECAR_FEATURES: mlx-cuda
+          DANQING_SERVER_BACKEND_TAG: mlx-cuda
         run: make pack-linux-server RELEASE_VERSION="$RELEASE_VERSION"
 
-      - name: Verify tar.gz was produced
+      - name: Verify tar.gz
         working-directory: danmo-make
         run: |
           ls -la out/dist/
-          test -n "$(find out/dist -name 'danmo-make-linux-ggml-*.tar.gz' -print -quit)"
+          test -n "$(find out/dist -name 'danmo-make-linux-mlx-cuda-*.tar.gz' -print -quit)"
 
-      - name: Upload Linux artifact
-        uses: actions/upload-artifact@v6
+      - name: Upload Linux server artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: danmo-make-linux-ggml
-          path: danmo-make/out/dist/danmo-make-linux-ggml-*.tar.gz
+          name: danmo-make-linux-mlx-cuda
+          path: danmo-make/out/dist/danmo-make-linux-mlx-cuda-*.tar.gz
           if-no-files-found: error
 
   publish-release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build-desktop, build-linux-server]
+    needs: [build-macos-desktop, build-linux-desktop, build-linux-server]
     runs-on: ubuntu-latest
     steps:
-      - name: Download macOS artifact
-        uses: actions/download-artifact@v6
+      - name: Download macOS desktop
+        uses: actions/download-artifact@v4
         with:
           name: danmo-make-desktop-macos
           path: release-assets/macos
 
-      - name: Download Linux server artifact
-        uses: actions/download-artifact@v6
+      - name: Download Linux desktop
+        uses: actions/download-artifact@v4
         with:
-          name: danmo-make-linux-ggml
+          name: danmo-make-desktop-linux-mlx-cuda
+          path: release-assets/linux-desktop
+
+      - name: Download Linux server
+        uses: actions/download-artifact@v4
+        with:
+          name: danmo-make-linux-mlx-cuda
           path: release-assets/linux-server
 
       - name: Attach assets to GitHub Release
@@ -162,5 +370,7 @@ jobs:
         with:
           files: |
             release-assets/macos/**/*.dmg
+            release-assets/linux-desktop/**/*.AppImage
+            release-assets/linux-desktop/**/*.deb
             release-assets/linux-server/**/*.tar.gz
           fail_on_unmatched_files: true

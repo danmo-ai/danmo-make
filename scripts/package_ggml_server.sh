@@ -8,7 +8,16 @@ source "$SCRIPT_DIR/out_paths.sh"
 VERSION="${RELEASE_VERSION:-$(git -C "$DQ_ROOT" describe --tags --always --dirty 2>/dev/null || echo dev)}"
 OS_NAME="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
-NAME="danmo-make-${OS_NAME}-ggml-${ARCH}-${VERSION}"
+# Prefer mlx-cuda label when the sidecar was built with that feature (CI / nvcc hosts).
+BACKEND_TAG="${DANQING_SERVER_BACKEND_TAG:-}"
+if [[ -z "$BACKEND_TAG" ]]; then
+  if command -v nvcc >/dev/null 2>&1 || [[ "${DANQING_SIDECAR_FEATURES:-}" == *mlx-cuda* ]]; then
+    BACKEND_TAG=mlx-cuda
+  else
+    BACKEND_TAG=ggml
+  fi
+fi
+NAME="danmo-make-${OS_NAME}-${BACKEND_TAG}-${ARCH}-${VERSION}"
 STAGE="$DQ_OUT/server/$NAME"
 
 dq_ensure_out_layout

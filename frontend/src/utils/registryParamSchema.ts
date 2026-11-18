@@ -1,6 +1,6 @@
 /**
  * models_registry.json parameters — inference and utilities aligned with
- * backend/core/registry_format.typed_parameters.
+ * registry typed_parameters (default_config/models_registry.json).
  */
 
 export type InferredParamType = 'int' | 'float' | 'enum' | 'bool' | 'object' | 'skip';

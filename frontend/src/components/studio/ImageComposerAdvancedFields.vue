@@ -347,9 +347,7 @@ const paramSchema = computed(() =>
   normalizeParamsDef(props.currentModelConfig?.parameters as Record<string, unknown> | undefined),
 );
 
-const isImg2imgMode = computed(
-  () => props.mode === 'img2img' || props.referenceImage != null,
-);
+const isImg2imgMode = computed(() => props.mode === 'img2img');
 
 const showStrengthSlider = computed(
   () => isImg2imgMode.value && img2imgUsesStrength(props.currentModelConfig?.parameters as Record<string, unknown> | undefined),
@@ -492,8 +490,31 @@ watch(
   min-width: 220px;
 }
 
-.composer-advanced-fields--stacked .composer-advanced-fields__field {
+.composer-advanced-fields--stacked {
+  --composer-field-label: 8.75rem;
+  --composer-field-value: 2.5rem;
   min-width: 0;
+  max-width: 100%;
+}
+
+.composer-advanced-fields--stacked .composer-advanced-fields__row {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  min-width: 0;
+  width: 100%;
+}
+
+.composer-advanced-fields--stacked .composer-advanced-fields__field,
+.composer-advanced-fields--stacked .composer-advanced-fields__inline {
+  display: grid;
+  grid-template-columns: var(--composer-field-label) minmax(0, 1fr) var(--composer-field-value);
+  align-items: center;
+  column-gap: 10px;
+  min-width: 0;
+  width: 100%;
+}
+
+.composer-advanced-fields--stacked .composer-advanced-fields__field {
   flex: 1 1 100%;
 }
 
@@ -507,6 +528,13 @@ watch(
   gap: 8px;
 }
 
+.composer-advanced-fields--stacked .composer-advanced-fields__field--stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  grid-template-columns: none;
+}
+
 .composer-advanced-fields__field label {
   font-size: var(--dq-font-size-caption);
   font-weight: 500;
@@ -516,8 +544,12 @@ watch(
   flex-shrink: 0;
 }
 
-.composer-advanced-fields--stacked .composer-advanced-fields__field label {
+.composer-advanced-fields--stacked .composer-advanced-fields__field label,
+.composer-advanced-fields--stacked .composer-advanced-fields__inline label {
   width: auto;
+  min-width: 0;
+  white-space: normal;
+  line-height: 1.35;
 }
 
 .composer-advanced-fields__field--stack > label {
@@ -549,8 +581,25 @@ watch(
   min-width: 0;
 }
 
-.composer-advanced-fields--stacked .composer-advanced-fields__select {
+.composer-advanced-fields--stacked .composer-advanced-fields__select,
+.composer-advanced-fields--stacked .composer-advanced-fields__seed {
+  grid-column: 2 / -1;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.composer-advanced-fields--stacked .composer-advanced-fields__field :deep(.dq-slider),
+.composer-advanced-fields--stacked .composer-advanced-fields__inline :deep(.dq-slider),
+.composer-advanced-fields--stacked .composer-advanced-fields__field :deep(.dq-select),
+.composer-advanced-fields--stacked .composer-advanced-fields__inline :deep(.dq-select) {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.composer-advanced-fields--stacked .composer-advanced-fields__hint {
+  padding-left: calc(var(--composer-field-label) + 10px);
 }
 
 .composer-advanced-fields__slider-grow {

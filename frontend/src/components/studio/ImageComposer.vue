@@ -12,6 +12,15 @@
       class="image-composer__title"
     />
 
+    <DqSegmented
+      v-if="modeOptions && modeOptions.length > 0"
+      v-model="localMode"
+      block
+      size="sm"
+      :options="modeOptions"
+      class="studio-composer-setup__mode"
+    />
+
     <!-- Middle: Prompt input -->
     <div class="image-composer__prompt-block">
     <div class="image-composer__prompt-wrap">
@@ -27,7 +36,7 @@
       />
 
       <!-- Bottom-left: Reference image -->
-      <div class="image-composer__ref-area">
+      <div v-if="localMode === 'img2img'" class="image-composer__ref-area">
         <div
           v-if="referenceImage"
           class="image-composer__ref-pill"
@@ -169,13 +178,6 @@
     </div>
 
     <div class="studio-composer-setup">
-      <DqSegmented
-        v-if="modeOptions && modeOptions.length > 0"
-        v-model="localMode"
-        size="sm"
-        :options="modeOptions"
-        class="studio-composer-setup__mode"
-      />
       <ModelSelect
         v-model="localModel"
         :options="modelOptions"
@@ -421,9 +423,7 @@ const advancedOpen = ref(false);
 const selectedStyle = ref('');
 const lastStylePositive = ref('');
 
-const isImg2imgMode = computed(
-  () => localMode.value === 'img2img' || props.referenceImage != null,
-);
+const isImg2imgMode = computed(() => localMode.value === 'img2img');
 
 const localTitle = computed({
   get: () => props.title || '',

@@ -378,6 +378,7 @@ async function fetchLibraryPage(reset: boolean) {
 
 function openLibrary() {
   libraryOpen.value = true;
+  void fetchLibraryPage(true);
 }
 
 function onLibraryOpened() {

@@ -29,6 +29,16 @@
       />
     </div>
 
+    <DqSegmented
+      v-if="workModeOptions.length > 0"
+      :model-value="localWorkMode"
+      block
+      size="sm"
+      :options="workModeOptions"
+      class="studio-composer-setup__mode"
+      @update:model-value="localWorkMode = $event"
+    />
+
     <!-- Prompt -->
     <div class="video-composer__prompt-block">
     <div class="video-composer__prompt-wrap">
@@ -287,13 +297,6 @@
     </div>
 
     <div class="studio-composer-setup">
-      <DqSegmented
-        :model-value="localWorkMode"
-        size="sm"
-        :options="workModeOptions"
-        class="studio-composer-setup__mode"
-        @update:model-value="localWorkMode = $event"
-      />
       <ModelSelect
         v-model="localModel"
         :options="modelOptions"

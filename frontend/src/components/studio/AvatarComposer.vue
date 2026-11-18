@@ -7,6 +7,15 @@
       class="avatar-composer__title"
     />
 
+    <DqSegmented
+      v-if="modeOptions.length > 0"
+      v-model="localMode"
+      block
+      size="sm"
+      :options="modeOptions"
+      class="studio-composer-setup__mode"
+    />
+
     <div class="avatar-composer__prompt-wrap">
       <DqInput
         v-model="localPrompt"
@@ -20,12 +29,6 @@
     </div>
 
     <div class="studio-composer-setup">
-      <DqSegmented
-        v-model="localMode"
-        size="sm"
-        :options="modeOptions"
-        class="studio-composer-setup__mode"
-      />
       <ModelSelect
         v-model="localModel"
         :options="modelOptions"
