@@ -136,4 +136,4 @@ Invalid `DANQING_HTTP_PORT`, an invalid device, a missing Cargo feature, a regis
 
 The active control plane is the only writer of tasks and assets. A worker returns events and a file manifest.
 
-Assistant routes (`/v1/llm/model`, `/v1/vision/model`, `/api/chat/enhance-prompt`, `/v1/chat/completions`) serve the local MLX assistant on its own worker. When settings select an OpenAI-compatible provider with a base URL and API key, those routes proxy that endpoint instead, and a remote failure is returned as an error. A missing local model and a missing cloud configuration both fail the request.
+Product assistant routes (`/v1/llm/model`, `/v1/vision/model`, `/api/chat/enhance-prompt`, `/api/assistant/run`) call an internal LLM client for in-app enhance, creative-assistant, and related helpers only. The client may use the local MLX assistant worker or an OpenAI-compatible backend from settings; it is not a public chat proxy. A missing local model and a missing cloud configuration both fail the request.

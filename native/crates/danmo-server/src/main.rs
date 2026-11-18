@@ -3,6 +3,7 @@
 mod app;
 mod download;
 mod engine_host;
+mod llm;
 mod product;
 
 #[tokio::main]

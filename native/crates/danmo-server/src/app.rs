@@ -1935,10 +1935,10 @@ mod tests {
         assert_eq!(info.status(), StatusCode::OK);
         let bytes = info.into_body().collect().await.unwrap().to_bytes();
         let info: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(info["model_id"], "qwen3-vl-4b-instruct", "{info}");
+        assert_eq!(info["model_id"], "qwen3.5-4b", "{info}");
         assert_eq!(info["provider"], "builtin", "{info}");
         assert_eq!(info["available"], false, "{info}");
-        assert_eq!(info["think_supported"], false, "{info}");
+        assert_eq!(info["think_supported"], true, "{info}");
         let vision = app
             .clone()
             .oneshot(
@@ -1964,17 +1964,25 @@ mod tests {
             enhance.1["detail"]
                 .as_str()
                 .unwrap()
-                .contains("not installed"),
+                .contains("not wired"),
             "{}",
             enhance.1
         );
-        let chat = post_json(
+        assert!(
+            !enhance.1["detail"]
+                .as_str()
+                .unwrap()
+                .contains("api.openai.com"),
+            "builtin must not fall back to cloud: {}",
+            enhance.1
+        );
+        let assistant = post_json(
             &app,
-            "/v1/chat/completions",
-            &json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+            "/api/assistant/run",
+            &json!({ "kind": "lyrics", "prompt": "dreamy synth pop" }),
         )
         .await;
-        assert_eq!(chat.0, StatusCode::SERVICE_UNAVAILABLE, "{}", chat.1);
+        assert_eq!(assistant.0, StatusCode::SERVICE_UNAVAILABLE, "{}", assistant.1);
         let put = put_json(
             &app,
             "/api/settings",
@@ -2015,7 +2023,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assistant_cloud_proxy_roundtrip() {
+    async fn assistant_cloud_product_features_roundtrip() {
         async fn mock_chat(headers: HeaderMap, body: Bytes) -> Response {
             let auth = headers
                 .get("authorization")
@@ -2030,14 +2038,13 @@ mod tests {
             }
             let request: Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(request["model"], "mock-model", "{request}");
-            if request["stream"].as_bool() == Some(true) {
-                let sse =
-                    "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n";
-                return Response::builder()
-                    .header(header::CONTENT_TYPE, "text/event-stream")
-                    .body(Body::from(sse))
-                    .unwrap();
-            }
+            assert_eq!(request["stream"], false, "{request}");
+            let system = request["messages"][0]["content"].as_str().unwrap_or("");
+            let content = if system.contains("ACE-Step lyrics") {
+                "[Verse 1]\nsoft neon rain\n\n[Chorus]\nkeep the beat alive"
+            } else {
+                "a vivid cat portrait, soft light"
+            };
             Json(json!({
                 "id": "chatcmpl-mock",
                 "object": "chat.completion",
@@ -2045,7 +2052,7 @@ mod tests {
                 "model": "mock-model",
                 "choices": [{
                     "index": 0,
-                    "message": { "role": "assistant", "content": "a vivid cat portrait, soft light" },
+                    "message": { "role": "assistant", "content": content },
                     "finish_reason": "stop"
                 }],
                 "usage": { "prompt_tokens": 3, "completion_tokens": 6, "total_tokens": 9 }
@@ -2106,19 +2113,23 @@ mod tests {
             "{}",
             enhance.1
         );
-        let chat = post_json(
+        let lyrics = post_json(
             &app,
-            "/v1/chat/completions",
-            &json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+            "/api/assistant/run",
+            &json!({ "kind": "lyrics", "prompt": "dreamy synth pop" }),
         )
         .await;
-        assert_eq!(chat.0, StatusCode::OK, "{}", chat.1);
-        assert_eq!(
-            chat.1["choices"][0]["message"]["content"], "a vivid cat portrait, soft light",
+        assert_eq!(lyrics.0, StatusCode::OK, "{}", lyrics.1);
+        assert!(
+            lyrics.1["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("[Verse 1]"),
             "{}",
-            chat.1
+            lyrics.1
         );
-        let streaming = app
+        assert_eq!(lyrics.1["vision_used"], false, "{}", lyrics.1);
+        let missing = app
             .clone()
             .oneshot(
                 Request::builder()
@@ -2127,8 +2138,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         serde_json::to_vec(&json!({
-                            "messages": [{ "role": "user", "content": "hi" }],
-                            "stream": true
+                            "messages": [{ "role": "user", "content": "hi" }]
                         }))
                         .unwrap(),
                     ))
@@ -2136,18 +2146,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(streaming.status(), StatusCode::OK);
         assert_eq!(
-            streaming
-                .headers()
-                .get(header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok()),
-            Some("text/event-stream")
+            missing.status(),
+            StatusCode::NOT_FOUND,
+            "public OpenAI proxy must stay removed"
         );
-        let bytes = streaming.into_body().collect().await.unwrap().to_bytes();
-        let text = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(text.contains("data: {"), "{text}");
-        assert!(text.contains("data: [DONE]"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
