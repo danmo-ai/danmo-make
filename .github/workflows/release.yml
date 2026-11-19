@@ -150,6 +150,11 @@ jobs:
     env:
       DANQING_CUDA_SKIP_APT_INSTALL: "1"
     steps:
+      - name: Prepare container for checkout
+        run: |
+          apt-get update
+          apt-get install -y ca-certificates git
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -187,7 +192,6 @@ jobs:
             file \
             wget \
             curl \
-            git \
             libfuse2
 
       - name: Configure CUDA env (preinstalled toolkit)
@@ -276,6 +280,11 @@ jobs:
     env:
       DANQING_CUDA_SKIP_APT_INSTALL: "1"
     steps:
+      - name: Prepare container for checkout
+        run: |
+          apt-get update
+          apt-get install -y ca-certificates git
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -297,7 +306,7 @@ jobs:
       - name: Install system dependencies
         run: |
           apt-get update
-          apt-get install -y build-essential cmake ninja-build g++ pkg-config libclang-dev wget git
+          apt-get install -y build-essential cmake ninja-build g++ pkg-config libclang-dev wget
 
       - name: Configure CUDA env (preinstalled toolkit)
         working-directory: danmo-make
