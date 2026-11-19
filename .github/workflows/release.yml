@@ -4,6 +4,7 @@
 #   - Linux server (.tar.gz) — same mlx-cuda sidecar + frontend
 #
 # MLX/mlx-c: git submodules; compiled by danmo-mlx-sys. Linux installs CUDA 12.9 + cuDNN via
+# Linux jobs: nvidia/cuda 12.9 cudnn-devel image (skip apt CUDA install) +
 # scripts/ci_install_cuda_ubuntu.sh (compile-only; physical GPU not required).
 #
 # Trigger: v* tags, or workflow_dispatch.
@@ -143,6 +144,11 @@ jobs:
     name: Linux desktop (mlx-cuda)
     runs-on: ubuntu-22.04
     timeout-minutes: 300
+    container:
+      image: nvidia/cuda:12.9.1-cudnn-devel-ubuntu22.04
+      options: --privileged
+    env:
+      DANQING_CUDA_SKIP_APT_INSTALL: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -164,8 +170,8 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt-get update
+          apt-get install -y \
             build-essential \
             cmake \
             ninja-build \
@@ -181,9 +187,10 @@ jobs:
             file \
             wget \
             curl \
+            git \
             libfuse2
 
-      - name: Install CUDA toolkit + cuDNN (compile-only)
+      - name: Configure CUDA env (preinstalled toolkit)
         working-directory: danmo-make
         run: bash scripts/ci_install_cuda_ubuntu.sh
 
@@ -263,6 +270,11 @@ jobs:
     name: Linux server (mlx-cuda tar.gz)
     runs-on: ubuntu-22.04
     timeout-minutes: 300
+    container:
+      image: nvidia/cuda:12.9.1-cudnn-devel-ubuntu22.04
+      options: --privileged
+    env:
+      DANQING_CUDA_SKIP_APT_INSTALL: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -284,10 +296,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build g++ pkg-config libclang-dev wget
+          apt-get update
+          apt-get install -y build-essential cmake ninja-build g++ pkg-config libclang-dev wget git
 
-      - name: Install CUDA toolkit + cuDNN (compile-only)
+      - name: Configure CUDA env (preinstalled toolkit)
         working-directory: danmo-make
         run: bash scripts/ci_install_cuda_ubuntu.sh
 
