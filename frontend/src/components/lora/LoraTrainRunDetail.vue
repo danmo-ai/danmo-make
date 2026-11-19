@@ -137,7 +137,7 @@
           v-if="verification.extra_adapters?.length"
           type="info"
           :closable="false"
-          :title="$t('loraTrain.verifyExtraAdapters', { adapters: verification.extra_adapters.map((item) => stackedAdapterToken(item)).filter(Boolean).join(', ') })"
+          :title="$t('loraTrain.verifyExtraAdapters', { adapters: formatExtraAdapters(verification.extra_adapters) })"
         />
         <div class="lora-run-detail__verify-grid">
           <label>{{ $t('loraTrain.progressPrompt') }}<DqInput v-model="verifyPrompt" type="textarea" :rows="3" /></label>
@@ -176,6 +176,16 @@ import TaskIdBadge from '@/components/studio/TaskIdBadge.vue';
 import LoraQualityHints from '@/components/lora/LoraQualityHints.vue';
 import type { LoraTrainingQualityReport } from '@/utils/loraQuality';
 import { stackedAdapterToken } from '@/utils/loraAdapterMeta';
+
+type StackedAdapterItem = Parameters<typeof stackedAdapterToken>[0];
+
+function formatExtraAdapters(adapters: unknown): string {
+  if (!Array.isArray(adapters)) return '';
+  return adapters
+    .map((item) => stackedAdapterToken(item as StackedAdapterItem))
+    .filter(Boolean)
+    .join(', ');
+}
 
 const props = defineProps<{ taskId: string }>();
 const emit = defineEmits<{
@@ -614,7 +624,7 @@ function syncVerification() {
     ...recipe,
     lora_scale: Number(recipe.lora_weight ?? verification.value.lora_scale ?? 0.8),
     extra_adapters: Array.isArray(recipe.extra_adapters)
-      ? recipe.extra_adapters.map((item: unknown) => stackedAdapterToken(item)).filter(Boolean)
+      ? recipe.extra_adapters.map((item) => stackedAdapterToken(item as StackedAdapterItem)).filter(Boolean)
       : [],
     seed: String(verification.value.seed || '42'),
     width: Number(recipe.width || res?.[0] || 1024),
