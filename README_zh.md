@@ -289,7 +289,7 @@ danmo-mlx → danmo-mlx-sys → mlx-c → MLX C++ → Metal 或 CUDA
 make pack-macos-desktop
 make pack-linux-desktop
 make pack-linux-server
-make pack-ggml-sidecar     # 发布用 danqing-api sidecar（MLX feature）
+make pack-mlx-sidecar      # 发布用 danqing-api sidecar（mlx-metal / mlx-cuda）
 ```
 
 ---
@@ -325,7 +325,7 @@ DANQING_USER_DATA_DIR=~/.danmo-make
 | `make frontend-build` | → `out/frontend/dist/` |
 | `make test` | workspace `cargo test` |
 | `cargo test --manifest-path native/Cargo.toml -p danmo-engine --features mlx-metal --lib` | 引擎测试（Metal） |
-| `make pack-ggml-sidecar` | 发布用 `danqing-api` sidecar（MLX） |
+| `make pack-mlx-sidecar` | 发布用 `danqing-api` sidecar（MLX） |
 | `make clean` | `cargo clean` 并清掉 `out/` |
 
 ---

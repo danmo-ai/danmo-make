@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# macOS Tauri desktop (ggml Metal sidecar).
+# macOS Tauri desktop (MLX Metal sidecar).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -22,8 +22,8 @@ export RELEASE_VERSION="${RELEASE_VERSION:-$(git describe --tags --always --dirt
 echo "==> Frontend -> $DQ_FRONTEND_DIST"
 (cd "$DQ_ROOT/frontend" && npm install && npm run build)
 
-echo "==> ggml sidecar (Metal)"
-bash "$SCRIPT_DIR/build_ggml_sidecar.sh"
+echo "==> MLX sidecar (Metal)"
+bash "$SCRIPT_DIR/build_mlx_sidecar.sh"
 
 echo "==> Tauri shell (macOS)"
 bash "$SCRIPT_DIR/tauri_build_macos.sh"

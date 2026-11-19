@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Headless archive: ggml danqing-api + built frontend. No Python runtime.
+# Headless archive: MLX danqing-api sidecar + built frontend. No Python runtime.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=out_paths.sh
@@ -13,15 +13,18 @@ BACKEND_TAG="${DANQING_SERVER_BACKEND_TAG:-}"
 if [[ -z "$BACKEND_TAG" ]]; then
   if command -v nvcc >/dev/null 2>&1 || [[ "${DANQING_SIDECAR_FEATURES:-}" == *mlx-cuda* ]]; then
     BACKEND_TAG=mlx-cuda
+  elif [[ "$(uname -s)" == Darwin ]] || [[ "${DANQING_SIDECAR_FEATURES:-}" == *mlx-metal* ]]; then
+    BACKEND_TAG=mlx-metal
   else
-    BACKEND_TAG=ggml
+    echo "ERROR: set DANQING_SERVER_BACKEND_TAG or build sidecar with mlx-cuda / mlx-metal" >&2
+    exit 1
   fi
 fi
 NAME="danmo-make-${OS_NAME}-${BACKEND_TAG}-${ARCH}-${VERSION}"
 STAGE="$DQ_OUT/server/$NAME"
 
 dq_ensure_out_layout
-bash "$SCRIPT_DIR/build_ggml_sidecar.sh"
+bash "$SCRIPT_DIR/build_mlx_sidecar.sh"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/bin" "$STAGE/frontend"
 cp -a "$DQ_SIDECAR_DIR/." "$STAGE/bin/"

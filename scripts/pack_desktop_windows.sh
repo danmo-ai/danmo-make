@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Windows Tauri desktop is not wired. The ggml sidecar is:
+# Windows Tauri desktop is not wired. The MLX sidecar is:
 #   make pack-windows-sidecar
 set -euo pipefail
 echo "Windows desktop pack is not wired. Build the sidecar with: make pack-windows-sidecar" >&2

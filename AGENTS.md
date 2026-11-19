@@ -30,7 +30,7 @@ Dev ports: backend **7800**, frontend **5800**.
 ```bash
 make dev          # cargo run danqing-api + Vite
 make test         # cargo test --manifest-path native/Cargo.toml
-make pack-ggml-sidecar
+make pack-mlx-sidecar
 ```
 
 The CLI binaries run generation without the HTTP server (registry + workspace resolution is shared with the server via `danmo-resolve`; task mapping via `danmo_engine::engine_request`):
@@ -79,4 +79,4 @@ Layout, cache keys, and the dtype policy: [docs/engine_architecture.md](docs/eng
 
 The product path is **MLX only**: build `danqing-api` with `metal,mlx-metal` (macOS) or `mlx-cuda` (Linux). There is no runtime Python stack and no GGUF product path. `GET /api/system/health` returns the selected backend, the reason, and the probe summary. Task logs carry a `[backend]` prefix.
 
-`scripts/build_ggml_sidecar.sh` (name is historical) builds the release sidecar with `metal,mlx-metal` on macOS and `mlx-cuda` on Linux when `nvcc` is present (CUDA toolkit only; no GPU needed to compile). Override with `DANQING_SIDECAR_FEATURES`. CI installs the toolkit via `scripts/ci_install_cuda_ubuntu.sh`.
+`scripts/build_mlx_sidecar.sh` builds the release sidecar with `metal,mlx-metal` on macOS and `mlx-cuda` on Linux when `nvcc` is present (CUDA toolkit only; no GPU needed to compile). Override with `DANQING_SIDECAR_FEATURES`. CI uses the NVIDIA CUDA devel container and `scripts/ci_install_cuda_ubuntu.sh` for env only.

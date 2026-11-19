@@ -67,10 +67,10 @@ make pack-windows-sidecar    # 仅 sidecar；桌面包未接线
 |------|-----------|
 | `scripts/pack_desktop_macos.sh` | `pack-macos-desktop` |
 | `scripts/pack_desktop_linux.sh` | `pack-linux-desktop` |
-| `scripts/package_ggml_server.sh` | `pack-linux-server` |
+| `scripts/package_mlx_server.sh` | `pack-linux-server` |
 | `scripts/pack_desktop_windows.sh` | 立即退出，并提示改打 sidecar |
 
-顺序：`out/frontend/dist` → `scripts/build_ggml_sidecar.sh`（MLX sidecar 构建）→ Tauri → `out/desktop/bundle/`。服务端包不走 Tauri，`./run.sh` 执行 `danqing-api`。
+顺序：`out/frontend/dist` → `scripts/build_mlx_sidecar.sh` → Tauri → `out/desktop/bundle/`。服务端包不走 Tauri，`./run.sh` 执行 `danqing-api`。
 
 ### macOS Developer ID 签名与公证
 

@@ -30,7 +30,7 @@ else
       if command -v nvcc >/dev/null 2>&1; then
         FEATURES+=(mlx-cuda)
       else
-        echo "WARNING: nvcc not found — building danqing-api without mlx-cuda (ggml CPU only)" >&2
+        echo "WARNING: nvcc not found — building danqing-api without mlx-cuda (no MLX GPU backend)" >&2
       fi
       ;;
   esac

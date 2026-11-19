@@ -296,7 +296,7 @@ Tag `v*` → [`.github/workflows/release.yml`](.github/workflows/release.yml).
 make pack-macos-desktop      # mlx-metal
 make pack-linux-desktop    # mlx-cuda (local)
 make pack-linux-server     # mlx-cuda headless tar.gz
-make pack-ggml-sidecar     # release danqing-api sidecar (MLX features)
+make pack-mlx-sidecar      # release danqing-api sidecar (mlx-metal / mlx-cuda)
 ```
 
 ---

@@ -14,7 +14,7 @@ case "$OS" in
     exec ./scripts/pack_desktop_linux.sh
     ;;
   MINGW*|MSYS*|CYGWIN*|Windows*)
-    echo "Use make pack-windows-sidecar for the ggml binary. Tauri Windows packs are not wired yet." >&2
+    echo "Use make pack-windows-sidecar for the danqing-api binary. Tauri Windows packs are not wired yet." >&2
     exit 1
     ;;
   *)

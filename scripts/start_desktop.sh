@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dev: ggml danqing-api + Tauri (Vite HMR via beforeDevCommand).
+# Dev: MLX danqing-api + Tauri (Vite HMR via beforeDevCommand).
 # Aligns with danmo-work / danmo-inbox `make dev-desktop`.
 set -euo pipefail
 
@@ -20,7 +20,7 @@ dq_resolve_workspace_env
 "$SCRIPT_DIR/stop.sh" 2>/dev/null || true
 
 echo "==> Starting $APP_NAME (dev-desktop) [${DQ_PROJECT}]"
-echo "    Backend : http://127.0.0.1:${BACKEND_PORT}  (danqing-api, ggml)"
+echo "    Backend : http://127.0.0.1:${BACKEND_PORT}  (danqing-api, MLX)"
 echo "    Desktop : Tauri webview (Vite HMR on :${FRONTEND_PORT})"
 echo "    Workspace: $DANQING_WORKSPACE"
 echo "    DB: $DANQING_DB"
@@ -31,11 +31,11 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 if ! command -v cmake >/dev/null 2>&1; then
-  echo "cmake not found (required to build danmo-ggml-sys). Install: brew install cmake" >&2
+  echo "cmake not found (required to build danmo-mlx-sys). Install: brew install cmake" >&2
   exit 1
 fi
-if [[ ! -f "$DQ_ROOT/native/third_party/ggml/CMakeLists.txt" ]]; then
-  echo "ggml sources missing. Run: git submodule update --init --recursive native/third_party/ggml" >&2
+if [[ ! -f "$DQ_ROOT/native/third_party/mlx/CMakeLists.txt" ]]; then
+  echo "MLX sources missing. Run: git submodule update --init --recursive native/third_party/mlx native/third_party/mlx-c" >&2
   exit 1
 fi
 

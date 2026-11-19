@@ -1,6 +1,6 @@
 .PHONY: help clean dev start stop dev-desktop test lint \
 	frontend-install frontend-dev frontend-build frontend-typecheck frontend-canvas-unit \
-	pack-prereqs pack-ggml-sidecar pack-windows-sidecar \
+	pack-prereqs pack-mlx-sidecar pack-windows-sidecar \
 	pack-macos-desktop pack-linux-desktop pack-linux-server set-release-secrets
 
 RELEASE_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -15,7 +15,7 @@ help:
 	@echo "  test                   cargo test (native/)"
 	@echo "  lint                   cargo fmt --check"
 	@echo "  frontend-install | frontend-dev | frontend-build | frontend-typecheck | frontend-canvas-unit"
-	@echo "  pack-ggml-sidecar      release danqing-api for this host"
+	@echo "  pack-mlx-sidecar       release danqing-api (mlx-metal / mlx-cuda)"
 	@echo "  pack-windows-sidecar   same binary; Vulkan, CUDA when the toolkit is present"
 	@echo "  pack-macos-desktop     macOS arm64 .app/.dmg"
 	@echo "  pack-linux-desktop     Linux x86_64 AppImage/.deb"
@@ -64,10 +64,10 @@ pack-prereqs:
 	@command -v cargo >/dev/null 2>&1 || (printf '%s\n' 'cargo not found. Install Rust: https://rustup.rs/' >&2; exit 1)
 	@echo "pack-prereqs OK (npm + cargo)"
 
-pack-ggml-sidecar:
-	bash scripts/build_ggml_sidecar.sh
+pack-mlx-sidecar:
+	bash scripts/build_mlx_sidecar.sh
 
-pack-windows-sidecar: pack-ggml-sidecar
+pack-windows-sidecar: pack-mlx-sidecar
 
 pack-macos-desktop: pack-prereqs
 	@chmod +x scripts/*.sh
@@ -79,7 +79,7 @@ pack-linux-desktop: pack-prereqs
 
 pack-linux-server: frontend-build
 	@chmod +x scripts/*.sh
-	@RELEASE_VERSION=$(RELEASE_VERSION) ./scripts/package_ggml_server.sh
+	@RELEASE_VERSION=$(RELEASE_VERSION) ./scripts/package_mlx_server.sh
 
 set-release-secrets:
 	@chmod +x scripts/gh_set_release_secrets.sh

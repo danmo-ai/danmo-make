@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Linux Tauri desktop (ggml sidecar) — AppImage + .deb
+# Linux Tauri desktop (MLX CUDA sidecar) — AppImage + .deb
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,8 +24,8 @@ mkdir -p "$CARGO_TARGET_DIR"
 echo "==> Frontend -> $DQ_FRONTEND_DIST"
 (cd "$DQ_ROOT/frontend" && npm install && npm run build)
 
-echo "==> ggml sidecar"
-bash "$SCRIPT_DIR/build_ggml_sidecar.sh"
+echo "==> MLX sidecar"
+bash "$SCRIPT_DIR/build_mlx_sidecar.sh"
 
 if [[ -n "${DANQING_DESKTOP_VERSION:-}" ]]; then
   bash "$SCRIPT_DIR/set_desktop_version.sh" "$DANQING_DESKTOP_VERSION"

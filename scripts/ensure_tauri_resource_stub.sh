@@ -30,7 +30,7 @@ if [[ ! -d "$RUNTIME_DIR/app" ]]; then
 Dev placeholder for CUDA thin runtime (desktop/src-tauri/runtime).
 
 Windows/Linux release packs replace this via:
-  bash scripts/build_ggml_sidecar.sh
+  bash scripts/build_mlx_sidecar.sh
 EOF
   echo "==> Ensured Tauri runtime stub: desktop/src-tauri/runtime/"
 fi
