@@ -29,7 +29,7 @@ env:
 jobs:
   build-macos-desktop:
     name: macOS desktop (Metal + MLX)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 240
     steps:
       - name: Checkout
