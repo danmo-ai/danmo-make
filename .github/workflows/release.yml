@@ -105,6 +105,18 @@ jobs:
           echo "DANQING_DESKTOP_VERSION=${ver}" >> "$GITHUB_ENV"
           echo "version=${ver}"
 
+      - name: Import Apple signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          chmod +x danmo-make/scripts/ci_import_apple_cert.sh
+          danmo-make/scripts/ci_import_apple_cert.sh
+
       - name: Build macOS desktop
         working-directory: danmo-make
         env:

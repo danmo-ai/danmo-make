@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # macOS Apple Silicon (aarch64) Tauri release build. Cargo artifacts -> out/desktop/cargo/.
+#
+# 签名/公证（对齐 danmo-novel）：
+#   - APPLE_SIGNING_IDENTITY 已设且证书在钥匙串 → Developer ID；CI 先跑 ci_import_apple_cert.sh
+#   - 未设 → ad-hoc，DMG 内带右键打开说明
+#   - APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID 齐全时，对自制 DMG 做 notarytool + staple
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/desktop"
@@ -13,6 +18,47 @@ if [[ "$(uname -m)" != arm64 ]]; then
   exit 1
 fi
 
+SIGN_IDENTITY="${APPLE_SIGNING_IDENTITY:-}"
+SIGNED=0
+NOTARIZED=0
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  SIGNED=1
+  echo "==> Signing identity: $SIGN_IDENTITY"
+  if [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
+    NOTARIZED=1
+  else
+    echo "==> No APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID — signed but NOT notarized"
+  fi
+else
+  echo "==> No APPLE_SIGNING_IDENTITY — ad-hoc signature only (not distributable)"
+fi
+
+# sidecar 须在 Tauri 拷进 .app 之前签好；打包后再改 bundle 内二进制会破坏 Developer ID。
+sign_mach_o_tree() {
+  local dir="$1"
+  [[ "$SIGNED" == 1 ]] || return 0
+  [[ -d "$dir" ]] || return 0
+  echo "==> Signing Mach-O under $(basename "$dir")"
+  while IFS= read -r -d '' f; do
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$f"
+  done < <(find "$dir" -type f \( -perm -111 -o -name '*.dylib' -o -name '*.so' \) -print0 2>/dev/null)
+}
+
+notarize() {
+  local path="$1"
+  if [[ "$NOTARIZED" != 1 ]]; then
+    if [[ "$SIGNED" == 1 ]]; then
+      echo "WARNING: 有签名身份但缺公证凭据，跳过公证：$(basename "$path")" >&2
+    fi
+    return 0
+  fi
+  echo "==> Notarizing $(basename "$path") (may take several minutes)"
+  xcrun notarytool submit "$path" \
+    --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+  xcrun stapler staple "$path"
+  xcrun stapler validate "$path"
+}
+
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/out/desktop/cargo}"
 mkdir -p "$CARGO_TARGET_DIR"
 
@@ -25,6 +71,7 @@ fi
 
 bash "$ROOT/scripts/prepare_tauri_resources.sh"
 bash "$ROOT/scripts/ensure_tauri_resource_stub.sh"
+sign_mach_o_tree "$ROOT/desktop/src-tauri/danqing-api"
 
 if ! rustup target list --installed | grep -q '^aarch64-apple-darwin$'; then
   echo "==> rustup target add aarch64-apple-darwin"
@@ -58,24 +105,50 @@ cleanup_dmg_artifacts
 bash "$ROOT/scripts/stage_desktop_bundle.sh"
 
 if APP=$(find "$ROOT/out/desktop/bundle" -name "*.app" -print -quit); then
-  echo "==> codesign .app (ad-hoc)"
   SC_DIR="$APP/Contents/Resources/danqing-api"
-  if [[ -d "$SC_DIR" ]]; then
-    while IFS= read -r -d '' bin; do
-      codesign -s - --force "$bin" 2>/dev/null || true
-    done < <(find "$SC_DIR" -type f \( -perm -111 -o -name '*.dylib' -o -name '*.so' \) -print0 2>/dev/null)
-  else
+  if [[ ! -d "$SC_DIR" ]]; then
     echo "Warning: sidecar not at $SC_DIR (check prepare_tauri_resources.sh)" >&2
+  elif [[ ! -f "$SC_DIR/danqing-api" ]]; then
+    echo "ERROR: $APP 里没有 danqing-api sidecar" >&2
+    ls -la "$SC_DIR" >&2 || true
+    exit 1
   fi
-  if [[ -d "$APP/Contents/MacOS" ]]; then
-    for bin in "$APP/Contents/MacOS"/*; do
-      [[ -f "$bin" ]] && codesign -s - --force "$bin" || true
-    done
+
+  if [[ "$SIGNED" == 1 ]]; then
+    echo "==> Verifying code signature..."
+    codesign --verify --deep --strict --verbose=2 "$APP"
+    sig_report="$(codesign -dv --verbose=2 "$APP" 2>&1 || true)"
+    if [[ "$sig_report" != *"Authority=Developer ID Application"* ]]; then
+      echo "ERROR: $APP 不是 Developer ID 签名（检查 APPLE_SIGNING_IDENTITY 与 Tauri 签名配置）" >&2
+      printf '%s\n' "$sig_report" >&2
+      exit 1
+    fi
+    echo "==> Signature OK"
+    if [[ "$NOTARIZED" == 1 ]]; then
+      if xcrun stapler validate "$APP" >/dev/null 2>&1; then
+        echo "==> App bundle already notarized (ticket stapled)"
+      else
+        echo "WARNING: .app 没有公证票据，尝试 staple" >&2
+        xcrun stapler staple "$APP" || echo "WARNING: staple 失败，app 可能未公证" >&2
+      fi
+    fi
+  else
+    echo "==> codesign .app (ad-hoc)"
+    if [[ -d "$SC_DIR" ]]; then
+      while IFS= read -r -d '' bin; do
+        codesign -s - --force "$bin" 2>/dev/null || true
+      done < <(find "$SC_DIR" -type f \( -perm -111 -o -name '*.dylib' -o -name '*.so' \) -print0 2>/dev/null)
+    fi
+    if [[ -d "$APP/Contents/MacOS" ]]; then
+      for bin in "$APP/Contents/MacOS"/*; do
+        [[ -f "$bin" ]] && codesign -s - --force "$bin" || true
+      done
+    fi
+    codesign -s - --force --deep "$APP"
+    xattr -cr "$APP" 2>/dev/null && echo "==> Removed quarantine attribute" || true
+    codesign --verify --deep --strict "$APP" 2>/dev/null || \
+      echo "Warning: codesign verify reported issues (app may still run after clearing quarantine)" >&2
   fi
-  codesign -s - --force --deep "$APP"
-  xattr -cr "$APP" 2>/dev/null && echo "==> Removed quarantine attribute" || true
-  codesign --verify --deep --strict "$APP" 2>/dev/null || \
-    echo "Warning: codesign verify reported issues (app may still run after clearing quarantine)" >&2
 fi
 
 # Create DMG with installation guide and one-click fix script
@@ -88,8 +161,27 @@ if APP=$(find "$ROOT/out/desktop/bundle" -name "*.app" -print -quit); then
   cp -R "$APP" "$DMG_STAGING/"
   APP_NAME=$(basename "$APP")
 
-  # README
-  cat > "$DMG_STAGING/阅读说明.txt" << 'README_EOF'
+  if [[ "$NOTARIZED" == 1 ]]; then
+    cat > "$DMG_STAGING/阅读说明.txt" << 'README_NOTARIZED_EOF'
+📦 Danmo Make 安装说明 (macOS)
+
+  1. 将 Danmo Make.app 拖入「应用程序」文件夹
+  2. 双击打开即可
+
+本应用已使用 Developer ID 签名，并通过 Apple 公证。
+README_NOTARIZED_EOF
+  elif [[ "$SIGNED" == 1 ]]; then
+    cat > "$DMG_STAGING/阅读说明.txt" << 'README_SIGNED_EOF'
+📦 Danmo Make 安装说明 (macOS)
+
+  1. 将 Danmo Make.app 拖入「应用程序」文件夹
+  2. 双击打开即可
+
+本应用已使用 Developer ID 签名，但未经过 Apple 公证。
+首次打开若被拦截，请到「系统设置 → 隐私与安全性」点「仍要打开」。
+README_SIGNED_EOF
+  else
+    cat > "$DMG_STAGING/阅读说明.txt" << 'README_EOF'
 📦 Danmo Make 安装说明 (macOS)
 
 由于本应用未使用 Apple 开发者签名，macOS 可能会阻止打开。
@@ -113,39 +205,28 @@ if APP=$(find "$ROOT/out/desktop/bundle" -name "*.app" -print -quit); then
   open "/Applications/Danmo Make.app"
 README_EOF
 
-  # One-click fix script
-  cat > "$DMG_STAGING/修复并打开.command" << 'FIX_EOF'
+    cat > "$DMG_STAGING/修复并打开.command" << 'FIX_EOF'
 #!/bin/bash
-# 一键移除 macOS 隔离属性并打开 Danmo Make
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_PATH="$SCRIPT_DIR/Danmo Make.app"
-
-# Step 1: clear quarantine on the DMG volume itself (needed when downloaded from internet)
 DMG_VOL="/Volumes/Danmo Make"
 if [ -d "$DMG_VOL" ]; then
   echo "==> 正在移除 DMG 卷隔离属性..."
   xattr -cr "$DMG_VOL" 2>/dev/null
 fi
-
-# Step 2: locate app
 if [ ! -d "$APP_PATH" ]; then
   APP_PATH="/Applications/Danmo Make.app"
 fi
-
 if [ ! -d "$APP_PATH" ]; then
   echo "❌ 未找到 Danmo Make.app"
-  echo "请先将 app 拖入应用程序文件夹"
   read -p "按回车退出..."
   exit 1
 fi
-
-# Step 3: clear quarantine on app and open
-echo "==> 正在移除应用隔离属性..."
 xattr -cr "$APP_PATH" 2>/dev/null
-echo "==> 正在打开 Danmo Make..."
 open "$APP_PATH"
 FIX_EOF
-  chmod +x "$DMG_STAGING/修复并打开.command"
+    chmod +x "$DMG_STAGING/修复并打开.command"
+  fi
 
   ln -s /Applications "$DMG_STAGING/Applications"
 
@@ -183,8 +264,11 @@ FIX_EOF
     echo "WARNING: DMG creation failed" >&2
   fi
 
-  # Remove quarantine on the DMG file itself so macOS doesn't flag it as damaged
-  xattr -cr "$DMG_PATH" 2>/dev/null && echo "==> Removed quarantine on DMG" || true
+  if [[ "$NOTARIZED" == 1 && -f "$DMG_PATH" ]]; then
+    notarize "$DMG_PATH"
+  elif [[ "$SIGNED" != 1 ]]; then
+    xattr -cr "$DMG_PATH" 2>/dev/null && echo "==> Removed quarantine on DMG" || true
+  fi
 
   rm -rf "$DMG_STAGING"
 fi

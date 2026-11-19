@@ -72,6 +72,36 @@ make pack-windows-sidecar    # 仅 sidecar；桌面包未接线
 
 顺序：`out/frontend/dist` → `scripts/build_ggml_sidecar.sh` → Tauri → `out/desktop/bundle/`。服务端包不走 Tauri，`./run.sh` 执行 `danqing-api`。
 
+### macOS Developer ID 签名与公证
+
+与 [danmo-novel](https://github.com/danmo-ai/danmo-novel) 相同：`scripts/tauri_build_macos.sh` 在 **Tauri 打包前**对 `desktop/src-tauri/danqing-api` 内 Mach-O 做 Developer ID 签名；设齐公证变量后对自制 DMG 走 `notarytool`。
+
+**本机有证书时：**
+
+```bash
+export APPLE_SIGNING_IDENTITY='Developer ID Application: …'
+export APPLE_ID=…
+export APPLE_PASSWORD=…   # App 专用密码
+export APPLE_TEAM_ID=…
+make pack-macos-desktop
+```
+
+**写入 GitHub Actions secrets（从钥匙串导出 p12，无需手搓 base64）：**
+
+```bash
+make set-release-secrets
+# 或 scripts/gh_set_release_secrets.sh
+```
+
+| Secret | 用途 |
+|--------|------|
+| `APPLE_CERTIFICATE` | Developer ID Application `.p12`（单行 base64） |
+| `APPLE_CERTIFICATE_PASSWORD` | 导出/导入 p12 的密码 |
+| `APPLE_SIGNING_IDENTITY` | 与证书 CN 完全一致 |
+| `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | 公证（可选；缺则只签名不公证） |
+
+CI：`.github/workflows/release.yml` 在 macOS job 中调用 `scripts/ci_import_apple_cert.sh`；未配置 secrets 时仍 ad-hoc 打包。
+
 设备由 `DANQING_GGML_BACKEND` 选择（`cpu`、`cuda`、`vulkan`、`metal`）。二进制没编进的后端在启动时失败。
 
 ## 运行时环境变量

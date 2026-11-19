@@ -1,7 +1,7 @@
 .PHONY: help clean dev start stop dev-desktop test lint \
 	frontend-install frontend-dev frontend-build frontend-typecheck frontend-canvas-unit \
 	pack-prereqs pack-ggml-sidecar pack-windows-sidecar \
-	pack-macos-desktop pack-linux-desktop pack-linux-server
+	pack-macos-desktop pack-linux-desktop pack-linux-server set-release-secrets
 
 RELEASE_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 FRONTEND_DIR := $(CURDIR)/frontend
@@ -20,6 +20,7 @@ help:
 	@echo "  pack-macos-desktop     macOS arm64 .app/.dmg"
 	@echo "  pack-linux-desktop     Linux x86_64 AppImage/.deb"
 	@echo "  pack-linux-server      headless tar.gz (ggml binary + frontend)"
+	@echo "  set-release-secrets    写入 GitHub APPLE_* 发布 secrets（证书从钥匙串导出）"
 
 dev start:
 	@chmod +x scripts/*.sh
@@ -79,3 +80,7 @@ pack-linux-desktop: pack-prereqs
 pack-linux-server: frontend-build
 	@chmod +x scripts/*.sh
 	@RELEASE_VERSION=$(RELEASE_VERSION) ./scripts/package_ggml_server.sh
+
+set-release-secrets:
+	@chmod +x scripts/gh_set_release_secrets.sh
+	@./scripts/gh_set_release_secrets.sh
