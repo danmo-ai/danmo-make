@@ -56,6 +56,8 @@ export CUDA_PATH="${CUDA_HOME_DIR}"
 # Compile for common datacenter/consumer arches without a live GPU.
 export CMAKE_CUDA_ARCHITECTURES="${CMAKE_CUDA_ARCHITECTURES:-75;80;86;89;90}"
 export CUDAARCHS="${CUDAARCHS:-75;80;86;89;90}"
+# MLX cuda backend queries a physical GPU when unset; pin archs for compile-only CI.
+export MLX_CUDA_ARCHITECTURES="${MLX_CUDA_ARCHITECTURES:-${CMAKE_CUDA_ARCHITECTURES}}"
 
 if [[ -n "${GITHUB_PATH:-}" ]]; then
   echo "${CUDA_HOME_DIR}/bin" >> "$GITHUB_PATH"
@@ -66,6 +68,7 @@ if [[ -n "${GITHUB_ENV:-}" ]]; then
     echo "CUDA_PATH=${CUDA_PATH}"
     echo "CMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES}"
     echo "CUDAARCHS=${CUDAARCHS}"
+    echo "MLX_CUDA_ARCHITECTURES=${MLX_CUDA_ARCHITECTURES}"
   } >> "$GITHUB_ENV"
 fi
 

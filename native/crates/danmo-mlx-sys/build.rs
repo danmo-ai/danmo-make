@@ -129,6 +129,12 @@ fn main() {
                 source.display()
             ));
         }
+        if cuda {
+            let archs = env::var("MLX_CUDA_ARCHITECTURES")
+                .or_else(|_| env::var("CMAKE_CUDA_ARCHITECTURES"))
+                .unwrap_or_else(|_| "75;80;86;89;90".into());
+            configure.arg(format!("-DMLX_CUDA_ARCHITECTURES={archs}"));
+        }
     }
 
     run(&mut configure, "configure mlx-c");

@@ -46,6 +46,17 @@ else
   echo "sidecar features: (default / none)"
 fi
 
+if [[ "$OS_NAME" == Linux && "${CI:-}" == "true" ]]; then
+  if [[ " ${FEATURES[*]} " != *mlx-cuda* ]]; then
+    echo "ERROR: CI Linux release must build danqing-api with mlx-cuda (set DANQING_SIDECAR_FEATURES=mlx-cuda)" >&2
+    exit 1
+  fi
+  if ! command -v nvcc >/dev/null 2>&1; then
+    echo "ERROR: mlx-cuda sidecar build requires nvcc on PATH" >&2
+    exit 1
+  fi
+fi
+
 cargo build --release --manifest-path "$ROOT/native/Cargo.toml" -p danmo-server "${ARGS[@]}"
 mkdir -p "$ROOT/out/sidecar/danqing-api"
 SRC="$ROOT/native/target/release/danqing-api"
