@@ -10185,7 +10185,9 @@
       "notes": [
         "2026-11-19 Metal create E2E: structural_guide canny weight=0.75 on z-image-turbo:fp16 256²/4 steps; task a1699df0-… completed. Eager DiT + ControlNet hints (compiled path skipped). No metal_parity/performance yet. Host canny/depth preprocess not in-engine (preprocessed control RGB).",
         "2026-11-19 registry catalog.binding/guide_type/supports_inpaint/allows_with_reference; actions create+retouch; create scope keeps dual-action nets; UI config-driven (no name heuristics).",
-        "2026-11-19 Metal inpaint E2E: structural_guide auto + inpaint source/mask on z-image-turbo:fp16 256²/4 steps; task 538284ce-… completed. Evidence tests/parity/evidence/controlnet-union-inpaint-e2e.json. No metal_parity/performance yet."
+        "2026-11-19 Metal inpaint E2E: structural_guide auto + inpaint source/mask on z-image-turbo:fp16 256²/4 steps; task 538284ce-… completed. Evidence tests/parity/evidence/controlnet-union-inpaint-e2e.json. No metal_parity/performance yet.",
+        "2026-11-19 follow-up: control-only coherent at 256²/512²; 768² control-only still poor (eager path, long seq). Undistilled Union-2.1.safetensors A/B did not fix 512² inpaint mosaic; same with 8steps-2602 restored (task 43c4ef15-…). e2e=passed means task completes with artifact, not visual parity.",
+        "2026-11-19 forward fix: hint stack misread (all_c.pop removes raw output; hints = one after_proj per block; stream = raw c). Fixed hint semantics, refined_control=raw c1, dropped wrong shared-refiner pass, VideoX single-pass refiner injection, nearest mask downsample. Diffusers parity gate real_control_branch_matches_diffusers_fixture: all tensors rel_l2<0.9%, cos>=0.99996 (evidence controlnet-union-forward-fix-2026-11-19.json). E2E 512 control/inpaint, 768x1280 control/inpaint all coherent (tasks 5eaac06a/e81d5092/5158ef94/d0dda1ae/dc9a493f)."
       ]
     },
     {
@@ -10224,7 +10226,9 @@
         "tests/parity/evidence/controlnet-union-inpaint-e2e-2026-11-19.png"
       ],
       "notes": [
-        "2026-11-19 companion retouch = create + structural_guide inpaint (not ImageEdit). Task 538284ce-… completed. Canvas UI submits base + Union; Fill standalone edits remain unstarted."
+        "2026-11-19 companion retouch = create + structural_guide inpaint (not ImageEdit). Task 538284ce-… completed. Canvas UI submits base + Union; Fill standalone edits remain unstarted.",
+        "2026-11-19 quality gate open: 512²+ inpaint mosaic with 8steps (4/8/25 steps) and undistilled 2.1 @25 steps (tasks ce5a4622-…, 43c4ef15-…); 768×1280 user assets (e.g. ast_94de97aa…) noise. Product: experimental ≤256² only until forward/inpaint pack fixed; default retouch should not rely on this ControlNet.",
+        "2026-11-19 forward fix resolved the mosaic: hint stack semantics (one after_proj per block, raw c stream), VideoX single-pass refiner injection, nearest mask. 512² inpaint red->blue coherent (e81d5092-…), 768×1280 inpaint coherent (dc9a493f-…), companion auto-edges 512² (d0dda1ae-…). Parity vs diffusers <1% (controlnet-union-forward-fix-2026-11-19.json). Product default-retouch decision can be revisited after real-photo validation."
       ]
     }
   ]

@@ -35,11 +35,11 @@
 | P1 控制面 | pending | 真实 DB fixture、实时 SSE、鉴权、EngineRouter、核心路由 E2E（不再保留 Python 推理 worker） |
 | P2 MLX runtime | pending | pipeline/session 去掉 ggml 类型、attention 分派、字节预算、TeaCache 原语、panic/OOM/cancel |
 | P3 common | pending | 第二个使用方出现后再抽的 tokenizer、VAE、媒体和 scheduler fixture |
-| P4 图像核心 | in_progress | rewrite + ControlNet union create E2E 已过（256²）；下一刀：ControlNet parity/热性能 → LEMICA/latent refine；其后 Flux2 / Qwen-Image |
+| P4 图像核心 | in_progress | rewrite 已过关；ControlNet union **forward 已对齐 Diffusers/VideoX 并有 parity 门**（512²/768×1280 出图正常）；下一刀：ControlNet metal_parity 勾选固化、热性能 → LEMICA/latent refine；其后 Flux2 / Qwen-Image |
 | P5 图像长尾 | pending | Flux1 各结构变体，以及 fibo、ernie、cogview4、hidream、step1x、boogu、longcat、esrgan |
 | P6 音频 | in_progress | ACE 与 `main` 的成歌 parity、DiffRhythm。FSQ 翻唱编码已接到 `task=cover` |
 | P7 超分 | pending | SeedVR2 图像和视频 |
-| P8 视频 | pending | Wan、LTX、LTX25、Hunyuan、MiniMax H3、LongCat Avatar |
+| P8 视频 | in_progress | LTX25 数值与配置基础切片已进树；仍待 Wan、LTX、LTX25 模型/两阶段会话、Hunyuan、MiniMax H3、LongCat Avatar |
 | P9 外围、assistant、训练 | in_progress | 安装与画廊、本地 assistant。**训练骨架已进树**（假 latent probe）；缺 VAE/TE cache、可微 DiT+LoRA、真图 E2E |
 | P10 退役 | in_progress | 产品 Python 树 / thin uvicorn / parity 脚本已删。仍待：默认切满 Rust MLX、ggml 计算栈退役、干净环境安装测试 |
 
@@ -114,11 +114,13 @@ P6 已落地、不要重做的部分：ACE XL 的 MLX 生成与 cover / cover-no
   - **DistillPatch companion 叠载 E2E（2026-11-19，Metal）**：HF `timeout: connect` 后把 `z-image-turbo-distillpatch-lora:bf16` 的 registry `source` 改为 **modelscope**（同 repo `DiffSynth-Studio/Z-Image-Turbo-DistillPatch`）并装入；用元数据行 `user-lora-lyt-distill-e2e`（同 李雪01 权重 + `extra_adapters: DistillPatch`）只提交用户 LoRA，服务端展开双 adapter；任务 `3e534cf4-…` 完成（8 步 / seed 42），产物 `tests/parity/evidence/zimage-lora-lyt-distillpatch-p4-2026-11-19.{json,png}`。**仍不算矩阵勾选**。
   - **rewrite Metal parity + E2E（2026-11-19）**：`z-image-turbo` fp16；main fixture `out/parity-zimage-rewrite-{16x16,256x256}.json`；cargo `real_zimage_rewrite_matches_main_latents_and_pixels`（mlx-metal）对 blend/velocity/latent/RGB **逐位一致**；API `17481890-…` rewrite completed（256² / 8 步 / fidelity 0.6 / init=4）；证据 `tests/parity/evidence/zimage-rewrite-turbo-fp16-p4-2026-11-19.{json,png}`。矩阵该行 `metal_parity`/`e2e` 已 passed。
   - **rewrite 热性能（2026-11-19，Metal）**：256² / 8 步 / init=4；main warm fixture `out/parity-zimage-rewrite-256x256-warm-main.json`；cargo `real_zimage_rewrite_warm_passes_match_main_and_report_performance`；p50 rust/main **denoise 0.995 / vae 0.852 / total 0.991**（≤105%）；证据 `tests/parity/evidence/zimage-rewrite-turbo-fp16-warm-gate-2026-11-19.json`。矩阵 `metal_performance` passed（256²，非 768×1280）。
-  - **ControlNet union create E2E（2026-11-19，Metal）**：`mlx/control.rs` 完整 forward（33ch、hint、refiner/layers、`before_proj`/`after_proj`）；`remap_control_name` 加载；session 在 `structural_guide.weight>0` 时走 eager DiT + hint；`controlnet_runtime_available` 随 mlx feature 打开。任务 `a1699df0-…`（`z-image-turbo:fp16` + `z-image-turbo-fun-controlnet-union:8steps`，256² / 4 步 / canny / weight 0.75）completed；证据 `tests/parity/evidence/controlnet-union-e2e.json` + `out/controlnet-e2e.png`。矩阵该行 `e2e`/`route` passed；**parity / 热性能仍 pending**。控制图按「已预处理 RGB」resize 后 VAE encode（引擎内未做 OpenCV canny/depth）。
-  - **ControlNet 配置驱动 + Union inpaint（2026-11-19）**：registry `catalog.binding` / `guide_type` / `supports_inpaint` / `allows_with_reference`；`compatible_controlnets` create scope 保留同时声明 `create+retouch` 的网；Union `actions.retouch`；前端去掉名字启发式；画布 companion → create+`structural_guide` inpaint，standalone Fill → edits。引擎 `build_control_context_inpaint_nchw` + session 源图/蒙版（白=重绘→preserve 取反）。任务 `538284ce-…`（256² / 4 步 / inpaint）completed；证据 `tests/parity/evidence/controlnet-union-inpaint-e2e.json`。**Fill 引擎仍 unstarted（P5）**；parity / 主机预处理仍 pending。
+  - **ControlNet union create E2E（2026-11-19，Metal）**：`mlx/control.rs` forward（33ch、hint、refiner/layers、`before_proj`/`after_proj`）；`remap_control_name` 加载；`structural_guide.weight>0` 走 eager DiT + hint。任务 `a1699df0-…`（256² / 4 步 / canny）completed；证据 `tests/parity/evidence/controlnet-union-e2e.json`。矩阵 `e2e`/`route` passed；**parity / 热性能 pending**。仅 **control-only ≤512²** 可辨（768² control-only 仍差）；显式 canny 资产 vs 引擎 Sobel 边图在 inpaint 上无本质差别。
+  - **ControlNet 配置驱动 + Union inpaint（2026-11-19）**：registry/UI 配置驱动；`build_control_context_inpaint_nchw` + preserve 蒙版；去掉 decode 硬合成。任务 `538284ce-…`（256² / 4 步）**路由完成**；证据 `controlnet-union-inpaint-e2e.json`。**不等于画质验收**： companion 768×1280（如 `ast_94de97aa…`）全噪点；512² inpaint 马赛克（8 步 / 25 步 / 显式 canny 均如此）。
+  - **ControlNet forward 修复（2026-11-19 续，已验证）**：根因是对 `ZImageControlTransformerBlock` hint 栈的误读——`all_c.pop(-1)` 会**移除**上一个原始输出，栈实为 `[after_proj(c0)…after_proj(ck), ck]`，注入 hint = 每块一个 after_proj 输出，控制流 = 原始块输出。修复：hint 语义回正；`refined_control` 改为原始 `c1`（原误用 after_proj 输出）；去掉错误的「共享 noise_refiner 跑 control 流」；结构采用 VideoX 单遍式（refiner hint 注入主 noise_refiner，与 8steps 蒸馏训练框架一致）；preserve mask 下采样 box→nearest。**Diffusers parity 门**：`real_control_branch_matches_diffusers_fixture`（torch bf16 参考，真权重固定输入）——embed/refiner/caption/15 层 hint 全部 rel_l2<0.9%、cos≥0.99996，证据 `tests/parity/evidence/controlnet-union-forward-fix-2026-11-19.json` + fixture `studio-workspace/parity-fixtures/zimage-control-diffusers-slim.safetensors`。**E2E**：512² control（`5eaac06a-…`）、512² inpaint 红→蓝（`e81d5092-…`）、768×1280 control（`5158ef94-…`）、512² companion 自动边图（`d0dda1ae-…`）、768×1280 inpaint（`dc9a493f-…`）均出图正常（修复前 512²+ 全为马赛克/曝白）。**另**：未蒸馏 2.1 权重 A/B（25 步）不能绕过旧 bug，已留存 `models/ControlNet/z-image-union-2.1-hold/`。
   - **下一刀（顺序）**：
-    1. ControlNet metal_parity / metal_performance；主机端预处理。
-    2. latent refine / LEMICA（现 501）；量化 rewrite；`z-image`（非 turbo）行；可选 768×1280 rewrite 热性能加严。
+    1. ControlNet metal_parity 依新 parity 门勾选、metal_performance；主机 canny/depth 预处理或明确契约。
+    2. 视产品评估重开 companion 重绘默认（此前建议弃用基于旧 bug 表现；现 512² 可用，768×1280 待更多真实素材验证）。
+    3. latent refine / LEMICA（501）；量化 rewrite；`z-image`（非 turbo）；768×1280 rewrite 热性能加严。
   - **仍缺**：上表 1–2；Flux2 / Qwen-Image；flux1 Fill retouch/extend。
 - `flux2`：Klein 4B/9B/base 的 create、edit、LoRA。变体不能用一次 family 级 parity 代替。
 - `qwen_image`：create、edit、edit-2511、lightning、多参考、LoRA。Qwen2.5-VL 进 common；108 token crop 和条件拼接留在 family。
@@ -141,6 +143,8 @@ SeedVR2 图像和视频超分。tiling、因果时间缓存、wavelet/LAB、ffmp
 
 - Wan：t2v / i2v / 5B / 14B / MoE / distill / LoRA 分开验。umT5 的 Viterbi 分词优先复用。
 - LTX 与 LTX25：两阶段音视频、per-token timestep、mask、IC-LoRA。只共享真正相同的组件，family 之间不互相引用。
+  - **LTX25 进行中（工作区）**：独立 family 模块按 `GenerationFacade` 定界；中立 `common::av_latent` 已有 causal 音视频几何与位置；family 内已有严格 `bundle_config`、固定 8+3 两阶段 plan、x0 Euler/ancestral step。默认测试及 MLX CPU/Metal 探针通过。
+  - **LTX25 仍缺**：真实 ingest 与 bundle 路由、Gemma 4、22B DiT、VAE/vocoder、Ref2VA、联合 A/V denoise 会话和双阶段执行；parity、性能、E2E 未跑，矩阵保持 pending。
 - Hunyuan：animate、byT5 字形、1080p SR。Qwen2.5-VL 走 common。SigLIP 等第二个视觉用户出现再抽。
 - MiniMax H3：Qwen3-VL conditioner 不在 family 里复制。大 QMM 和长序列内存两个后端都要测。
 - LongCat Avatar：whisper 前端抽成中立音频特征，数字人条件留在 family。

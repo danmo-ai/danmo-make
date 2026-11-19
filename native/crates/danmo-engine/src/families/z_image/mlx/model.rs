@@ -778,9 +778,11 @@ fn forward_with_timestep_observed(
 /// closure can capture it as a constant input, exactly like main's
 /// `_forward_cached_compute` boundary.
 ///
-/// When `control` is set, runs the control noise-refiner first and injects
-/// hints after each main noise_refiner block; also returns control layer
-/// hints for the unified tower (computed after concat).
+/// When `control` is set, runs the control noise-refiner on the control
+/// context, injects refiner hints into the main noise_refiner blocks
+/// (VideoX `ZImageControlTransformer2DModel` single-pass: main refiner blocks
+/// are `BaseZImageTransformerBlock`s that add `hints[block_id] * scale`), then
+/// computes control layer hints from the hinted unified stream.
 fn unified_before(
     weights: &MlxWeights,
     config: MlxZImageConfig,
@@ -821,6 +823,11 @@ fn unified_before(
         refiner_hints = Some(hints);
         refined_control = Some(refined);
     }
+    // VideoX `ZImageControlTransformer2DModel` (the Union checkpoints were
+    // trained/distilled with it): the main noise_refiner blocks ARE the
+    // `BaseZImageTransformerBlock`s that add refiner hints to the image
+    // stream; the resulting hinted unified stream feeds both the main layers
+    // and `control_layers.0` (`before_proj(c) + unified`).
     for index in 0..config.refiners {
         image = run_block(
             weights,
@@ -841,6 +848,7 @@ fn unified_before(
         observe(&format!("noise_refiner.{index}"), &image);
     }
     let unified = Array::concatenate_axis(&[image, caption.clone()], 1, stream)?;
+    control::debug_tensor_stats("unified_pre_layers", &unified, stream);
     let layer_hints = match (control, refined_control) {
         (Some(ctrl), Some(refined)) => Some(control::forward_control_layers(
             ctrl.weights,
@@ -888,7 +896,13 @@ fn unified_layers_and_final(
         )?;
         if let (Some(hints), Some(scale)) = (layer_hints, context_scale) {
             if let Some(hint) = control::hint_for_layer(index as usize, hints) {
+                control::debug_tensor_stats(&format!("layer_hint.{index}"), hint, stream);
                 unified = control::apply_control_hint(&unified, hint, scale, stream)?;
+                control::debug_tensor_stats(
+                    &format!("unified_post_hint.{index}"),
+                    &unified,
+                    stream,
+                );
             }
         }
         observe(&format!("layers.{index}"), &unified);
@@ -2220,7 +2234,11 @@ mod tests {
             .unwrap()
             .to_vec_f32(&stream)
             .unwrap();
-        assert_eq!(noise, values("noise"), "edit noise must match main RandomKey");
+        assert_eq!(
+            noise,
+            values("noise"),
+            "edit noise must match main RandomKey"
+        );
         let sigma = sliced[0];
         assert!(
             (sigma - payload["sig_blend"].as_f64().unwrap() as f32).abs() < 1e-6,
@@ -2268,8 +2286,9 @@ mod tests {
                     let expected_current = &payload["step_latents"][step - 1];
                     let current_values = latent.to_vec_f32(&stream)?;
                     let mut current_error = 0.0f32;
-                    for (actual, expected) in
-                        current_values.iter().zip(expected_current.as_array().unwrap())
+                    for (actual, expected) in current_values
+                        .iter()
+                        .zip(expected_current.as_array().unwrap())
                     {
                         current_error =
                             current_error.max((actual - expected.as_f64().unwrap() as f32).abs());
@@ -2357,7 +2376,10 @@ mod tests {
             .map(|(actual, expected)| actual.abs_diff(*expected))
             .max()
             .unwrap_or(0);
-        assert!(max_pixel_error <= 1, "rewrite 8-bit RGB error {max_pixel_error}");
+        assert!(
+            max_pixel_error <= 1,
+            "rewrite 8-bit RGB error {max_pixel_error}"
+        );
         println!(
             "rewrite RGB parity: {different_pixels}/{} values differ, max channel error {max_pixel_error}; VAE {:.3}s output error {output_error}",
             plane * 3,
@@ -2388,8 +2410,10 @@ mod tests {
     fn real_zimage_rewrite_warm_passes_match_main_and_report_performance() {
         let bundle = std::path::PathBuf::from(std::env::var("DANQING_TEST_ZIMAGE_BUNDLE").unwrap());
         let payload: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(std::env::var("DANQING_TEST_ZIMAGE_REWRITE_WARM_JSON").unwrap())
-                .unwrap(),
+            &std::fs::read_to_string(
+                std::env::var("DANQING_TEST_ZIMAGE_REWRITE_WARM_JSON").unwrap(),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(payload["kind"].as_str(), Some("z_image_rewrite"));
@@ -2507,10 +2531,11 @@ mod tests {
                     .map(|(a, e)| (a - e).abs())
                     .fold(0.0f32, f32::max);
                 assert!(
-                    max_err <= 1e-3 || denoised_values
-                        .iter()
-                        .zip(&expected_denoised)
-                        .all(|(a, e)| bf16_ok(*a, *e)),
+                    max_err <= 1e-3
+                        || denoised_values
+                            .iter()
+                            .zip(&expected_denoised)
+                            .all(|(a, e)| bf16_ok(*a, *e)),
                     "rewrite warm pass {pass_index} latent max abs error {max_err}"
                 );
             }
@@ -2526,10 +2551,7 @@ mod tests {
         }
         let warm = &passes[warmup_passes..];
         let median = |key: &str| -> f64 {
-            let mut vals: Vec<f64> = warm
-                .iter()
-                .map(|row| row[key].as_f64().unwrap())
-                .collect();
+            let mut vals: Vec<f64> = warm.iter().map(|row| row[key].as_f64().unwrap()).collect();
             vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let mid = vals.len() / 2;
             if vals.len() % 2 == 1 {
@@ -3763,5 +3785,244 @@ mod tests {
             std::fs::write(path, serde_json::to_string(&report).unwrap()).unwrap();
         }
         assert!(failures.is_empty(), "{}", failures.join("; "));
+    }
+
+    /// ControlNet branch parity against a diffusers `ZImageControlNetModel`
+    /// fixture (probe: torch CPU float32, stored bf16). Validates the hint
+    /// stack semantics (`after_proj` per block, raw block output as the
+    /// continuing stream), the control embed, the refiner branch, the caption
+    /// branch, and all 15 layer hints on real weights.
+    ///
+    /// Env: `DANQING_TEST_ZIMAGE_DIT_DIR` (bundle transformer dir),
+    /// `DANQING_TEST_ZIMAGE_CONTROL_DIR` (union controlnet dir),
+    /// `DANQING_TEST_ZIMAGE_CONTROL_FIXTURE` (slim safetensors fixture).
+    #[cfg(feature = "mlx-metal")]
+    #[test]
+    #[ignore]
+    fn real_control_branch_matches_diffusers_fixture() {
+        use super::{control, embed_caption, embed_image, embed_timestep, run_block, ForwardRope};
+
+        let dit = std::path::PathBuf::from(std::env::var("DANQING_TEST_ZIMAGE_DIT_DIR").unwrap());
+        let control_dir =
+            std::path::PathBuf::from(std::env::var("DANQING_TEST_ZIMAGE_CONTROL_DIR").unwrap());
+        let fixture_path =
+            std::path::PathBuf::from(std::env::var("DANQING_TEST_ZIMAGE_CONTROL_FIXTURE").unwrap());
+        let stream = Stream::gpu().unwrap();
+        let config = MlxZImageConfig::published();
+        // Checkpoint dtype: the reference probe runs torch in bf16 so the
+        // gate measures semantics, not f32-vs-bf16 accumulation.
+        let weights = load_directory(&dit, config, WeightDtype::Native, None).unwrap();
+        let control_weights =
+            control::load_directory(&control_dir, config.patch, WeightDtype::Native).unwrap();
+        // SafeTensors lazy-load only supports the CPU stream.
+        let fixture = danmo_mlx::SafeTensors::load(&fixture_path, &Stream::cpu().unwrap()).unwrap();
+        let get = |name: &str| -> Array {
+            fixture
+                .get(name)
+                .unwrap()
+                .unwrap_or_else(|| panic!("fixture missing {name}"))
+        };
+        let rel_err = |tag: &str, actual: &Array, expected: &Array, tol: f32| {
+            let actual = actual.astype(Dtype::Float32, &stream).unwrap();
+            let expected = expected
+                .astype(Dtype::Float32, &stream)
+                .unwrap()
+                .reshape(actual.shape().as_slice(), &stream)
+                .unwrap();
+            let a = actual.to_vec_f32(&stream).unwrap();
+            let b = expected.to_vec_f32(&stream).unwrap();
+            assert_eq!(a.len(), b.len(), "{tag}: element count mismatch");
+            let mut num = 0f64;
+            let mut den = 0f64;
+            let mut dot = 0f64;
+            let mut na = 0f64;
+            let mut max_abs = 0f32;
+            for (x, y) in a.iter().zip(b.iter()) {
+                num += ((x - y) as f64).powi(2);
+                den += (*y as f64).powi(2);
+                dot += (*x as f64) * (*y as f64);
+                na += (*x as f64).powi(2);
+                max_abs = max_abs.max((x - y).abs());
+            }
+            let rel = (num.sqrt() / den.sqrt().max(1e-12)) as f32;
+            let cos = (dot / (na.sqrt() * den.sqrt()).max(1e-12)) as f32;
+            println!("{tag}: rel_l2={rel:.5} cos={cos:.5} max_abs={max_abs:.5}");
+            assert!(rel < tol, "{tag}: rel_l2 {rel} exceeds {tol}");
+            assert!(cos > 0.95, "{tag}: cosine {cos} below 0.95");
+        };
+
+        // Engine timesteps embed `(1 - sigma) * t_scale`; the diffusers probe
+        // passes the already-scheduled `t * t_scale` value (VideoX scheduler:
+        // `t = 1 - sigma` for this parametrization).
+        let sigma = get("sigma").to_vec_f32(&stream).unwrap()[0];
+        let sigma = 1.0 - sigma;
+        let scale = get("scale").to_vec_f32(&stream).unwrap()[0];
+        let grid = geom::token_grid(512, 512, 40, config.vae_scale).unwrap();
+        assert_eq!(grid.img_len, 1024);
+        assert_eq!(grid.unified, 1088);
+
+        let latent = get("latent").reshape(&[1, 16, 64, 64], &stream).unwrap();
+        let caption_raw = get("caption").reshape(&[40, 2560], &stream).unwrap();
+        let context = get("context").reshape(&[1, 33, 64, 64], &stream).unwrap();
+        let timestep = embed_timestep(&weights, config, sigma, &stream).unwrap();
+        let rope = ForwardRope::new(config, grid, &stream).unwrap();
+
+        // 1. Control embed.
+        let control_embed = control::embed_control_context(
+            &control_weights,
+            &weights,
+            config,
+            grid,
+            &context,
+            &stream,
+        )
+        .unwrap();
+        rel_err(
+            "control_embed",
+            &control_embed,
+            &get("cap.control_embed"),
+            0.05,
+        );
+
+        // 2. Refiner branch: hints are after_proj outputs; stream is the raw
+        // last block output. First localize the inputs.
+        let image = embed_image(&weights, config, grid, &latent, &stream).unwrap();
+        rel_err("image_embed", &image, &get("cap.image_embed"), 0.05);
+        rel_err("t_embed", &timestep, &get("cap.t_embed"), 0.05);
+        // The diffusers refiner pre-hook captured the block INPUT c (the
+        // embedded control stream, before its internal before_proj + x).
+        rel_err(
+            "refiner0_input_c",
+            &control_embed,
+            &get("cap.pre.refiner0.c"),
+            0.05,
+        );
+        rel_err("refiner0_input_x", &image, &get("cap.pre.refiner0.x"), 0.05);
+        let (refiner_hints, refined) = control::forward_control_refiner(
+            &control_weights,
+            config,
+            grid,
+            &image,
+            &control_embed,
+            &rope.image,
+            &timestep,
+            &stream,
+        )
+        .unwrap();
+        let ref0 = get("cap.control_noise_refiner.0");
+        let ref1 = get("cap.control_noise_refiner.1");
+        rel_err(
+            "refiner_hint.0",
+            &refiner_hints[0],
+            &ref0
+                .slice(&[0, 0, 0, 0], &[1, 1, 1024, 3840], &[1, 1, 1, 1], &stream)
+                .unwrap(),
+            0.20,
+        );
+        rel_err(
+            "refiner_hint.1",
+            &refiner_hints[1],
+            &ref1
+                .slice(&[1, 0, 0, 0], &[2, 1, 1024, 3840], &[1, 1, 1, 1], &stream)
+                .unwrap(),
+            0.20,
+        );
+        rel_err(
+            "refined_stream",
+            &refined,
+            &ref1
+                .slice(&[2, 0, 0, 0], &[3, 1, 1024, 3840], &[1, 1, 1, 1], &stream)
+                .unwrap(),
+            0.12,
+        );
+
+        // 3. Caption branch (embed + context_refiner).
+        let caption_ids = &geom::positions_image_first(grid)[grid.img_len as usize..];
+        let mut caption = embed_caption(&weights, config, grid, &caption_raw, &stream).unwrap();
+        for index in 0..config.refiners {
+            caption = run_block(
+                &weights,
+                config,
+                &format!("context_refiner.{index}"),
+                &caption,
+                caption_ids,
+                false,
+                None,
+                Some(&rope.caption),
+                &stream,
+            )
+            .unwrap();
+        }
+        rel_err("cap_refined", &caption, &get("cap.cap_refined"), 0.05);
+
+        // 4. Main noise_refiner with VideoX refiner-hint injection, then the
+        // control layers; all 15 hints must match the diffusers stack
+        // (and the scaled controlnet_block_samples).
+        let ids = geom::positions_image_first(grid);
+        let image_ids = &ids[..grid.img_len as usize];
+        let mut image = image;
+        for index in 0..config.refiners {
+            image = run_block(
+                &weights,
+                config,
+                &format!("noise_refiner.{index}"),
+                &image,
+                image_ids,
+                true,
+                Some(&timestep),
+                Some(&rope.image),
+                &stream,
+            )
+            .unwrap();
+            image =
+                control::apply_control_hint(&image, &refiner_hints[index as usize], scale, &stream)
+                    .unwrap();
+        }
+        let unified = Array::concatenate_axis(&[image, caption.clone()], 1, &stream).unwrap();
+        let layer_hints = control::forward_control_layers(
+            &control_weights,
+            config,
+            grid,
+            &unified,
+            &refined,
+            &caption,
+            &rope.unified,
+            &timestep,
+            &stream,
+        )
+        .unwrap();
+        let last = get("cap.control_layers.last");
+        for (index, place) in control::CONTROL_LAYER_PLACES.iter().enumerate() {
+            let stack_entry = last
+                .slice(
+                    &[index as i32, 0, 0, 0],
+                    &[index as i32 + 1, 1, 1088, 3840],
+                    &[1, 1, 1, 1],
+                    &stream,
+                )
+                .unwrap();
+            rel_err(
+                &format!("layer_hint.{place}"),
+                &layer_hints[index],
+                &stack_entry,
+                0.25,
+            );
+            let expected = get(&format!("hint.{place}"));
+            let scaled_hint = Array::multiply(
+                &layer_hints[index],
+                &Array::from_f32_slice(&[scale], &[])
+                    .unwrap()
+                    .astype(layer_hints[index].dtype(), &stream)
+                    .unwrap(),
+                &stream,
+            )
+            .unwrap();
+            rel_err(
+                &format!("scaled_hint.{place}"),
+                &scaled_hint,
+                &expected,
+                0.25,
+            );
+        }
     }
 }

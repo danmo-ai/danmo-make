@@ -118,19 +118,14 @@ fn resolve_control_guide(
         _ => None,
     };
     // VideoX / Diffusers inpaint demos always pass a structural map (pose/
-    // canny/…). Companion retouch has none — derive Gray(source), the Union
-    // 2602-trained condition. Do not reuse the photo RGB or constant mid-gray.
+    // canny/…). Companion retouch has none — derive edges(source) as a canny-
+    // like map. Do not reuse the photo RGB or constant mid-gray.
     let image_n11 = if needs_structural_map {
         Some(load_resized_n11(
-            resolver,
-            run,
-            control_id,
-            width,
-            height,
-            "control",
+            resolver, run, control_id, width, height, "control",
         )?)
     } else if let Some(inp) = inpaint.as_ref() {
-        Some(rgb_n11_to_gray_n11(
+        Some(rgb_n11_to_edges_n11(
             &inp.source_n11,
             width as usize,
             height as usize,
@@ -138,12 +133,63 @@ fn resolve_control_guide(
     } else {
         None
     };
+    // Inpaint needs a stronger control signal for continuity (HF: use larger
+    // control_context_scale for inpaint).
+    let scale = if inpaint.is_some() {
+        (guide.weight * 1.1).clamp(0.0, 1.5)
+    } else {
+        guide.weight
+    };
     Ok(Some(super::mlx::session::ControlGuide {
         controlnet,
         image_n11,
-        scale: guide.weight,
+        scale,
         inpaint,
     }))
+}
+
+/// Sobel edge magnitude → replicated RGB in NCHW n11 (canny-like Union map).
+/// Operates on the same `[-1, 1]` input as the rest of the guide.
+#[cfg(feature = "mlx")]
+fn rgb_n11_to_edges_n11(
+    source_n11: &[f32],
+    width: usize,
+    height: usize,
+) -> Result<Vec<f32>, EngineError> {
+    let plane = width * height;
+    if source_n11.len() != plane * 3 {
+        return Err(EngineError::bad_request(format!(
+            "edge control source has {} values, expected {} for {width}x{height}",
+            source_n11.len(),
+            plane * 3
+        )));
+    }
+    let mut gray = vec![0f32; plane];
+    for i in 0..plane {
+        gray[i] = 0.299 * source_n11[i]
+            + 0.587 * source_n11[plane + i]
+            + 0.114 * source_n11[2 * plane + i];
+    }
+    let mut out = vec![0f32; plane * 3];
+    let clamp_i = |v: i32, hi: usize| v.clamp(0, hi as i32 - 1) as usize;
+    for y in 0..height as i32 {
+        for x in 0..width as i32 {
+            let xm = clamp_i(x - 1, width);
+            let xp = clamp_i(x + 1, width);
+            let ym = clamp_i(y - 1, height);
+            let yp = clamp_i(y + 1, height);
+            let at = |xx: usize, yy: usize| gray[yy * width + xx];
+            let gx = at(xp, y as usize) - at(xm, y as usize);
+            let gy = at(x as usize, yp) - at(x as usize, ym);
+            let mag = (gx * gx + gy * gy).sqrt().clamp(0.0, 1.0);
+            let v = mag * 2.0 - 1.0;
+            let idx = y as usize * width + x as usize;
+            out[idx] = v;
+            out[plane + idx] = v;
+            out[2 * plane + idx] = v;
+        }
+    }
+    Ok(out)
 }
 
 /// Rec.601 luma → replicated RGB in NCHW n11 (Union Gray control).
@@ -163,7 +209,9 @@ fn rgb_n11_to_gray_n11(
     }
     let mut out = vec![0f32; plane * 3];
     for i in 0..plane {
-        let y = 0.299 * source_n11[i] + 0.587 * source_n11[plane + i] + 0.114 * source_n11[2 * plane + i];
+        let y = 0.299 * source_n11[i]
+            + 0.587 * source_n11[plane + i]
+            + 0.114 * source_n11[2 * plane + i];
         out[i] = y;
         out[plane + i] = y;
         out[2 * plane + i] = y;

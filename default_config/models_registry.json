@@ -5527,18 +5527,17 @@
         "versions": {
           "8steps": {
             "name": {
-              "zh": "Union 2.1 8-step",
-              "en": "Union 2.1 8-step"
+              "zh": "Union 2.1 8-step（2602）",
+              "en": "Union 2.1 8-step (2602)"
             },
-            "size": "23GB",
+            "size": "6.3GB",
             "default": true,
             "source": "modelscope",
             "repo_id": "PAI/Z-Image-Turbo-Fun-Controlnet-Union-2.1",
             "local_path": "models/ControlNet/z-image-turbo-fun-controlnet-union-2.1-8steps",
             "source_type": "full",
             "allow_patterns": [
-              "Z-Image-Turbo-Fun-Controlnet-Union-2.1-*-8steps.safetensors",
-              "Z-Image-Turbo-Fun-Controlnet-Union-2.1-8steps.safetensors",
+              "Z-Image-Turbo-Fun-Controlnet-Union-2.1-2602-8steps.safetensors",
               "README.md"
             ]
           }

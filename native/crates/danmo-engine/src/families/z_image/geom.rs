@@ -148,8 +148,11 @@ pub fn rope_columns(ids: &[[i32; 3]]) -> [Vec<i32>; 3] {
     axes
 }
 
-/// Row index into a flattened `[W, H, C]` latent for each real patch element.
-/// Within a token, channel is fastest, then patch x, then patch y.
+/// Row index into a flattened `[C, H, W]` latent for each real patch element.
+///
+/// Matches diffusers `ZImageTransformer2DModel._patchify_image`:
+/// `image.permute(1, 3, 5, 2, 4, 6, 0).reshape(...)` on `[C, F, H, W]` gives
+/// patch element order `(pf, ph, pw, c)` per token (channel slowest).
 pub fn patch_index(grid: TokenGrid, channels: i64) -> Vec<i32> {
     let mut index = Vec::with_capacity((grid.img_real * PATCH * PATCH * channels) as usize);
     for row in 0..grid.tokens_h {

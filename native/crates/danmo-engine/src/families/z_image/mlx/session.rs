@@ -313,12 +313,7 @@ fn encode_control_rgb(
         Ok(latent)
     } else if latent.shape().len() == 3 {
         latent.reshape(
-            &[
-                1,
-                latent.shape()[0],
-                latent.shape()[1],
-                latent.shape()[2],
-            ],
+            &[1, latent.shape()[0], latent.shape()[1], latent.shape()[2]],
             stream,
         )
     } else {
@@ -380,7 +375,10 @@ fn mask_inpaint_source_n11(
     Ok(out)
 }
 
-/// Box-average pixel preserve mask down to latent HxW.
+/// Nearest-neighbor pixel preserve mask down to latent HxW, matching
+/// diffusers `F.interpolate(mask, size=...)` (default nearest). Averaging
+/// would bleed repaint/keep across mask edges; the checkpoint was trained on
+/// hard 0/1 latent masks.
 fn downsample_preserve_mask(
     preserve_hw: &[f32],
     width: usize,
@@ -410,18 +408,11 @@ fn downsample_preserve_mask(
     let scale_x = width / latent_w;
     let scale_y = height / latent_h;
     let mut out = vec![0f32; latent_w * latent_h];
-    let area = (scale_x * scale_y) as f32;
     for ly in 0..latent_h {
         for lx in 0..latent_w {
-            let mut sum = 0f32;
-            for oy in 0..scale_y {
-                for ox in 0..scale_x {
-                    let y = ly * scale_y + oy;
-                    let x = lx * scale_x + ox;
-                    sum += preserve_hw[y * width + x];
-                }
-            }
-            out[ly * latent_w + lx] = sum / area;
+            let y = ly * scale_y;
+            let x = lx * scale_x;
+            out[ly * latent_w + lx] = preserve_hw[y * width + x];
         }
     }
     Array::from_f32_slice(&out, &[1, 1, latent_h as i32, latent_w as i32])
@@ -515,12 +506,9 @@ fn denoise(
                 let latent_w = inpaint_latent.shape()[3];
                 let control_latent = match control_image {
                     Some(pixels) => encode_control_rgb(pixels, width, height, &vae, stream)?,
-                    None => control_latents_absent(
-                        latent_h,
-                        latent_w,
-                        inpaint_latent.dtype(),
-                        stream,
-                    )?,
+                    None => {
+                        control_latents_absent(latent_h, latent_w, inpaint_latent.dtype(), stream)?
+                    }
                 };
                 let mask = downsample_preserve_mask(
                     preserve_hw,
@@ -682,19 +670,16 @@ fn denoise(
         };
         let delta = sigmas[step_index + 1] - sigmas[step_index];
         let delta = Array::from_f32_slice(&[delta], &[])?.astype(current.dtype(), stream)?;
-        current = Array::add(&current, &Array::multiply(&velocity, &delta, stream)?, stream)?;
+        current = Array::add(
+            &current,
+            &Array::multiply(&velocity, &delta, stream)?,
+            stream,
+        )?;
         if let Some(interval) = interval {
             let step_1 = (step_index + 1) as u32;
             if should_emit_preview(step_1, total, interval) {
                 let png = step_preview_png(
-                    cache,
-                    &current,
-                    width,
-                    height,
-                    latent_h,
-                    latent_w,
-                    max_edge,
-                    stream,
+                    cache, &current, width, height, latent_h, latent_w, max_edge, stream,
                 )?;
                 exec.observer
                     .write_step_preview(&png)
@@ -784,7 +769,11 @@ fn step_preview_png(
     if values.len() != plane * 3 {
         return Err(Error::new(
             "Z-Image preview",
-            format!("TAEF1 returned {} values, expected {}", values.len(), plane * 3),
+            format!(
+                "TAEF1 returned {} values, expected {}",
+                values.len(),
+                plane * 3
+            ),
         ));
     }
     // NHWC, then the same channel reversal main applies before saving the PNG.
@@ -1183,15 +1172,26 @@ mod tests {
         session.schedule().unwrap();
         let exec = ExecutionContext::new("mlx-session-real", Arc::new(NoopObserver));
         let latents = session.infer(&exec).unwrap();
-        assert!(latents.iter().any(|value| value.abs() > 1e-4), "latent is empty");
+        assert!(
+            latents.iter().any(|value| value.abs() > 1e-4),
+            "latent is empty"
+        );
         let decoded = Box::new(session).decode(&ctx, &latents).unwrap();
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(&output, &decoded.preview_png).unwrap();
         assert_eq!(&decoded.preview_png[..8], b"\x89PNG\r\n\x1a\n");
-        let distinct = decoded.preview_png.iter().collect::<std::collections::HashSet<_>>().len();
-        assert!(distinct > 8, "png has only {distinct} distinct bytes: {}", output.display());
+        let distinct = decoded
+            .preview_png
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        assert!(
+            distinct > 8,
+            "png has only {distinct} distinct bytes: {}",
+            output.display()
+        );
         eprintln!("wrote {}", output.display());
     }
 }

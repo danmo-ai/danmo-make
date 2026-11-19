@@ -1,0 +1,28 @@
+{
+  "gate": "z_image_controlnet_union_forward_fix",
+  "date": "2026-11-19",
+  "status": "passed",
+  "fix": "control hint stack semantics: hints are one after_proj output per control block (all_c.pop(-1) removes the raw output before appending); refined control stream is the raw last block output; VideoX single-pass refiner-hint injection into the main noise_refiner; nearest-neighbor preserve-mask downsample",
+  "parity": {
+    "test": "families::z_image::mlx::model::tests::real_control_branch_matches_diffusers_fixture",
+    "reference": "diffusers 0.44.0.dev0 ZImageControlNetModel (torch bf16, real weights, fixed random inputs)",
+    "fixture": "studio-workspace/parity-fixtures/zimage-control-diffusers-slim.safetensors (293MiB, regenerate with the zref probe script)",
+    "results": {
+      "control_embed_rel_l2": 0.00002,
+      "refiner_hints_rel_l2": [0.00193, 0.00216],
+      "refined_stream_rel_l2": 0.00281,
+      "cap_refined_rel_l2": 0.00253,
+      "layer_hints_rel_l2_max": 0.00841,
+      "scaled_hints_rel_l2_max": 0.00859,
+      "cosine_min": 0.99996
+    }
+  },
+  "e2e": {
+    "control_512": {"task": "5eaac06a-1066-4959-a406-fec02a9b4925", "asset": "ast_e37e2f306d69474ba5db", "note": "cube edges control, clean red cube"},
+    "inpaint_512": {"task": "e81d5092-1b35-4d6e-b520-e8badd6c6d7e", "asset": "ast_744b254417464538b8d2", "note": "red->blue cube repaint, structure held"},
+    "control_768x1280": {"task": "5158ef94-2600-4272-86f6-b1409d166314", "asset": "ast_10bd3882b4fe4d40bba4"},
+    "inpaint_512_companion_auto": {"task": "d0dda1ae-cacc-4abe-a409-cb33a3c3781c", "asset": "ast_5e2d83a05cbf40d6bb02", "note": "asset_id==source, engine Sobel edges"},
+    "inpaint_768x1280": {"task": "dc9a493f-f8e1-4100-a148-fd11a987900f", "asset": "ast_3883f3d607034412865c"}
+  },
+  "notes": "pre-fix 512+ outputs were mosaic/blown-out; post-fix coherent at 512 and 768x1280. metal_performance still pending."
+}

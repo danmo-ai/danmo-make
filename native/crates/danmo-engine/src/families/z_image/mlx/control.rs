@@ -33,6 +33,31 @@ pub struct ControlConditioning<'a> {
     pub scale: f32,
 }
 
+/// Env-gated (`DANQING_ZIMAGE_CONTROL_DEBUG=1`) tensor stats for control
+/// debugging: RMS and mean-abs, forced-evaluated on the given stream.
+pub fn debug_tensor_stats(tag: &str, array: &Array, stream: &Stream) {
+    if std::env::var("DANQING_ZIMAGE_CONTROL_DEBUG")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return;
+    }
+    let stats = (|| -> Result<(f32, f32)> {
+        let flat = array.astype(Dtype::Float32, stream)?;
+        let sq = Array::multiply(&flat, &flat, stream)?;
+        let mean_sq = sq.mean(false, stream)?.to_vec_f32(stream)?[0];
+        let mean_abs = flat.abs(stream)?.mean(false, stream)?.to_vec_f32(stream)?[0];
+        Ok((mean_sq.sqrt(), mean_abs))
+    })();
+    match stats {
+        Ok((rms, mean_abs)) => {
+            eprintln!("[control-debug] {tag}: rms={rms:.4} mean_abs={mean_abs:.4}")
+        }
+        Err(error) => eprintln!("[control-debug] {tag}: stats failed: {error}"),
+    }
+}
+
 /// `x + hint * context_scale` (main `apply_control_hint`).
 pub fn apply_control_hint(
     x: &Array,
@@ -208,18 +233,18 @@ fn load_single_safetensors(path: &Path, dtype: WeightDtype) -> Result<MlxWeights
     // load_mlx_directory only accepts directories. Use a private sibling
     // directory that contains a symlink/copy is heavy; instead read via the
     // same SafeTensors path by staging a one-file temp dir under the parent.
-    let staging = path.parent().map(|p| p.join(".danmo-control-load")).ok_or_else(|| {
-        Error::new(
-            "Z-Image control",
-            format!("{} has no parent", path.display()),
-        )
-    })?;
+    let staging = path
+        .parent()
+        .map(|p| p.join(".danmo-control-load"))
+        .ok_or_else(|| {
+            Error::new(
+                "Z-Image control",
+                format!("{} has no parent", path.display()),
+            )
+        })?;
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|error| {
-        Error::new(
-            "Z-Image control",
-            format!("{}: {error}", staging.display()),
-        )
+        Error::new("Z-Image control", format!("{}: {error}", staging.display()))
     })?;
     let link = staging.join(
         path.file_name()
@@ -261,21 +286,18 @@ pub fn select_control_shard(path: &Path) -> Result<PathBuf> {
     if !path.is_dir() {
         return Err(Error::new(
             "Z-Image control",
-            format!("{} is not an installed controlnet directory", path.display()),
+            format!(
+                "{} is not an installed controlnet directory",
+                path.display()
+            ),
         ));
     }
     let mut shards = Vec::new();
-    for entry in std::fs::read_dir(path).map_err(|error| {
-        Error::new(
-            "Z-Image control",
-            format!("{}: {error}", path.display()),
-        )
-    })? {
+    for entry in std::fs::read_dir(path)
+        .map_err(|error| Error::new("Z-Image control", format!("{}: {error}", path.display())))?
+    {
         let entry = entry.map_err(|error| {
-            Error::new(
-                "Z-Image control",
-                format!("{}: {error}", path.display()),
-            )
+            Error::new("Z-Image control", format!("{}: {error}", path.display()))
         })?;
         let candidate = entry.path();
         if candidate.extension().and_then(|v| v.to_str()) == Some("safetensors") {
@@ -322,10 +344,7 @@ pub fn select_control_shard(path: &Path) -> Result<PathBuf> {
     // leakage; 2602 adds Gray — needed for companion retouch without pose.
     let mut ranked = non_lite;
     ranked.sort_by_key(|p| {
-        let name = p
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         std::cmp::Reverse(dated_8steps_rank(name))
     });
     Ok(ranked[0].clone())
@@ -367,10 +386,7 @@ pub fn embed_control_context(
     if shape.len() != 4 || shape[0] != 1 || shape[1] != CONTROL_IN_CHANNELS as i32 {
         return Err(Error::new(
             "Z-Image control",
-            format!(
-                "control context must be [1,33,H,W], got {:?}",
-                shape
-            ),
+            format!("control context must be [1,33,H,W], got {:?}", shape),
         ));
     }
     if shape[2] as i64 != grid.latent_h || shape[3] as i64 != grid.latent_w {
@@ -425,9 +441,16 @@ pub fn embed_control_context(
         )?;
         embedded = Array::concatenate_axis(&[real, pad], 1, stream)?;
     }
+    debug_tensor_stats("control_embed", &embedded, stream);
     Ok(embedded)
 }
 
+/// Diffusers/VideoX `ZImageControlTransformerBlock` hint semantics: the block
+/// keeps a stack, but `all_c.pop(-1)` REMOVES the previous raw output, so the
+/// stack is `[after_proj(c0), after_proj(c1), ..., after_proj(ck), ck]`. The
+/// injected hints (`unbind(stack)[:-1]`) are therefore exactly one
+/// `after_proj` output per block; the continuing control stream is the raw
+/// block output `c`.
 struct ControlBranch {
     hints: Vec<Array>,
     stream: Array,
@@ -445,15 +468,19 @@ fn control_block_forward(
     timestep: &Array,
     stream: &Stream,
 ) -> Result<ControlBranch> {
+    let ControlBranch {
+        mut hints,
+        stream: control_stream,
+    } = branch;
     let control = if block_id == 0 {
         let projected = linear(weights, &format!("{prefix}.before_proj.weight"))?.apply(
-            &branch.stream,
+            &control_stream,
             Some(weight(weights, &format!("{prefix}.before_proj.bias"))?),
             stream,
         )?;
         Array::add(&projected, x_main, stream)?
     } else {
-        branch.stream
+        control_stream
     };
     let control = blocks::forward_with_table(
         &control,
@@ -488,12 +515,13 @@ fn control_block_forward(
         Some(rope),
         stream,
     )?;
+    debug_tensor_stats(&format!("{prefix}.block_out"), &control, stream);
     let hint = linear(weights, &format!("{prefix}.after_proj.weight"))?.apply(
         &control,
         Some(weight(weights, &format!("{prefix}.after_proj.bias"))?),
         stream,
     )?;
-    let mut hints = branch.hints;
+    debug_tensor_stats(&format!("{prefix}.after_proj"), &hint, stream);
     hints.push(hint);
     Ok(ControlBranch {
         hints,
@@ -502,7 +530,10 @@ fn control_block_forward(
 }
 
 /// Control noise-refiner branch. Returns (refiner hints, refined_control).
-/// `refined_control` is the last after_proj hint (main's `c[num_hints-1]`).
+/// Hints are one `after_proj` output per refiner block (diffusers
+/// `unbind(stack)[:-1]` with the pop-mutated stack); `refined_control` is the
+/// raw output of the last refiner block (`unbind(stack)[-1]`), which continues
+/// as the control stream.
 pub fn forward_control_refiner(
     control_weights: &MlxWeights,
     config: MlxZImageConfig,
@@ -533,17 +564,27 @@ pub fn forward_control_refiner(
             stream,
         )?;
     }
-    if branch.hints.is_empty() {
+    if branch.hints.len() != CONTROL_REFINER_PLACES.len() {
         return Err(Error::new(
             "Z-Image control",
-            "control noise refiner produced no hints",
+            format!(
+                "control noise refiner produced {} hints, expected {}",
+                branch.hints.len(),
+                CONTROL_REFINER_PLACES.len()
+            ),
         ));
     }
-    let refined = branch.hints[branch.hints.len() - 1].clone();
-    Ok((branch.hints, refined))
+    Ok((branch.hints, branch.stream))
 }
 
-/// Control main-layer branch. Returns one hint per CONTROL_LAYER_PLACES entry.
+/// Control main-layer branch. Returns one hint per CONTROL_LAYER_PLACES entry
+/// (the `after_proj` output of each block, in block order).
+///
+/// The control stream does NOT pass through the shared DiT noise_refiner —
+/// it goes straight from the control refiner branch into the caption concat,
+/// then through `control_layers` (diffusers `ZImageControlNetModel` with
+/// `add_control_noise_refiner="control_noise_refiner"`, VideoX
+/// `forward_control_2_0_layers`).
 pub fn forward_control_layers(
     control_weights: &MlxWeights,
     config: MlxZImageConfig,
@@ -555,8 +596,9 @@ pub fn forward_control_layers(
     timestep: &Array,
     stream: &Stream,
 ) -> Result<Vec<Array>> {
-    let control_unified = Array::concatenate_axis(&[refined_control.clone(), caption.clone()], 1, stream)?;
     let ids = geom::positions_image_first(grid);
+    let control_unified =
+        Array::concatenate_axis(&[refined_control.clone(), caption.clone()], 1, stream)?;
     let mut branch = ControlBranch {
         hints: Vec::new(),
         stream: control_unified,
@@ -676,7 +718,9 @@ mod tests {
         assert!((values[67] - 1.0).abs() < 1e-6);
         assert!(values[68..].iter().all(|v| (*v - 2.0).abs() < 1e-6));
         let bad_mask = Array::from_f32_slice(&[1.0f32], &[1, 1, 1, 1]).unwrap();
-        assert!(build_control_context_inpaint_nchw(&control, &bad_mask, &inpaint, &stream).is_err());
+        assert!(
+            build_control_context_inpaint_nchw(&control, &bad_mask, &inpaint, &stream).is_err()
+        );
     }
 
     #[test]
