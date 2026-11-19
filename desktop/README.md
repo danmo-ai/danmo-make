@@ -2,13 +2,13 @@
 
 Language: 中文 below · English summary first.
 
-Native **Tauri 2** window. The API is the Rust binary `danqing-api` (ggml). Engine rules: [docs/engine_architecture.md](../docs/engine_architecture.md).
+Native **Tauri 2** window. The API is the Rust binary `danqing-api` built with **MLX** (`mlx-metal` on macOS, `mlx-cuda` on Linux). Engine rules: [docs/engine_architecture.md](../docs/engine_architecture.md).
 
 | Platform | Runtime | Artifact |
 |----------|---------|----------|
-| **macOS** (Apple Silicon) | ggml Metal sidecar | `.app` / `.dmg` |
-| **Linux x64 desktop** | ggml sidecar | AppImage / `.deb` (local pack; CI may omit) |
-| **Linux server** | ggml `danqing-api` + built UI | `danmo-make-<os>-ggml-<arch>-<version>.tar.gz` |
+| **macOS** (Apple Silicon) | MLX Metal | `.app` / `.dmg` |
+| **Linux x64 desktop** | MLX CUDA sidecar | AppImage / `.deb` (local pack; CI may omit) |
+| **Linux server** | MLX `danqing-api` + built UI | `danmo-make-linux-mlx-cuda-*.tar.gz` |
 | **Windows desktop** | not wired (`pack_desktop_windows.sh` exits) | sidecar only: `make pack-windows-sidecar` |
 
 Product name: Danmo Make. Technical ids remain `danqing-*` ([AGENTS.md](../AGENTS.md)).
@@ -17,10 +17,10 @@ Product name: Danmo Make. Technical ids remain `danqing-*` ([AGENTS.md](../AGENT
 
 # Danmo Make — Tauri 2 桌面壳
 
-本目录是 **Tauri 2** 窗口。API 是 Rust 二进制 `danqing-api`（ggml）。引擎原则见 [docs/engine_architecture.md](../docs/engine_architecture.md)。
+本目录是 **Tauri 2** 窗口。API 为 Rust 二进制 `danqing-api`（**MLX**：macOS `mlx-metal`，Linux `mlx-cuda`）。引擎原则见 [docs/engine_architecture.md](../docs/engine_architecture.md)。
 
-- **macOS**：ggml Metal sidecar
-- **Linux 桌面**：ggml sidecar（AppImage / `.deb`，本地打包）
+- **macOS**：MLX Metal sidecar
+- **Linux 桌面**：MLX CUDA sidecar（AppImage / `.deb`，本地打包）
 - **Linux 服务端**：`danqing-api` + 已构建界面，`./run.sh` 直接启动二进制
 - **Windows 桌面**：未接线。sidecar 用 `make pack-windows-sidecar`
 
@@ -33,7 +33,7 @@ Product name: Danmo Make. Technical ids remain `danqing-*` ([AGENTS.md](../AGENT
 | 路径 | 内容 |
 |------|------|
 | `out/frontend/dist/` | Vite 生产构建 |
-| `out/sidecar/danqing-api/` | ggml sidecar |
+| `out/sidecar/danqing-api/` | 发布用 `danqing-api`（MLX features） |
 | `out/desktop/bundle/` | `.dmg` / AppImage / `.deb` |
 | `out/desktop/cargo/` | Cargo 中间产物 |
 
@@ -41,7 +41,7 @@ Product name: Danmo Make. Technical ids remain `danqing-*` ([AGENTS.md](../AGENT
 
 - **Rust**（`cargo` 在 PATH）
 - **Node.js**（`npm`）
-- Linux 桌面另需 WebKitGTK 等（本地 `make pack-linux-desktop`；CI 暂未构建 Linux 桌面）
+- Linux 桌面另需 WebKitGTK 等（本地 `make pack-linux-desktop`；CI 视 workflow 而定）
 
 ## 开发（`make dev-desktop`）
 
@@ -50,16 +50,16 @@ make dev-desktop
 # 已有 API 时：SKIP_BACKEND=1 make dev-desktop
 ```
 
-- `cargo run -p danmo-server` 启动 `danqing-api`（`:7800`）
+- `cargo run -p danmo-server` 启动 `danqing-api`（`:7800`，需 `mlx-metal` / `mlx-cuda` feature）
 - Tauri `beforeDevCommand` 启动 Vite HMR（`:5800`）
 - 原生窗口加载 Vite；`Ctrl+C` / `make stop` 清理
 
 ## 发布构建
 
 ```bash
-make pack-macos-desktop      # Darwin arm64 · ggml Metal · .app/.dmg
-make pack-linux-desktop      # Linux x86_64 · ggml · AppImage/.deb（本地）
-make pack-linux-server       # 无头 ggml API + 界面
+make pack-macos-desktop      # Darwin arm64 · mlx-metal · .app/.dmg
+make pack-linux-desktop      # Linux x86_64 · mlx-cuda · AppImage/.deb（本地）
+make pack-linux-server       # 无头 mlx-cuda API + 界面
 make pack-windows-sidecar    # 仅 sidecar；桌面包未接线
 ```
 
@@ -70,7 +70,7 @@ make pack-windows-sidecar    # 仅 sidecar；桌面包未接线
 | `scripts/package_ggml_server.sh` | `pack-linux-server` |
 | `scripts/pack_desktop_windows.sh` | 立即退出，并提示改打 sidecar |
 
-顺序：`out/frontend/dist` → `scripts/build_ggml_sidecar.sh` → Tauri → `out/desktop/bundle/`。服务端包不走 Tauri，`./run.sh` 执行 `danqing-api`。
+顺序：`out/frontend/dist` → `scripts/build_ggml_sidecar.sh`（MLX sidecar 构建）→ Tauri → `out/desktop/bundle/`。服务端包不走 Tauri，`./run.sh` 执行 `danqing-api`。
 
 ### macOS Developer ID 签名与公证
 
@@ -102,7 +102,7 @@ make set-release-secrets
 
 CI：`.github/workflows/release.yml` 在 macOS job 中调用 `scripts/ci_import_apple_cert.sh`；未配置 secrets 时仍 ad-hoc 打包。
 
-设备由 `DANQING_GGML_BACKEND` 选择（`cpu`、`cuda`、`vulkan`、`metal`）。二进制没编进的后端在启动时失败。
+后端在 **编译期** 由 Cargo feature 决定（`mlx-metal` / `mlx-cuda`）。`GET /api/system/health` 返回当前 backend 与探针摘要。
 
 ## 运行时环境变量
 
@@ -110,9 +110,9 @@ CI：`.github/workflows/release.yml` 在 macOS job 中调用 `scripts/ci_import_
 |------|------|
 | `DANQING_HTTP_HOST` | 服务端包默认 `127.0.0.1` |
 | `DANQING_HTTP_PORT` | 默认 `7800`；Tauri 开发时注入空闲端口 |
-| `DANQING_GGML_BACKEND` | `cpu` / `cuda` / `vulkan` / `metal` |
 | `DANQING_REGISTRY` | 注册表路径 |
 | `DANQING_DB` | SQLite 路径 |
+| `DANQING_WORKSPACE` | 工作区根（模型 / 输出） |
 | `DANQING_USER_DATA_DIR` | 控制面根目录，默认 `~/.danmo-make` |
 
 ## 安装后提示「已损坏，无法打开」

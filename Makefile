@@ -7,9 +7,9 @@ RELEASE_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || e
 FRONTEND_DIR := $(CURDIR)/frontend
 
 help:
-	@echo "Danmo Make — Rust ggml backend + Vue"
+	@echo "Danmo Make — Rust MLX engine + Vue"
 	@echo ""
-	@echo "  dev | start            danqing-api (ggml) + Vite (:7800 / :5800)"
+	@echo "  dev | start            danqing-api (mlx-metal / mlx-cuda) + Vite (:7800 / :5800)"
 	@echo "  dev-desktop            Tauri webview (SKIP_BACKEND=1 for an external API)"
 	@echo "  stop                   Stop dev processes"
 	@echo "  test                   cargo test (native/)"
@@ -19,7 +19,7 @@ help:
 	@echo "  pack-windows-sidecar   same binary; Vulkan, CUDA when the toolkit is present"
 	@echo "  pack-macos-desktop     macOS arm64 .app/.dmg"
 	@echo "  pack-linux-desktop     Linux x86_64 AppImage/.deb"
-	@echo "  pack-linux-server      headless tar.gz (ggml binary + frontend)"
+	@echo "  pack-linux-server      headless tar.gz (mlx-cuda danqing-api + frontend)"
 	@echo "  set-release-secrets    写入 GitHub APPLE_* 发布 secrets（证书从钥匙串导出）"
 
 dev start:

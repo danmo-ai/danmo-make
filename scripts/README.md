@@ -6,9 +6,9 @@ Run from the repo root. Paths live in `out_paths.sh`.
 |--------|------|
 | `start.sh` / `stop.sh` | `make dev` / `make stop` |
 | `start_desktop.sh` | `make dev-desktop` |
-| `build_ggml_sidecar.sh` | Release `danqing-api` into `out/sidecar/danqing-api/` |
+| `build_ggml_sidecar.sh` | Release `danqing-api` (MLX: `metal,mlx-metal` or `mlx-cuda`) into `out/sidecar/danqing-api/` |
 | `prepare_tauri_resources.sh` | Copy that sidecar into the Tauri bundle |
-| `package_ggml_server.sh` | Headless tar.gz |
+| `package_ggml_server.sh` | Headless Linux server tar.gz (`danmo-make-linux-mlx-cuda-*.tar.gz`) |
 | `pack_desktop_macos.sh` / `pack_desktop_linux.sh` | Desktop packs |
 | `ci_import_apple_cert.sh` | CI: import Developer ID p12 into a temp keychain |
 | `ci_install_cuda_ubuntu.sh` | Linux CI: apt CUDA 12.9, or env-only when `DANQING_CUDA_SKIP_APT_INSTALL=1` (CUDA container) |

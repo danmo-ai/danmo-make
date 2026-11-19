@@ -8,7 +8,7 @@ The server is the Rust binary `danqing-api`. Do not start it with `scripts/start
 
 ## Naming
 
-Product / UI / release artifacts: **Danmo Make** / `danmo-make-*`. Runtime identifiers stay `danqing-*` (binary `danqing-api`, bundle id `com.danqing.studio.desktop`, env `DANQING_*`).
+Product / UI / release artifacts: **Danmo Make** / `danmo-make-*`. Runtime identifiers stay `danqing-*` (binary `danqing-api`, bundle id `com.danqing.studio.desktop`, env `DANQING_*`). The command-line creation tools are product surface and use the `danmo-*` prefix (`danmo-generate`, `danmo-edit`, `danmo-audio-generate`, `danmo-audio-edit`, `danmo-video-generate`, `danmo-video-edit`).
 
 ## Layout
 
@@ -16,9 +16,11 @@ Product / UI / release artifacts: **Danmo Make** / `danmo-make-*`. Runtime ident
 |------|----------|
 | API binary | `native/crates/danmo-server` (`danqing-api`) |
 | Engine | `native/crates/danmo-engine` |
-| ggml bindings | `native/crates/danmo-ggml-sys` (`native/third_party/ggml`) |
-| MLX-C | `native/crates/danmo-mlx-sys` + `native/crates/danmo-mlx` (`native/third_party/mlx-c`) |
+| MLX | `native/crates/danmo-mlx-sys` + `native/crates/danmo-mlx` (`native/third_party/mlx-c`, `mlx`) |
+| ggml (vendor, retiring) | `native/crates/danmo-ggml-sys` (`native/third_party/ggml`) — not a product runtime |
 | Contracts / catalog / queue | `danmo-contracts`, `danmo-catalog`, `danmo-schedule`, `danmo-store` |
+| Bundle / LoRA resolution | `danmo-resolve` (shared by server and CLI) |
+| CLI | `danmo-cli` (`danmo-generate`, `danmo-edit`, `danmo-audio-generate`, `danmo-audio-edit`, `danmo-video-generate`, `danmo-video-edit`) |
 | Frontend | `frontend/` (Vue 3, Vite, port 5800) |
 | Registry | `default_config/models_registry.json` |
 | Desktop | `desktop/` |
@@ -30,6 +32,15 @@ make dev          # cargo run danqing-api + Vite
 make test         # cargo test --manifest-path native/Cargo.toml
 make pack-ggml-sidecar
 ```
+
+The CLI binaries run generation without the HTTP server (registry + workspace resolution is shared with the server via `danmo-resolve`; task mapping via `danmo_engine::engine_request`):
+
+```bash
+cargo run --manifest-path native/Cargo.toml -p danmo-cli --features mlx-metal --bin danmo-generate -- \
+  --model z-image-turbo --prompt "a red apple" --output out.png
+```
+
+CLI sources are file paths (there is no asset store); `--lora` accepts a file path, a user LoRA id from `config/user_loras.json`, or a registry card, with optional `:weight`.
 
 `cargo test` takes one Cargo filter. Extra names after `--` are libtest filters. `--exact` needs the full test path. From the repo root, pass `--manifest-path native/Cargo.toml` or the feature flags are rejected. `danmo-server` has no lib target.
 
@@ -58,16 +69,14 @@ When replacing a running `danqing-api`, wait until port 7800 is free before star
 
 ## Weights
 
-ggml bundles use version keys `bf16`, `q8_0`, and `q4_k`. The file tensor name is the graph parameter name. An install that lists `components` writes `bundle.manifest.json` after the last file lands.
-
-MLX bundles are safetensors. Production loading keeps each dense tensor at its checkpoint dtype. `fp16` in the registry is not a tensor-dtype guarantee. Packed affine weights stay packed inside `LinearWeight`.
+MLX bundles are **safetensors**. Production loading keeps each dense tensor at its checkpoint dtype. Registry version keys include `fp16`, `bf16`, `fp32`, `int8`, `int4`, `mlx-q4`, `mlx-q8`; a label is not a tensor-dtype guarantee. Packed affine weights stay packed inside `LinearWeight`. An install that lists `components` writes `bundle.manifest.json` after the last file lands.
 
 LoRA files are resolved to adapter paths by the server and applied by the shared weight layer. A target that is not a parameter fails the task.
 
 Layout, cache keys, and the dtype policy: [docs/engine_architecture.md](docs/engine_architecture.md).
 
-## Backend selection
+## Backend selection (MLX)
 
-`DANQING_GGML_BACKEND=auto|cpu|cuda|vulkan|metal`. The binary must be built with the matching Cargo feature (`cuda`, `vulkan`, `metal`). A missing feature fails at startup. `auto` tries only compiled backends and does not change the choice during a task. Health returns the selected backend, the reason, and the probe summary. Task logs carry a `[backend]` prefix.
+The product path is **MLX only**: build `danqing-api` with `metal,mlx-metal` (macOS) or `mlx-cuda` (Linux). There is no runtime Python stack and no GGUF product path. `GET /api/system/health` returns the selected backend, the reason, and the probe summary. Task logs carry a `[backend]` prefix.
 
-`scripts/build_ggml_sidecar.sh` enables `metal,mlx-metal` on macOS and `mlx-cuda` on Linux when `nvcc` is present (CUDA toolkit only; no GPU needed to compile). Override with `DANQING_SIDECAR_FEATURES`. CI installs the toolkit via `scripts/ci_install_cuda_ubuntu.sh`.
+`scripts/build_ggml_sidecar.sh` (name is historical) builds the release sidecar with `metal,mlx-metal` on macOS and `mlx-cuda` on Linux when `nvcc` is present (CUDA toolkit only; no GPU needed to compile). Override with `DANQING_SIDECAR_FEATURES`. CI installs the toolkit via `scripts/ci_install_cuda_ubuntu.sh`.
