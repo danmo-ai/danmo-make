@@ -157,47 +157,20 @@
           <DqSlider v-model="params.controlnet_strength" :min="0" :max="2" :step="0.05" class="composer-advanced-fields__slider-grow" />
           <span class="composer-advanced-fields__val">{{ params.controlnet_strength }}</span>
         </div>
-        <div v-if="params.controlnet" class="composer-advanced-fields__asset-row">
+        <div v-if="params.controlnet" class="composer-advanced-fields__inline">
           <label>{{ $t('canvas.controlImage') }}</label>
-          <div v-if="controlImage" class="composer-advanced-fields__thumb">
-            <img :src="controlImage.previewUrl" alt="control" />
-            <DqIconButton type="text" size="sm" :label="$t('common.delete')" @click="$emit('remove-control')">
-              <DqIcon :size="10"><Close /></DqIcon>
-            </DqIconButton>
+          <div class="composer-advanced-fields__control-asset">
+            <div v-if="controlImage" class="composer-advanced-fields__thumb">
+              <img :src="controlImage.previewUrl" alt="control" />
+              <DqIconButton type="text" size="sm" :label="$t('common.delete')" @click="$emit('remove-control')">
+                <DqIcon :size="10"><Close /></DqIcon>
+              </DqIconButton>
+            </div>
+            <DqButton v-else size="sm" type="secondary" @click="$emit('pick-control')">
+              {{ $t('canvas.pickControlImage') }}
+            </DqButton>
           </div>
-          <DqButton v-else size="sm" type="secondary" @click="$emit('pick-control')">
-            {{ $t('canvas.pickControlImage') }}
-          </DqButton>
         </div>
-        <template v-if="showZImageInpaintExtras">
-          <p class="composer-advanced-fields__hint composer-advanced-fields__hint--sub">
-            {{ $t('create.controlInpaintHint') }}
-          </p>
-          <div class="composer-advanced-fields__asset-row">
-            <label>{{ $t('create.inpaintSource') }}</label>
-            <div v-if="inpaintSourceImage" class="composer-advanced-fields__thumb">
-              <img :src="inpaintSourceImage.previewUrl" alt="inpaint source" />
-              <DqIconButton type="text" size="sm" :label="$t('common.delete')" @click="$emit('remove-inpaint-source')">
-                <DqIcon :size="10"><Close /></DqIcon>
-              </DqIconButton>
-            </div>
-            <DqButton v-else size="sm" type="secondary" @click="$emit('pick-inpaint-source')">
-              {{ $t('create.pickInpaintSource') }}
-            </DqButton>
-          </div>
-          <div class="composer-advanced-fields__asset-row">
-            <label>{{ $t('create.inpaintMask') }}</label>
-            <div v-if="inpaintMaskImage" class="composer-advanced-fields__thumb">
-              <img :src="inpaintMaskImage.previewUrl" alt="inpaint mask" />
-              <DqIconButton type="text" size="sm" :label="$t('common.delete')" @click="$emit('remove-inpaint-mask')">
-                <DqIcon :size="10"><Close /></DqIcon>
-              </DqIconButton>
-            </div>
-            <DqButton v-else size="sm" type="secondary" @click="$emit('pick-inpaint-mask')">
-              {{ $t('create.pickInpaintMask') }}
-            </DqButton>
-          </div>
-        </template>
       </div>
     </div>
 
@@ -277,11 +250,8 @@ import { Close, Refresh } from '@danqing/dq-shell';
 import {
   applyControlNetRegistryDefaults,
   controlNetDisplayName,
+  controlNetGuideType,
   controlNetReady,
-  isCannyOrDepthControlNet,
-  isReduxControlNet,
-  isZImageStructuralBaseModel,
-  isZImageUnionControlNet,
 } from '@/composables/useStructuralGuide';
 import {
   type CompatibleLoraRow,
@@ -327,8 +297,6 @@ const props = withDefaults(defineProps<{
   compatibleControlNets?: Record<string, unknown>[];
   controlNetRuntimeAvailable?: boolean;
   controlImage?: { previewUrl: string; path: string } | null;
-  inpaintSourceImage?: { previewUrl: string; path: string } | null;
-  inpaintMaskImage?: { previewUrl: string; path: string } | null;
   showNegativePrompt?: boolean;
   stacked?: boolean;
 }>(), {
@@ -341,10 +309,6 @@ const props = withDefaults(defineProps<{
 defineEmits<{
   (e: 'pick-control'): void;
   (e: 'remove-control'): void;
-  (e: 'pick-inpaint-source'): void;
-  (e: 'remove-inpaint-source'): void;
-  (e: 'pick-inpaint-mask'): void;
-  (e: 'remove-inpaint-mask'): void;
 }>();
 
 const { t: $t } = useI18n();
@@ -413,29 +377,30 @@ const inferenceEnumKeys = computed(() =>
   COMPOSER_INFERENCE_ENUM_KEYS.filter((key) => Boolean(paramSchema.value[key])),
 );
 
-const showZImageInpaintExtras = computed(() => {
+const selectedControlNetRow = computed(() => {
   const key = String(props.params.controlnet || '');
-  return Boolean(key) && isZImageUnionControlNet(key);
+  if (!key) return undefined;
+  return props.compatibleControlNets?.find((n) => String(n.key) === key);
 });
 
 const controlNetStrengthLabel = computed(() => {
-  if (isReduxControlNet(String(props.params.controlnet || ''))) {
+  if (controlNetGuideType(selectedControlNetRow.value) === 'redux') {
     return $t('create.reduxStrengthLabel');
   }
   return $t('create.controlNetStrengthLabel');
 });
 
 const showCompanionLoraHint = computed(() => {
-  const key = String(props.params.controlnet || '');
-  return isCannyOrDepthControlNet(key) && !isZImageStructuralBaseModel(String(props.model || ''));
+  const guide = controlNetGuideType(selectedControlNetRow.value);
+  return guide === 'canny' || guide === 'depth';
 });
 
 const controlNetGuideHint = computed(() => {
-  const key = String(props.params.controlnet || '').toLowerCase();
-  if (key.includes('z-image') && key.includes('union')) return $t('studio.controlnetZImageUnionHint');
-  if (key.includes('fill')) return $t('studio.controlnetFillHint');
-  if (key.includes('depth')) return $t('studio.controlnetDepthHint');
-  if (key.includes('redux')) return $t('studio.controlnetReduxHint');
+  const guide = controlNetGuideType(selectedControlNetRow.value);
+  if (guide === 'auto') return $t('studio.controlnetZImageUnionHint');
+  if (guide === 'fill') return $t('studio.controlnetFillHint');
+  if (guide === 'depth') return $t('studio.controlnetDepthHint');
+  if (guide === 'redux') return $t('studio.controlnetReduxHint');
   return $t('studio.controlnetBundleHint');
 });
 
@@ -596,11 +561,18 @@ watch(
 }
 
 .composer-advanced-fields--stacked .composer-advanced-fields__select,
-.composer-advanced-fields--stacked .composer-advanced-fields__seed {
+.composer-advanced-fields--stacked .composer-advanced-fields__seed,
+.composer-advanced-fields--stacked .composer-advanced-fields__control-asset {
   grid-column: 2 / -1;
   width: 100%;
   min-width: 0;
   max-width: 100%;
+}
+
+.composer-advanced-fields__control-asset {
+  display: flex;
+  align-items: center;
+  min-width: 0;
 }
 
 .composer-advanced-fields--stacked .composer-advanced-fields__field :deep(.dq-slider),

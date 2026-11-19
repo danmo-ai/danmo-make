@@ -253,7 +253,7 @@ impl FacadeSession for ZImageEditSession {
                     prepared.height,
                 )?;
                 let fidelity = prepared.request.source_fidelity.unwrap_or(0.6);
-                let metadata = json!({
+                let mut metadata = json!({
                     "operation": prepared.request.operation,
                     "prompt": prepared.request.prompt,
                     "negative_prompt": prepared.request.negative_prompt,
@@ -269,12 +269,34 @@ impl FacadeSession for ZImageEditSession {
                     "batch_index": index,
                     "batch_count": count,
                 });
+                if !prepared.request.adapters.is_empty() {
+                    metadata["adapters"] = json!(prepared
+                        .request
+                        .adapters
+                        .iter()
+                        .map(|adapter| {
+                            json!({
+                                "id": adapter.id,
+                                "weight": adapter.weight,
+                            })
+                        })
+                        .collect::<Vec<_>>());
+                }
+                if let Some(mask_id) = prepared
+                    .request
+                    .mask_asset_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                {
+                    metadata["mask_asset_id"] = json!(mask_id);
+                }
                 items.push(metadata.clone());
                 let mut artifact =
                     Artifact::png(png, prepared.width as i64, prepared.height as i64, metadata);
                 artifact.source_action = "edit".into();
                 artifact.parent_asset_id = Some(prepared.request.source_asset_id.clone());
-                artifact.relation_type = Some("edit".into());
+                artifact.relation_type = Some(edit_relation_type(&prepared.request));
                 output.artifacts.push(artifact);
                 output.latent_len = latents.len();
             }
@@ -286,6 +308,24 @@ impl FacadeSession for ZImageEditSession {
             output.metadata = metadata;
             Ok(output)
         }
+    }
+}
+
+/// Canvas edge label: prefer client `metadata.relation_type`, else map
+/// known edit ops; rewrite/unknown stay `edit`.
+fn edit_relation_type(request: &ImageEditRequest) -> String {
+    if let Some(relation) = request
+        .metadata
+        .get("relation_type")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        return relation.to_string();
+    }
+    match request.operation.as_str() {
+        "retouch" | "extend" | "upscale" => request.operation.clone(),
+        _ => "edit".into(),
     }
 }
 
@@ -386,6 +426,7 @@ mod tests {
             model: "z-image".into(),
             operation: "rewrite".into(),
             source_asset_id: "ast_src".into(),
+            mask_asset_id: None,
             reference_asset_ids: Vec::new(),
             title: "edit".into(),
             prompt: "make it blue".into(),

@@ -2,17 +2,21 @@
 //!
 //! The three component directories are admitted into `ModelCache`, then
 //! encode, denoise, and decode run on that thread. Guidance 0 and 1 are the
-//! single-forward path. Any other guidance, a negative prompt, and a
-//! structural guide fail instead of being dropped. LoRA is the shared
-//! residual on a clone of the DiT; the compiled graph for that clone is
-//! keyed by the adapter files.
+//! single-forward path. Any other guidance or a negative prompt fails instead
+//! of being dropped. A structural guide with weight > 0 runs the eager DiT
+//! path with ControlNet hint injection (compiled DiT has no control hooks).
+//! LoRA is the shared residual on a clone of the DiT; the compiled graph for
+//! that clone is keyed by the adapter files.
 
 use std::path::{Path, PathBuf};
 
 use danmo_contracts::ImageGenerationRequest;
 use danmo_mlx::{Array, Dtype, Error, Stream};
 
-use super::model::{forward_compiled_with_step_cache, CaptionCache, CompiledCompute};
+use super::control::ControlConditioning;
+use super::model::{
+    forward_cached_with_control, forward_compiled_with_step_cache, CaptionCache, CompiledCompute,
+};
 use super::resident::{self, cache_key};
 use super::step_cache::StepCache;
 use super::MlxZImageConfig;
@@ -23,6 +27,22 @@ use crate::families::{DitDecode, DitImageSession};
 use crate::runtime::GgmlContext;
 use crate::weights::{LoraFile, MlxWeights, WeightError};
 
+pub(crate) struct ControlInpaint {
+    /// Inpaint/source RGB resized to the create size, NCHW n11 planar.
+    pub source_n11: Vec<f32>,
+    /// Pixel-space preserve mask `[H*W]`, 1 = keep source (UI white = repaint inverted).
+    pub preserve_hw: Vec<f32>,
+}
+
+pub(crate) struct ControlGuide {
+    pub controlnet: PathBuf,
+    /// Preprocessed structural map (canny/depth/pose/…) as NCHW n11 planar.
+    /// `None` = DiffSynth inpaint-only: pack control latents as all `-1`.
+    pub image_n11: Option<Vec<f32>>,
+    pub scale: f32,
+    pub inpaint: Option<ControlInpaint>,
+}
+
 pub(crate) struct MlxSession {
     bundle: PathBuf,
     request: ImageGenerationRequest,
@@ -31,6 +51,7 @@ pub(crate) struct MlxSession {
     sigmas: Option<Vec<f32>>,
     width: u32,
     height: u32,
+    control: Option<ControlGuide>,
 }
 
 pub(crate) fn is_mlx_bundle(bundle: &Path) -> bool {
@@ -42,6 +63,7 @@ impl MlxSession {
         bundle: &Path,
         request: &ImageGenerationRequest,
         loras: Vec<LoraFile>,
+        control: Option<ControlGuide>,
     ) -> Result<Self, EngineError> {
         if !is_mlx_bundle(bundle) {
             return Err(EngineError::bad_request(format!(
@@ -59,17 +81,54 @@ impl MlxSession {
                 "MLX Z-Image create does not apply a negative prompt",
             ));
         }
-        if request
-            .structural_guide
-            .as_ref()
-            .is_some_and(|guide| guide.weight > 0.0)
-        {
-            return Err(EngineError::bad_request(
-                "MLX Z-Image create does not apply a structural guide",
-            ));
+        if let Some(guide) = &request.structural_guide {
+            if guide.weight > 0.0 && control.is_none() {
+                return Err(EngineError::bad_request(
+                    "MLX Z-Image structural guide requires a resolved controlnet bundle",
+                ));
+            }
+        }
+        if let Some(ctrl) = &control {
+            if !ctrl.scale.is_finite() || ctrl.scale <= 0.0 {
+                return Err(EngineError::bad_request(format!(
+                    "structural_guide.weight {} must be finite and > 0",
+                    ctrl.scale
+                )));
+            }
+            if ctrl.image_n11.is_none() && ctrl.inpaint.is_none() {
+                return Err(EngineError::bad_request(
+                    "structural guide requires a control image or an inpaint source/mask pair",
+                ));
+            }
         }
         let (width, height) =
             danmo_contracts::parse_size(&request.size).map_err(EngineError::InvalidRequest)?;
+        if let Some(ctrl) = &control {
+            let expected_rgb = 3 * width as usize * height as usize;
+            if let Some(pixels) = &ctrl.image_n11 {
+                if pixels.len() != expected_rgb {
+                    return Err(EngineError::bad_request(format!(
+                        "control image has {} values, expected {expected_rgb} for {width}x{height}",
+                        pixels.len()
+                    )));
+                }
+            }
+            if let Some(inpaint) = &ctrl.inpaint {
+                if inpaint.source_n11.len() != expected_rgb {
+                    return Err(EngineError::bad_request(format!(
+                        "inpaint source has {} values, expected {expected_rgb} for {width}x{height}",
+                        inpaint.source_n11.len()
+                    )));
+                }
+                let expected_mask = width as usize * height as usize;
+                if inpaint.preserve_hw.len() != expected_mask {
+                    return Err(EngineError::bad_request(format!(
+                        "inpaint preserve mask has {} values, expected {expected_mask} for {width}x{height}",
+                        inpaint.preserve_hw.len()
+                    )));
+                }
+            }
+        }
         Ok(Self {
             bundle: bundle.to_path_buf(),
             request: request.clone(),
@@ -78,6 +137,7 @@ impl MlxSession {
             sigmas: None,
             width,
             height,
+            control,
         })
     }
 }
@@ -94,6 +154,9 @@ impl DitImageSession for MlxSession {
         .map_err(from_mlx)?;
         resident::load_text_encoder(&self.bundle.join("text_encoder")).map_err(from_mlx)?;
         resident::load_vae(&self.bundle.join("vae")).map_err(from_mlx)?;
+        if let Some(control) = &self.control {
+            resident::load_controlnet(&control.controlnet, config.patch).map_err(from_mlx)?;
+        }
         self.ids = config.token_ids(&self.bundle, &self.request.prompt)?;
         Ok(())
     }
@@ -130,6 +193,28 @@ impl DitImageSession for MlxSession {
         }
         let text_key = cache_key(&self.bundle.join("text_encoder")).map_err(from_mlx)?;
         let dit_key = cache_key(&self.bundle.join("transformer")).map_err(from_mlx)?;
+        let control_key = self
+            .control
+            .as_ref()
+            .map(|guide| cache_key(&guide.controlnet))
+            .transpose()
+            .map_err(from_mlx)?;
+        let control_image = self
+            .control
+            .as_ref()
+            .and_then(|guide| guide.image_n11.clone());
+        let control_scale = self.control.as_ref().map(|guide| guide.scale);
+        let control_inpaint_source = self
+            .control
+            .as_ref()
+            .and_then(|guide| guide.inpaint.as_ref())
+            .map(|inpaint| inpaint.source_n11.clone());
+        let control_preserve = self
+            .control
+            .as_ref()
+            .and_then(|guide| guide.inpaint.as_ref())
+            .map(|inpaint| inpaint.preserve_hw.clone());
+        let vae_key = cache_key(&self.bundle.join("vae")).map_err(from_mlx)?;
         let ids = self.ids.clone();
         let width = self.width;
         let height = self.height;
@@ -142,6 +227,12 @@ impl DitImageSession for MlxSession {
                     cache,
                     &text_key,
                     &dit_key,
+                    &vae_key,
+                    control_key.as_ref(),
+                    control_image.as_deref(),
+                    control_scale,
+                    control_inpaint_source.as_deref(),
+                    control_preserve.as_deref(),
                     &ids,
                     width,
                     height,
@@ -165,6 +256,8 @@ impl DitImageSession for MlxSession {
         let width = self.width;
         let height = self.height;
         let latents = latents.to_vec();
+        // Diffusers / VideoX ControlNet inpaint: no post-decode hard composite —
+        // preserve is carried by the 33-ch mask + inpaint latents alone.
         let pixels = crate::runtime::mlx_executor()
             .map_err(from_mlx)?
             .execute("z_image mlx decode", move |_, stream, cache, _| {
@@ -207,10 +300,143 @@ fn attach_dit_lora(
         .map_err(|error| Error::new("Z-Image LoRA", error.to_string()))
 }
 
+fn encode_control_rgb(
+    pixels: &[f32],
+    width: u32,
+    height: u32,
+    vae: &MlxWeights,
+    stream: &Stream,
+) -> danmo_mlx::Result<Array> {
+    let image = Array::from_f32_slice(pixels, &[1, 3, height as i32, width as i32])?;
+    let latent = crate::common::vae::mlx::encode(vae, &vae_spec(), &image, stream)?;
+    if latent.shape().len() == 4 {
+        Ok(latent)
+    } else if latent.shape().len() == 3 {
+        latent.reshape(
+            &[
+                1,
+                latent.shape()[0],
+                latent.shape()[1],
+                latent.shape()[2],
+            ],
+            stream,
+        )
+    } else {
+        Err(Error::new(
+            "Z-Image control",
+            format!("vae encode returned unexpected shape {:?}", latent.shape()),
+        ))
+    }
+}
+
+/// DiffSynth `ZImageUnit_PAIControlNet`: when `controlnet_input.image` is
+/// absent, `control_latents = ones([1,16,H,W]) * -1` (not mid-gray RGB, not
+/// the photo VAE encode).
+fn control_latents_absent(
+    latent_h: i32,
+    latent_w: i32,
+    dtype: Dtype,
+    stream: &Stream,
+) -> danmo_mlx::Result<Array> {
+    Array::from_f32_slice(&[-1.0], &[])?
+        .astype(dtype, stream)?
+        .broadcast_to(&[1, 16, latent_h, latent_w], stream)
+}
+
+/// Zero repaint pixels in NCHW n11 RGB (preserve=1 keep, 0 → mid-gray 0.0).
+fn mask_inpaint_source_n11(
+    source_n11: &[f32],
+    preserve_hw: &[f32],
+    width: usize,
+    height: usize,
+) -> danmo_mlx::Result<Vec<f32>> {
+    let plane = width * height;
+    if source_n11.len() != plane * 3 {
+        return Err(Error::new(
+            "Z-Image control",
+            format!(
+                "inpaint source has {} values, expected {} for {width}x{height}",
+                source_n11.len(),
+                plane * 3
+            ),
+        ));
+    }
+    if preserve_hw.len() != plane {
+        return Err(Error::new(
+            "Z-Image control",
+            format!(
+                "preserve mask has {} values, expected {plane} for {width}x{height}",
+                preserve_hw.len()
+            ),
+        ));
+    }
+    let mut out = source_n11.to_vec();
+    for channel in 0..3 {
+        let base = channel * plane;
+        for i in 0..plane {
+            out[base + i] *= preserve_hw[i].clamp(0.0, 1.0);
+        }
+    }
+    Ok(out)
+}
+
+/// Box-average pixel preserve mask down to latent HxW.
+fn downsample_preserve_mask(
+    preserve_hw: &[f32],
+    width: usize,
+    height: usize,
+    latent_w: usize,
+    latent_h: usize,
+    _stream: &Stream,
+) -> danmo_mlx::Result<Array> {
+    if preserve_hw.len() != width * height {
+        return Err(Error::new(
+            "Z-Image control",
+            format!(
+                "preserve mask has {} values, expected {}",
+                preserve_hw.len(),
+                width * height
+            ),
+        ));
+    }
+    if latent_w == 0 || latent_h == 0 || width % latent_w != 0 || height % latent_h != 0 {
+        return Err(Error::new(
+            "Z-Image control",
+            format!(
+                "cannot downsample preserve mask {width}x{height} to latent {latent_w}x{latent_h}"
+            ),
+        ));
+    }
+    let scale_x = width / latent_w;
+    let scale_y = height / latent_h;
+    let mut out = vec![0f32; latent_w * latent_h];
+    let area = (scale_x * scale_y) as f32;
+    for ly in 0..latent_h {
+        for lx in 0..latent_w {
+            let mut sum = 0f32;
+            for oy in 0..scale_y {
+                for ox in 0..scale_x {
+                    let y = ly * scale_y + oy;
+                    let x = lx * scale_x + ox;
+                    sum += preserve_hw[y * width + x];
+                }
+            }
+            out[ly * latent_w + lx] = sum / area;
+        }
+    }
+    Array::from_f32_slice(&out, &[1, 1, latent_h as i32, latent_w as i32])
+}
+
 fn denoise(
     cache: &mut danmo_mlx::ModelCache,
     text_key: &danmo_mlx::CacheKey,
     dit_key: &danmo_mlx::CacheKey,
+    vae_key: &danmo_mlx::CacheKey,
+    control_key: Option<&danmo_mlx::CacheKey>,
+    control_image: Option<&[f32]>,
+    control_scale: Option<f32>,
+    control_inpaint_source: Option<&[f32]>,
+    control_preserve: Option<&[f32]>,
     ids: &[i32],
     width: u32,
     height: u32,
@@ -243,6 +469,96 @@ fn denoise(
     let weights = resident_weights(cache, dit_key, "transformer")?.clone();
     let weights = attach_dit_lora(weights, loras, config.patch, stream)?;
     let caption_cache = CaptionCache::new(&weights, config, grid, &caption, stream)?;
+    let control_active = control_key.is_some();
+    let control_weights = match control_key {
+        Some(key) => Some(resident_weights(cache, key, "controlnet")?.clone()),
+        None => None,
+    };
+    // DiffSynth / Diffusers Fun ControlNet Union: pack
+    // [control(16), preserve_mask(1), holed_inpaint(16)]. Denoise from pure
+    // noise — no per-step latent blend and no post-decode hard composite.
+    // DiffSynth inpaint-only (no pose/canny): control latents = ones * -1.
+    let control_context = if let (Some(_), Some(_)) = (control_key, control_scale) {
+        let expected = 3 * width as usize * height as usize;
+        if let Some(pixels) = control_image {
+            if pixels.len() != expected {
+                return Err(Error::new(
+                    "Z-Image control",
+                    format!(
+                        "control image has {} values, expected {expected} for {width}x{height}",
+                        pixels.len()
+                    ),
+                ));
+            }
+        }
+        let vae = resident_weights(cache, vae_key, "vae")?.clone();
+        let context = match (control_inpaint_source, control_preserve) {
+            (Some(source_pixels), Some(preserve_hw)) => {
+                if source_pixels.len() != expected {
+                    return Err(Error::new(
+                        "Z-Image control",
+                        format!(
+                            "inpaint source has {} values, expected {expected} for {width}x{height}",
+                            source_pixels.len()
+                        ),
+                    ));
+                }
+                let masked_source = mask_inpaint_source_n11(
+                    source_pixels,
+                    preserve_hw,
+                    width as usize,
+                    height as usize,
+                )?;
+                let inpaint_latent =
+                    encode_control_rgb(&masked_source, width, height, &vae, stream)?;
+                let latent_h = inpaint_latent.shape()[2];
+                let latent_w = inpaint_latent.shape()[3];
+                let control_latent = match control_image {
+                    Some(pixels) => encode_control_rgb(pixels, width, height, &vae, stream)?,
+                    None => control_latents_absent(
+                        latent_h,
+                        latent_w,
+                        inpaint_latent.dtype(),
+                        stream,
+                    )?,
+                };
+                let mask = downsample_preserve_mask(
+                    preserve_hw,
+                    width as usize,
+                    height as usize,
+                    latent_w as usize,
+                    latent_h as usize,
+                    stream,
+                )?;
+                super::control::build_control_context_inpaint_nchw(
+                    &control_latent,
+                    &mask,
+                    &inpaint_latent,
+                    stream,
+                )?
+            }
+            (None, None) => {
+                let pixels = control_image.ok_or_else(|| {
+                    Error::new(
+                        "Z-Image control",
+                        "structural control image required when inpaint is not set",
+                    )
+                })?;
+                let control_latent = encode_control_rgb(pixels, width, height, &vae, stream)?;
+                super::control::build_control_context_nchw(&control_latent, stream)?
+            }
+            _ => {
+                return Err(Error::new(
+                    "Z-Image control",
+                    "inpaint source and preserve mask must both be set",
+                ));
+            }
+        };
+        context.eval()?;
+        Some(context)
+    } else {
+        None
+    };
     let lora_key = lora_cache_tag(loras);
     let compiled_key = danmo_mlx::CacheKey {
         id: format!(
@@ -251,7 +567,7 @@ fn denoise(
         ),
         revision: dit_key.revision,
     };
-    if cache.get::<CompiledCompute>(&compiled_key)?.is_none() {
+    if !control_active && cache.get::<CompiledCompute>(&compiled_key)?.is_none() {
         let compiled = CompiledCompute::new(&weights, config, grid, stream)?;
         let bytes = weights.nbytes();
         cache.insert(compiled_key.clone(), compiled, bytes)?;
@@ -285,7 +601,8 @@ fn denoise(
                 .astype(Dtype::BFloat16, stream)?;
             let noise = noise.astype(Dtype::BFloat16, stream)?;
             let sigma = sigmas[0];
-            let keep = Array::from_f32_slice(&[1.0 - sigma], &[])?.astype(Dtype::BFloat16, stream)?;
+            let keep =
+                Array::from_f32_slice(&[1.0 - sigma], &[])?.astype(Dtype::BFloat16, stream)?;
             let mix = Array::from_f32_slice(&[sigma], &[])?.astype(Dtype::BFloat16, stream)?;
             Array::add(
                 &Array::multiply(&reference, &keep, stream)?,
@@ -315,7 +632,28 @@ fn denoise(
         }
         exec.progress("denoise", step_index as u32, total)
             .map_err(|error| Error::new("Z-Image denoise", error.to_string()))?;
-        let velocity = {
+        let velocity = if let (Some(control_weights), Some(context), Some(scale)) = (
+            control_weights.as_ref(),
+            control_context.as_ref(),
+            control_scale,
+        ) {
+            forward_cached_with_control(
+                &weights,
+                config,
+                grid,
+                &current,
+                &caption_cache,
+                sigmas[step_index],
+                &mut step_cache,
+                step_index,
+                ControlConditioning {
+                    weights: control_weights,
+                    context,
+                    scale,
+                },
+                stream,
+            )?
+        } else {
             let compiled = cache
                 .get::<CompiledCompute>(&compiled_key)?
                 .ok_or_else(|| {
@@ -577,6 +915,7 @@ pub(crate) fn denoise_reference(
     resident::load_text_encoder(&bundle.join("text_encoder")).map_err(from_mlx)?;
     let text_key = cache_key(&bundle.join("text_encoder")).map_err(from_mlx)?;
     let dit_key = cache_key(&bundle.join("transformer")).map_err(from_mlx)?;
+    let vae_key = cache_key(&bundle.join("vae")).map_err(from_mlx)?;
     let ids = ids.to_vec();
     let reference = reference.to_vec();
     let sigmas = sigmas.to_vec();
@@ -589,6 +928,12 @@ pub(crate) fn denoise_reference(
                 cache,
                 &text_key,
                 &dit_key,
+                &vae_key,
+                None,
+                None,
+                None,
+                None,
+                None,
                 &ids,
                 width,
                 height,
@@ -719,6 +1064,36 @@ mod tests {
         assert!(!should_emit_preview(3, 9, 2));
     }
 
+    #[test]
+    fn absent_control_latents_are_neg_one() {
+        let stream = Stream::cpu().unwrap();
+        let latents =
+            super::control_latents_absent(2, 3, danmo_mlx::Dtype::Float32, &stream).unwrap();
+        latents.eval().unwrap();
+        assert_eq!(latents.shape(), vec![1, 16, 2, 3]);
+        let values = latents.to_vec_f32(&stream).unwrap();
+        assert!(values.iter().all(|v| (*v + 1.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn inpaint_source_zeros_repaint_pixels() {
+        // NCHW 2x2 RGB: channel 0 all 1.0, others 0.5; preserve keeps left column.
+        let source = vec![
+            1.0, 1.0, 1.0, 1.0, // R
+            0.5, 0.5, 0.5, 0.5, // G
+            0.5, 0.5, 0.5, 0.5, // B
+        ];
+        let preserve = vec![1.0, 0.0, 1.0, 0.0];
+        let out = super::mask_inpaint_source_n11(&source, &preserve, 2, 2).unwrap();
+        assert_eq!(out[0], 1.0);
+        assert_eq!(out[1], 0.0);
+        assert_eq!(out[2], 1.0);
+        assert_eq!(out[3], 0.0);
+        assert_eq!(out[4], 0.5);
+        assert_eq!(out[5], 0.0);
+        assert!(super::mask_inpaint_source_n11(&source, &[1.0], 2, 2).is_err());
+    }
+
     fn write_shard(path: &Path) {
         let values = [0.5f32; 4];
         let array = Array::from_f32_slice(&values, &[1, 4]).unwrap();
@@ -752,7 +1127,7 @@ mod tests {
         std::fs::write(bundle.join("tokenizer.json"), r#"{"vocab":{"red":1}}"#).unwrap();
         assert!(is_mlx_bundle(&bundle));
 
-        let mut session = MlxSession::prepare(&bundle, &request(), Vec::new()).unwrap();
+        let mut session = MlxSession::prepare(&bundle, &request(), Vec::new(), None).unwrap();
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
         session.encode(&ctx).unwrap();
         let again = super::resident::load_transformer(
@@ -802,7 +1177,7 @@ mod tests {
             "scheduler": "linear"
         }))
         .unwrap();
-        let mut session = MlxSession::prepare(&bundle, &request, Vec::new()).unwrap();
+        let mut session = MlxSession::prepare(&bundle, &request, Vec::new(), None).unwrap();
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
         session.encode(&ctx).unwrap();
         session.schedule().unwrap();

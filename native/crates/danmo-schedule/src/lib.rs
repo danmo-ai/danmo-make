@@ -173,8 +173,10 @@ impl Scheduler {
         kind: Option<&str>,
         limit: i64,
         offset: i64,
+        exclude_upload_refs: bool,
     ) -> Result<(Vec<AssetRow>, i64), StoreError> {
-        self.lock().list_assets(kind, limit, offset)
+        self.lock()
+            .list_assets(kind, limit, offset, exclude_upload_refs)
     }
 
     pub fn delete_asset(&self, id: &str) -> Result<Option<AssetRow>, StoreError> {

@@ -21,6 +21,18 @@ const options: I18nOptions = {
 
 const i18n = createI18n(options);
 
+// JSON locale HMR: createI18n captures messages once; merge on accept so new keys show up.
+if (import.meta.hot) {
+  import.meta.hot.accept('@/locales/zh.json', (mod) => {
+    const next = (mod as { default?: typeof zhMessages } | undefined)?.default;
+    if (next) i18n.global.setLocaleMessage('zh', next);
+  });
+  import.meta.hot.accept('@/locales/en.json', (mod) => {
+    const next = (mod as { default?: typeof enMessages } | undefined)?.default;
+    if (next) i18n.global.setLocaleMessage('en', next);
+  });
+}
+
 export default i18n;
 
 /** Get current locale string */

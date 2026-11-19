@@ -175,6 +175,7 @@ mod tests {
             use_empirical_mu: false,
             adapters: Vec::new(),
             structural_guide: None,
+            metadata: serde_json::json!({}),
             preview: true,
             priority: "normal".into(),
         }

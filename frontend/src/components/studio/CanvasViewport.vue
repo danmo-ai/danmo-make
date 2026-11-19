@@ -329,17 +329,20 @@ function onViewportMouseDown(e: MouseEvent) {
   const cx = e.clientX - rect.left;
   const cy = e.clientY - rect.top;
 
+  // Empty left-drag pans. Shift+left-drag marquees.
+  // Middle-button / Space / ⌘·Ctrl also pan (Space/⌘ still needed over nodes).
+  const wantMarquee = e.button === 0 && e.shiftKey && !spaceHeld.value;
   const panGesture =
     e.button === 1 ||
-    (e.button === 0 && (e.ctrlKey || e.metaKey)) ||
-    (e.button === 0 && spaceHeld.value);
+    (e.button === 0 && (spaceHeld.value || e.ctrlKey || e.metaKey || !wantMarquee));
 
-  if (panGesture) {
+  if (panGesture && !wantMarquee) {
     isPanning.value = true;
     panStartX = e.clientX;
     panStartY = e.clientY;
     panStartPanX = props.viewport.panX;
     panStartPanY = props.viewport.panY;
+    e.preventDefault();
 
     const onMove = (ev: MouseEvent) => {
       if (!isPanning.value) return;
@@ -359,7 +362,7 @@ function onViewportMouseDown(e: MouseEvent) {
     return;
   }
 
-  if (e.button === 0) {
+  if (wantMarquee) {
     isMarquee = true;
     marqueeStartX = cx;
     marqueeStartY = cy;
@@ -466,7 +469,7 @@ defineExpose({ viewportRef });
   inset: 0;
   overflow: hidden;
   background: var(--dq-fill-dim);
-  cursor: default;
+  cursor: grab;
 }
 
 .canvas-viewport--space-pan {

@@ -1,0 +1,19 @@
+{
+  "gate": "z_image_controlnet_union_create_e2e",
+  "status": "passed",
+  "date": "2026-11-19",
+  "task_id": "a1699df0-c87f-491f-bf20-2dcc715ac6b6",
+  "model": "z-image-turbo:fp16",
+  "controlnet": "z-image-turbo-fun-controlnet-union:8steps",
+  "size": "256x256",
+  "steps": 4,
+  "seed": 42,
+  "guide": {
+    "type": "canny",
+    "weight": 0.75,
+    "asset_id": "ast_2b363d61fa574dffa13f"
+  },
+  "primary_asset_id": "ast_2f7003309b0b4d818417",
+  "output": "tests/parity/evidence/controlnet-union-e2e-2026-11-19.png",
+  "notes": "Eager DiT + ControlNet hint injection; compiled path skipped when guide.weight>0. Preprocessed control RGB resized to create size (no host canny/depth yet)."
+}

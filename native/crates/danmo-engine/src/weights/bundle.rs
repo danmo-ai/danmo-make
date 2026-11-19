@@ -94,6 +94,15 @@ pub fn is_safetensors_image_bundle(dir: &Path) -> bool {
             .all(|role| contains_extension(&dir.join(role), "safetensors"))
 }
 
+/// ControlNet (or similar) adapter directory: one or more top-level
+/// `*.safetensors` files without the full image create layout.
+pub fn is_controlnet_safetensors_dir(dir: &Path) -> bool {
+    if !dir.is_dir() || is_safetensors_image_bundle(dir) || contains_gguf(dir) {
+        return false;
+    }
+    contains_extension(dir, "safetensors")
+}
+
 /// ACE-Step 1.5 safetensors tree: `vae/`, `Qwen3-Embedding-0.6B/`, and an XL
 /// DiT directory (this directory or one child) with `model.safetensors.index.json`.
 pub fn is_ace_step_safetensors_bundle(dir: &Path) -> bool {

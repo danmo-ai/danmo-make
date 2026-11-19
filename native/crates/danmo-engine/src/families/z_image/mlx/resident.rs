@@ -48,6 +48,12 @@ pub fn load_vae(directory: &Path) -> Result<ResidentReport> {
     })
 }
 
+pub fn load_controlnet(directory: &Path, patch: i64) -> Result<ResidentReport> {
+    admit(directory, "z_image resident controlnet", move |path, _| {
+        super::control::load_directory(path, patch, WeightDtype::Native)
+    })
+}
+
 pub(crate) fn cache_key(directory: &Path) -> Result<CacheKey> {
     Ok(CacheKey {
         id: cache_id(directory)?,

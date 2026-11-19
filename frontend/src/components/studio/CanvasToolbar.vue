@@ -2,107 +2,119 @@
   <div class="canvas-toolbar">
     <span class="canvas-toolbar__title">{{ $t('canvas.viewToolsLabel') }}</span>
     <div class="canvas-toolbar__group">
-      <DqIconButton
-        type="text"
-        size="sm"
-        :label="$t('canvas.fitAll')"
-        @click="$emit('fit-all')"
-      >
-        <DqIcon :size="14"><Grid /></DqIcon>
-      </DqIconButton>
-      <DqIconButton
-        type="text"
-        size="sm"
-        :disabled="zoom <= 0.11"
-        :label="'-'"
-        @click="$emit('update:zoom', Math.max(0.1, zoom - 0.2))"
-      >
-        <span class="canvas-toolbar__zoom-out-icon">&minus;</span>
-      </DqIconButton>
-      <span class="canvas-toolbar__zoom-label">{{ Math.round(zoom * 100) }}%</span>
-      <DqIconButton
-        type="text"
-        size="sm"
-        :disabled="zoom >= 4.9"
-        :label="'+'"
-        @click="$emit('update:zoom', Math.min(5, zoom + 0.2))"
-      >
-        <DqIcon :size="14"><ZoomIn /></DqIcon>
-      </DqIconButton>
-      <DqIconButton
-        type="text"
-        size="sm"
-        :label="$t('canvas.resetView')"
-        @click="$emit('reset-view')"
-      >
-        <DqIcon :size="14"><Refresh /></DqIcon>
-      </DqIconButton>
-    </div>
-    <div class="canvas-toolbar__group">
-      <DqIconButton
-        type="text"
-        size="sm"
-        class="canvas-toolbar__btn--accent"
-        :label="$t('studio.openComposer')"
-        @click="$emit('open-composer')"
-      >
-        <DqIcon :size="14"><MagicStick /></DqIcon>
-      </DqIconButton>
-      <DqIconButton
-        type="text"
-        size="sm"
-        class="canvas-toolbar__btn--accent"
-        :label="$t('canvas.importWorks')"
-        @click="$emit('open-gallery-picker')"
-      >
-        <DqIcon :size="14"><Plus /></DqIcon>
-      </DqIconButton>
-      <DqIconButton
-        type="text"
-        size="sm"
-        :class="{ 'canvas-toolbar__btn--active': graphOpen }"
-        :aria-pressed="!!graphOpen"
-        :label="$t('canvas.sessionGraph')"
-        @click="$emit('toggle-graph')"
-      >
-        <DqIcon :size="14"><Document /></DqIcon>
-      </DqIconButton>
-      <DqIconButton
-        type="text"
-        size="sm"
-        :class="{ 'canvas-toolbar__btn--active': edgesOpen }"
-        :aria-pressed="!!edgesOpen"
-        :label="$t('canvas.showEdges')"
-        @click="$emit('toggle-edges')"
-      >
-        <DqIcon :size="14"><Grid /></DqIcon>
-      </DqIconButton>
-      <DqIconButton
-        type="text"
-        size="sm"
-        :class="{ 'canvas-toolbar__btn--active': guidesOpen }"
-        :aria-pressed="!!guidesOpen"
-        :label="$t('canvas.regionGuides')"
-        @click="$emit('toggle-guides')"
-      >
-        <DqIcon :size="14"><Aim /></DqIcon>
-      </DqIconButton>
-      <DqIconButton
-        type="text"
-        size="sm"
-        :label="$t('canvas.layers')"
-        @click="$emit('toggle-layers')"
-      >
-        <DqIcon :size="14"><Menu /></DqIcon>
-      </DqIconButton>
-      <DqDropdown trigger="click" size="sm" @command="onMoreCommand">
+      <ComposerIconTip :content="$t('canvas.fitAll')">
         <DqIconButton
           type="text"
           size="sm"
-          :label="$t('canvas.moreMenu')"
+          :label="$t('canvas.fitAll')"
+          @click="$emit('fit-all')"
         >
-          <DqIcon :size="14"><Menu /></DqIcon>
+          <DqIcon :size="14"><Maximize2 /></DqIcon>
         </DqIconButton>
+      </ComposerIconTip>
+      <ComposerIconTip :content="$t('gallery.zoomOut')">
+        <DqIconButton
+          type="text"
+          size="sm"
+          :disabled="zoom <= 0.11"
+          :label="$t('gallery.zoomOut')"
+          @click="$emit('update:zoom', Math.max(0.1, zoom - 0.2))"
+        >
+          <span class="canvas-toolbar__zoom-out-icon">&minus;</span>
+        </DqIconButton>
+      </ComposerIconTip>
+      <span class="canvas-toolbar__zoom-label">{{ Math.round(zoom * 100) }}%</span>
+      <ComposerIconTip :content="$t('gallery.zoomIn')">
+        <DqIconButton
+          type="text"
+          size="sm"
+          :disabled="zoom >= 4.9"
+          :label="$t('gallery.zoomIn')"
+          @click="$emit('update:zoom', Math.min(5, zoom + 0.2))"
+        >
+          <DqIcon :size="14"><ZoomIn /></DqIcon>
+        </DqIconButton>
+      </ComposerIconTip>
+    </div>
+    <div class="canvas-toolbar__group">
+      <ComposerIconTip :content="$t('studio.openComposer')">
+        <DqIconButton
+          type="text"
+          size="sm"
+          class="canvas-toolbar__btn--accent"
+          :label="$t('studio.openComposer')"
+          @click="$emit('open-composer')"
+        >
+          <DqIcon :size="14"><MagicStick /></DqIcon>
+        </DqIconButton>
+      </ComposerIconTip>
+      <ComposerIconTip :content="$t('canvas.importWorks')">
+        <DqIconButton
+          type="text"
+          size="sm"
+          class="canvas-toolbar__btn--accent"
+          :label="$t('canvas.importWorks')"
+          @click="$emit('open-gallery-picker')"
+        >
+          <DqIcon :size="14"><Plus /></DqIcon>
+        </DqIconButton>
+      </ComposerIconTip>
+      <ComposerIconTip :content="$t('canvas.sessionGraph')">
+        <DqIconButton
+          type="text"
+          size="sm"
+          :class="{ 'canvas-toolbar__btn--active': graphOpen }"
+          :aria-pressed="!!graphOpen"
+          :label="$t('canvas.sessionGraph')"
+          @click="$emit('toggle-graph')"
+        >
+          <DqIcon :size="14"><Document /></DqIcon>
+        </DqIconButton>
+      </ComposerIconTip>
+      <ComposerIconTip :content="$t('canvas.showEdges')">
+        <DqIconButton
+          type="text"
+          size="sm"
+          :class="{ 'canvas-toolbar__btn--active': edgesOpen }"
+          :aria-pressed="!!edgesOpen"
+          :label="$t('canvas.showEdges')"
+          @click="$emit('toggle-edges')"
+        >
+          <DqIcon :size="14"><Link /></DqIcon>
+        </DqIconButton>
+      </ComposerIconTip>
+      <ComposerIconTip :content="$t('canvas.regionGuides')">
+        <DqIconButton
+          type="text"
+          size="sm"
+          :class="{ 'canvas-toolbar__btn--active': guidesOpen }"
+          :aria-pressed="!!guidesOpen"
+          :label="$t('canvas.regionGuides')"
+          @click="$emit('toggle-guides')"
+        >
+          <DqIcon :size="14"><Aim /></DqIcon>
+        </DqIconButton>
+      </ComposerIconTip>
+      <ComposerIconTip :content="$t('canvas.layers')">
+        <DqIconButton
+          type="text"
+          size="sm"
+          :label="$t('canvas.layers')"
+          @click="$emit('toggle-layers')"
+        >
+          <DqIcon :size="14"><ListOrdered /></DqIcon>
+        </DqIconButton>
+      </ComposerIconTip>
+      <DqDropdown trigger="click" size="sm" @command="onMoreCommand">
+        <ComposerIconTip :content="$t('canvas.moreMenu')">
+          <DqIconButton
+            type="text"
+            size="sm"
+            :label="$t('canvas.moreMenu')"
+          >
+            <DqIcon :size="14"><MoreFilled /></DqIcon>
+          </DqIconButton>
+        </ComposerIconTip>
         <template #dropdown>
           <DqDropdownMenu>
             <DqDropdownItem command="import-json">
@@ -164,7 +176,18 @@
 </template>
 
 <script setup lang="ts">
-import { Grid, ZoomIn, Refresh, Menu, Document, Plus, Aim, MagicStick } from '@danqing/dq-shell';
+import {
+  Aim,
+  Document,
+  Link,
+  ListOrdered,
+  MagicStick,
+  Maximize2,
+  MoreFilled,
+  Plus,
+  ZoomIn,
+} from '@danqing/dq-shell';
+import ComposerIconTip from '@/components/studio/ComposerIconTip.vue';
 
 defineProps<{
   zoom: number;
@@ -176,7 +199,6 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'update:zoom', zoom: number, cx?: number, cy?: number): void;
   (e: 'fit-all'): void;
-  (e: 'reset-view'): void;
   (e: 'toggle-layers'): void;
   (e: 'toggle-graph'): void;
   (e: 'toggle-edges'): void;

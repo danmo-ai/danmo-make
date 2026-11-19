@@ -9680,17 +9680,34 @@
         ]
       },
       "python_baseline_status": "registry_declared",
-      "rust_driver_status": "unstarted",
-      "metal_parity": "pending",
+      "rust_driver_status": "in_progress",
+      "metal_parity": "passed",
       "cuda_parity": "pending",
-      "metal_performance": "pending",
-      "metal_peak_memory": "pending",
+      "metal_performance": "passed",
+      "metal_peak_memory": {
+        "status": "passed",
+        "rust_bytes": 26281981652,
+        "note": "single-process rewrite warm peak; main peak from fixture memory.peak not a formal resident compare",
+        "evidence": "tests/parity/evidence/zimage-rewrite-turbo-fp16-warm-gate-2026-11-19.json"
+      },
       "cuda_performance": "pending",
       "cuda_peak_memory": "pending",
-      "e2e": "pending",
+      "e2e": "passed",
       "route": "pending",
-      "evidence": [],
-      "notes": []
+      "evidence": [
+        "native/crates/danmo-engine/src/families/z_image/edit_session.rs",
+        "native/crates/danmo-engine/src/families/z_image/mlx/session.rs",
+        "families::z_image::mlx::model::tests::real_zimage_rewrite_matches_main_latents_and_pixels (mlx-metal, --ignored)",
+        "2026-11-19 out/parity-zimage-rewrite-16x16.json SHA-256 c7d706ddb83e592d5c34bcaa00f7326ea8de45bc45b2c4c4df686881f1d295a3: blend/velocities/step_latents/denoised/RGB bit-exact vs danmo-make main on Metal; encode max abs 0.006 (16x16 gate 0.02)",
+        "2026-11-19 out/parity-zimage-rewrite-256x256.json SHA-256 3d85530c86778c4ea4975ec84920caa71ecbd63b584c060c1c201c9dfb99dcef: DiT rewrite path bit-exact vs main; VAE encode observational only (Metal BF16 encode not bit-stable main-vs-main)",
+        "2026-11-19 API E2E rewrite task 17481890-1e62-40e8-b7e5-4020fffcb95c completed; evidence tests/parity/evidence/zimage-rewrite-turbo-fp16-p4-2026-11-19.{json,png}",
+        "2026-11-19 rewrite warm gate PASSED on Metal 256x256: rust/main p50 denoise=0.995 vae=0.852 total=0.991; tests/parity/evidence/zimage-rewrite-turbo-fp16-warm-gate-2026-11-19.json; main fixture SHA-256 04d6a737c1a671fdb797e9cdbaf4c443f44c4ff2fb59759cb8d2994a76dedd79"
+      ],
+      "notes": [
+        "Parity injects fixture VAE-encoded latent into DiT (create-style fixed latent); production API path still encodes live.",
+        "Do not mark quant rewrite rows from this fp16 evidence.",
+        "metal_performance passed on 256x256 warm multipass (not 768x1280)."
+      ]
     },
     {
       "model_id": "z-image-turbo",
@@ -10152,17 +10169,63 @@
         ]
       },
       "python_baseline_status": "registry_declared",
-      "rust_driver_status": "unstarted",
+      "rust_driver_status": "in_progress",
       "metal_parity": "pending",
       "cuda_parity": "pending",
       "metal_performance": "pending",
       "metal_peak_memory": "pending",
       "cuda_performance": "pending",
       "cuda_peak_memory": "pending",
-      "e2e": "pending",
-      "route": "pending",
-      "evidence": [],
-      "notes": []
+      "e2e": "passed",
+      "route": "passed",
+      "evidence": [
+        "tests/parity/evidence/controlnet-union-e2e.json",
+        "tests/parity/evidence/controlnet-union-e2e-2026-11-19.png"
+      ],
+      "notes": [
+        "2026-11-19 Metal create E2E: structural_guide canny weight=0.75 on z-image-turbo:fp16 256²/4 steps; task a1699df0-… completed. Eager DiT + ControlNet hints (compiled path skipped). No metal_parity/performance yet. Host canny/depth preprocess not in-engine (preprocessed control RGB).",
+        "2026-11-19 registry catalog.binding/guide_type/supports_inpaint/allows_with_reference; actions create+retouch; create scope keeps dual-action nets; UI config-driven (no name heuristics).",
+        "2026-11-19 Metal inpaint E2E: structural_guide auto + inpaint source/mask on z-image-turbo:fp16 256²/4 steps; task 538284ce-… completed. Evidence tests/parity/evidence/controlnet-union-inpaint-e2e.json. No metal_parity/performance yet."
+      ]
+    },
+    {
+      "model_id": "z-image-turbo-fun-controlnet-union",
+      "version": "8steps",
+      "family": "z_image",
+      "media": "image",
+      "action": "retouch",
+      "architecture_variant": "unclassified",
+      "quant": "8steps",
+      "default_version": true,
+      "source_type": "full",
+      "repo_id": "PAI/Z-Image-Turbo-Fun-Controlnet-Union-2.1",
+      "local_path": "models/ControlNet/z-image-turbo-fun-controlnet-union-2.1-8steps",
+      "adapters_options": {
+        "lora_support": false,
+        "media_roles": [],
+        "declared_parameters": [
+          "controlnet_strength",
+          "guidance",
+          "steps"
+        ]
+      },
+      "python_baseline_status": "registry_declared",
+      "rust_driver_status": "in_progress",
+      "metal_parity": "pending",
+      "cuda_parity": "pending",
+      "metal_performance": "pending",
+      "metal_peak_memory": "pending",
+      "cuda_performance": "pending",
+      "cuda_peak_memory": "pending",
+      "e2e": "passed",
+      "route": "passed",
+      "evidence": [
+        "tests/parity/evidence/controlnet-union-inpaint-e2e.json",
+        "tests/parity/evidence/controlnet-union-inpaint-e2e-2026-11-19.png"
+      ],
+      "notes": [
+        "2026-11-19 companion retouch = create + structural_guide inpaint (not ImageEdit). Task 538284ce-… completed. Canvas UI submits base + Union; Fill standalone edits remain unstarted."
+      ]
     }
   ]
 }

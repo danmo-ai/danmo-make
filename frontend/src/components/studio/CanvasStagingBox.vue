@@ -5,7 +5,7 @@
     :class="{ 'canvas-staging--active': active }"
     :style="boxStyle"
   >
-    <div class="canvas-staging__body" @mousedown.stop="onMoveStart">
+    <div class="canvas-staging__body" @mousedown="onMoveStart">
       <span class="canvas-staging__label">{{ $t('canvas.stagingLabel') }}</span>
       <span class="canvas-staging__hint">{{ $t('canvas.stagingHint') }}</span>
       <DqButton
@@ -62,7 +62,10 @@ let originH = 0;
 const zoomFactor = () => Math.max(0.1, props.zoom ?? 1);
 
 function onMoveStart(e: MouseEvent) {
+  // Let viewport pan handle middle-click / ⌘·Ctrl; Space is handled via grab cursor path.
+  if (e.button === 1 || e.ctrlKey || e.metaKey) return;
   if (e.button !== 0) return;
+  e.stopPropagation();
   dragging = true;
   startX = e.clientX;
   startY = e.clientY;
@@ -74,6 +77,7 @@ function onMoveStart(e: MouseEvent) {
 
 function onResizeStart(e: MouseEvent) {
   if (e.button !== 0) return;
+  e.stopPropagation();
   resizing = true;
   startX = e.clientX;
   startY = e.clientY;

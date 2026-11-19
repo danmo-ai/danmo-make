@@ -35,12 +35,12 @@
 | P1 控制面 | pending | 真实 DB fixture、实时 SSE、鉴权、EngineRouter、核心路由 E2E（不再保留 Python 推理 worker） |
 | P2 MLX runtime | pending | pipeline/session 去掉 ggml 类型、attention 分派、字节预算、TeaCache 原语、panic/OOM/cancel |
 | P3 common | pending | 第二个使用方出现后再抽的 tokenizer、VAE、媒体和 scheduler fixture |
-| P4 图像核心 | in_progress | Z-Image 的 LoRA、control、DistillPatch、rewrite 逐位 parity；Flux2 与 Qwen-Image 的 MLX |
+| P4 图像核心 | in_progress | rewrite + ControlNet union create E2E 已过（256²）；下一刀：ControlNet parity/热性能 → LEMICA/latent refine；其后 Flux2 / Qwen-Image |
 | P5 图像长尾 | pending | Flux1 各结构变体，以及 fibo、ernie、cogview4、hidream、step1x、boogu、longcat、esrgan |
 | P6 音频 | in_progress | ACE 与 `main` 的成歌 parity、DiffRhythm。FSQ 翻唱编码已接到 `task=cover` |
 | P7 超分 | pending | SeedVR2 图像和视频 |
 | P8 视频 | pending | Wan、LTX、LTX25、Hunyuan、MiniMax H3、LongCat Avatar |
-| P9 外围、assistant、训练 | pending | 安装与画廊、本地 assistant。**训练延后**：等 Rust MLX 推理成熟后再做 Rust trainer；当前产品训练入口不可用 |
+| P9 外围、assistant、训练 | in_progress | 安装与画廊、本地 assistant。**训练骨架已进树**（假 latent probe）；缺 VAE/TE cache、可微 DiT+LoRA、真图 E2E |
 | P10 退役 | in_progress | 产品 Python 树 / thin uvicorn / parity 脚本已删。仍待：默认切满 Rust MLX、ggml 计算栈退役、干净环境安装测试 |
 
 P0 已落地、不要重做的部分：源码 Metal 构建；Z-Image fp16 create 在 Metal 上的 parity、热性能和峰值显存；mlx-q4/mlx-q8 的 parity 和峰值显存；会话生命周期；safetensors create/rewrite 进进程内 executor。量化 `metal_performance` 没有点亮。证据文件名在 `tests/parity/evidence/zimage-*2026-11-18.json`。
@@ -108,7 +108,18 @@ P6 已落地、不要重做的部分：ACE XL 的 MLX 生成与 cover / cover-no
 
 ### P4
 
-- `z_image`：LoRA 已接到共享 `attach_lora`，模块名经 `remap_lora_module_prefix` 对齐图参数。还没有真实图的 LoRA 生成证据。controlnet union、structural guide、latent refine、LEMICA、8 步 DistillPatch 仍未做。create/rewrite 的 safetensors 会话已经在树上。rewrite 还没有逐位 parity。
+- `z_image`：
+  - **已落地**：create/rewrite safetensors 会话；共享 `attach_lora` + `remap_lora_module_prefix`；user LoRA 注册写入完整 `inference`（含 `extra_adapters` / steps / guidance / weight）；推理侧中立展开 `inference_stack`（客户端不注入配方 companion）。
+  - **真实图 LoRA E2E（2026-11-19，Metal）**：用 lyt 数据集身份 LoRA `user-lora-a97835981f18`（李雪01 / trigger `Lyt`，来自既有真训 `tsk_aa0ce54848f9e4dd060317f7`）在 `z-image-turbo` fp16 上 create：`768x1280`、9 步、guidance 0、seed 42、weight 0.9；任务 `8afd0b5f-…` 完成，产物 `tests/parity/evidence/zimage-lora-lyt-p4-2026-11-19.{json,png}`。`bind_installed_loras` 正确解析目录型 `local_path`。**仍不算矩阵勾选**（无 parity / 热性能门；本条 LoRA 为 turbo scheme，`extra_adapters` 为空）。
+  - **DistillPatch companion 叠载 E2E（2026-11-19，Metal）**：HF `timeout: connect` 后把 `z-image-turbo-distillpatch-lora:bf16` 的 registry `source` 改为 **modelscope**（同 repo `DiffSynth-Studio/Z-Image-Turbo-DistillPatch`）并装入；用元数据行 `user-lora-lyt-distill-e2e`（同 李雪01 权重 + `extra_adapters: DistillPatch`）只提交用户 LoRA，服务端展开双 adapter；任务 `3e534cf4-…` 完成（8 步 / seed 42），产物 `tests/parity/evidence/zimage-lora-lyt-distillpatch-p4-2026-11-19.{json,png}`。**仍不算矩阵勾选**。
+  - **rewrite Metal parity + E2E（2026-11-19）**：`z-image-turbo` fp16；main fixture `out/parity-zimage-rewrite-{16x16,256x256}.json`；cargo `real_zimage_rewrite_matches_main_latents_and_pixels`（mlx-metal）对 blend/velocity/latent/RGB **逐位一致**；API `17481890-…` rewrite completed（256² / 8 步 / fidelity 0.6 / init=4）；证据 `tests/parity/evidence/zimage-rewrite-turbo-fp16-p4-2026-11-19.{json,png}`。矩阵该行 `metal_parity`/`e2e` 已 passed。
+  - **rewrite 热性能（2026-11-19，Metal）**：256² / 8 步 / init=4；main warm fixture `out/parity-zimage-rewrite-256x256-warm-main.json`；cargo `real_zimage_rewrite_warm_passes_match_main_and_report_performance`；p50 rust/main **denoise 0.995 / vae 0.852 / total 0.991**（≤105%）；证据 `tests/parity/evidence/zimage-rewrite-turbo-fp16-warm-gate-2026-11-19.json`。矩阵 `metal_performance` passed（256²，非 768×1280）。
+  - **ControlNet union create E2E（2026-11-19，Metal）**：`mlx/control.rs` 完整 forward（33ch、hint、refiner/layers、`before_proj`/`after_proj`）；`remap_control_name` 加载；session 在 `structural_guide.weight>0` 时走 eager DiT + hint；`controlnet_runtime_available` 随 mlx feature 打开。任务 `a1699df0-…`（`z-image-turbo:fp16` + `z-image-turbo-fun-controlnet-union:8steps`，256² / 4 步 / canny / weight 0.75）completed；证据 `tests/parity/evidence/controlnet-union-e2e.json` + `out/controlnet-e2e.png`。矩阵该行 `e2e`/`route` passed；**parity / 热性能仍 pending**。控制图按「已预处理 RGB」resize 后 VAE encode（引擎内未做 OpenCV canny/depth）。
+  - **ControlNet 配置驱动 + Union inpaint（2026-11-19）**：registry `catalog.binding` / `guide_type` / `supports_inpaint` / `allows_with_reference`；`compatible_controlnets` create scope 保留同时声明 `create+retouch` 的网；Union `actions.retouch`；前端去掉名字启发式；画布 companion → create+`structural_guide` inpaint，standalone Fill → edits。引擎 `build_control_context_inpaint_nchw` + session 源图/蒙版（白=重绘→preserve 取反）。任务 `538284ce-…`（256² / 4 步 / inpaint）completed；证据 `tests/parity/evidence/controlnet-union-inpaint-e2e.json`。**Fill 引擎仍 unstarted（P5）**；parity / 主机预处理仍 pending。
+  - **下一刀（顺序）**：
+    1. ControlNet metal_parity / metal_performance；主机端预处理。
+    2. latent refine / LEMICA（现 501）；量化 rewrite；`z-image`（非 turbo）行；可选 768×1280 rewrite 热性能加严。
+  - **仍缺**：上表 1–2；Flux2 / Qwen-Image；flux1 Fill retouch/extend。
 - `flux2`：Klein 4B/9B/base 的 create、edit、LoRA。变体不能用一次 family 级 parity 代替。
 - `qwen_image`：create、edit、edit-2511、lightning、多参考、LoRA。Qwen2.5-VL 进 common；108 token crop 和条件拼接留在 family。
 
@@ -138,13 +149,16 @@ SeedVR2 图像和视频超分。tiling、因果时间缓存、wavelet/LAB、ffmp
 
 - 下载、components、manifest、workspace registry、user LoRA、画廊、metadata、MCP、CLI。
 - 本地 assistant：qwen3 / qwen3_vl、chat template、视觉预处理、采样、KV cache、SSE、卸载。它用自己的 worker，不和分钟级 DiT 串在同一个 executor 上。
-- **训练（进行中）**：不恢复 Python trainer。已落地：`danmo-mlx` `value_and_grad` + AdamW；DiffSynth 对齐的 Flow-Match schedule/`training_weight`；数据集 `train.jsonl`+`meta.json`；Z-Image/Turbo presets（默认 `turbo-sft`=Scheme 4）；共享 train loop（假 latent loss↓ + adapter `attach_lora` 可加载）；API datasets/requirements/trainings（MLX feature 下 `ready:true`）。仍缺：VAE/TE encode cache、完整 DiT forward 可微 LoRA、真图 E2E 与矩阵勾选。
+- **训练（进行中，`3f2be72` 起）**：不恢复 Python trainer。
+  - **已落地**：`danmo-mlx` `value_and_grad` + AdamW；DiffSynth 对齐的 Flow-Match schedule/`training_weight`；hybrid 数据集 `train.jsonl`+`meta.json`（upload/list/health/import）；Z-Image/Turbo 命名 presets（`turbo-sft` / `turbo-diff` / `base-face`）；共享 train loop（**假 latent** loss↓ + 导出 adapter，`attach_lora` 可加载）；API `datasets` / `requirements` / `trainings` / `artifacts` / `register`（MLX feature 下 `ready:true`）；训练 UI 瘦身为四步向导 + 完成态摘要/注册；注册校验 companion 已安装；推理不按配方名分支。
+  - **仍缺（训练验收门）**：VAE encode cache、TE encode、完整 DiT forward 上可微 LoRA（替换 probe latent）；人脸检测/门禁真链路；loss/梯度按可训练 tensor 的证据；checkpoint 往返；**真图短训 E2E**（训出的 adapter 经中立推理加载出图）；矩阵勾选。在此之前不要把训练行标 done。
 
 ### P10
 
-- **已做**：删除产品 Python（空 `backend/`、parity 脚本、桌面 thin uvicorn / venv bootstrap）；训练提交 501 + UI 明示不可用。
+- **已做**：删除产品 Python（空 `backend/`、parity 脚本、桌面 thin uvicorn / venv bootstrap）。
+- **已过时表述**：旧「训练提交一律 501」仅适用于无 MLX feature 的构建；`mlx-metal` / `mlx-cuda` 构建下训练 API 可提交（当前仍是 probe，非产品完备）。
 - 仍待：23 个 runtime family 达到发布要求后默认走满 Rust MLX；退役 `danmo-ggml-sys` / `native/third_party/ggml` / GGUF 安装逻辑（按矩阵，勿提前）。
-- 干净的 macOS Metal 和 Linux CUDA 安装、生成、升级各跑一遍（训练项等 trainer 落地后再验）。
+- 干净的 macOS Metal 和 Linux CUDA 安装、生成、升级各跑一遍（训练真图 E2E 过门后再把训练纳入安装验收）。
 
 ## 未决
 

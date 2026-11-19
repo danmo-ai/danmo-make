@@ -52,7 +52,6 @@
       :guides-open="showRegionGuides"
       @update:zoom="(z: number, cx?: number, cy?: number) => store.setZoom(z, cx, cy)"
       @fit-all="fitAll"
-      @reset-view="store.resetView()"
       @toggle-layers="showLayers = true"
       @toggle-graph="showGraph = !showGraph"
       @toggle-edges="showEdges = !showEdges"
@@ -933,10 +932,17 @@ function pathsHaveLineageOnCanvas(paths: string[]): boolean {
 
 function addPathsToCanvas(
   paths: string[],
-  opts?: { fit?: boolean; placement?: 'staging' | 'center'; focusLast?: boolean }
+  opts?: {
+    fit?: boolean;
+    placement?: 'staging' | 'center';
+    focusLast?: boolean;
+    /** Prefer caller-fresh gallery rows; props.items can lag one tick after loadGallery. */
+    galleryItems?: GalleryItem[];
+  }
 ): string[] {
   const placement = opts?.placement ?? (store.staging.visible ? 'staging' : 'center');
-  const added = store.addPathsFromGallery(paths, props.items, {
+  const catalog = opts?.galleryItems?.length ? opts.galleryItems : props.items;
+  const added = store.addPathsFromGallery(paths, catalog, {
     placement,
     selectLast: true,
   });
@@ -944,11 +950,18 @@ function addPathsToCanvas(
     const last = added[added.length - 1];
     nextTick(() => {
       onSelectItem({ path: last, shiftKey: false });
-      if (pathsHaveLineageOnCanvas(added)) {
+      const lineageItems = opts?.galleryItems?.length ? opts.galleryItems : props.items;
+      const hasLineage = added.some((path) => {
+        const gi = lineageItems.find((i) => i.path === path);
+        const parentId = String(gi?.metadata?.parent_asset_id || '').trim();
+        return !!parentId && store.hasItem(`asset:${parentId}`);
+      });
+      if (hasLineage) {
         if (!showEdges.value) {
           showEdges.value = true;
           toast.info($tt('canvas.lineageEdgesShown'));
         }
+        store.refreshEdges(lineageItems);
       }
       if (placement === 'staging' && added.length > 0) {
         toast.success($tt('canvas.resultInStaging', { n: added.length }));

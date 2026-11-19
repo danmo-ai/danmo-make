@@ -111,8 +111,6 @@
         :references-blocked="referencesBlocked"
         :generate-block-reason="generateBlockReason"
         :control-image="controlImage"
-        :inpaint-source-image="inpaintSourceImage"
-        :inpaint-mask-image="inpaintMaskImage"
         :mode="imageMode"
         :mode-options="imageModeOptions"
         :current-model-config="currentModelConfig"
@@ -127,10 +125,6 @@
         @remove-extra-reference="removeExtraReferenceImage"
         @pick-control="openAssetPicker('control')"
         @remove-control="removeControlImage"
-        @pick-inpaint-source="openAssetPicker('inpaint_source')"
-        @remove-inpaint-source="removeInpaintSourceImage"
-        @pick-inpaint-mask="openAssetPicker('inpaint_mask')"
-        @remove-inpaint-mask="removeInpaintMaskImage"
         @model-change="onModelVersionChange"
         @reset-defaults="resetToDefaults"
         @enhance="onEnhancePrompt"
@@ -184,7 +178,17 @@
           </DqPrefRow>
         </DqPrefPane>
 
-        <p class="studio-retouch-fill-hint">{{ $t('studio.retouchFillHint') }}</p>
+        <p class="studio-retouch-fill-hint">{{ retouchHintText }}</p>
+        <DqPrefPane class="studio-create-pref-pane studio-editor-drawer-pref-pane">
+          <DqPrefRow :label="$t('studio.retouchPromptLabel')">
+            <DqInput
+              v-model="params.prompt"
+              type="textarea"
+              :rows="3"
+              :placeholder="$t('studio.retouchPromptPlaceholder')"
+            />
+          </DqPrefRow>
+        </DqPrefPane>
         <CreateFillEditParams :params="fillEditParams" />
         <div class="studio-retouch-editor-wrap">
           <ImageEditor
@@ -296,8 +300,10 @@ import { useStudioGallery } from '@/composables/useStudioGallery';
 import {
   appendZImageEnhancementFields,
   applyControlNetRegistryDefaults,
+  buildStructuralGuidePayload,
   fillModelRegistryDefaultsPatch,
-  isFillControlNet,
+  isStandaloneEditControlNet,
+  isStructuralRetouchControlNet,
   isControlNetHostRuntimeAvailable,
   pickDefaultStructuralControlNet,
   resolveControlAssetId,
@@ -437,17 +443,20 @@ function addAssetPathsToCanvas(
     placement?: 'staging' | 'center';
     focusLast?: boolean;
   }
-) {
-  if (!paths.length) return;
+): string[] {
+  if (!paths.length) return [];
+  const catalog = galleryItems.value;
   if (viewMode.value === 'canvas' && infiniteCanvasRef.value) {
-    infiniteCanvasRef.value.addPathsToCanvas(paths, {
-      fit: opts?.fit,
-      placement: opts?.placement ?? 'staging',
-      focusLast: opts?.focusLast ?? true,
-    });
-    return;
+    return (
+      infiniteCanvasRef.value.addPathsToCanvas(paths, {
+        fit: opts?.fit,
+        placement: opts?.placement ?? 'staging',
+        focusLast: opts?.focusLast ?? true,
+        galleryItems: catalog,
+      }) || []
+    );
   }
-  imageCanvas.addPathsFromGallery(paths, galleryItems.value, {
+  return imageCanvas.addPathsFromGallery(paths, catalog, {
     placement: opts?.placement ?? 'center',
   });
 }
@@ -704,27 +713,16 @@ function shouldAutoAddToCanvas(): boolean {
 const referenceImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
 const extraReferenceImages = ref<Array<{ previewUrl: string; path: string; assetId?: string }>>([]);
 const controlImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
-const inpaintSourceImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
-const inpaintMaskImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
 const showAssetPicker = ref(false);
-const assetPickerMode = ref<'reference' | 'extra_reference' | 'control' | 'inpaint_source' | 'inpaint_mask'>('reference');
+const assetPickerMode = ref<'reference' | 'extra_reference' | 'control'>('reference');
 
-function openAssetPicker(mode: 'reference' | 'extra_reference' | 'control' | 'inpaint_source' | 'inpaint_mask') {
+function openAssetPicker(mode: 'reference' | 'extra_reference' | 'control') {
   assetPickerMode.value = mode;
   showAssetPicker.value = true;
 }
 
 function assetIdFromPickPath(path: string): string | undefined {
   return path.startsWith('asset:') ? path.slice('asset:'.length) : undefined;
-}
-
-function resolveInpaintAssetId(
-  ref: { path: string; assetId?: string } | null,
-): string {
-  if (!ref) return '';
-  if (ref.assetId) return ref.assetId;
-  if (ref.path.startsWith('asset:')) return ref.path.slice('asset:'.length);
-  return '';
 }
 
 function onReferencePick({ path, previewUrl }: { path: string; previewUrl: string }) {
@@ -802,43 +800,15 @@ function onControlPick({ path, previewUrl }: { path: string; previewUrl: string 
   syncCanvasControlOverlay(path);
 }
 
-function onInpaintSourcePick({ path, previewUrl }: { path: string; previewUrl: string }) {
-  if (!path.startsWith('asset:')) {
-    toast.warning($tt('canvas.controlImageAssetRequired'));
-    return;
-  }
-  inpaintSourceImage.value = { path, previewUrl, assetId: assetIdFromPickPath(path) };
-  showAssetPicker.value = false;
-}
-
-function onInpaintMaskPick({ path, previewUrl }: { path: string; previewUrl: string }) {
-  if (!path.startsWith('asset:')) {
-    toast.warning($tt('canvas.controlImageAssetRequired'));
-    return;
-  }
-  inpaintMaskImage.value = { path, previewUrl, assetId: assetIdFromPickPath(path) };
-  showAssetPicker.value = false;
-}
-
 function onAssetPickerPick(payload: { path: string; previewUrl: string }) {
   if (assetPickerMode.value === 'control') onControlPick(payload);
   else if (assetPickerMode.value === 'extra_reference') onExtraReferencePick(payload);
-  else if (assetPickerMode.value === 'inpaint_source') onInpaintSourcePick(payload);
-  else if (assetPickerMode.value === 'inpaint_mask') onInpaintMaskPick(payload);
   else onReferencePick(payload);
 }
 
 function removeControlImage() {
   controlImage.value = null;
   syncCanvasControlOverlay(null);
-}
-
-function removeInpaintSourceImage() {
-  inpaintSourceImage.value = null;
-}
-
-function removeInpaintMaskImage() {
-  inpaintMaskImage.value = null;
 }
 
 function onCanvasUseAsRef(payload: { path: string; previewUrl: string; quiet?: boolean }) {
@@ -1169,11 +1139,6 @@ async function addGalleryItemToCanvas(
 
 watch(() => params.model, (modelKey) => {
   if (modelKey) loadCompatibleAdapters(String(modelKey));
-  if (params.controlnet && !supportsStructuralGuideBaseModel(String(modelKey || ''))) {
-    params.controlnet = '';
-    controlImage.value = null;
-    syncCanvasControlOverlay(null);
-  }
 });
 
 watch(() => params.lora, () => {
@@ -1700,12 +1665,63 @@ function closeGenStream() {
   }
 }
 
+function assetIdsFromResultPayload(data: unknown): string[] {
+  if (!data || typeof data !== 'object') return [];
+  const rec = data as Record<string, unknown>;
+  const nested =
+    rec.result && typeof rec.result === 'object'
+      ? (rec.result as Record<string, unknown>)
+      : null;
+  const raw = rec.asset_ids ?? nested?.asset_ids;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((id) => String(id || '').trim()).filter(Boolean);
+}
+
+async function resolveCompletedAssetIds(taskId: string, seeded: string[]): Promise<string[]> {
+  if (seeded.length > 0) return seeded;
+  try {
+    const task = (await api.gen.getMediaTask(taskId)) as {
+      result?: { asset_ids?: unknown; primary_asset_id?: unknown };
+    };
+    const fromResult = assetIdsFromResultPayload(task?.result);
+    if (fromResult.length) return fromResult;
+    const primary = String(task?.result?.primary_asset_id || '').trim();
+    return primary ? [primary] : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Ensure gallery has rows for canvas placement (group filters can miss a fresh asset). */
+async function ensureGalleryItemsForCanvas(assetIds: string[]): Promise<void> {
+  const missing = () =>
+    assetIds.filter((id) => !galleryItems.value.some((g) => g.path === `asset:${id}`));
+  if (!missing().length) return;
+  // Ungrouped / group-root filters may omit the new row; pull a plain first page.
+  try {
+    const rows = await api.gallery.listImages(Math.max(40, assetIds.length), 0, {
+      kind: 'image',
+      exclude_upload_refs: true,
+    });
+    const byPath = new Map(galleryItems.value.map((g) => [g.path, g]));
+    for (const row of rows) {
+      byPath.set(row.path, row);
+    }
+    galleryItems.value = Array.from(byPath.values());
+  } catch {
+    /* staging add still attempts with whatever gallery has */
+  }
+}
+
 function attachStreamFromSubmit(submitRes: unknown) {
   const tid = taskIdFromSubmitResponse(submitRes);
   if (!tid) {
     generating.value = false;
     return;
   }
+  closeGenStream();
+  pendingCanvasAssetIds.value = [];
+  generating.value = true;
   tasksStore.clearTaskLogs(tid);
   tasksStore.appendTaskLog(tid, $tt('studio.startingGen'), 'info');
   tasksStore.registerPageOwnedStream(tid);
@@ -1749,7 +1765,7 @@ function attachStreamFromSubmit(submitRes: unknown) {
       }
     },
     onResult: (resultData: any) => {
-      const ids = (resultData?.asset_ids as string[] | undefined) || [];
+      const ids = assetIdsFromResultPayload(resultData);
       if (ids.length > 0) pendingCanvasAssetIds.value = ids;
     },
     onDone: async (doneData: any) => {
@@ -1757,19 +1773,42 @@ function attachStreamFromSubmit(submitRes: unknown) {
       tasksStore.unregisterPageOwnedStream(tid);
       if (doneData.status === 'completed') {
         tasksStore.appendTaskLog(tid, $tt('studio.genComplete'), 'success');
-        const ids = [...pendingCanvasAssetIds.value];
+        const ids = await resolveCompletedAssetIds(tid, [...pendingCanvasAssetIds.value]);
+        pendingCanvasAssetIds.value = [];
         const willAutoAdd = shouldAutoAddToCanvas() && ids.length > 0;
         if (!willAutoAdd) {
           toast.success($tt('studio.genComplete'));
         }
-        pendingCanvasAssetIds.value = [];
-        setTimeout(async () => {
+        void (async () => {
+          // Let SSE close / DB commit settle, then add with a fresh gallery catalog
+          // (do not rely on InfiniteCanvas props.items — they lag loadGallery reset).
+          await new Promise((r) => setTimeout(r, 400));
           await loadGallery(true);
-          if (willAutoAdd) {
-            await activateCanvasViewForResults(viewMode, syncCompositorOverlaysOnCanvasEnter);
-            addAssetPathsToCanvas(ids.map((id) => `asset:${id}`), { placement: 'staging' });
+          await nextTick();
+          if (!willAutoAdd) return;
+          await ensureGalleryItemsForCanvas(ids);
+          await nextTick();
+          await activateCanvasViewForResults(viewMode, syncCompositorOverlaysOnCanvasEnter);
+          await nextTick();
+          const paths = ids.map((id) => `asset:${id}`);
+          let added = addAssetPathsToCanvas(paths, { placement: 'staging' });
+          if (!added.length) {
+            await ensureGalleryItemsForCanvas(ids);
+            await nextTick();
+            added = addAssetPathsToCanvas(paths, { placement: 'staging' });
           }
-        }, 1000);
+          if (!added.length) {
+            // Last resort: place via shared store even if child ref missed.
+            added = imageCanvas.addPathsFromGallery(paths, galleryItems.value, {
+              placement: 'staging',
+              selectLast: true,
+            });
+            imageCanvas.refreshEdges(galleryItems.value);
+          }
+          if (!added.length) {
+            toast.warning($tt('canvas.autoAddMissed'));
+          }
+        })();
       } else if (doneData.status === 'failed') {
         const updated = await api.gen.getMediaTask(tid) as any;
         tasksStore.appendTaskLog(
@@ -1917,16 +1956,14 @@ async function submitImageGenerationTask(
   ctx: GenerationPrepared,
   opts: { prompt: string; title: string; seed: number | null; n: number },
 ): Promise<unknown> {
-  const inpSrc = resolveInpaintAssetId(inpaintSourceImage.value);
-  const inpMsk = resolveInpaintAssetId(inpaintMaskImage.value);
   const enhCommon = {
     parameters: currentModelConfig.value?.parameters as Record<string, unknown> | undefined,
     params,
     controlnet: String(params.controlnet || ''),
     controlAssetId: ctx.control_asset_id,
     controlnetStrength: Number(params.controlnet_strength) || 0.8,
-    inpaintSourceId: inpSrc,
-    inpaintMaskId: inpMsk,
+    compatibleControlNets: compatibleControlNets.value,
+    registry: modelRegistry.value,
   };
 
   if (ctx.hasRef) {
@@ -2177,14 +2214,15 @@ const extendModelOptions = computed(() => {
   const rows = allVersions.value
     .filter((v) => {
       const acts = (v.actions as Record<string, unknown>) || {};
-      return imageSupportsExtend(acts);
+      if (!imageSupportsExtend(acts)) return false;
+      const row = modelRegistry.value[String(v.modelKey || '')];
+      return isStandaloneEditControlNet(row);
     })
     .map((v) => ({
       ...modelSelectOption(v, { unreadySuffix: $tt('common.notReady') }),
-      isFill: isFillControlNet(String(v.modelKey || '')),
+      isStandalone: true,
     }));
   rows.sort((a, b) => {
-    if (a.isFill !== b.isFill) return a.isFill ? -1 : 1;
     if (a.disabled !== b.disabled) return a.disabled ? 1 : -1;
     return a.label.localeCompare(b.label);
   });
@@ -2199,9 +2237,52 @@ const fillEditParams = reactive({
 function applyFillEditDefaults(modelVersion: string) {
   const [modelKey] = String(modelVersion || '').split('|');
   if (!modelKey) return;
-  const patch = fillModelRegistryDefaultsPatch(modelKey, modelRegistry.value);
-  if (patch.guidance != null) fillEditParams.guidance = patch.guidance;
-  if (patch.steps != null) fillEditParams.steps = patch.steps;
+  const row = modelRegistry.value[modelKey];
+  if (isStandaloneEditControlNet(row)) {
+    const patch = fillModelRegistryDefaultsPatch(modelKey, modelRegistry.value);
+    if (patch.guidance != null) fillEditParams.guidance = patch.guidance;
+    if (patch.steps != null) fillEditParams.steps = patch.steps;
+    return;
+  }
+  if (isStructuralRetouchControlNet(row)) {
+    const raw =
+      (row.parameters as Record<string, { default?: number }> | undefined) ||
+      (row.ui as { parameters?: Record<string, { default?: number }> } | undefined)?.parameters;
+    if (typeof raw?.guidance?.default === 'number') fillEditParams.guidance = raw.guidance.default;
+    if (typeof raw?.steps?.default === 'number') fillEditParams.steps = raw.steps.default;
+  }
+}
+
+function retouchProviderKind(modelKey: string): 'standalone' | 'companion' | '' {
+  const row = modelRegistry.value[modelKey];
+  if (isStandaloneEditControlNet(row)) return 'standalone';
+  if (isStructuralRetouchControlNet(row)) return 'companion';
+  return '';
+}
+
+const retouchHintText = computed(() => {
+  const [modelKey] = String(retouchModelVersion.value || '').split('|');
+  const kind = retouchProviderKind(modelKey || '');
+  if (kind === 'companion') return $tt('studio.retouchCompanionHint');
+  if (kind === 'standalone') return $tt('studio.retouchStandaloneHint');
+  return $tt('studio.retouchSelectHint');
+});
+
+function defaultBaseVersionForControlNet(controlnetKey: string): string {
+  const row = modelRegistry.value[controlnetKey];
+  const base = String(row?.base_model || '').trim();
+  if (!base) return '';
+  const candidates = allVersions.value.filter((v) => String(v.modelKey) === base);
+  const ready = candidates.find((v) => v.ready);
+  const pick = ready || candidates[0];
+  return pick ? `${pick.modelKey}|${pick.versionKey}` : '';
+}
+
+function retouchSizeFromItem(item: GalleryItem): string {
+  const w = Number(item.width) || 0;
+  const h = Number(item.height) || 0;
+  if (w > 0 && h > 0) return `${w}x${h}`;
+  return `${params.width}x${params.height}`;
 }
 
 function isEditModelVersionReady(modelVersion: string): boolean {
@@ -2227,15 +2308,22 @@ const retouchModelOptions = computed(() => {
   const rows = allVersions.value
     .filter((v) => {
       const acts = (v.actions as Record<string, unknown>) || {};
-      return imageSupportsRetouch(acts);
+      if (!imageSupportsRetouch(acts)) return false;
+      const row = modelRegistry.value[String(v.modelKey || '')];
+      return (
+        isStandaloneEditControlNet(row) || isStructuralRetouchControlNet(row)
+      );
     })
-    .map((v) => ({
-      ...modelSelectOption(v, { unreadySuffix: $tt('common.notReady') }),
-      modelKey: String(v.modelKey || ''),
-      isFill: isFillControlNet(String(v.modelKey || '')),
-    }));
+    .map((v) => {
+      const row = modelRegistry.value[String(v.modelKey || '')];
+      return {
+        ...modelSelectOption(v, { unreadySuffix: $tt('common.notReady') }),
+        modelKey: String(v.modelKey || ''),
+        isStandalone: isStandaloneEditControlNet(row),
+      };
+    });
   rows.sort((a, b) => {
-    if (a.isFill !== b.isFill) return a.isFill ? -1 : 1;
+    if (a.isStandalone !== b.isStandalone) return a.isStandalone ? -1 : 1;
     if (a.disabled !== b.disabled) return a.disabled ? 1 : -1;
     return a.label.localeCompare(b.label);
   });
@@ -2310,7 +2398,10 @@ function onCardAction({ action, item }: { action: string; item: GalleryItem }) {
           const acts = (v.actions as Record<string, unknown>) || {};
           return `${v.modelKey}|${v.versionKey}` === currentKey && imageSupportsExtend(acts);
         });
-        if (currentSupportsExtend && isFillControlNet(currentKey.split('|')[0] || '')) {
+        if (
+          currentSupportsExtend &&
+          isStandaloneEditControlNet(modelRegistry.value[currentKey.split('|')[0] || ''])
+        ) {
           extendModelVersion.value = currentKey;
         } else {
           const first = extendModelOptions.value.find((o) => !o.disabled);
@@ -2319,14 +2410,23 @@ function onCardAction({ action, item }: { action: string; item: GalleryItem }) {
         if (extendModelVersion.value) applyFillEditDefaults(extendModelVersion.value);
       } else if (action === 'retouch') {
         const currentKey = params.model && params.version ? `${params.model}|${params.version}` : '';
+        const currentModelKey = currentKey.split('|')[0] || '';
         const currentSupportsRetouch = allVersions.value.some((v) => {
           const acts = (v.actions as Record<string, unknown>) || {};
           return `${v.modelKey}|${v.versionKey}` === currentKey && imageSupportsRetouch(acts);
         });
-        if (currentSupportsRetouch && isFillControlNet(currentKey.split('|')[0] || '')) {
+        const currentKind = retouchProviderKind(currentModelKey);
+        if (currentSupportsRetouch && currentKind) {
           retouchModelVersion.value = currentKey;
         } else {
-          const first = retouchModelOptions.value.find((o) => !o.disabled);
+          // Prefer companion matching the create base, else first ready option.
+          const baseKey = String(params.model || '');
+          const companionForBase = retouchModelOptions.value.find((o) => {
+            if (o.disabled || o.isStandalone) return false;
+            const row = modelRegistry.value[o.modelKey];
+            return String(row?.base_model || '') === baseKey;
+          });
+          const first = companionForBase || retouchModelOptions.value.find((o) => !o.disabled);
           retouchModelVersion.value = first ? first.value : '';
         }
         if (retouchModelVersion.value) applyFillEditDefaults(retouchModelVersion.value);
@@ -2393,7 +2493,10 @@ async function onEditorSubmit() {
     }
 
     const mask_asset_id = (
-      await api.gen.uploadAsset(new File([maskBlob], 'mask.png', { type: 'image/png' }))
+      await api.gen.uploadAsset(new File([maskBlob], 'mask.png', { type: 'image/png' }), {
+        ephemeral: true,
+        purpose: 'inpaint_mask',
+      })
     ).id as string;
 
     if (!retouchModelVersion.value) {
@@ -2401,35 +2504,81 @@ async function onEditorSubmit() {
       return;
     }
     const [modelKey, versionKey] = retouchModelVersion.value.split('|');
-    if (!isFillControlNet(modelKey)) {
-      toast.warning($tt('studio.retouchFillModelRequired'));
+    const kind = retouchProviderKind(modelKey);
+    if (!kind) {
+      toast.warning($tt('studio.retouchProviderRequired'));
       return;
     }
     if (!isEditModelVersionReady(retouchModelVersion.value)) {
       toast.warning($tt('studio.modelNotReadyDesc', { name: modelKey, version: versionKey }));
       return;
     }
-    const modelStr = versionKey ? `${modelKey}:${versionKey}` : modelKey;
     const seedNum = seedForSubmit(params.seed);
     const adapters: Array<{ id: string; weight: number }> = [];
     if (params.lora) adapters.push({ id: String(params.lora), weight: Number(params.lora_scale) || 0.8 });
 
-    const submitRes = await api.gen.createImageEdit({
-      model: modelStr,
-      operation: 'retouch',
-      source_asset_id,
-      mask_asset_id,
-      title: String(params.title || '').trim(),
-      prompt: String(params.prompt || '').trim(),
-      negative_prompt: params.negative_prompt || '',
-      n: 1,
-      steps: fillEditParams.steps,
-      guidance: fillEditParams.guidance,
-      seed: seedNum,
-      adapters,
-      metadata: buildCanvasMeta(),
-      priority: 'normal',
-    });
+    let submitRes: unknown;
+    if (kind === 'standalone') {
+      const modelStr = versionKey ? `${modelKey}:${versionKey}` : modelKey;
+      submitRes = await api.gen.createImageEdit({
+        model: modelStr,
+        operation: 'retouch',
+        source_asset_id,
+        mask_asset_id,
+        title: String(params.title || '').trim(),
+        prompt: String(params.prompt || '').trim(),
+        negative_prompt: params.negative_prompt || '',
+        n: 1,
+        steps: fillEditParams.steps,
+        guidance: fillEditParams.guidance,
+        seed: seedNum,
+        adapters,
+        metadata: buildCanvasMeta(),
+        priority: 'normal',
+      });
+    } else {
+      const basePick = defaultBaseVersionForControlNet(modelKey);
+      if (!basePick) {
+        toast.warning($tt('studio.retouchBaseMissing'));
+        return;
+      }
+      const [baseKey, baseVersion] = basePick.split('|');
+      if (!isEditModelVersionReady(basePick)) {
+        toast.warning($tt('studio.modelNotReadyDesc', { name: baseKey, version: baseVersion }));
+        return;
+      }
+      const row = modelRegistry.value[modelKey];
+      const paramBlock =
+        (row?.parameters as Record<string, { default?: number }> | undefined) ||
+        (
+          row?.ui as { parameters?: Record<string, { default?: number }> } | undefined
+        )?.parameters;
+      const strengthRaw = paramBlock?.controlnet_strength?.default;
+      // Registry Union default is 0.9; never silently fall back to a weaker scale.
+      const weight = typeof strengthRaw === 'number' ? strengthRaw : 0.9;
+      const genBody: Record<string, unknown> = {
+        model: baseVersion ? `${baseKey}:${baseVersion}` : baseKey,
+        title: String(params.title || '').trim(),
+        prompt: String(params.prompt || '').trim(),
+        negative_prompt: params.negative_prompt || '',
+        size: retouchSizeFromItem(editDrawerItem.value),
+        n: 1,
+        steps: fillEditParams.steps,
+        guidance: fillEditParams.guidance,
+        seed: seedNum,
+        adapters,
+        metadata: buildCanvasMeta(),
+        priority: 'normal',
+        structural_guide: buildStructuralGuidePayload(
+          modelKey,
+          source_asset_id,
+          weight,
+          { sourceAssetId: source_asset_id, maskAssetId: mask_asset_id },
+          { registry: modelRegistry.value, versionKey },
+        ),
+      };
+      submitRes = await api.gen.createImageGeneration(genBody);
+    }
     attachStreamFromSubmit(submitRes);
     showEditorDrawer.value = false;
     tasksStore.pollQueueOnce();
@@ -2475,8 +2624,8 @@ async function onExtendSubmit() {
       return;
     }
     const [modelKey, versionKey] = extendModelVersion.value.split('|');
-    if (!isFillControlNet(modelKey)) {
-      toast.warning($tt('studio.extendFillModelRequired'));
+    if (!isStandaloneEditControlNet(modelRegistry.value[modelKey])) {
+      toast.warning($tt('studio.extendStandaloneRequired'));
       return;
     }
     if (!isEditModelVersionReady(extendModelVersion.value)) {

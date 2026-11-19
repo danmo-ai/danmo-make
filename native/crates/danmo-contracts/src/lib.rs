@@ -84,6 +84,9 @@ pub struct ImageGenerationRequest {
     pub adapters: Vec<ImageAdapter>,
     #[serde(default)]
     pub structural_guide: Option<StructuralGuide>,
+    /// Product / canvas lineage (`parent_asset_id`, `relation_type`, …).
+    #[serde(default)]
+    pub metadata: Value,
     /// Mid-denoise step thumbnails. Omitted stays on.
     #[serde(default = "default_true")]
     pub preview: bool,
@@ -91,10 +94,14 @@ pub struct ImageGenerationRequest {
     pub priority: String,
 }
 
-/// ControlNet structural guide on an image create, aligned with
-/// Structural guide conditioning. `asset_id` is the preprocessed
-/// control image. `model_id` is the registry controlnet entry. The inpaint
-/// pair is both-or-neither.
+/// ControlNet structural guide on an image create.
+///
+/// `asset_id` is a preprocessed structural map (canny / depth / pose / …).
+/// `model_id` is the registry controlnet entry. The inpaint pair is
+/// both-or-neither. VideoX/Diffusers inpaint demos always pass a structural
+/// map; companion retouch may send `asset_id == inpaint_source_asset_id`,
+/// which the engine treats as “no uploaded map” and derives Gray(source)
+/// (Union 2602 Gray condition) instead of re-encoding the photo RGB.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StructuralGuide {
     pub asset_id: String,
@@ -137,6 +144,10 @@ pub struct ImageEditRequest {
     pub model: String,
     pub operation: String,
     pub source_asset_id: String,
+    /// Optional inpaint mask (white = repaint). Ephemeral upload refs are
+    /// deleted when the task finishes.
+    #[serde(default)]
+    pub mask_asset_id: Option<String>,
     #[serde(default)]
     pub reference_asset_ids: Vec<String>,
     #[serde(default)]

@@ -1,0 +1,80 @@
+{
+  "kind": "z_image_rewrite_warm_gate",
+  "date": "2026-11-19",
+  "platform": "macos-arm64",
+  "backend": "mlx-metal",
+  "model": "z-image-turbo",
+  "version": "fp16",
+  "action": "rewrite",
+  "size": "256x256",
+  "steps": 8,
+  "source_fidelity": 0.6,
+  "init_timestep": 4,
+  "seed": 42,
+  "test": "families::z_image::mlx::model::tests::real_zimage_rewrite_warm_passes_match_main_and_report_performance",
+  "main_fixture": {
+    "path": "out/parity-zimage-rewrite-256x256-warm-main.json",
+    "sha256": "04d6a737c1a671fdb797e9cdbaf4c443f44c4ff2fb59759cb8d2994a76dedd79",
+    "warm_p50": {
+      "denoise": 1.2347233750042506,
+      "vae": 0.0300381659908453,
+      "total": 1.2647615409950959
+    }
+  },
+  "rust_report": {
+    "active_memory": 24697075334,
+    "dit_weight_bytes": 24619634944,
+    "height": 256,
+    "init_timestep": 4,
+    "main_warm_p50": {
+      "denoise": 1.2347233750042506,
+      "total": 1.264761540995096,
+      "vae": 0.0300381659908453
+    },
+    "passes": [
+      {
+        "denoise": 1.229621792,
+        "total": 1.2592343330000002,
+        "vae": 0.029612541
+      },
+      {
+        "denoise": 1.223196292,
+        "total": 1.247387625,
+        "vae": 0.024191333
+      },
+      {
+        "denoise": 1.22691375,
+        "total": 1.255102209,
+        "vae": 0.028188459
+      },
+      {
+        "denoise": 1.22815675,
+        "total": 1.253740709,
+        "vae": 0.025583959
+      },
+      {
+        "denoise": 1.228030958,
+        "total": 1.252938875,
+        "vae": 0.024907917
+      }
+    ],
+    "peak_memory": 26281981652,
+    "rust_to_main_ratio": {
+      "denoise": 0.9945798248095631,
+      "total": 0.9912862372566886,
+      "vae": 0.8517150816663439
+    },
+    "steps": 8,
+    "warm_p50": {
+      "denoise": 1.228030958,
+      "total": 1.253740709,
+      "vae": 0.025583959
+    },
+    "width": 256
+  },
+  "gate": "warm p50 denoise/vae/total <= 105% of main; ratios in rust_to_main_ratio",
+  "notes": [
+    "Resident multipass denoise+VAE after 1 warmup; fixture latent injected (create-style).",
+    "Passed: denoise 0.995, vae 0.852, total 0.991 vs main."
+  ]
+}

@@ -106,7 +106,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route(
             "/api/settings/controlnets/compatible/:model",
-            get(empty_list),
+            get(compatible_controlnets),
         )
         .route("/api/settings/presets", get(get_presets).post(save_preset))
         .route(
@@ -219,6 +219,15 @@ struct ListQuery {
     media: Option<String>,
     action: Option<String>,
     installed: Option<String>,
+    /// When true (gallery default), hide ephemeral upload refs such as inpaint masks.
+    exclude_upload_refs: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct UploadQuery {
+    /// Mark the asset as a one-shot ref (hidden from gallery; deleted after task end).
+    ephemeral: Option<bool>,
+    purpose: Option<String>,
 }
 
 pub fn task_json(row: &TaskRow, queue_position: Option<i64>) -> Value {
@@ -864,6 +873,201 @@ async fn empty_list() -> Json<Value> {
     Json(json!([]))
 }
 
+#[derive(Debug, Deserialize)]
+struct CompatibleControlNetQuery {
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+/// Registry ControlNets whose `base_model` matches the selected create/edit model.
+async fn compatible_controlnets(
+    State(state): State<AppState>,
+    Path(model): Path<String>,
+    Query(query): Query<CompatibleControlNetQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let models = catalog
+        .root()
+        .get("models")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| fail(StatusCode::INTERNAL_SERVER_ERROR, "registry has no models"))?;
+    let scope = query.scope.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if let Some(scope) = scope {
+        if !matches!(scope, "create" | "retouch" | "extend") {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                format!("invalid controlnet scope {scope}"),
+            ));
+        }
+    }
+    let runtime_available = cfg!(feature = "mlx");
+    let mut rows = Vec::new();
+    for (id, entry) in models {
+        if entry
+            .pointer("/catalog/category")
+            .and_then(|value| value.as_str())
+            != Some("controlnets")
+        {
+            continue;
+        }
+        if entry
+            .pointer("/catalog/type")
+            .and_then(|value| value.as_str())
+            != Some("controlnet")
+        {
+            continue;
+        }
+        let base = entry
+            .pointer("/catalog/base_model")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if !controlnet_compatible(&model, base) {
+            continue;
+        }
+        let actions = entry.get("actions").cloned().unwrap_or_else(|| json!({}));
+        if !controlnet_matches_scope(&actions, scope) {
+            continue;
+        }
+        let status = detailed_status(&state.workspace, entry);
+        let ready = status
+            .get("ready")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let mut versions_ready = serde_json::Map::new();
+        if let Some(versions) = status.get("versions").and_then(|value| value.as_object()) {
+            for (key, version) in versions {
+                versions_ready.insert(
+                    key.clone(),
+                    json!(version
+                        .get("ready")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false)),
+                );
+            }
+        }
+        let name = lora_display_name(entry, id);
+        let name_en = entry
+            .pointer("/catalog/name/en")
+            .and_then(|value| value.as_str())
+            .unwrap_or(id)
+            .to_string();
+        let parameters = entry
+            .pointer("/ui/parameters")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let backends = entry
+            .pointer("/runtime/backends")
+            .cloned()
+            .unwrap_or_else(|| json!(["mlx"]));
+        let binding = entry
+            .pointer("/catalog/binding")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("controlnet {id} missing catalog.binding"),
+                )
+            })?;
+        if !matches!(binding, "structural" | "standalone_edit") {
+            return Err(fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("controlnet {id} has invalid catalog.binding {binding}"),
+            ));
+        }
+        let guide_type = entry
+            .pointer("/catalog/guide_type")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("controlnet {id} missing catalog.guide_type"),
+                )
+            })?;
+        let supports_inpaint = entry
+            .pointer("/catalog/supports_inpaint")
+            .and_then(|value| value.as_bool())
+            .ok_or_else(|| {
+                fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("controlnet {id} missing catalog.supports_inpaint"),
+                )
+            })?;
+        let allows_with_reference = entry
+            .pointer("/catalog/allows_with_reference")
+            .and_then(|value| value.as_bool())
+            .ok_or_else(|| {
+                fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("controlnet {id} missing catalog.allows_with_reference"),
+                )
+            })?;
+        rows.push(json!({
+            "name": name,
+            "name_en": name_en,
+            "key": id,
+            "base_model": base,
+            "binding": binding,
+            "guide_type": guide_type,
+            "supports_inpaint": supports_inpaint,
+            "allows_with_reference": allows_with_reference,
+            "ready": ready,
+            "versions_ready": versions_ready,
+            "actions": actions,
+            "parameters": parameters,
+            "runtime_backends": backends,
+            "runtime_available": runtime_available,
+            "cuda_batch_planned": false,
+        }));
+    }
+    rows.sort_by(|left, right| {
+        let name = |row: &Value| {
+            row.get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        name(left).cmp(&name(right))
+    });
+    Ok(Json(Value::Array(rows)))
+}
+
+fn controlnet_compatible(model: &str, base: &str) -> bool {
+    let model = model.split(':').next().unwrap_or(model).trim();
+    let base = base.split(':').next().unwrap_or(base).trim();
+    if model.is_empty() {
+        return false;
+    }
+    if model.starts_with("flux") {
+        return base.is_empty() || base.starts_with("flux");
+    }
+    if model.starts_with("z-image") {
+        return base.is_empty()
+            || base.starts_with("z-image")
+            || base == "z-image"
+            || base == "z-image-turbo";
+    }
+    !base.is_empty() && model == base
+}
+
+fn controlnet_matches_scope(actions: &Value, scope: Option<&str>) -> bool {
+    let Some(scope) = scope else {
+        return true;
+    };
+    let acts = actions.as_object();
+    let has_create = acts.is_some_and(|map| map.contains_key("create"));
+    let has_retouch = acts.is_some_and(|map| map.contains_key("retouch"));
+    let has_extend = acts.is_some_and(|map| map.contains_key("extend"));
+    let actions_empty = acts.map_or(true, |map| map.is_empty());
+    match scope {
+        // Empty actions = legacy structural create-eligible. Having retouch
+        // no longer excludes a net that also declares create.
+        "create" => has_create || actions_empty,
+        "retouch" => has_retouch,
+        "extend" => has_extend,
+        _ => false,
+    }
+}
+
 /// Installed and registry LoRAs whose `base_model` matches the selected model.
 /// ACE-Step XL SFT, Turbo, and base share one LoRA set.
 async fn compatible_loras(
@@ -1349,9 +1553,15 @@ async fn list_assets(
 ) -> Result<Json<Value>, ApiError> {
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
     let offset = query.offset.unwrap_or(0).max(0);
+    let exclude_upload_refs = query.exclude_upload_refs.unwrap_or(false);
     let (rows, total) = state
         .scheduler
-        .list_assets(query.kind.as_deref(), limit, offset)
+        .list_assets(
+            query.kind.as_deref(),
+            limit,
+            offset,
+            exclude_upload_refs,
+        )
         .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     let items: Vec<Value> = rows.iter().map(asset_json).collect();
     Ok(Json(json!({ "items": items, "total": total })))
@@ -1359,6 +1569,7 @@ async fn list_assets(
 
 async fn upload_asset(
     State(state): State<AppState>,
+    Query(query): Query<UploadQuery>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Value>, ApiError> {
@@ -1404,6 +1615,23 @@ async fn upload_asset(
     let path = dir.join(format!("{id}.{ext}"));
     std::fs::write(&path, &bytes)
         .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let ephemeral = query.ephemeral.unwrap_or(false)
+        || filename.eq_ignore_ascii_case("mask.png");
+    let mut meta = json!({ "filename": filename });
+    if ephemeral {
+        meta["ephemeral"] = json!(true);
+        meta["upload_ref"] = json!(true);
+    }
+    if let Some(purpose) = query
+        .purpose
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        meta["purpose"] = json!(purpose);
+    } else if ephemeral && filename.eq_ignore_ascii_case("mask.png") {
+        meta["purpose"] = json!("inpaint_mask");
+    }
     let row = AssetRow {
         id: id.clone(),
         kind: kind.into(),
@@ -1415,7 +1643,7 @@ async fn upload_asset(
         duration_seconds: None,
         source_task_id: None,
         source_action: Some("upload".into()),
-        metadata: json!({ "filename": filename }).to_string(),
+        metadata: meta.to_string(),
         created_at: String::new(),
         parent_asset_id: None,
         relation_type: None,
@@ -1540,6 +1768,58 @@ fn remove_asset_files(state: &AppState, row: &AssetRow) {
     {
         let path = resolve_asset_fs_path(&state.outputs, &state.workspace, thumb);
         let _ = std::fs::remove_file(path);
+    }
+}
+
+fn asset_is_ephemeral(row: &AssetRow) -> bool {
+    let meta: Value = serde_json::from_str(&row.metadata).unwrap_or_else(|_| json!({}));
+    if meta.get("ephemeral").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return true;
+    }
+    if meta.get("upload_ref").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return true;
+    }
+    meta.get("filename")
+        .and_then(|v| v.as_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("mask.png"))
+}
+
+fn collect_request_asset_ids(request: &Value, out: &mut Vec<String>) {
+    let push = |out: &mut Vec<String>, value: Option<&Value>| {
+        if let Some(id) = value.and_then(|v| v.as_str()).map(str::trim).filter(|id| !id.is_empty())
+        {
+            out.push(id.to_string());
+        }
+    };
+    push(out, request.get("mask_asset_id"));
+    push(out, request.get("inpaint_mask_asset_id"));
+    if let Some(guide) = request.get("structural_guide") {
+        push(out, guide.get("inpaint_mask_asset_id"));
+        // Control image for inpaint companion is the source frame, not ephemeral by default.
+    }
+}
+
+/// Delete one-shot upload refs (e.g. inpaint masks) once the task has finished.
+pub(crate) fn cleanup_ephemeral_task_assets(state: &AppState, params: &Value) {
+    let mut ids = Vec::new();
+    if let Some(request) = params.get("request") {
+        collect_request_asset_ids(request, &mut ids);
+    }
+    collect_request_asset_ids(params, &mut ids);
+    ids.sort();
+    ids.dedup();
+    for id in ids {
+        let Ok(Some(row)) = state.scheduler.get_asset(&id) else {
+            continue;
+        };
+        if !asset_is_ephemeral(&row) {
+            continue;
+        }
+        match state.scheduler.delete_asset(&id) {
+            Ok(Some(deleted)) => remove_asset_files(state, &deleted),
+            Ok(None) => {}
+            Err(err) => tracing::warn!("ephemeral asset cleanup failed for {id}: {err}"),
+        }
     }
 }
 
@@ -1937,7 +2217,7 @@ async fn system_info(State(state): State<AppState>) -> Json<Value> {
         "memory_gb": total,
         "memory_available_gb": avail,
         "mlx_memory_limit": 0,
-        "controlnet_runtime_available": false,
+        "controlnet_runtime_available": cfg!(feature = "mlx"),
         "runtime": "ggml",
         "backend": format!("{:?}", state.backend).to_lowercase(),
     }))

@@ -51,7 +51,7 @@ pub fn run(
         let decoded = session.decode(ctx, &latents)?;
         output.graph_computes += decoded.graph_computes;
         output.latent_len = latents.len();
-        let metadata = json!({
+        let mut metadata = json!({
             "prompt": one.prompt,
             "title": one.title,
             "model": run.model,
@@ -60,12 +60,176 @@ pub fn run(
             "batch_index": index,
             "batch_count": count,
         });
-        output.artifacts.push(Artifact::png(
+        apply_request_run_meta(&mut metadata, &one);
+        let mut artifact = Artifact::png(
             decoded.preview_png,
             width as i64,
             height as i64,
-            metadata,
-        ));
+            metadata.clone(),
+        );
+        apply_request_lineage(&mut artifact, &mut metadata, &one);
+        artifact.metadata = metadata;
+        output.artifacts.push(artifact);
     }
     Ok(output)
+}
+
+/// Persist run knobs for gallery asset tip (LoRA, steps, CFG, ControlNet, …).
+fn apply_request_run_meta(metadata: &mut serde_json::Value, request: &ImageGenerationRequest) {
+    if let Some(steps) = request.steps {
+        metadata["steps"] = json!(steps);
+    }
+    if let Some(guidance) = request.guidance {
+        metadata["guidance"] = json!(guidance);
+    }
+    if let Some(scheduler) = request
+        .scheduler
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        metadata["scheduler"] = json!(scheduler);
+    }
+    if request.scheduler_shift.is_some() {
+        metadata["scheduler_shift"] = json!(request.scheduler_shift);
+    }
+    let negative = request.negative_prompt.trim();
+    if !negative.is_empty() {
+        metadata["negative_prompt"] = json!(negative);
+    }
+    if !request.adapters.is_empty() {
+        metadata["adapters"] = json!(request
+            .adapters
+            .iter()
+            .map(|adapter| {
+                json!({
+                    "id": adapter.id,
+                    "weight": adapter.weight,
+                })
+            })
+            .collect::<Vec<_>>());
+    }
+    if let Some(guide) = &request.structural_guide {
+        metadata["structural_guide"] = json!({
+            "model_id": guide.model_id,
+            "type": guide.guide_type,
+            "weight": guide.weight,
+            "inpaint": guide.inpaint_mask_asset_id.as_ref().is_some_and(|id| !id.trim().is_empty()),
+        });
+    }
+}
+
+/// Canvas edges / lineage: honor `metadata.parent_asset_id` + `relation_type`
+/// from the client (e.g. retouch drawer). Companion inpaint without those
+/// fields falls back to the structural-guide inpaint source as parent.
+fn apply_request_lineage(
+    artifact: &mut Artifact,
+    metadata: &mut serde_json::Value,
+    request: &ImageGenerationRequest,
+) {
+    let meta_parent = request
+        .metadata
+        .get("parent_asset_id")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    let guide_parent = request
+        .structural_guide
+        .as_ref()
+        .and_then(|guide| guide.inpaint_source_asset_id.as_deref())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    let parent = meta_parent.or(guide_parent);
+    let Some(parent) = parent else {
+        return;
+    };
+
+    let meta_relation = request
+        .metadata
+        .get("relation_type")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let has_inpaint_mask = request
+        .structural_guide
+        .as_ref()
+        .and_then(|guide| guide.inpaint_mask_asset_id.as_deref())
+        .is_some_and(|id| !id.trim().is_empty());
+    let relation = meta_relation.unwrap_or_else(|| {
+        if has_inpaint_mask {
+            "retouch".into()
+        } else {
+            "create".into()
+        }
+    });
+
+    artifact.parent_asset_id = Some(parent.clone());
+    artifact.relation_type = Some(relation.clone());
+    metadata["parent_asset_id"] = json!(parent);
+    metadata["relation_type"] = json!(relation);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use danmo_contracts::{ImageGenerationRequest, StructuralGuide};
+
+    fn base_request() -> ImageGenerationRequest {
+        ImageGenerationRequest {
+            model: "z-image-turbo".into(),
+            title: String::new(),
+            prompt: "x".into(),
+            negative_prompt: String::new(),
+            size: "16x16".into(),
+            n: 1,
+            steps: Some(1),
+            guidance: Some(0.0),
+            seed: Some(1),
+            scheduler: None,
+            scheduler_shift: None,
+            use_empirical_mu: false,
+            adapters: Vec::new(),
+            structural_guide: None,
+            metadata: json!({}),
+            preview: true,
+            priority: "normal".into(),
+        }
+    }
+
+    #[test]
+    fn create_lineage_uses_request_metadata() {
+        let mut request = base_request();
+        request.metadata = json!({
+            "parent_asset_id": "ast_parent",
+            "relation_type": "retouch",
+        });
+        let mut artifact = Artifact::png(vec![1, 2, 3], 16, 16, json!({}));
+        let mut metadata = json!({});
+        apply_request_lineage(&mut artifact, &mut metadata, &request);
+        assert_eq!(artifact.parent_asset_id.as_deref(), Some("ast_parent"));
+        assert_eq!(artifact.relation_type.as_deref(), Some("retouch"));
+        assert_eq!(metadata["parent_asset_id"], json!("ast_parent"));
+        assert_eq!(metadata["relation_type"], json!("retouch"));
+    }
+
+    #[test]
+    fn create_lineage_falls_back_to_inpaint_source() {
+        let mut request = base_request();
+        request.structural_guide = Some(StructuralGuide {
+            asset_id: "ast_ctrl".into(),
+            model_id: "z-image-turbo-fun-controlnet-union:8steps".into(),
+            guide_type: "auto".into(),
+            weight: 0.75,
+            inpaint_source_asset_id: Some("ast_src".into()),
+            inpaint_mask_asset_id: Some("ast_mask".into()),
+        });
+        let mut artifact = Artifact::png(vec![1, 2, 3], 16, 16, json!({}));
+        let mut metadata = json!({});
+        apply_request_lineage(&mut artifact, &mut metadata, &request);
+        assert_eq!(artifact.parent_asset_id.as_deref(), Some("ast_src"));
+        assert_eq!(artifact.relation_type.as_deref(), Some("retouch"));
+    }
 }

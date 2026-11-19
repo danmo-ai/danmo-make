@@ -609,13 +609,45 @@ function onKeyDown(e: KeyboardEvent) {
   }
 }
 
+/** Export a binary RGB mask: painted brush → white, clear → black (preview stays pink-red). */
 function getMaskBlob(): Promise<Blob | null> {
   return new Promise((resolve) => {
     if (!offscreenCanvas) {
       resolve(null);
       return;
     }
-    offscreenCanvas.toBlob((blob) => resolve(blob), 'image/png');
+    const w = offscreenCanvas.width;
+    const h = offscreenCanvas.height;
+    if (!w || !h) {
+      resolve(null);
+      return;
+    }
+    const srcCtx = offscreenCanvas.getContext('2d');
+    if (!srcCtx) {
+      resolve(null);
+      return;
+    }
+    const src = srcCtx.getImageData(0, 0, w, h).data;
+    const out = document.createElement('canvas');
+    out.width = w;
+    out.height = h;
+    const outCtx = out.getContext('2d');
+    if (!outCtx) {
+      resolve(null);
+      return;
+    }
+    const image = outCtx.createImageData(w, h);
+    const dst = image.data;
+    for (let i = 0; i < src.length; i += 4) {
+      const painted = src[i + 3] > 0 || src[i] > 0 || src[i + 1] > 0 || src[i + 2] > 0;
+      const v = painted ? 255 : 0;
+      dst[i] = v;
+      dst[i + 1] = v;
+      dst[i + 2] = v;
+      dst[i + 3] = 255;
+    }
+    outCtx.putImageData(image, 0, 0);
+    out.toBlob((blob) => resolve(blob), 'image/png');
   });
 }
 

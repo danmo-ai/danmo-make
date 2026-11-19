@@ -1,5 +1,6 @@
 mod attention;
 mod blocks;
+mod control;
 mod denoise;
 mod feed_forward;
 #[cfg(test)]

@@ -149,6 +149,8 @@ fn spawn_worker(state: AppState) {
                 Err(error) => state.scheduler.finish_err(&task.id, &error),
             }
         };
+        // Always drop one-shot upload refs (inpaint masks) after the task ends.
+        crate::product::cleanup_ephemeral_task_assets(&state, &params);
         if let Err(error) = outcome {
             tracing::error!("task finish failed: {error}");
         }
@@ -689,6 +691,7 @@ fn safetensors_bundle(
     let resolved = download::resolve_model_path(workspace, &path);
     if danmo_engine::is_safetensors_image_bundle(&resolved)
         || danmo_engine::is_ace_step_safetensors_bundle(&resolved)
+        || danmo_engine::is_controlnet_safetensors_dir(&resolved)
     {
         return Ok(resolved);
     }
@@ -729,8 +732,9 @@ fn installed_safetensors_version(
         {
             let resolved = download::resolve_model_path(workspace, path);
             (danmo_engine::is_safetensors_image_bundle(&resolved)
-                || danmo_engine::is_ace_step_safetensors_bundle(&resolved))
-            .then_some(key.to_string())
+                || danmo_engine::is_ace_step_safetensors_bundle(&resolved)
+                || danmo_engine::is_controlnet_safetensors_dir(&resolved))
+                .then_some(key.to_string())
         }
     };
     for key in danmo_catalog::SAFETENSORS_VERSION_KEYS {
@@ -3271,9 +3275,17 @@ fn validate_structural_guide(
     let controlnet = catalog
         .model(&guide.model_id)
         .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
-    let category = catalog
+    let cn_root = catalog
         .root()
-        .pointer(&format!("/models/{}/catalog/category", controlnet.id))
+        .pointer(&format!("/models/{}", controlnet.id))
+        .ok_or_else(|| {
+            fail(
+                StatusCode::BAD_REQUEST,
+                format!("structural_guide.model_id {} missing from registry", controlnet.id),
+            )
+        })?;
+    let category = cn_root
+        .pointer("/catalog/category")
         .and_then(|v| v.as_str())
         .unwrap_or("");
     if category != "controlnets" {
@@ -3285,12 +3297,40 @@ fn validate_structural_guide(
             ),
         ));
     }
-    match guide.guide_type.as_str() {
+    let binding = cn_root
+        .pointer("/catalog/binding")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if binding == "standalone_edit" {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "structural_guide.model_id {} is standalone_edit; use image edits, not create structural guide",
+                controlnet.id
+            ),
+        ));
+    }
+    let registry_guide_type = cn_root
+        .pointer("/catalog/guide_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let effective_type = if guide.guide_type.trim().is_empty() {
+        registry_guide_type
+    } else {
+        guide.guide_type.as_str()
+    };
+    match effective_type {
         "canny" | "depth" | "pose" | "hed" | "mlsd" | "scribble" | "gray" | "auto" => {}
         "redux" => {
             return Err(fail(
                 StatusCode::BAD_REQUEST,
                 "redux structural_guide is FLUX-only; use a control image",
+            ));
+        }
+        "fill" => {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                "fill structural_guide is standalone_edit; use image edits",
             ));
         }
         other => {
@@ -3319,6 +3359,21 @@ fn validate_structural_guide(
             StatusCode::BAD_REQUEST,
             "structural_guide.inpaint_source_asset_id and inpaint_mask_asset_id must both be set for inpaint mode",
         ));
+    }
+    if has_source {
+        let supports_inpaint = cn_root
+            .pointer("/catalog/supports_inpaint")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !supports_inpaint {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "structural_guide.model_id {} does not support inpaint (catalog.supports_inpaint=false)",
+                    controlnet.id
+                ),
+            ));
+        }
     }
     Ok(())
 }

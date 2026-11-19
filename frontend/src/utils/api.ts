@@ -478,11 +478,18 @@ export const api = {
   },
 
   gen: {
-    async uploadAsset(file: File): Promise<unknown> {
+    async uploadAsset(
+      file: File,
+      options: { ephemeral?: boolean; purpose?: string } = {},
+    ): Promise<unknown> {
       const fd = new FormData();
       fd.append('file', file);
+      const params: Record<string, string | boolean> = {};
+      if (options.ephemeral) params.ephemeral = true;
+      if (options.purpose) params.purpose = options.purpose;
       const response = await client.post('/api/assets', fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        params,
       });
       return response.data;
     },

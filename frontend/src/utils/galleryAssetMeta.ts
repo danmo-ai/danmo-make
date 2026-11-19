@@ -62,6 +62,87 @@ export function metaNumber(
   return null;
 }
 
+export function metaText(
+  item: GalleryItem | null | undefined,
+  ...keys: string[]
+): string {
+  if (!item) return '';
+  const meta = item.metadata || {};
+  for (const key of keys) {
+    const raw = meta[key];
+    if (raw == null) continue;
+    const text = String(raw).trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+export type GalleryAdapterMeta = {
+  id: string;
+  weight: number | null;
+  /** Optional filesystem path from task params (for display name). */
+  path?: string;
+};
+
+/** Prefer LoRA folder name from path when id is opaque (user-lora-…). */
+function adapterDisplayName(id: string, path?: string): string {
+  const p = String(path || '').trim();
+  if (p) {
+    const parts = p.split(/[/\\]/).filter(Boolean);
+    // …/Lora/<name>/final_adapters.safetensors → <name>
+    if (parts.length >= 2) {
+      const file = parts[parts.length - 1] || '';
+      const parent = parts[parts.length - 2] || '';
+      if (/adapters|safetensors|lora/i.test(file) && parent && !/^user-lora-/i.test(parent)) {
+        return parent;
+      }
+      if (file && !/^user-lora-/i.test(file)) return file.replace(/\.safetensors$/i, '');
+    }
+  }
+  if (id.includes('/') || id.includes('\\')) {
+    return id.split(/[/\\]/).filter(Boolean).pop() || id;
+  }
+  return id;
+}
+
+/** LoRA / adapter rows stored on asset metadata (or task overlay). */
+export function galleryAdapters(
+  item: GalleryItem | null | undefined,
+  overlay?: Record<string, unknown> | null,
+): GalleryAdapterMeta[] {
+  const raw =
+    overlay?.adapters ??
+    item?.metadata?.adapters ??
+    item?.metadata?.loras ??
+    null;
+  if (!Array.isArray(raw)) return [];
+  const out: GalleryAdapterMeta[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== 'object') continue;
+    const rec = row as Record<string, unknown>;
+    const id = String(rec.id || rec.name || '').trim();
+    if (!id) continue;
+    const path = String(rec.path || '').trim() || undefined;
+    const weightRaw = rec.weight ?? rec.scale;
+    const weight =
+      weightRaw == null || weightRaw === ''
+        ? null
+        : Number.isFinite(Number(weightRaw))
+          ? Number(weightRaw)
+          : null;
+    out.push({ id, weight, path });
+  }
+  return out;
+}
+
+export function formatAdapterLabel(adapter: GalleryAdapterMeta): string {
+  const short = adapterDisplayName(adapter.id, adapter.path);
+  if (adapter.weight == null) return short;
+  const w = Number(adapter.weight);
+  const text = Number.isInteger(w) ? String(w) : w.toFixed(2).replace(/\.?0+$/, '');
+  return `${short} × ${text}`;
+}
+
 export function formatGalleryResolution(item: GalleryItem | null | undefined): string {
   if (!item) return '';
   const w = Number(item.width || item.metadata?.width || 0);

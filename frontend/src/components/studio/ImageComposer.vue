@@ -253,15 +253,9 @@
         :compatible-control-nets="compatibleControlNets"
         :control-net-runtime-available="controlNetRuntimeAvailable"
         :control-image="controlImage"
-        :inpaint-source-image="inpaintSourceImage"
-        :inpaint-mask-image="inpaintMaskImage"
         :show-negative-prompt="showNegativePrompt"
         @pick-control="$emit('pick-control')"
         @remove-control="$emit('remove-control')"
-        @pick-inpaint-source="$emit('pick-inpaint-source')"
-        @remove-inpaint-source="$emit('remove-inpaint-source')"
-        @pick-inpaint-mask="$emit('pick-inpaint-mask')"
-        @remove-inpaint-mask="$emit('remove-inpaint-mask')"
       />
     </ComposerAdvancedCollapsible>
   </div>
@@ -324,8 +318,6 @@ const props = withDefaults(defineProps<{
   referenceImage: { previewUrl: string; path: string } | null;
   extraReferenceImages?: Array<{ previewUrl: string; path: string }>;
   controlImage?: { previewUrl: string; path: string } | null;
-  inpaintSourceImage?: { previewUrl: string; path: string } | null;
-  inpaintMaskImage?: { previewUrl: string; path: string } | null;
   /**
    * Optional mode selector. If provided, a segmented control is shown in the
    * toolbar for switching between text2img / img2img modes.
@@ -375,10 +367,6 @@ const emit = defineEmits<{
   (e: 'remove-extra-reference', index: number): void;
   (e: 'pick-control'): void;
   (e: 'remove-control'): void;
-  (e: 'pick-inpaint-source'): void;
-  (e: 'remove-inpaint-source'): void;
-  (e: 'pick-inpaint-mask'): void;
-  (e: 'remove-inpaint-mask'): void;
   (e: 'model-change', value: string): void;
   (e: 'reset-defaults'): void;
   (e: 'enhance', ctx?: { stylePositive?: string }): void;

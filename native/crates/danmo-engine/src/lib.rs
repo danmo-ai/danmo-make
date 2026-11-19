@@ -42,8 +42,8 @@ pub use runtime::{identity_probe, select_from_env, BackendKind, BackendSelection
 pub use session::ensure_available;
 pub use weights::{
     assert_gguf_bundle, assert_upscale_bundle, is_ace_step_safetensors_bundle,
-    is_safetensors_image_bundle, lora_base_name,
-    write_f32_gguf, GgufWeights, UpscaleBundle, WeightError,
+    is_controlnet_safetensors_dir, is_safetensors_image_bundle, lora_base_name, write_f32_gguf,
+    GgufWeights, UpscaleBundle, WeightError,
 };
 
 #[cfg(test)]
@@ -70,6 +70,7 @@ mod tests {
             use_empirical_mu: false,
             adapters: Vec::new(),
             structural_guide: None,
+            metadata: serde_json::json!({}),
             preview: true,
             priority: "normal".into(),
         }

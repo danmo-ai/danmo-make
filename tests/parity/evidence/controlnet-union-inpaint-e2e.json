@@ -1,0 +1,21 @@
+{
+  "gate": "z_image_controlnet_union_inpaint_e2e",
+  "status": "passed",
+  "date": "2026-11-19",
+  "task_id": "538284ce-738f-41e0-96f7-ff026226189b",
+  "model": "z-image-turbo:fp16",
+  "controlnet": "z-image-turbo-fun-controlnet-union:8steps",
+  "size": "256x256",
+  "steps": 4,
+  "seed": 42,
+  "guide": {
+    "type": "auto",
+    "weight": 0.75,
+    "asset_id": "ast_397d53b081714c80ba62",
+    "inpaint_source_asset_id": "ast_397d53b081714c80ba62",
+    "inpaint_mask_asset_id": "ast_ae105950d2074433ad57"
+  },
+  "primary_asset_id": "ast_469cc9daf19442779ba2",
+  "output": "tests/parity/evidence/controlnet-union-inpaint-e2e-2026-11-19.png",
+  "notes": "33ch inpaint pack; UI white=repaint inverted to preserve; eager DiT + ControlNet hints."
+}

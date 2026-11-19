@@ -5183,7 +5183,11 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "binding": "structural",
+        "guide_type": "canny",
+        "supports_inpaint": false,
+        "allows_with_reference": false
       },
       "runtime": {
         "family": "flux1",
@@ -5254,7 +5258,11 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "binding": "structural",
+        "guide_type": "depth",
+        "supports_inpaint": false,
+        "allows_with_reference": false
       },
       "runtime": {
         "family": "flux1",
@@ -5325,7 +5333,11 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "binding": "standalone_edit",
+        "guide_type": "fill",
+        "supports_inpaint": true,
+        "allows_with_reference": false
       },
       "runtime": {
         "family": "flux1",
@@ -5395,7 +5407,11 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "binding": "structural",
+        "guide_type": "redux",
+        "supports_inpaint": false,
+        "allows_with_reference": false
       },
       "runtime": {
         "family": "flux1",
@@ -5452,8 +5468,8 @@
       "catalog": {
         "media": "image",
         "description": {
-          "zh": "Z-Image-Turbo Fun ControlNet Union（Canny / Depth / Pose / HED / MLSD 等），需上传预处理控制图。",
-          "en": "Z-Image-Turbo Fun ControlNet Union (Canny, Depth, Pose, HED, MLSD, …); supply a preprocessed control image."
+          "zh": "Z-Image-Turbo Fun ControlNet Union（Canny / Depth / Pose / HED / MLSD 等）；文生图需预处理控制图；局部重绘需源图+蒙版。",
+          "en": "Z-Image-Turbo Fun ControlNet Union (Canny, Depth, Pose, HED, MLSD, …); create needs a preprocessed control image; retouch needs source + mask."
         },
         "category": "controlnets",
         "commercial_use_allowed": true,
@@ -5465,7 +5481,11 @@
         },
         "recommended": false,
         "base_model": "z-image-turbo",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "binding": "structural",
+        "guide_type": "auto",
+        "supports_inpaint": true,
+        "allows_with_reference": true
       },
       "runtime": {
         "family": "z_image",
@@ -5474,12 +5494,13 @@
         ]
       },
       "actions": {
-        "create": {}
+        "create": {},
+        "retouch": {}
       },
       "ui": {
         "parameters": {
           "controlnet_strength": {
-            "default": 0.75,
+            "default": 0.9,
             "min": 0.0,
             "max": 1.5,
             "step": 0.05,
@@ -6591,7 +6612,7 @@
             "default": true,
             "repo_id": "DiffSynth-Studio/Z-Image-Turbo-DistillPatch",
             "local_path": "models/Lora/Z-Image/z-image-turbo-distillpatch-bf16",
-            "source": "huggingface",
+            "source": "modelscope",
             "source_type": "full",
             "allow_patterns": [
               "model.safetensors"

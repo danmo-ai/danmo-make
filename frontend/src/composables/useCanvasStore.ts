@@ -673,13 +673,6 @@ function createCanvasStore(media: CanvasMedia) {
     schedulePersist();
   }
 
-  function resetView() {
-    viewport.zoom = DEFAULT_VIEWPORT.zoom;
-    viewport.panX = DEFAULT_VIEWPORT.panX;
-    viewport.panY = DEFAULT_VIEWPORT.panY;
-    schedulePersist();
-  }
-
   function expandBounds(
     minX: number,
     minY: number,
@@ -715,7 +708,9 @@ function createCanvasStore(media: CanvasMedia) {
     };
   }
 
-  function fitAll(galleryItems: GalleryItem[], viewportEl?: HTMLElement | null) {
+  function contentBounds(
+    galleryItems: GalleryItem[]
+  ): { minX: number; minY: number; maxX: number; maxY: number } | null {
     const keys = Object.keys(items);
     let minX = Infinity;
     let minY = Infinity;
@@ -760,11 +755,43 @@ function createCanvasStore(media: CanvasMedia) {
       }
     }
 
-    if (!isFinite(minX)) {
-      resetView();
+    if (!isFinite(minX)) return null;
+    return { minX, minY, maxX, maxY };
+  }
+
+  function applyDefaultViewport() {
+    viewport.zoom = DEFAULT_VIEWPORT.zoom;
+    viewport.panX = DEFAULT_VIEWPORT.panX;
+    viewport.panY = DEFAULT_VIEWPORT.panY;
+    schedulePersist();
+  }
+
+  /** Zoom 100% and center on canvas content (nodes / staging / overlays). */
+  function resetView(galleryItems: GalleryItem[] = [], viewportEl?: HTMLElement | null) {
+    const bounds = contentBounds(galleryItems);
+    if (!bounds || !viewportEl) {
+      applyDefaultViewport();
+      return;
+    }
+    const { minX, minY, maxX, maxY } = bounds;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const vw = viewportEl.clientWidth || 800;
+    const vh = viewportEl.clientHeight || 600;
+    viewport.zoom = 1;
+    viewport.panX = vw / 2 - cx;
+    viewport.panY = vh / 2 - cy;
+    schedulePersist();
+  }
+
+  function fitAll(galleryItems: GalleryItem[], viewportEl?: HTMLElement | null) {
+    const bounds = contentBounds(galleryItems);
+    if (!bounds) {
+      applyDefaultViewport();
       return;
     }
 
+    const { minX, minY, maxX, maxY } = bounds;
     const pad = 48;
     const contentW = maxX - minX + pad * 2;
     const contentH = maxY - minY + pad * 2;

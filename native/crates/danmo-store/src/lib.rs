@@ -348,33 +348,48 @@ impl TaskStore {
         kind: Option<&str>,
         limit: i64,
         offset: i64,
+        exclude_upload_refs: bool,
     ) -> Result<(Vec<AssetRow>, i64), StoreError> {
-        let (where_sql, arg) = match kind.filter(|k| !k.is_empty()) {
-            Some(kind) => ("WHERE kind=?", Some(kind.to_string())),
-            None => ("", None),
+        // Ephemeral / upload-ref assets (inpaint masks, etc.) stay out of gallery.
+        const HIDE_UPLOAD_REFS: &str = "NOT (
+            COALESCE(json_extract(metadata, '$.ephemeral'), 0) = 1
+            OR COALESCE(json_extract(metadata, '$.upload_ref'), 0) = 1
+            OR lower(COALESCE(json_extract(metadata, '$.filename'), '')) = 'mask.png'
+        )";
+        let kind = kind.filter(|k| !k.is_empty());
+        let where_sql = match (kind, exclude_upload_refs) {
+            (Some(_), true) => format!("WHERE kind=? AND {HIDE_UPLOAD_REFS}"),
+            (Some(_), false) => "WHERE kind=?".to_string(),
+            (None, true) => format!("WHERE {HIDE_UPLOAD_REFS}"),
+            (None, false) => String::new(),
         };
-        let total: i64 = match &arg {
+
+        let total: i64 = match kind {
             Some(kind) => self.conn.query_row(
                 &format!("SELECT COUNT(*) FROM assets {where_sql}"),
                 params![kind],
                 |row| row.get(0),
             )?,
-            None => self
-                .conn
-                .query_row("SELECT COUNT(*) FROM assets", [], |row| row.get(0))?,
+            None => self.conn.query_row(
+                &format!("SELECT COUNT(*) FROM assets {where_sql}"),
+                [],
+                |row| row.get(0),
+            )?,
         };
+
         let sql = format!(
             "SELECT id, kind, mime_type, file_path, thumbnail_path, width, height, duration_seconds,
                     source_task_id, source_action, metadata, created_at, parent_asset_id, relation_type, group_id
              FROM assets {where_sql} ORDER BY {ASSET_TIME_KEY} DESC LIMIT ? OFFSET ?"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let rows = if let Some(kind) = arg {
-            stmt.query_map(params![kind, limit, offset], read_asset)?
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            stmt.query_map(params![limit, offset], read_asset)?
-                .collect::<Result<Vec<_>, _>>()?
+        let rows = match kind {
+            Some(kind) => stmt
+                .query_map(params![kind, limit, offset], read_asset)?
+                .collect::<Result<Vec<_>, _>>()?,
+            None => stmt
+                .query_map(params![limit, offset], read_asset)?
+                .collect::<Result<Vec<_>, _>>()?,
         };
         Ok((rows, total))
     }
