@@ -353,6 +353,14 @@ pub fn execute(
         preview_dir: state.outputs.join("previews"),
         preview: request_preview(params),
     });
+    // Record the MLX capability line once per task so a NAX-less build is
+    // visible in the log next to the task that ran on it. The log write goes
+    // through the observer path: a failure is a task failure, not a warning.
+    if !task_id.is_empty() {
+        if let Some(capability) = crate::app::mlx_capability_summary() {
+            observer.log("info", capability)?;
+        }
+    }
     let exec = ExecutionContext::new(task_id, observer).with_cancellation(cancellation);
     engine
         .execute(request, exec)
@@ -588,6 +596,20 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), EngineError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "mlx")]
+    #[test]
+    fn mlx_capability_line_is_present_and_well_formed() {
+        let capability = crate::app::mlx_capability_summary().expect("mlx build");
+        assert!(capability.contains("deployment_target="), "{capability}");
+        assert!(capability.contains("nax_built="), "{capability}");
+    }
+
+    #[cfg(not(feature = "mlx"))]
+    #[test]
+    fn mlx_capability_line_is_absent_without_mlx() {
+        assert!(crate::app::mlx_capability_summary().is_none());
+    }
 
     #[test]
     fn metadata_parsing_is_typed_and_fail_loud() {

@@ -1,11 +1,13 @@
 mod array;
 mod cache;
 mod cancel;
+mod capability;
 mod compile;
 mod device;
 mod error;
 mod executor;
 mod io;
+mod kernel;
 mod linear;
 mod memory;
 mod optim;
@@ -18,11 +20,16 @@ use std::ffi::CStr;
 pub use array::{Array, Dtype, QuantizedArray};
 pub use cache::{CacheKey, CacheRevision, ModelCache};
 pub use cancel::CancelToken;
+pub use capability::{
+    cached_summary as cached_capability_summary, deployment_target, gpu_architecture,
+    gpu_generation, gpu_name, nax_available, nax_built, require_nax, summary as capability_summary,
+};
 pub use compile::{Closure, MultiClosure, UnaryClosure};
 pub use device::{Device, DeviceType};
 pub use error::{Error, Result};
 pub use executor::{EventSink, Executor, ExecutorEvent};
 pub use io::{save_safetensors, SafeTensors};
+pub use kernel::{Config as KernelConfig, Launch, MetalKernel, OutputSpec, TemplateArg};
 pub use linear::{AffineQuantization, LinearWeight, LoraResidual};
 pub use memory::{active_memory, clear_cache, peak_memory, reset_peak_memory};
 pub use optim::{adamw_update, adamw_update_all, AdamWConfig, AdamWState};
@@ -55,6 +62,16 @@ pub fn version() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether MLX will run float32 matmuls as TF32. MLX reads
+    /// `MLX_ENABLE_TF32` once, defaulting to on; host-reference probes set it
+    /// to 0.
+    fn tf32_enabled() -> bool {
+        match std::env::var("MLX_ENABLE_TF32") {
+            Ok(value) => value.trim() != "0",
+            Err(_) => true,
+        }
+    }
 
     fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
         assert_eq!(actual.len(), expected.len());
@@ -304,6 +321,119 @@ mod tests {
     }
 
     #[test]
+    fn metal_kernel_requires_metal_backend() {
+        // The kernel body is never compiled on the CPU stream: MLX raises
+        // "[metal_kernel] Only supports the GPU." and the wrapper surfaces it
+        // instead of silently running a different path.
+        let stream = Stream::cpu().unwrap();
+        let kernel = MetalKernel::new(
+            "danmo_add_one",
+            &["x"],
+            &["y"],
+            "  uint i = thread_position_in_grid.x;\n  y[i] = x[i] + 1.0f;\n",
+            "",
+        )
+        .unwrap();
+        let input = Array::from_f32_slice(&[1.0, 2.0, 3.0], &[3]).unwrap();
+        let config =
+            KernelConfig::new(&[OutputSpec::f32(&[3])], Launch::new((3, 1, 1), (32, 1, 1)))
+                .unwrap();
+        let error = match kernel.apply_one(&[input], &config, &stream) {
+            Ok(_) => panic!("CPU stream unexpectedly accepted a Metal kernel"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("mlx_fast_metal_kernel_apply"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn metal_kernel_rejects_an_empty_source() {
+        let error = MetalKernel::new("danmo_empty", &["x"], &["y"], "   ", "").unwrap_err();
+        assert!(error.to_string().contains("source is empty"), "{error}");
+    }
+
+    #[test]
+    fn kernel_config_rejects_a_zero_grid() {
+        let error = KernelConfig::new(&[OutputSpec::f32(&[4])], Launch::new((0, 1, 1), (32, 1, 1)))
+            .unwrap_err();
+        assert!(error.to_string().contains("must be positive"), "{error}");
+    }
+
+    #[cfg(feature = "metal")]
+    #[test]
+    fn metal_kernel_elementwise_matches_host_reference() {
+        let device = Device::gpu().unwrap();
+        assert!(device.is_available().unwrap(), "Metal GPU is unavailable");
+        let stream = Stream::new(&device).unwrap();
+        // A dtype template argument makes MLX instantiate one kernel per dtype;
+        // `x_shape` makes it pass the input shape as a buffer.
+        let kernel = MetalKernel::new(
+            "danmo_affine_probe",
+            &["x"],
+            &["y"],
+            "  uint i = thread_position_in_grid.x;\n\
+             \x20 if (i >= uint(x_shape[0])) { return; }\n\
+             \x20 y[i] = T(2) * x[i] + T(3);\n",
+            "",
+        )
+        .unwrap();
+        let values = [1.0f32, -2.0, 0.5, 4.0, 0.0, -1.5];
+        let input = Array::from_f32_slice(&values, &[6]).unwrap();
+        let config =
+            KernelConfig::new(&[OutputSpec::f32(&[6])], Launch::new((6, 1, 1), (32, 1, 1)))
+                .unwrap()
+                .template_arg(TemplateArg::Dtype(Dtype::Float32))
+                .unwrap();
+        let output = kernel
+            .apply_one(&[input], &config, &stream)
+            .unwrap()
+            .to_vec_f32(&stream)
+            .unwrap();
+        let expected: Vec<f32> = values.iter().map(|value| 2.0 * value + 3.0).collect();
+        assert_close(&output, &expected, 1e-5);
+    }
+
+    #[cfg(feature = "metal")]
+    #[test]
+    fn metal_kernel_runs_inside_the_executor() {
+        let executor = Executor::spawn(DeviceType::Gpu).unwrap();
+        let values = executor
+            .execute("custom kernel", |_, stream, _, _| {
+                let kernel = MetalKernel::new(
+                    "danmo_executor_probe",
+                    &["x"],
+                    &["y"],
+                    "  uint i = thread_position_in_grid.x;\n  y[i] = x[i] * x[i];\n",
+                    "",
+                )?;
+                let input = Array::from_f32_slice(&[1.0, 2.0, 3.0, 4.0], &[4])?;
+                let config = KernelConfig::new(
+                    &[OutputSpec::f32(&[4])],
+                    Launch::new((4, 1, 1), (32, 1, 1)),
+                )?;
+                kernel
+                    .apply_one(&[input], &config, stream)?
+                    .to_vec_f32(stream)
+            })
+            .unwrap();
+        assert_close(&values, &[1.0, 4.0, 9.0, 16.0], 1e-5);
+    }
+
+    #[test]
+    fn capability_summary_never_panics_without_a_gpu() {
+        let summary = capability_summary();
+        assert!(summary.contains("deployment_target="), "{summary}");
+        assert!(!deployment_target().is_empty());
+        assert_eq!(
+            gpu_generation("applegpu_g17s"),
+            Some(17),
+            "architecture parsing must stay in step with MLX"
+        );
+    }
+
+    #[test]
     fn executor_reuses_one_thread_and_recovers_from_job_panics() {
         let executor = Executor::spawn(DeviceType::Cpu).unwrap();
         let first = executor
@@ -428,7 +558,20 @@ mod tests {
         .unwrap()
         .to_vec_f32(&stream)
         .unwrap();
-        assert_close(&output, &[1.6604775, 2.6604775, 2.3395226, 3.3395226], 2e-4);
+        // A float32 SDPA on NAX runs the matmuls through TF32, which MLX enables
+        // by default (`MLX_ENABLE_TF32`, off only for host-reference probes).
+        // The reference below is exact, so the tolerance has to match whichever
+        // precision path this build can take.
+        let tolerance = if capability::nax_built() && tf32_enabled() {
+            2e-3
+        } else {
+            2e-4
+        };
+        assert_close(
+            &output,
+            &[1.6604775, 2.6604775, 2.3395226, 3.3395226],
+            tolerance,
+        );
 
         let (convolution, transposed) = conv3d_probe(&stream).unwrap();
         assert_close(&convolution, &[36.0], 1e-5);

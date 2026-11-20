@@ -115,6 +115,26 @@ fn main() {
             "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY={}",
             lib_dir.display()
         ));
+    if metal {
+        let target = deployment_target();
+        // MLX compiles its M5 tensor-unit (NAX) kernels only when the
+        // deployment target is >= 26.2. Left unset, MLX falls back to the host
+        // OS version, so the same source tree produces a NAX binary on a new
+        // build host and a NAX-less binary on an old one. Pin it explicitly.
+        configure.arg(format!("-DCMAKE_OSX_DEPLOYMENT_TARGET={target}"));
+        // Consumed by danmo-mlx's build script, which forwards them as
+        // `DANMO_MLX_*` rustc-env for the capability self-check (`DEP_MLXC_*`
+        // metadata is only visible inside dependents' build scripts).
+        println!("cargo:deployment_target={target}");
+        println!(
+            "cargo:nax_built={}",
+            if version_at_least(&target, NAX_DEPLOYMENT_TARGET) {
+                "ON"
+            } else {
+                "OFF"
+            }
+        );
+    }
     if let Some(prefix) = &prebuilt {
         configure
             .arg("-DMLX_C_USE_SYSTEM_MLX=ON")
@@ -155,10 +175,14 @@ fn main() {
     }
 
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
+    // Downstream bin crates (danmo-cli) re-emit this as their own LC_RPATH;
+    // `cargo:rustc-link-arg` above only covers this package's own targets.
+    println!("cargo:lib_dir={}", lib_dir.display());
     if let Some(prefix) = &prebuilt {
         let prefix_lib = prefix.join("lib");
         println!("cargo:rustc-link-search=native={}", prefix_lib.display());
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", prefix_lib.display());
+        println!("cargo:prebuilt_lib_dir={}", prefix_lib.display());
     }
     println!("cargo:rustc-link-lib=dylib=mlxc");
     println!("cargo:rustc-link-lib=dylib=mlx");
@@ -191,6 +215,75 @@ fn main() {
     if prebuilt.is_none() {
         copy_metal_library(&build_dir, &metal_dir);
     }
+}
+
+/// The Metal 4 / macOS 26.2 floor under which MLX omits its M5 tensor-unit
+/// (NAX) kernels. `mlx/backend/metal/kernels/CMakeLists.txt` gates the NAX
+/// kernel builds on exactly these three conditions.
+const NAX_DEPLOYMENT_TARGET: &str = "26.2";
+/// MLX's own minimum deployment target. Used when the SDK cannot build NAX.
+const FALLBACK_DEPLOYMENT_TARGET: &str = "14.0";
+
+/// The macOS deployment target passed to MLX's CMake configure.
+///
+/// Left unset, MLX substitutes the *build host* OS version, so the same source
+/// tree produces a NAX binary on a new machine and a NAX-less binary on an older
+/// CI runner. Pin it here instead. Override with `DANQING_MLX_DEPLOYMENT_TARGET`.
+fn deployment_target() -> String {
+    println!("cargo:rerun-if-env-changed=DANQING_MLX_DEPLOYMENT_TARGET");
+    if let Ok(explicit) = env::var("DANQING_MLX_DEPLOYMENT_TARGET") {
+        let explicit = explicit.trim().to_string();
+        if !explicit.is_empty() {
+            return explicit;
+        }
+    }
+    // Prefer the NAX floor. Older SDKs reject the flag outright, so fall back
+    // and say so: a silent drop here is exactly the failure this guards.
+    let sdk = Command::new("xcrun")
+        .args(["--sdk", "macosx", "--show-sdk-version"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string());
+    match sdk {
+        Some(version) if version_at_least(&version, NAX_DEPLOYMENT_TARGET) => {
+            NAX_DEPLOYMENT_TARGET.into()
+        }
+        Some(version) => {
+            println!(
+                "cargo:warning=macOS SDK {version} is older than {NAX_DEPLOYMENT_TARGET}; \
+                 building MLX without M5 tensor-unit (NAX) kernels. \
+                 Set DANQING_MLX_DEPLOYMENT_TARGET to override."
+            );
+            FALLBACK_DEPLOYMENT_TARGET.into()
+        }
+        None => {
+            println!(
+                "cargo:warning=could not query the macOS SDK version; \
+                 building MLX for {FALLBACK_DEPLOYMENT_TARGET} without NAX kernels"
+            );
+            FALLBACK_DEPLOYMENT_TARGET.into()
+        }
+    }
+}
+
+fn version_at_least(actual: &str, minimum: &str) -> bool {
+    let parse = |value: &str| -> Vec<u32> {
+        value
+            .split('.')
+            .map(|part| part.parse::<u32>().unwrap_or(0))
+            .collect()
+    };
+    let actual = parse(actual);
+    let minimum = parse(minimum);
+    for index in 0..minimum.len().max(actual.len()) {
+        let left = actual.get(index).copied().unwrap_or(0);
+        let right = minimum.get(index).copied().unwrap_or(0);
+        if left != right {
+            return left > right;
+        }
+    }
+    true
 }
 
 fn stage_prebuilt(source: &Path, destination: &Path) {

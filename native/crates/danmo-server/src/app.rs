@@ -794,11 +794,24 @@ fn upscale_or_edit(kind: &str, family: &str, bundle: &std::path::Path) -> Result
 async fn health(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "ok": true,
-        "runtime": "ggml",
+        "runtime": if cfg!(feature = "mlx") { "mlx" } else { "unavailable" },
         "backend": state.backend.name(),
         "backend_selection": state.backend_selection.reason,
         "backend_probe": state.backend_selection.probe.as_ref().map(|probe| probe.summary()),
+        "mlx_capability": mlx_capability_summary(),
     }))
+}
+
+/// One-line MLX capability report (deployment target, NAX build/runtime state,
+/// GPU architecture). `None` for non-MLX builds.
+#[cfg(feature = "mlx")]
+pub(crate) fn mlx_capability_summary() -> Option<&'static str> {
+    Some(danmo_mlx::cached_capability_summary())
+}
+
+#[cfg(not(feature = "mlx"))]
+pub(crate) fn mlx_capability_summary() -> Option<&'static str> {
+    None
 }
 
 async fn registry_route(

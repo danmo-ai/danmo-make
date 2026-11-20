@@ -1164,7 +1164,7 @@ impl VectorArray {
         })
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         unsafe { sys::mlx_vector_array_size(self.raw) }
     }
 

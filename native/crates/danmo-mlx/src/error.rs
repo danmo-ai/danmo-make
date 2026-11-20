@@ -57,7 +57,7 @@ pub(crate) fn set_error(message: String) {
     });
 }
 
-fn take_error() -> Option<String> {
+pub(crate) fn take_error() -> Option<String> {
     LAST_ERROR
         .try_with(|slot| slot.borrow_mut().take())
         .ok()
