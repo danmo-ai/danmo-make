@@ -747,7 +747,7 @@
   },
   "avatar": {
     "composerTitle": "Avatar Create",
-    "generate": "Generate avatar video",
+    "generate": "Generate",
     "promptPlaceholder": "Optional scene or expression, e.g. smiling, soft indoor light…",
     "portrait": "Portrait reference",
     "voiceTrack": "Voice audio",

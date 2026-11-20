@@ -52,7 +52,7 @@
     </template>
   </StudioLayout>
 
-  <StudioComposerHost v-model:open="composerDrawerOpen" :drawer-title="$t('avatar.composerTitle')">
+  <StudioComposerHost v-model:open="composerDrawerOpen" :drawer-title="$t('studio.composerDrawerTitle')">
     <AvatarComposer
       v-model="params.prompt"
       v-model:title="params.title"
@@ -80,6 +80,7 @@
       @pick-audio="openAudioPicker"
       @remove-audio="clearAudio"
       @model-change="onModelChange"
+      @reset-defaults="resetParamsToDefaults"
     />
   </StudioComposerHost>
 
@@ -123,6 +124,7 @@ import AvatarComposer from '@/components/studio/AvatarComposer.vue';
 import StudioComposerHost from '@/components/studio/StudioComposerHost.vue';
 import AssetPicker from '@/components/asset/AssetPicker.vue';
 import GalleryPreviewDialog from '@/components/gallery/GalleryPreviewDialog.vue';
+import { buildResolutionSizeOptions } from '@/utils/registryParamSchema';
 
 const tasksStore = useTasksStore();
 const registryStore = useRegistryStore();
@@ -256,11 +258,9 @@ const avatarModelSelectOptions = computed(() =>
 
 const currentModelConfig = computed(() => (modelRegistry.value[params.model] as Record<string, unknown>) || null);
 
-const resolutionSelectOptions = computed(() => {
-  const presets = (currentModelConfig.value?.parameters as any)?.resolution_presets;
-  const options = presets?.options || ['512x512', '832x480'];
-  return options.map((s: string) => ({ label: s, value: s }));
-});
+const resolutionSelectOptions = computed(() =>
+  buildResolutionSizeOptions(currentModelConfig.value?.parameters as Record<string, unknown> | undefined),
+);
 
 const supportsNegativePrompt = computed(() => {
   const p = (currentModelConfig.value?.parameters as any) || {};
@@ -345,6 +345,13 @@ function syncParamsFromModelConfig() {
   const [w, h] = preset.split('x').map((x: string) => parseInt(x, 10));
   if (w > 0) params.width = w;
   if (h > 0) params.height = h;
+}
+
+function resetParamsToDefaults() {
+  params.seed = null;
+  params.negative_prompt = '';
+  syncParamsFromModelConfig();
+  toast.success($tt('studio.restoredDefaults'));
 }
 
 function onModelChange() {

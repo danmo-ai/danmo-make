@@ -747,7 +747,7 @@
   },
   "avatar": {
     "composerTitle": "数字人创作",
-    "generate": "生成数字人视频",
+    "generate": "生成",
     "promptPlaceholder": "可选：补充场景或表情描述，例如：微笑、室内自然光…",
     "portrait": "人像参考",
     "voiceTrack": "配音音频",
