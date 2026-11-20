@@ -1100,14 +1100,16 @@ async fn compatible_loras(
         if !lora_compatible(&model, base) {
             continue;
         }
-        rows.push(json!({
+        let mut row = json!({
             "kind": "lora",
             "id": id,
             "name": lora_display_name(entry, id),
             "base_model": base,
             "source": "registry",
             "ready": lora_versions_ready(&state.workspace, entry),
-        }));
+        });
+        attach_registry_lora_meta(&mut row, entry, &state.workspace);
+        rows.push(row);
     }
     let user_path = state.workspace.join("config").join("user_loras.json");
     if user_path.is_file() {
@@ -1243,6 +1245,85 @@ async fn compatible_loras(
         name(left).cmp(&name(right))
     });
     Ok(Json(Value::Array(rows)))
+}
+
+fn attach_registry_lora_meta(row: &mut Value, entry: &Value, workspace: &FsPath) {
+    if let Some(overrides) = registry_compose_overrides(entry, installed_lora_version(entry, workspace))
+    {
+        row["compose_overrides"] = overrides;
+    }
+    let Some(meta) = entry.pointer("/catalog/metadata/lora") else {
+        return;
+    };
+    if let Some(hint) = meta
+        .get("hint_key")
+        .and_then(|value| value.as_str())
+        .filter(|text| !text.is_empty())
+    {
+        row["hint_key"] = json!(hint);
+    }
+    if let Some(tags) = meta.get("tags").filter(|value| value.is_array()) {
+        row["tags"] = tags.clone();
+    }
+    if let Some(range) = meta.get("recommended_lora_scale").filter(|value| value.is_array()) {
+        row["recommended_lora_scale"] = range.clone();
+    }
+}
+
+/// Card overrides, then the installed version. `ui.parameters.compose_overrides`
+/// and `runtime.overrides.compose_overrides` are the same map.
+fn registry_compose_overrides(entry: &Value, version: Option<&Value>) -> Option<Value> {
+    let mut overrides = serde_json::Map::new();
+    merge_compose_overrides(
+        &mut overrides,
+        entry.pointer("/runtime/overrides/compose_overrides"),
+    );
+    merge_compose_overrides(
+        &mut overrides,
+        entry.pointer("/ui/parameters/compose_overrides"),
+    );
+    if let Some(version) = version {
+        merge_compose_overrides(&mut overrides, version.get("compose_overrides"));
+    }
+    if overrides.is_empty() {
+        None
+    } else {
+        Some(Value::Object(overrides))
+    }
+}
+
+fn merge_compose_overrides(into: &mut serde_json::Map<String, Value>, source: Option<&Value>) {
+    let Some(source) = source.and_then(|value| value.as_object()) else {
+        return;
+    };
+    for (key, value) in source {
+        if value.is_null() {
+            continue;
+        }
+        into.insert(key.clone(), value.clone());
+    }
+}
+
+fn installed_lora_version<'a>(entry: &'a Value, workspace: &FsPath) -> Option<&'a Value> {
+    let versions = entry
+        .pointer("/distribution/versions")
+        .and_then(|value| value.as_object())?;
+    let ready: Vec<&Value> = versions
+        .values()
+        .filter(|spec| {
+            spec.get("local_path")
+                .and_then(|value| value.as_str())
+                .is_some_and(|path| {
+                    download::version_ready(&download::resolve_model_path(workspace, path))
+                })
+        })
+        .collect();
+    if ready.len() == 1 {
+        return Some(ready[0]);
+    }
+    ready
+        .into_iter()
+        .find(|spec| spec.get("default").and_then(|value| value.as_bool()) == Some(true))
 }
 
 fn lora_display_name(entry: &Value, id: &str) -> String {
@@ -3951,6 +4032,24 @@ mod lora_base_tests {
         assert!(!lora_compatible("ace-step-xl-turbo", "ace-step-turbo"));
         assert!(!lora_compatible("ace-step-xl-sft", "ace-step-turbo"));
         assert!(!lora_compatible("ace-step-xl-base", ""));
+    }
+
+    #[test]
+    fn lightning_version_overrides_the_card_steps() {
+        let entry = json!({
+            "runtime": { "overrides": { "compose_overrides": { "steps": 4, "guidance": 1 } } },
+            "distribution": {
+                "versions": {
+                    "v8-bf16": { "compose_overrides": { "steps": 8 } }
+                }
+            }
+        });
+        let version = entry.pointer("/distribution/versions/v8-bf16");
+        let overrides = super::registry_compose_overrides(&entry, version).unwrap();
+        assert_eq!(overrides["steps"], 8);
+        assert_eq!(overrides["guidance"], 1);
+        let card = super::registry_compose_overrides(&entry, None).unwrap();
+        assert_eq!(card["steps"], 4);
     }
 }
 

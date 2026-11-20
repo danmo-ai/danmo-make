@@ -178,6 +178,11 @@ import {
 import { previewUrlForGalleryItem } from '@/utils/canvasAssets';
 import { isAudioLyricsRequired, audioLyricsRequiredHintKey, resolveVocalLanguageForSubmit } from '@/utils/audioLyrics';
 import { ACTIVE_COMPOSER_TASK_STATUSES, splitComposerPromptLines } from '@/utils/composerQueue';
+import {
+  applyLoraComposeOverrides,
+  withRegistryLoraMeta,
+  type CompatibleLoraRow,
+} from '@/utils/loraAdapterMeta';
 
 const tasksStore = useTasksStore();
 const registryStore = useRegistryStore();
@@ -348,7 +353,19 @@ const hasCustomParams = computed(() => {
     || !!params.lora;
 });
 
-const compatibleLoras = ref<Record<string, unknown>[]>([]);
+const compatibleLoras = ref<CompatibleLoraRow[]>([]);
+
+function syncAudioLoraSelection() {
+  if (!params.lora) return;
+  const row = compatibleLoras.value.find((item) => String(item.id) === String(params.lora));
+  if (!row || row.ready === false) return;
+  const bare = String(row.id || params.lora).split(':')[0];
+  applyLoraComposeOverrides(
+    params as unknown as Record<string, unknown>,
+    row,
+    modelRegistry.value[bare],
+  );
+}
 
 async function loadCompatibleAdapters(modelKey: string) {
   if (!modelKey) {
@@ -357,7 +374,10 @@ async function loadCompatibleAdapters(modelKey: string) {
   }
   try {
     const loras = await api.settings.getCompatibleLoras(modelKey);
-    compatibleLoras.value = (loras as Record<string, unknown>[]) || [];
+    compatibleLoras.value = ((loras as CompatibleLoraRow[]) || []).map((row) => {
+      const bare = String(row.id || '').split(':')[0];
+      return withRegistryLoraMeta(row, modelRegistry.value[bare]);
+    });
     if (
       params.lora &&
       !compatibleLoras.value.some(
@@ -366,11 +386,16 @@ async function loadCompatibleAdapters(modelKey: string) {
     ) {
       params.lora = '';
     }
+    syncAudioLoraSelection();
   } catch (e) {
     console.error('Failed to load compatible adapters:', e);
     compatibleLoras.value = [];
   }
 }
+
+watch(() => params.lora, () => {
+  syncAudioLoraSelection();
+});
 
 // ---- Registry-driven capability flags ----
 const supportsBpm = computed(() => currentModelConfig.value?.parameters?.supports_bpm === true);

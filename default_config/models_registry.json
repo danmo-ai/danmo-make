@@ -5731,10 +5731,22 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "flux1"
+        "family": "flux1",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 28,
+            "guidance": 3.5,
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -5783,10 +5795,22 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "flux1"
+        "family": "flux1",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 28,
+            "guidance": 3.5,
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -5835,10 +5859,22 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "flux1"
+        "family": "flux1",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 28,
+            "guidance": 3.5,
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -5887,10 +5923,22 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "flux1"
+        "family": "flux1",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 28,
+            "guidance": 3.5,
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -5939,10 +5987,22 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "flux1"
+        "family": "flux1",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 28,
+            "guidance": 3.5,
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -5991,10 +6051,22 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "flux1"
+        "family": "flux1",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 28,
+            "guidance": 3.5,
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -6043,10 +6115,22 @@
         },
         "recommended": false,
         "base_model": "flux1-schnell",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "flux1"
+        "family": "flux1",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 4,
+            "guidance": 3.5,
+            "lora_scale": 0.85
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -6095,10 +6179,23 @@
         },
         "recommended": false,
         "base_model": "flux2-klein-9b",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "flux2"
+        "family": "flux2",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 4,
+            "guidance": 1,
+            "scheduler": "flow_match_euler_discrete",
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -6147,10 +6244,23 @@
         },
         "recommended": false,
         "base_model": "flux2-klein-4b",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "flux2"
+        "family": "flux2",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 4,
+            "guidance": 1.0,
+            "scheduler": "flow_match_euler_discrete",
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -6199,10 +6309,23 @@
         },
         "recommended": false,
         "base_model": "flux2-klein-4b",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "flux2"
+        "family": "flux2",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 4,
+            "guidance": 1.0,
+            "scheduler": "flow_match_euler_discrete",
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -6251,10 +6374,23 @@
         },
         "recommended": false,
         "base_model": "flux2-klein-4b",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "flux2"
+        "family": "flux2",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 4,
+            "guidance": 1.0,
+            "scheduler": "flow_match_euler_discrete",
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -6289,8 +6425,8 @@
       "catalog": {
         "media": "image",
         "description": {
-          "zh": "Klein 4B 物体移除向 LoRA。",
-          "en": "Object-removal LoRA for Klein 4B."
+          "zh": "Klein 4B（蒸馏）物体移除 LoRA。fal：edit 高亮物体、固定提示词、强度约 1.1；需较多步数。",
+          "en": "Object-removal LoRA for distilled Klein 4B. fal: edit a highlighted object, fixed prompt, scale ~1.1; use enough steps."
         },
         "category": "loras",
         "commercial_use_allowed": true,
@@ -6303,16 +6439,28 @@
         },
         "recommended": false,
         "base_model": "flux2-klein-4b",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "flux2"
+        "family": "flux2",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 28,
+            "guidance": 1,
+            "lora_scale": 1.1
+          }
+        }
       },
       "actions": {},
       "ui": {
         "parameters": {
           "lora_scale": {
-            "default": 0.8,
+            "default": 1.1,
             "min": 0.0,
             "max": 2.0,
             "step": 0.1,
@@ -6378,7 +6526,8 @@
           "compose_overrides": {
             "steps": 4,
             "guide_scale": 0,
-            "shift": 5
+            "shift": 5,
+            "lora_scale": 1.0
           }
         }
       },
@@ -6457,7 +6606,8 @@
           "compose_overrides": {
             "steps": 4,
             "guide_scale": 0,
-            "shift": 5
+            "shift": 5,
+            "lora_scale": 1.0
           }
         }
       },
@@ -6513,10 +6663,23 @@
         },
         "recommended": true,
         "base_model": "z-image",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "z_image"
+        "family": "z_image",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 28,
+            "guidance": 4,
+            "scheduler": "flow_match_euler",
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -6596,7 +6759,8 @@
           "compose_overrides": {
             "steps": 8,
             "guidance": 0,
-            "scheduler": "linear"
+            "scheduler": "linear",
+            "lora_scale": 1.0
           }
         }
       },
@@ -6638,10 +6802,23 @@
         },
         "recommended": true,
         "base_model": "qwen-image",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "qwen_image"
+        "family": "qwen_image",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 20,
+            "guidance": 1.0,
+            "scheduler": "flow_match_euler_discrete",
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -6689,13 +6866,29 @@
         },
         "recommended": true,
         "base_model": "qwen-image",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.qwenLightning",
+            "tags": [
+              "lightning",
+              "4-step"
+            ]
+          }
+        }
       },
       "runtime": {
         "family": "qwen_image",
         "backends": [
           "mlx"
-        ]
+        ],
+        "overrides": {
+          "compose_overrides": {
+            "steps": 4,
+            "guidance": 1,
+            "lora_scale": 1
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -6747,13 +6940,28 @@
         },
         "recommended": true,
         "base_model": "qwen-image-edit",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.qwenLightning",
+            "tags": [
+              "lightning"
+            ]
+          }
+        }
       },
       "runtime": {
         "family": "qwen_image",
         "backends": [
           "mlx"
-        ]
+        ],
+        "overrides": {
+          "compose_overrides": {
+            "steps": 4,
+            "guidance": 1,
+            "lora_scale": 1
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -6798,7 +7006,12 @@
             "source_type": "full",
             "allow_patterns": [
               "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors"
-            ]
+            ],
+            "compose_overrides": {
+              "steps": 8,
+              "guidance": 1,
+              "lora_scale": 1
+            }
           }
         }
       }
@@ -7537,7 +7750,8 @@
             "tags": [
               "ref2va",
               "msr"
-            ]
+            ],
+            "hint_key": "studio.loraHint.samplingRecipe"
           }
         }
       },
@@ -7545,7 +7759,14 @@
         "family": "ltx25",
         "backends": [
           "mlx"
-        ]
+        ],
+        "overrides": {
+          "compose_overrides": {
+            "steps": 8,
+            "guide_scale": 1.0,
+            "lora_scale": 1.0
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -9259,7 +9480,8 @@
           "h3_turbo_distill": true,
           "compose_overrides": {
             "steps": 8,
-            "guide_scale": 1.0
+            "guide_scale": 1.0,
+            "lora_scale": 1.0
           }
         }
       },
@@ -10280,10 +10502,22 @@
         },
         "recommended": false,
         "base_model": "ace-step-xl-sft",
-        "engine": "danqing-audio"
+        "engine": "danqing-audio",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "ace_step"
+        "family": "ace_step",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 50,
+            "guidance": 7.0,
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -10333,10 +10567,22 @@
         },
         "recommended": false,
         "base_model": "ace-step-xl-sft",
-        "engine": "danqing-audio"
+        "engine": "danqing-audio",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "ace_step"
+        "family": "ace_step",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 50,
+            "guidance": 7.0,
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -10386,10 +10632,20 @@
         },
         "recommended": false,
         "base_model": "ace-step-turbo",
-        "engine": "danqing-audio"
+        "engine": "danqing-audio",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.zImageSamplerStays"
+          }
+        }
       },
       "runtime": {
-        "family": "ace_step"
+        "family": "ace_step",
+        "overrides": {
+          "compose_overrides": {
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -10439,10 +10695,22 @@
         },
         "recommended": false,
         "base_model": "ace-step-xl-sft",
-        "engine": "danqing-audio"
+        "engine": "danqing-audio",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "ace_step"
+        "family": "ace_step",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 50,
+            "guidance": 7.0,
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -10492,10 +10760,22 @@
         },
         "recommended": false,
         "base_model": "ace-step-xl-sft",
-        "engine": "danqing-audio"
+        "engine": "danqing-audio",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "ace_step"
+        "family": "ace_step",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 50,
+            "guidance": 7.0,
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -10545,10 +10825,22 @@
         },
         "recommended": false,
         "base_model": "ace-step-xl-sft",
-        "engine": "danqing-audio"
+        "engine": "danqing-audio",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "ace_step"
+        "family": "ace_step",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 50,
+            "guidance": 7.0,
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -10752,10 +11044,22 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "flux1"
+        "family": "flux1",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 28,
+            "guidance": 3.5,
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -10804,10 +11108,26 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe",
+            "recommended_lora_scale": [
+              0.9,
+              1.0
+            ]
+          }
+        }
       },
       "runtime": {
-        "family": "flux1"
+        "family": "flux1",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 28,
+            "guidance": 3.5,
+            "lora_scale": 0.9
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -10856,10 +11176,26 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe",
+            "recommended_lora_scale": [
+              0.9,
+              1.0
+            ]
+          }
+        }
       },
       "runtime": {
-        "family": "flux1"
+        "family": "flux1",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 28,
+            "guidance": 3.5,
+            "lora_scale": 0.9
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -10908,10 +11244,23 @@
         },
         "recommended": true,
         "base_model": "z-image-turbo",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "z_image"
+        "family": "z_image",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 9,
+            "guidance": 0,
+            "scheduler": "linear",
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -10964,10 +11313,22 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "flux1"
+        "family": "flux1",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 28,
+            "guidance": 3.5,
+            "lora_scale": 0.9
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -11020,10 +11381,22 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe"
+          }
+        }
       },
       "runtime": {
-        "family": "flux1"
+        "family": "flux1",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 28,
+            "guidance": 3.5,
+            "lora_scale": 1.0
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -11076,10 +11449,26 @@
         },
         "recommended": false,
         "base_model": "flux1-dev",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe",
+            "recommended_lora_scale": [
+              0.6,
+              1.0
+            ]
+          }
+        }
       },
       "runtime": {
-        "family": "flux1"
+        "family": "flux1",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 28,
+            "guidance": 3.5,
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -11132,10 +11521,27 @@
         },
         "recommended": true,
         "base_model": "flux2-klein-9b",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe",
+            "recommended_lora_scale": [
+              0.6,
+              1.0
+            ]
+          }
+        }
       },
       "runtime": {
-        "family": "flux2"
+        "family": "flux2",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 4,
+            "guidance": 1,
+            "scheduler": "flow_match_euler_discrete",
+            "lora_scale": 0.8
+          }
+        }
       },
       "actions": {},
       "ui": {
@@ -11188,10 +11594,27 @@
         },
         "recommended": true,
         "base_model": "z-image-turbo",
-        "engine": "danqing-image"
+        "engine": "danqing-image",
+        "metadata": {
+          "lora": {
+            "hint_key": "studio.loraHint.samplingRecipe",
+            "recommended_lora_scale": [
+              0.6,
+              0.8
+            ]
+          }
+        }
       },
       "runtime": {
-        "family": "z_image"
+        "family": "z_image",
+        "overrides": {
+          "compose_overrides": {
+            "steps": 9,
+            "guidance": 0,
+            "scheduler": "linear",
+            "lora_scale": 0.7
+          }
+        }
       },
       "actions": {},
       "ui": {

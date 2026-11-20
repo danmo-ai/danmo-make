@@ -252,7 +252,7 @@ import { usePromptApplyOffer } from '@/composables/usePromptApplyOffer';
 import { useTasksStore } from '@/stores/tasks';
 import { useRegistryStore } from '@/stores/registry';
 import type { SystemInfo, GalleryItem, Task } from '@/types';
-import { applyDefaults, buildResolutionSizeOptions, extraReferenceSlotCap, hasDeviation, parseSizeValue, pickResolutionForModel, referenceImageSlotCap, strengthDefaultFromRegistry, strengthToSourceFidelity } from '@/utils/registryParamSchema';
+import { applyDefaults, buildResolutionSizeOptions, extraReferenceSlotCap, hasDeviation, parseSizeValue, pickResolutionForModel, referenceImageSlotCap, schedulerForModel, strengthDefaultFromRegistry, strengthToSourceFidelity } from '@/utils/registryParamSchema';
 import { getImageSizeForModel, migrateLegacyImageLastSize, setImageSizeForModel } from '@/utils/imageSizeStorage';
 
 import { warnIfRiskyMemory } from '@/composables/memoryHint';
@@ -265,6 +265,7 @@ import {
 import {
   applyLoraComposeOverrides,
   findCompatibleLora,
+  withRegistryLoraMeta,
   type CompatibleLoraRow,
 } from '@/utils/loraAdapterMeta';
 import { reconcileVersionPickerSelection } from '@/composables/useModelRegistryFilters';
@@ -297,6 +298,7 @@ import {
 } from '@/utils/canvasWorkspaceHint';
 import { previewUrlForGalleryItem } from '@/utils/canvasAssets';
 import { useStudioGallery } from '@/composables/useStudioGallery';
+import { isStructuralComposerControlNet } from '@/utils/composerModelFilter';
 import {
   appendZImageEnhancementFields,
   applyControlNetRegistryDefaults,
@@ -1043,7 +1045,12 @@ function syncImageLoraSelection() {
     params.lora = '';
     return;
   }
-  applyLoraComposeOverrides(params as Record<string, unknown>, row);
+  const bare = String(row.id || params.lora).split(':')[0];
+  applyLoraComposeOverrides(
+    params as Record<string, unknown>,
+    row,
+    modelRegistry.value[bare] as Record<string, unknown> | undefined,
+  );
 }
 
 async function loadCompatibleAdapters(modelKey: string) {
@@ -1056,7 +1063,13 @@ async function loadCompatibleAdapters(modelKey: string) {
   try {
     const loras = await api.settings.getCompatibleLoras(modelKey);
     if (String(params.model || '') !== modelKey) return;
-    compatibleLoras.value = (loras as CompatibleLoraRow[]) || [];
+    compatibleLoras.value = ((loras as CompatibleLoraRow[]) || []).map((row) => {
+      const bare = String(row.id || '').split(':')[0];
+      return withRegistryLoraMeta(
+        row,
+        modelRegistry.value[bare] as Record<string, unknown> | undefined,
+      );
+    });
     syncImageLoraSelection();
     await loadCompatibleControlNets(modelKey);
     clearControlNetIfIncompatible(params, () => {
@@ -1244,6 +1257,8 @@ const allVersions = computed(() => {
 
 const filteredAllVersions = computed(() => {
   return allVersions.value.filter((v) => {
+    const row = modelRegistry.value[String(v.modelKey || '')];
+    if (isStructuralComposerControlNet(row)) return false;
     const acts = v.actions as Record<string, unknown> || {};
     if (imageMode.value === 'img2img') {
       return hasAction(acts, 'rewrite') || hasAction(acts, 'retouch');
@@ -1896,7 +1911,11 @@ async function prepareGenerationContext(): Promise<GenerationPrepared | null> {
   if (params.lora) adapters.push({ id: String(params.lora), weight: Number(params.lora_scale) || 0.8 });
   persistComposerSnapshot();
   const meta = buildCanvasMeta();
-  if (params.scheduler) meta.scheduler = params.scheduler;
+  const scheduler = schedulerForModel(
+    currentModelConfig.value?.parameters as Record<string, unknown> | undefined,
+    params.scheduler,
+  );
+  if (scheduler) meta.scheduler = scheduler;
 
   let control_asset_id: string | null = null;
   if (params.controlnet) {
@@ -1978,7 +1997,10 @@ async function submitImageGenerationTask(
       steps: params.steps,
       guidance: params.guidance,
       seed: opts.seed,
-      scheduler: params.scheduler || undefined,
+      scheduler: schedulerForModel(
+        currentModelConfig.value?.parameters as Record<string, unknown> | undefined,
+        params.scheduler,
+      ),
       scheduler_shift: params.scheduler_shift,
       use_empirical_mu: params.use_empirical_mu === true,
       adapters: ctx.adapters,
@@ -2011,7 +2033,10 @@ async function submitImageGenerationTask(
     steps: params.steps,
     guidance: params.guidance,
     seed: opts.seed,
-    scheduler: params.scheduler || undefined,
+    scheduler: schedulerForModel(
+      currentModelConfig.value?.parameters as Record<string, unknown> | undefined,
+      params.scheduler,
+    ),
     scheduler_shift: params.scheduler_shift,
     use_empirical_mu: params.use_empirical_mu === true,
     adapters: ctx.adapters,
@@ -2171,6 +2196,7 @@ function restoreSavedSize() {
 const resetToDefaults = () => {
   loadModelDefaults();
   syncResolutionForModel(String(params.model || ''));
+  syncImageLoraSelection();
   toast.success($tt('studio.restoredDefaults'));
 };
 

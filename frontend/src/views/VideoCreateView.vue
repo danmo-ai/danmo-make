@@ -325,6 +325,7 @@ import {
   filterOutH3TurboLoras,
   findCompatibleLora,
   isH3TurboLora,
+  withRegistryLoraMeta,
   type CompatibleLoraRow,
 } from '@/utils/loraAdapterMeta';
 
@@ -1395,7 +1396,12 @@ function syncVideoLoraSelection() {
     params.lora = '';
     return;
   }
-  applyLoraComposeOverrides(params as Record<string, unknown>, row);
+  const bare = String(row.id || params.lora).split(':')[0];
+  applyLoraComposeOverrides(
+    params as Record<string, unknown>,
+    row,
+    modelRegistry.value[bare] as Record<string, unknown> | undefined,
+  );
 }
 
 function buildVideoAdapters() {
@@ -1428,9 +1434,15 @@ const loadCompatibleLoras = async () => {
   }
   try {
     const loras = await api.settings.getCompatibleLoras(params.model);
-    compatibleLoras.value = ((loras as typeof compatibleLoras.value) || []).filter(
-      (lora) => lora.ready !== false,
-    );
+    compatibleLoras.value = ((loras as CompatibleLoraRow[]) || [])
+      .filter((lora) => lora.ready !== false)
+      .map((row) => {
+        const bare = String(row.id || '').split(':')[0];
+        return withRegistryLoraMeta(
+          row,
+          modelRegistry.value[bare] as Record<string, unknown> | undefined,
+        );
+      });
     syncVideoLoraSelection();
   } catch (e) {
     console.error('Failed to load compatible loras:', e);
@@ -2427,7 +2439,12 @@ watch(
       params.lora = '';
       return;
     }
-    applyLoraComposeOverrides(params as Record<string, unknown>, row);
+    const bare = String(row.id || loraId).split(':')[0];
+    applyLoraComposeOverrides(
+      params as Record<string, unknown>,
+      row,
+      modelRegistry.value[bare] as Record<string, unknown> | undefined,
+    );
   },
 );
 

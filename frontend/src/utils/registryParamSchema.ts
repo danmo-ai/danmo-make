@@ -336,6 +336,22 @@ export function applyDefaults(parameters: Record<string, unknown> | undefined | 
   }
 }
 
+/** Scheduler value the current model actually accepts. A leftover from the previous model is dropped. */
+export function schedulerForModel(
+  parameters: Record<string, unknown> | undefined | null,
+  current: unknown,
+): string | undefined {
+  const spec = normalizeParamsDef(parameters || {}).scheduler;
+  if (!spec) return undefined;
+  const options = Array.isArray(spec.options) ? spec.options.map((item) => String(item)) : [];
+  const value = typeof current === 'string' ? current : '';
+  if (options.includes(value)) return value;
+  if (typeof spec.default === 'string' && (options.length === 0 || options.includes(spec.default))) {
+    return spec.default;
+  }
+  return options[0];
+}
+
 export function strengthDefaultFromRegistry(
   parameters: Record<string, unknown> | undefined | null,
 ): number {

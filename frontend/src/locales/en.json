@@ -674,7 +674,9 @@
       "videoStepDistillMoe": "This LoRA uses high/low noise shards merged per step; composer values follow registry compose_overrides.",
       "zImageDistillPatch": "Scheme 4: auto-loaded with Base-trained LoRAs on Turbo to restore official 8-step acceleration (cfg_scale=1).",
       "zImageTurboTrained": "Trained on Z-Image-Turbo: linear scheduler, 9 steps, CFG 0. LoRA weight 0.8–1.0 (0.9 default) — lower fades the subject, higher over-bakes textures.",
-      "zImageSamplerStays": "Only the LoRA weight is applied. Steps, CFG, and scheduler stay as they are."
+      "zImageSamplerStays": "Only the LoRA weight is applied. Steps, CFG, and scheduler stay as they are.",
+      "qwenLightning": "Distill LoRA: steps become 4 (8 for the 8-step file), CFG becomes 1, and LoRA strength becomes 1.",
+      "samplingRecipe": "Steps, CFG, and LoRA strength follow this LoRA's recommended values."
     },
     "myLoraTag": "My LoRA",
     "pickLoraToAdd": "Select LoRA to add…",
@@ -1028,7 +1030,9 @@
       "videoStepDistillMoe": "This LoRA uses high/low noise shards merged per step; composer values follow registry compose_overrides.",
       "zImageDistillPatch": "Scheme 4: auto-loaded with Base-trained LoRAs on Turbo to restore official 8-step acceleration (cfg_scale=1).",
       "zImageTurboTrained": "Trained on Z-Image-Turbo: linear scheduler, 9 steps, CFG 0. LoRA weight 0.8–1.0 (0.9 default) — lower fades the subject, higher over-bakes textures.",
-      "zImageSamplerStays": "Only the LoRA weight is applied. Steps, CFG, and scheduler stay as they are."
+      "zImageSamplerStays": "Only the LoRA weight is applied. Steps, CFG, and scheduler stay as they are.",
+      "qwenLightning": "Distill LoRA: steps become 4 (8 for the 8-step file), CFG becomes 1, and LoRA strength becomes 1.",
+      "samplingRecipe": "Steps, CFG, and LoRA strength follow this LoRA's recommended values."
     },
     "myLoraTag": "My LoRA",
     "pickLoraToAdd": "Select LoRA to add…",

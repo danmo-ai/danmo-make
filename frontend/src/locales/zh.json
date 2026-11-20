@@ -674,7 +674,9 @@
       "videoStepDistillMoe": "该 LoRA 含高噪/低噪双分片，引擎按步自动合并；参数以注册表 compose_overrides 为准。",
       "zImageDistillPatch": "Scheme 4：Base 训练的 LoRA 在 Turbo 推理时自动加载，恢复官方 8 步加速配置（cfg_scale=1）。",
       "zImageTurboTrained": "在 Z-Image-Turbo 上训练：线性调度、9 步、CFG 0。LoRA 权重建议 0.8–1.0（默认 0.9）——过低人物特征变淡，过高纹理过曝。",
-      "zImageSamplerStays": "只套用 LoRA 权重。步数、CFG 和调度器保持当前设置。"
+      "zImageSamplerStays": "只套用 LoRA 权重。步数、CFG 和调度器保持当前设置。",
+      "qwenLightning": "蒸馏 LoRA：步数改为 4（8 步版改为 8），CFG 改为 1，LoRA 强度改为 1。",
+      "samplingRecipe": "已按该 LoRA 的推荐值更新步数、CFG 和强度。"
     },
     "myLoraTag": "我的 LoRA",
     "pickLoraToAdd": "选择 LoRA 添加…",
@@ -1029,7 +1031,9 @@
       "videoStepDistillMoe": "该 LoRA 含高噪/低噪双分片，引擎按步自动合并；参数以注册表 compose_overrides 为准。",
       "zImageDistillPatch": "Scheme 4：Base 训练的 LoRA 在 Turbo 推理时自动加载，恢复官方 8 步加速配置（cfg_scale=1）。",
       "zImageTurboTrained": "在 Z-Image-Turbo 上训练：线性调度、9 步、CFG 0。LoRA 权重建议 0.8–1.0（默认 0.9）——过低人物特征变淡，过高纹理过曝。",
-      "zImageSamplerStays": "只套用 LoRA 权重。步数、CFG 和调度器保持当前设置。"
+      "zImageSamplerStays": "只套用 LoRA 权重。步数、CFG 和调度器保持当前设置。",
+      "qwenLightning": "蒸馏 LoRA：步数改为 4（8 步版改为 8），CFG 改为 1，LoRA 强度改为 1。",
+      "samplingRecipe": "已按该 LoRA 的推荐值更新步数、CFG 和强度。"
     },
     "myLoraTag": "我的 LoRA",
     "pickLoraToAdd": "选择 LoRA 添加…",
