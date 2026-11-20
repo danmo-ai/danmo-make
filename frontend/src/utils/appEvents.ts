@@ -5,6 +5,8 @@
 export type AppEventMap = {
   'open-global-task-queue': void;
   'open-task-log': { taskId: string };
+  /** Re-open the first-run onboarding wizard from Settings → Quick Setup. */
+  'open-onboarding': void;
 };
 
 type Handler<K extends keyof AppEventMap> = (payload: AppEventMap[K]) => void;
@@ -50,4 +52,9 @@ export function openTaskLog(taskId: string): void {
   const id = String(taskId || '').trim();
   if (!id) return;
   appEvents.emit('open-task-log', { taskId: id });
+}
+
+/** Re-run the first-run onboarding wizard (Settings → Quick Setup). */
+export function openOnboarding(): void {
+  appEvents.emit('open-onboarding', undefined as void);
 }

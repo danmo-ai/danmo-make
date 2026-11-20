@@ -4,6 +4,7 @@ import { toast } from '@/utils/feedback';
 import { api } from '@/utils/api';
 import { $tt, $mn, $mvn } from '@/utils/i18n';
 import { useModelInstall } from '@/composables/useModelInstall';
+import { openOnboarding } from '@/utils/appEvents';
 
 type SetupSlotKey = 'image' | 'video' | 'audio' | 'llm' | 'vlm';
 
@@ -24,6 +25,7 @@ interface SlotRecommendation {
 interface RecommendationsPayload {
   reference_memory_gb: number;
   memory_tier: string;
+  memory_detected?: boolean;
   available_backends: string[];
   slots: SlotRecommendation[];
 }
@@ -150,6 +152,7 @@ onMounted(() => {
 defineExpose({
   applyingDefaults,
   applyRecommendedDefaults,
+  loadRecommendations,
 });
 </script>
 
@@ -160,6 +163,11 @@ defineExpose({
     <p class="settings-section-desc settings-section-desc--muted">
       {{ $t('settings.quickSetupWorkspaceOptional') }}
     </p>
+    <div class="quick-setup-panel__toolbar">
+      <DqButton size="sm" @click="openOnboarding">
+        {{ $t('settings.quickSetupRerun') }}
+      </DqButton>
+    </div>
 
     <div v-if="loading" class="quick-setup-panel__loading">{{ $t('common.loading') }}</div>
 
@@ -174,6 +182,9 @@ defineExpose({
                   tier: recommendations.memory_tier,
                 })
               }}
+            </div>
+            <div v-if="recommendations.memory_detected === false" class="quick-setup-panel__reason">
+              {{ $t('settings.quickSetupMemoryUnknown') }}
             </div>
             <div>
               {{
@@ -250,6 +261,11 @@ defineExpose({
 .quick-setup-panel__loading {
   padding: 16px 0;
   color: var(--dq-label-tertiary);
+}
+.quick-setup-panel__toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 .quick-setup-panel__row {
   display: flex;

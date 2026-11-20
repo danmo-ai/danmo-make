@@ -637,6 +637,23 @@ fn model_ready(workspace: &FsPath, entry: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// Every published version of this model is resolved on disk.
+fn model_fully_installed(workspace: &FsPath, entry: &Value) -> bool {
+    let versions = entry
+        .pointer("/distribution/versions")
+        .and_then(|v| v.as_object());
+    let Some(versions) = versions.filter(|rows| !rows.is_empty()) else {
+        return false;
+    };
+    versions.values().all(|version| {
+        let path = version
+            .get("local_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        !path.is_empty() && download::version_ready(&download::resolve_model_path(workspace, path))
+    })
+}
+
 async fn installed_models(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
     let catalog = open_catalog(&state)?;
     let mut rows = Vec::new();
@@ -1616,12 +1633,32 @@ async fn empty_models() -> Json<Value> {
     Json(json!({ "models": [] }))
 }
 
-async fn recommendations() -> Json<Value> {
-    Json(json!({
-        "runtime": "ggml",
-        "weights": "safetensors",
-        "versions": ["fp16", "bf16", "mlx-bf16", "mlx-q8", "mlx-q4"],
-    }))
+async fn recommendations(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let settings = current_settings(&state);
+    let (memory_gb, memory_available_gb) = crate::setup::host_memory();
+    let mlx_memory_limit = settings
+        .get("mlx_memory_limit")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.0);
+    let models = catalog
+        .root()
+        .get("models")
+        .and_then(|value| value.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let ready = |model_id: &str| {
+        models
+            .get(model_id)
+            .is_some_and(|entry| model_fully_installed(&state.workspace, entry))
+    };
+    Ok(Json(crate::setup::recommendations(
+        &catalog,
+        memory_gb,
+        memory_available_gb,
+        mlx_memory_limit,
+        &ready,
+    )))
 }
 
 async fn refresh_ok() -> Json<Value> {
@@ -2290,7 +2327,7 @@ async fn restore_defaults(
 }
 
 async fn system_info(State(state): State<AppState>) -> Json<Value> {
-    let (total, avail) = meminfo();
+    let (total, avail) = crate::setup::host_memory();
     Json(json!({
         "env_ready": true,
         "platform": std::env::consts::OS,
@@ -3910,31 +3947,6 @@ fn dir_size(path: &FsPath) -> u64 {
         }
     }
     total
-}
-
-fn meminfo() -> (f64, f64) {
-    let Ok(text) = std::fs::read_to_string("/proc/meminfo") else {
-        return (0.0, 0.0);
-    };
-    let mut total = 0f64;
-    let mut avail = 0f64;
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix("MemTotal:") {
-            total = kib(rest);
-        } else if let Some(rest) = line.strip_prefix("MemAvailable:") {
-            avail = kib(rest);
-        }
-    }
-    (total, avail)
-}
-
-fn kib(text: &str) -> f64 {
-    text.split_whitespace()
-        .next()
-        .and_then(|n| n.parse::<f64>().ok())
-        .unwrap_or(0.0)
-        / 1024.0
-        / 1024.0
 }
 
 fn stat_space(path: &FsPath) -> (u64, u64) {

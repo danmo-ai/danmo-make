@@ -35,6 +35,10 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 base64 = "0.22"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Host memory probe (`hw.memsize`) for Quick Setup recommendations.
+libc = "0.2"
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

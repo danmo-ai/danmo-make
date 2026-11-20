@@ -5,6 +5,7 @@ mod download;
 mod engine_host;
 mod llm;
 mod product;
+mod setup;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

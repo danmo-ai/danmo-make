@@ -85,16 +85,6 @@ select {
   padding: 0;
 }
 
-.dq-app-setup-hint {
-  margin: 0 0 16px;
-  padding: 12px 16px;
-  border: 1px solid color-mix(in srgb, var(--dq-accent) 24%, var(--dq-border-subtle));
-  border-radius: var(--dq-radius-control);
-  background: color-mix(in srgb, var(--dq-accent) 6%, var(--dq-bg-base));
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-
 .workspace-layout {
   display: flex;
   align-items: stretch;

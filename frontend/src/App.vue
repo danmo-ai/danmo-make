@@ -15,24 +15,14 @@
     </aside>
 
     <main class="app-main dq-app-main">
-      <div
-        v-if="showSetupHint"
-        class="dq-app-setup-hint"
-        role="status"
-      >
-        <p class="dq-app-setup-hint__text">{{ $tt('settings.quickSetupFirstRunHint') }}</p>
-        <div class="dq-app-setup-hint__actions">
-          <DqButton type="primary" @click="goQuickSetupSettings">
-            {{ $tt('settings.quickSetupGoSettings') }}
-          </DqButton>
-          <DqButton size="sm" @click="dismissSetupHint">
-            {{ $tt('settings.quickSetupDismissHint') }}
-          </DqButton>
-        </div>
-      </div>
       <router-view />
     </main>
   </div>
+
+  <OnboardingWizard
+    v-model:open="showOnboarding"
+    @completed="onOnboardingCompleted"
+  />
 
   <DqDrawer
     v-model:open="showGlobalQueueDrawer"
@@ -193,13 +183,14 @@ import { toast } from '@/utils/feedback';
 import TopNav from '@/components/shell/TopNav.vue';
 import GenTaskLogDialog from '@/components/studio/GenTaskLogDialog.vue';
 import TaskIdBadge from '@/components/studio/TaskIdBadge.vue';
+import OnboardingWizard from '@/components/onboarding/OnboardingWizard.vue';
 import { useTasksStore } from '@/stores/tasks';
 import { api } from '@/utils/api';
 import { applyTheme, migrateThemeId } from '@/stores/theme';
 import { $tt } from '@/utils/i18n';
 import { getItem, DQ_STORAGE, setItem } from '@/utils/storage';
 import type { PageKey, SystemInfo, Task } from '@/types';
-import { appEvents } from '@/utils/appEvents';
+import { appEvents, openOnboarding } from '@/utils/appEvents';
 
 const router = useRouter();
 const route = useRoute();
@@ -232,7 +223,7 @@ function openQueueTaskLogs(taskId: string) {
   showQueueTaskLogs.value = true;
 }
 const currentLang = ref('zh');
-const showSetupHint = ref(false);
+const showOnboarding = ref(false);
 
 const systemInfo = ref<SystemInfo>({
   env_ready: false,
@@ -320,21 +311,14 @@ async function loadSystemInfo() {
   try {
     const info = await api.settings.getSystemInfo();
     systemInfo.value = info;
-    showSetupHint.value =
-      !getItem(DQ_STORAGE.SETUP_HINT_DISMISSED) && !info.env_ready;
   } catch (e) {
     console.error('Failed to load system info:', e);
   }
 }
 
-function goQuickSetupSettings() {
-  setItem(DQ_STORAGE.SETTINGS_TAB, 'quicksetup');
-  void router.push({ name: 'settings' });
-}
-
-function dismissSetupHint() {
-  setItem(DQ_STORAGE.SETUP_HINT_DISMISSED, '1');
-  showSetupHint.value = false;
+function onOnboardingCompleted() {
+  setItem(DQ_STORAGE.ONBOARDED, '1');
+  showOnboarding.value = false;
 }
 
 function queueTaskLabel(task: { params?: { title?: string; prompt?: string } }) {
@@ -374,10 +358,19 @@ onMounted(async () => {
 
   tasksStore.ensureQueuePoller();
 
+  // First launch: no completion marker yet. The wizard is skipped once the user
+  // finishes it (Finish), which writes ONBOARDED.
+  showOnboarding.value = !getItem(DQ_STORAGE.ONBOARDED);
+
   appEvents.on('open-global-task-queue', onOpenGlobalTaskQueue);
   appEvents.on('open-task-log', onOpenTaskLog);
+  appEvents.on('open-onboarding', onOpenOnboarding);
   window.addEventListener('resize', onViewportResize);
 });
+
+function onOpenOnboarding(_: void) {
+  showOnboarding.value = true;
+}
 
 function onOpenGlobalTaskQueue(_: void) {
   showGlobalQueueDrawer.value = true;
@@ -390,6 +383,7 @@ function onOpenTaskLog(payload: { taskId: string }) {
 onBeforeUnmount(() => {
   appEvents.off('open-global-task-queue', onOpenGlobalTaskQueue);
   appEvents.off('open-task-log', onOpenTaskLog);
+  appEvents.off('open-onboarding', onOpenOnboarding);
   window.removeEventListener('resize', onViewportResize);
   if (sysInfoInterval) {
     clearInterval(sysInfoInterval);
@@ -411,33 +405,6 @@ provide('systemInfo', systemInfo);
   width: var(--dq-shell-sidebar-width, 60px);
   flex-shrink: 0;
   padding-top: env(safe-area-inset-top, 0px);
-}
-.dq-app-setup-hint {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 12px 16px 0;
-  padding: 10px 14px;
-  border-radius: 8px;
-  border: 0.5px solid var(--dq-glass-border);
-  background: var(--dq-glass-grouped-bg);
-  -webkit-backdrop-filter: var(--dq-glass-blur-light);
-  backdrop-filter: var(--dq-glass-blur-light);
-}
-.dq-app-setup-hint__text {
-  margin: 0;
-  font-size: var(--dq-font-size-body);
-  line-height: 1.5;
-  color: var(--dq-label-secondary);
-  flex: 1;
-  min-width: 200px;
-}
-.dq-app-setup-hint__actions {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
 }
 .app-main {
   flex: 1;

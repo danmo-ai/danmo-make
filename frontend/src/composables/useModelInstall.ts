@@ -10,6 +10,7 @@ export function useModelInstall(opts?: { onCompleted?: () => void }) {
   const downloading = ref<Record<string, boolean>>({});
   const progressByKey = ref<Record<string, number>>({});
   const sseConnections = ref<Record<string, EventSource>>({});
+  const settledByKey = ref<Record<string, () => void>>({});
 
   function uiKey(modelId: string, versionKey: string): string {
     return `${modelId}-${versionKey}`;
@@ -20,6 +21,12 @@ export function useModelInstall(opts?: { onCompleted?: () => void }) {
       sseConnections.value[id].close();
     }
     sseConnections.value = {};
+  }
+
+  function settle(key: string) {
+    const cb = settledByKey.value[key];
+    delete settledByKey.value[key];
+    cb?.();
   }
 
   function connectProgressSSE(taskId: string, label: string, key: string) {
@@ -42,6 +49,7 @@ export function useModelInstall(opts?: { onCompleted?: () => void }) {
           }, 2000);
           toast.success($tt('download.downloadComplete', { name: label }));
           opts?.onCompleted?.();
+          settle(key);
         } else if (data.status === 'failed' || data.status === 'cancelled') {
           eventSource.close();
           delete sseConnections.value[taskId];
@@ -50,6 +58,7 @@ export function useModelInstall(opts?: { onCompleted?: () => void }) {
           if (data.status === 'failed') {
             toast.error($tt('download.downloadFailed', { name: label, msg: data.error_message || '' }));
           }
+          settle(key);
         }
       } catch {
         /* ignore malformed SSE */
@@ -60,11 +69,23 @@ export function useModelInstall(opts?: { onCompleted?: () => void }) {
       eventSource.close();
       delete sseConnections.value[taskId];
       delete downloading.value[key];
+      settle(key);
     };
   }
 
-  async function installModel(modelId: string, versionKey: string, label: string) {
+  /**
+   * Start (or re-attach to) a registry install. `onSettled` fires once when the
+   * download reaches completed / failed / cancelled, or immediately when no task
+   * could be started — callers can await a batch without polling.
+   */
+  async function installModel(
+    modelId: string,
+    versionKey: string,
+    label: string,
+    onSettled?: () => void,
+  ) {
     const key = uiKey(modelId, versionKey);
+    if (onSettled) settledByKey.value[key] = onSettled;
     if (downloading.value[key]) return;
     downloading.value[key] = true;
     progressByKey.value[key] = 0;
@@ -96,12 +117,14 @@ export function useModelInstall(opts?: { onCompleted?: () => void }) {
         connectProgressSSE(data.task_id, label, key);
       } else {
         delete downloading.value[key];
+        settle(key);
       }
     } catch (e: unknown) {
       delete downloading.value[key];
       delete progressByKey.value[key];
       const msg = e instanceof Error ? e.message : String(e);
       toast.error($tt('download.downloadFailed', { name: label, msg }));
+      settle(key);
     }
   }
 
