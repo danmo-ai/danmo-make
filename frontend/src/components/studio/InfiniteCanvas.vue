@@ -1,5 +1,6 @@
 <template>
   <div class="infinite-canvas">
+    <div class="infinite-canvas__stage">
     <CanvasViewport
       ref="viewportComp"
       :items="store.items"
@@ -24,7 +25,6 @@
       @item-drag-move="onItemDragMove"
       @item-drag-end="onItemDragEnd"
       @toolbar-action="onToolbarAction"
-      @open-import-picker="showGalleryPicker = true"
       @scale-item="onScaleItem"
       @staging-move="onStagingMove"
       @staging-resize="onStagingResize"
@@ -50,6 +50,7 @@
       :graph-open="showGraph"
       :edges-open="showEdges"
       :guides-open="showRegionGuides"
+      :hide-composer="hideComposerEntry"
       @update:zoom="(z: number, cx?: number, cy?: number) => store.setZoom(z, cx, cy)"
       @fit-all="fitAll"
       @toggle-layers="showLayers = true"
@@ -127,6 +128,18 @@
       @import-works="showGalleryPicker = true"
       @snap-staging="onSnapStagingToPrimary"
     />
+    </div>
+
+    <CanvasShelfDock
+      v-if="showShelfDock"
+      :paths="dockAssetPaths"
+      :board-paths="dockBoardPaths"
+      :gallery-items="items"
+      :selected-path="shelfSelectedPath"
+      @select="onShelfSelect"
+      @preview="onShelfPreview"
+      @promote="onShelfPromote"
+    />
   </div>
 </template>
 
@@ -137,6 +150,7 @@ import { toast } from '@/utils/feedback';
 import { $tt } from '@/utils/i18n';
 import CanvasViewport from '@/components/studio/CanvasViewport.vue';
 import CanvasToolbar from '@/components/studio/CanvasToolbar.vue';
+import CanvasShelfDock from '@/components/studio/CanvasShelfDock.vue';
 import CanvasLayerPanel from '@/components/studio/CanvasLayerPanel.vue';
 import CanvasLineageSidebar from '@/components/studio/CanvasLineageSidebar.vue';
 import CanvasSessionGraph from '@/components/studio/CanvasSessionGraph.vue';
@@ -168,7 +182,11 @@ import { DQ_STORAGE, getItem, setItem } from '@/utils/storage';
 
 const router = useRouter();
 import { api } from '@/utils/api';
-import { previewUrlForGalleryItem, isImageGalleryItem } from '@/utils/canvasAssets';
+import {
+  galleryStubForAssetPath,
+  previewUrlForGalleryItem,
+  isImageGalleryItem,
+} from '@/utils/canvasAssets';
 import { rectIntersects, itemBounds, type AlignMode, type DistributeMode } from '@/utils/canvasGeometry';
 import type {
   GalleryItem,
@@ -183,6 +201,10 @@ const props = defineProps<{
   editingPath?: string;
   maskPreview?: import('@/types').CanvasMaskPreviewState | null;
   extendPreview?: import('@/types').CanvasExtendPreviewState | null;
+  /** Hide the in-canvas composer button (page header provides the entry). */
+  hideComposerEntry?: boolean;
+  /** When false, skip orphan prune (paginated gallery is incomplete). */
+  galleryComplete?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -197,6 +219,7 @@ const emit = defineEmits<{
   (e: 'download', item: GalleryItem): void;
   (e: 'delete', item: GalleryItem): void;
   (e: 'toggle-grid-view'): void;
+  (e: 'shelf-preview', item: GalleryItem): void;
   (e: 'node-selected', item: GalleryItem | null): void;
   (e: 'session-ready', payload: { sessionId: string }): void;
   (e: 'open-preview', item: GalleryItem): void;
@@ -390,7 +413,13 @@ async function onToolbarRename() {
 }
 
 function onRemoveItem(path: string) {
-  store.removeItem(path);
+  // Image: leave session membership on the bottom dock; only leave the freeform board.
+  if (props.media === 'image') {
+    store.demoteToShelf([path]);
+    toast.success($tt('canvas.shelfDemoted'));
+  } else {
+    store.removeItem(path);
+  }
   selectedPaths.value = selectedPaths.value.filter((p) => p !== path);
   if (selectedPaths.value.length === 0) onClearSelection();
   else emitPrimarySelection();
@@ -399,10 +428,59 @@ function onRemoveItem(path: string) {
 
 function onRemoveSelected() {
   const paths = [...selectedPaths.value];
-  store.removeItems(paths);
+  if (props.media === 'image') {
+    store.demoteToShelf(paths);
+    toast.success($tt('canvas.shelfDemoted'));
+  } else {
+    store.removeItems(paths);
+  }
   selectedPaths.value = [];
   onClearSelection();
   store.refreshEdges(props.items);
+}
+
+const showShelfDock = computed(() => props.media === 'image');
+const dockBoardPaths = computed(() =>
+  Object.keys(store.items).filter((p) => p.startsWith('asset:')),
+);
+const dockAssetPaths = computed(() => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of dockBoardPaths.value) {
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  for (const p of unref(store.shelf) || []) {
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+});
+const shelfSelectedPath = ref('');
+
+function onShelfSelect(item: GalleryItem) {
+  shelfSelectedPath.value = item.path;
+  if (store.hasItem(item.path)) {
+    selectedPaths.value = [item.path];
+    emitPrimarySelection();
+  }
+}
+
+function onShelfPreview(item: GalleryItem) {
+  shelfSelectedPath.value = item.path;
+  emit('shelf-preview', item);
+  emit('open-preview', item);
+}
+
+function onShelfPromote(path: string) {
+  const added = store.promoteToBoard([path], props.items, { placement: 'staging' });
+  if (added.length) {
+    selectedPaths.value = [added[added.length - 1]];
+    emitPrimarySelection();
+    toast.success($tt('canvas.shelfPromoted'));
+  }
 }
 
 function onSnapStagingToPrimary() {
@@ -449,6 +527,16 @@ function toggleRegionGuides() {
 
 function onGalleryPickerImport(paths: string[]) {
   if (paths.length === 0) return;
+  // Image: imports land on the shelf (board stays freeform). Other media: board.
+  if (props.media === 'image') {
+    const added = store.addToShelf(paths);
+    if (added.length === 0) {
+      toast.info($tt('canvas.importNothingNew'));
+      return;
+    }
+    toast.success($tt('canvas.shelfImported', { n: added.length }));
+    return;
+  }
   const added = addPathsToCanvas(paths, { placement: 'center', focusLast: false, fit: true });
   if (added.length === 0) {
     toast.info($tt('canvas.importNothingNew'));
@@ -503,7 +591,13 @@ function onTrainLoraSelected() {
 
 function onToolbarAction(action: string) {
   const path = primaryPath.value;
-  const item = galleryItem(path);
+  if (!path) return;
+  // Remove must work even when the paged gallery catalog lags (board stub only).
+  if (action === 'remove') {
+    onRemoveItem(path);
+    return;
+  }
+  const item = galleryItem(path) ?? galleryStubForAssetPath(path);
   if (!item) return;
 
   switch (action) {
@@ -987,10 +1081,11 @@ function syncControlOverlay(path: string | null) {
 }
 
 function pruneOrphans() {
-  // Gallery may still be loading; avoid wiping persisted canvas nodes on empty gallery.
+  // Paginated gallery is not an authoritative membership set — never prune against a page.
+  if (!props.galleryComplete) return;
   if (props.items.length === 0) return;
   const valid = new Set(props.items.map((i) => i.path));
-  store.pruneOrphans(valid);
+  store.pruneOrphans(valid, { authoritative: true });
   store.refreshEdges(props.items);
 }
 
@@ -1210,6 +1305,16 @@ defineExpose({
 .infinite-canvas {
   position: absolute;
   inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.infinite-canvas__stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: hidden;
 }
 

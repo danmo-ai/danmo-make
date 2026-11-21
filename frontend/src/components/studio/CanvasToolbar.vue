@@ -37,7 +37,7 @@
       </ComposerIconTip>
     </div>
     <div class="canvas-toolbar__group">
-      <ComposerIconTip :content="$t('studio.openComposer')">
+      <ComposerIconTip v-if="!hideComposer" :content="$t('studio.openComposer')">
         <DqIconButton
           type="text"
           size="sm"
@@ -106,15 +106,14 @@
         </DqIconButton>
       </ComposerIconTip>
       <DqDropdown trigger="click" size="sm" @command="onMoreCommand">
-        <ComposerIconTip :content="$t('canvas.moreMenu')">
-          <DqIconButton
-            type="text"
-            size="sm"
-            :label="$t('canvas.moreMenu')"
-          >
-            <DqIcon :size="14"><MoreFilled /></DqIcon>
-          </DqIconButton>
-        </ComposerIconTip>
+        <DqIconButton
+          type="text"
+          size="sm"
+          :label="$t('canvas.moreMenu')"
+          :title="$t('canvas.moreMenu')"
+        >
+          <DqIcon :size="14"><MoreFilled /></DqIcon>
+        </DqIconButton>
         <template #dropdown>
           <DqDropdownMenu>
             <DqDropdownItem command="import-json">
@@ -194,6 +193,8 @@ defineProps<{
   graphOpen?: boolean;
   edgesOpen?: boolean;
   guidesOpen?: boolean;
+  /** Hide the composer wand when the parent page provides its own entry. */
+  hideComposer?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -222,8 +223,8 @@ function onMoreCommand(cmd: string) {
 <style scoped>
 .canvas-toolbar {
   position: absolute;
-  bottom: calc(16px + var(--dq-composer-reserve, min(200px, 36vh)));
-  right: 16px;
+  top: 12px;
+  right: 12px;
   display: flex;
   align-items: center;
   gap: 6px;

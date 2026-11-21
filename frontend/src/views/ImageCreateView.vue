@@ -6,67 +6,79 @@
     @scroll="onCanvasScroll"
   >
     <template #filters>
-      <StudioGalleryFilters
-        :filter-time="filterTime"
-        :filter-models="filterModels"
-        :search-text="searchText"
-        :time-options="timeOptions"
-        :model-options="allModelOptions"
-        :selection-mode="selectionMode"
-        :selected-count="selectedPaths.size"
-        :all-selected="allLoadedSelected"
-        :view-mode="viewMode"
-        :supports-canvas="true"
-        canvas-media="image"
-        :composer-busy="composerBusy"
-        @update:filter-time="filterTime = $event"
-        @update:filter-models="filterModels = $event"
-        @update:search-text="searchText = $event"
-        @refresh="refreshGallery"
-        @toggle-selection-mode="toggleSelectionMode"
-        @select-all="selectAllLoaded"
-        @batch-delete="batchDeleteSelected"
-        @batch-train-lora="batchTrainLoraSelected"
-        @clear-selection="clearSelection"
-        @update:view-mode="onViewModeChange"
-        @composer-restore="onCanvasComposerRestore"
-        @open-composer="openComposerDrawer()"
-      />
+      <!-- List: search canvases + new / refresh -->
+      <div v-if="viewMode === 'grid'" class="image-create-filters image-create-filters--list">
+        <DqInput
+          v-model="stripSearchText"
+          size="sm"
+          class="image-create-filters__search"
+          :placeholder="$t('canvas.stripSearchPlaceholder')"
+          clearable
+        >
+          <template #prefix><DqIcon><Search /></DqIcon></template>
+        </DqInput>
+        <div class="image-create-filters__spacer" aria-hidden="true" />
+        <div class="image-create-filters__actions">
+          <DqButton size="sm" @click="onNewCanvas">{{ $t('canvas.newCanvas') }}</DqButton>
+          <DqIconButton
+            type="text"
+            size="sm"
+            :label="$t('common.refresh')"
+            @click="refreshStripList"
+          >
+            <DqIcon><Refresh /></DqIcon>
+          </DqIconButton>
+        </div>
+      </div>
+      <!-- Detail: back + title + refresh + text-to-image composer -->
+      <div v-else class="image-create-filters image-create-filters--detail">
+        <DqButton size="sm" type="text" @click="onBackToStripList">
+          ← {{ $t('canvas.backToCanvasList') }}
+        </DqButton>
+        <span class="image-create-filters__session-title" :title="canvasSessionTitle">
+          {{ canvasSessionTitle }}
+        </span>
+        <div class="image-create-filters__spacer" />
+        <DqIconButton
+          type="text"
+          size="sm"
+          :label="$t('common.refresh')"
+          @click="refreshGallery"
+        >
+          <DqIcon><Refresh /></DqIcon>
+        </DqIconButton>
+        <DqButton
+          type="primary"
+          size="sm"
+          :class="{ 'is-busy': composerBusy }"
+          @click="openTextGenComposer"
+        >
+          {{ $t('studio.openComposer') }}
+        </DqButton>
+      </div>
     </template>
 
     <template #canvas>
-      <StudioCanvas
+      <StudioCanvasStripList
         v-if="viewMode === 'grid'"
-        :items="galleryItems"
-        :groups="galleryGroups"
+        :sessions="canvasSessions"
+        :search-text="stripSearchText"
+        :session-asset-ids="sessionAssetIdsBySession"
+        :loading="!canvasReady"
         :active-tasks="activeImageTasks"
-        :loading="galleryLoading"
-        :has-more="galleryHasMore"
-        media="image"
-        :group-mode="groupMode"
-        :selected-group-id="selectedGroupId"
-        :has-active-filters="hasActiveFilters"
-        :selection-mode="selectionMode"
-        :selected-paths="selectedPaths"
-        :all-selected="allLoadedSelected"
-        @select="onGallerySelect"
-        @enter-group="enterGroup"
-        @exit-group="exitGroup"
-        @card-action="onCardAction"
-        @reset-filters="resetGalleryFilters"
-        @load-more="loadGallery(false)"
-        @toggle-select="toggleSelect"
-        @select-all="selectAllLoaded"
-        @batch-delete="batchDeleteSelected"
-        @batch-train-lora="batchTrainLoraSelected"
-        @clear-selection="clearSelection"
-        @open-composer="openComposerDrawer()"
+        :gallery-by-asset-id="galleryByAssetId"
+        @open="onStripOpen"
+        @preview="onStripPreview"
+        @create="onStripCreate"
+        @rename="onStripRename"
+        @delete="onStripDelete"
       />
       <InfiniteCanvas
         v-else
         ref="infiniteCanvasRef"
         :items="galleryItems"
         media="image"
+        hide-composer-entry
         :editing-path="showEditorDrawer && editDrawerItem ? editDrawerItem.path : ''"
         :mask-preview="canvasMaskPreview"
         :extend-preview="canvasExtendPreview"
@@ -74,19 +86,20 @@
         @use-as-control="onCanvasUseAsControl"
         @card-action="onCardAction"
         @download="downloadItem"
-        @toggle-grid-view="() => onViewModeChange('grid')"
+        @toggle-grid-view="onBackToStripList"
         @node-selected="onCanvasNodeSelected"
         @session-ready="onCanvasSessionReady"
         @open-preview="onCanvasOpenPreview"
         @composer-restore="onCanvasComposerRestore"
         @overlay-cleared="onCanvasOverlayCleared"
-        @open-composer="onCanvasOpenComposer()"
+        @open-composer="onCanvasOpenComposer"
         @request-close-composer="closeComposerDrawer()"
       />
     </template>
   </StudioLayout>
 
   <StudioComposerHost
+    v-if="viewMode === 'canvas' || composerDrawerOpen"
     v-model:open="composerDrawerOpen"
     :drawer-title="$t('studio.composerDrawerTitle')"
   >
@@ -112,7 +125,7 @@
         :generate-block-reason="generateBlockReason"
         :control-image="controlImage"
         :mode="imageMode"
-        :mode-options="imageModeOptions"
+        :mode-options="[]"
         :current-model-config="currentModelConfig"
         :compatible-loras="compatibleLoras"
         :compatible-control-nets="compatibleControlNets"
@@ -150,13 +163,32 @@
     />
   </DqDialog>
 
-  <!-- Preview dialog -->
+  <!-- Preview dialog: canvas detail uses session node order -->
   <GalleryPreviewDialog
     v-model:open="previewVisible"
     v-model:index="selectedImageIndex"
-    :items="galleryItems"
+    :items="previewItems"
     media="image"
+    :transfer-targets="previewTransferTargets"
+    @transfer="onPreviewTransfer"
   />
+
+  <DqDialog
+    v-model:open="stripRenameOpen"
+    :title="$t('canvas.renameSession')"
+    width="360px"
+  >
+    <DqInput
+      v-model="stripRenameDraft"
+      size="sm"
+      :placeholder="$t('canvas.sessionSelect')"
+      @keydown.enter="commitStripRename"
+    />
+    <template #footer>
+      <DqButton size="sm" @click="stripRenameOpen = false">{{ $t('common.cancel') }}</DqButton>
+      <DqButton type="primary" @click="commitStripRename">{{ $t('common.confirm') }}</DqButton>
+    </template>
+  </DqDialog>
 
   <!-- Unified Editor Drawer: retouch / extend / upscale -->
   <DqDrawer
@@ -275,9 +307,9 @@ import { dismissSuccessorHint, isSuccessorHintDismissed } from '@/utils/modelSuc
 import { ACTIVE_COMPOSER_TASK_STATUSES, splitComposerPromptLines } from '@/utils/composerQueue';
 import { seedForSubmit } from '@/utils/seed';
 // Studio components
+import { Refresh, Search } from '@danqing/dq-shell';
 import StudioLayout from '@/components/studio/StudioLayout.vue';
-import StudioCanvas from '@/components/studio/StudioCanvas.vue';
-import StudioGalleryFilters from '@/components/studio/StudioGalleryFilters.vue';
+import StudioCanvasStripList from '@/components/studio/StudioCanvasStripList.vue';
 import ImageComposer from '@/components/studio/ImageComposer.vue';
 import ModelSelect from '@/components/model/ModelSelect.vue';
 import { modelSelectOption } from '@/utils/modelSelectOption';
@@ -296,7 +328,8 @@ import {
   activateCanvasViewForResults,
   maybeShowCanvasWorkspaceHint,
 } from '@/utils/canvasWorkspaceHint';
-import { previewUrlForGalleryItem } from '@/utils/canvasAssets';
+import { galleryStubForAssetPath, previewUrlForGalleryItem } from '@/utils/canvasAssets';
+import { CANVAS_OVERLAY_KINDS } from '@/utils/canvasOverlays';
 import { useStudioGallery } from '@/composables/useStudioGallery';
 import { isStructuralComposerControlNet } from '@/utils/composerModelFilter';
 import {
@@ -387,7 +420,15 @@ const queueSubmitting = ref(false);
 const infiniteCanvasRef = ref<InstanceType<typeof InfiniteCanvas> | null>(null);
 const pendingCanvasAssetIds = ref<string[]>([]);
 const imageCanvas = useCanvasStore('image');
+const canvasSessions = computed(() => unref(imageCanvas.sessions));
+const canvasSessionId = computed(() => unref(imageCanvas.sessionId));
+const canvasSessionTitle = computed(() => unref(imageCanvas.sessionTitle));
+const canvasReady = computed(() => unref(imageCanvas.ready));
 const canvasSelectedItem = ref<GalleryItem | null>(null);
+const stripSearchText = ref('');
+const stripRenameOpen = ref(false);
+const stripRenameDraft = ref('');
+const stripRenameId = ref('');
 
 const showEditorDrawer = ref(false);
 const {
@@ -397,12 +438,14 @@ const {
 } = useComposerDrawer('image', { editorDrawerOpen: showEditorDrawer });
 
 const savedViewMode = getItem(DQ_STORAGE.IMAGE_VIEW_MODE);
+/** grid = canvas strip list; canvas = infinite canvas detail */
 const viewMode = ref<'grid' | 'canvas'>(
   savedViewMode === 'canvas' || savedViewMode === 'grid' ? savedViewMode : 'grid'
 );
 
 watch(viewMode, (mode) => {
   setItem(DQ_STORAGE.IMAGE_VIEW_MODE, mode);
+  if (mode === 'grid') closeComposerDrawer();
 });
 
 function onViewModeChange(mode: 'grid' | 'canvas') {
@@ -410,31 +453,403 @@ function onViewModeChange(mode: 'grid' | 'canvas') {
   if (mode === 'canvas' && selectedGroupId.value) {
     exitGroup();
   }
-  const batchPaths =
-    mode === 'canvas' && selectedPaths.value.size > 0
-      ? Array.from(selectedPaths.value)
-      : [];
   viewMode.value = mode;
   if (mode === 'canvas') {
     clearSelection();
     maybeShowCanvasWorkspaceHint();
-    const batchCount = batchPaths.length;
     nextTick(() => {
       syncCompositorOverlaysOnCanvasEnter();
       persistComposerSnapshot();
-      if (batchCount > 0) {
-        addAssetPathsToCanvas(batchPaths, {
-          fit: true,
-          placement: 'center',
-          focusLast: false,
-        });
-        toast.success($tt('canvas.batchAdded', { n: batchCount }));
-      } else if (Object.keys(imageCanvas.items).length > 0) {
+      if (Object.keys(imageCanvas.items).length > 0) {
         infiniteCanvasRef.value?.fitAll();
       }
     });
   } else {
     clearSelection();
+    closeComposerDrawer();
+  }
+}
+
+function openTextGenComposer() {
+  // List/detail 「创作」and top-bar open are text-to-image only; asset ops enter via toolbar.
+  imageMode.value = 'text2img';
+  referenceImage.value = null;
+  extraReferenceImages.value = [];
+  controlImage.value = null;
+  imageCanvas.setControlOverlay(null);
+  imageCanvas.clearOverlay('reference');
+  openComposerDrawer();
+}
+
+async function enterCanvasDetail(sessionId: string, opts?: { openComposer?: boolean }) {
+  if (sessionId && sessionId !== canvasSessionId.value) {
+    await imageCanvas.switchSession(sessionId);
+    onCanvasComposerRestore({ ...imageCanvas.composerSnapshot });
+  }
+  onViewModeChange('canvas');
+  if (opts?.openComposer) {
+    nextTick(() => openTextGenComposer());
+  }
+}
+
+async function onStripOpen(sessionId: string) {
+  await enterCanvasDetail(sessionId, { openComposer: false });
+}
+
+async function onStripPreview(payload: { sessionId: string; assetId: string }) {
+  const sessionId = String(payload?.sessionId || '').trim();
+  const assetId = String(payload?.assetId || '').trim();
+  if (!sessionId || !assetId) return;
+
+  const byPath = new Map(galleryItems.value.map((g) => [g.path, g]));
+  const resolveItem = (path: string): GalleryItem =>
+    byPath.get(path) || galleryStubForAssetPath(path);
+
+  let paths: string[] = [];
+  try {
+    const detail = await api.canvas.getSession(sessionId);
+    const items = detail?.state?.items || {};
+    const board = Object.entries(items)
+      .sort((a, b) => (Number(a[1]?.zIndex) || 0) - (Number(b[1]?.zIndex) || 0))
+      .map(([path]) => path)
+      .filter((p) => p.startsWith('asset:'));
+    const boardSet = new Set(board);
+    const shelf = (detail?.state?.shelf || []).filter(
+      (p) => typeof p === 'string' && p.startsWith('asset:') && !boardSet.has(p),
+    );
+    paths = [...board, ...shelf];
+  } catch (e) {
+    toast.error($tt('studio.error', { msg: String(e) }));
+    return;
+  }
+
+  if (!paths.length) {
+    paths = [`asset:${assetId}`];
+  }
+
+  let list = sortGalleryItemsByTime(paths.map(resolveItem));
+  const q = stripSearchText.value.trim().toLowerCase();
+  if (q) {
+    const matched = list.filter((g) => {
+      const hay = [g.title, g.prompt, g.model, g.name]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return hay.includes(q);
+    });
+    if (matched.length) list = matched;
+  }
+  let idx = list.findIndex((g) => assetIdFromGalleryPath(g.path) === assetId);
+  if (idx < 0) {
+    list = [resolveItem(`asset:${assetId}`), ...list];
+    idx = 0;
+  }
+
+  stripPreviewOverride.value = list;
+  previewSourceSessionId.value = sessionId;
+  selectedImageIndex.value = idx;
+  previewVisible.value = true;
+}
+
+async function onStripCreate(sessionId: string) {
+  // Stay on strip list — only bind the target session and open the composer.
+  if (sessionId && sessionId !== canvasSessionId.value) {
+    await imageCanvas.switchSession(sessionId);
+    onCanvasComposerRestore({ ...imageCanvas.composerSnapshot });
+  }
+  openTextGenComposer();
+}
+
+function onBackToStripList() {
+  onViewModeChange('grid');
+  void imageCanvas.refreshSessions().then(() => rebuildSessionAssetIndex());
+}
+
+async function onNewCanvas() {
+  try {
+    const created = await imageCanvas.createSession();
+    toast.success($tt('canvas.sessionCreated'));
+    await rebuildSessionAssetIndex();
+    await enterCanvasDetail(created.id, { openComposer: true });
+  } catch (e) {
+    toast.error($tt('studio.error', { msg: String(e) }));
+  }
+}
+
+async function refreshStripList() {
+  try {
+    if (!unref(imageCanvas.ready) || !unref(imageCanvas.sessionId)) {
+      await imageCanvas.ensureDefaultAndAdoptOrphans();
+    } else {
+      await imageCanvas.refreshSessions();
+    }
+    await loadGallery(true);
+    await rebuildSessionAssetIndex();
+  } catch (e) {
+    toast.error($tt('studio.error', { msg: String(e) }));
+  }
+}
+
+/** Full membership index so strip search can match any asset on a canvas. */
+const sessionAssetIdsBySession = ref<Record<string, string[]>>({});
+
+async function rebuildSessionAssetIndex() {
+  const sessions = canvasSessions.value || [];
+  if (!sessions.length) {
+    sessionAssetIdsBySession.value = {};
+    return;
+  }
+  const entries = await Promise.all(
+    sessions.map(async (s) => {
+      try {
+        const detail = await api.canvas.getSession(s.id);
+        const ids: string[] = [];
+        const seen = new Set<string>();
+        for (const p of Object.keys(detail?.state?.items || {})) {
+          if (!p.startsWith('asset:')) continue;
+          const id = p.slice('asset:'.length);
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          ids.push(id);
+        }
+        for (const p of detail?.state?.shelf || []) {
+          if (typeof p !== 'string' || !p.startsWith('asset:')) continue;
+          const id = p.slice('asset:'.length);
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          ids.push(id);
+        }
+        return [s.id, ids] as const;
+      } catch {
+        return [s.id, s.preview_asset_ids || []] as const;
+      }
+    }),
+  );
+  sessionAssetIdsBySession.value = Object.fromEntries(entries);
+}
+
+function onStripRename(sessionId: string) {
+  const s = canvasSessions.value.find((x) => x.id === sessionId);
+  stripRenameId.value = sessionId;
+  stripRenameDraft.value = s?.title || '';
+  stripRenameOpen.value = true;
+}
+
+async function commitStripRename() {
+  stripRenameOpen.value = false;
+  const id = stripRenameId.value;
+  const t = stripRenameDraft.value.trim();
+  if (!id || !t) return;
+  const prev = canvasSessionId.value;
+  try {
+    if (id !== prev) await imageCanvas.switchSession(id);
+    await imageCanvas.renameSession(t);
+    if (prev && prev !== id) await imageCanvas.switchSession(prev);
+    await imageCanvas.refreshSessions();
+    toast.success($tt('canvas.sessionRenamed'));
+  } catch (e) {
+    toast.error($tt('studio.error', { msg: String(e) }));
+  }
+}
+
+async function onStripDelete(sessionId: string) {
+  try {
+    await imageCanvas.deleteSession(sessionId);
+    toast.success($tt('canvas.sessionDeleted'));
+    await rebuildSessionAssetIndex();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('cannot_delete_last_canvas') || msg.includes('last canvas')) {
+      toast.error($tt('canvas.sessionCannotDeleteLast'));
+      return;
+    }
+    toast.error($tt('studio.error', { msg }));
+  }
+}
+
+const galleryByAssetId = computed(() => {
+  const map: Record<
+    string,
+    { prompt?: string; model?: string; title?: string; name?: string; created_at?: string }
+  > = {};
+  for (const item of galleryItems.value) {
+    const id = assetIdFromGalleryPath(item.path);
+    if (!id) continue;
+    map[id] = {
+      prompt: item.prompt,
+      model: item.model,
+      title: item.title,
+      name: item.name,
+      created_at: item.created_at,
+    };
+  }
+  return map;
+});
+
+function sortGalleryItemsByTime(items: GalleryItem[]): GalleryItem[] {
+  return [...items].sort((a, b) => {
+    const c = String(b.created_at || '').localeCompare(String(a.created_at || ''));
+    if (c !== 0) return c;
+    return String(b.path || '').localeCompare(String(a.path || ''));
+  });
+}
+
+/** One-shot strip-list preview when asset is not yet in galleryItems. */
+const stripPreviewOverride = ref<GalleryItem[] | null>(null);
+/** Canvas that owns the asset currently shown in the lightbox (for transfer). */
+const previewSourceSessionId = ref('');
+
+/** Preview sequence: board + shelf members when in detail, else gallery. */
+const previewItems = computed(() => {
+  if (stripPreviewOverride.value?.length) return stripPreviewOverride.value;
+  if (viewMode.value !== 'canvas') return galleryItems.value;
+  const byPath = new Map(galleryItems.value.map((g) => [g.path, g]));
+  const paths = new Set<string>([
+    ...Object.keys(imageCanvas.items),
+    ...unref(imageCanvas.shelf),
+  ]);
+  const items = [...paths]
+    .filter((p) => p.startsWith('asset:'))
+    .map((path) => byPath.get(path) || galleryStubForAssetPath(path));
+  return sortGalleryItemsByTime(items);
+});
+
+function canvasTitleLabel(title: string): string {
+  const t = (title || '').trim().toLowerCase();
+  if (t === 'default canvas' || t === '默认画布') return $tt('canvas.defaultCanvasTitle');
+  return title || $tt('canvas.untitledSession');
+}
+
+const previewTransferTargets = computed(() => {
+  const source = resolvePreviewSourceSessionId();
+  return (canvasSessions.value || [])
+    .filter((s) => s.id && s.id !== source)
+    .map((s) => ({ id: s.id, title: canvasTitleLabel(s.title || '') }));
+});
+
+function resolvePreviewSourceSessionId(path?: string): string {
+  if (previewSourceSessionId.value) return previewSourceSessionId.value;
+  if (viewMode.value === 'canvas' && canvasSessionId.value) return canvasSessionId.value;
+  const p = path || previewItems.value[selectedImageIndex.value]?.path || '';
+  if (p) {
+    const assetId = assetIdFromGalleryPath(p);
+    for (const [sid, ids] of Object.entries(sessionAssetIdsBySession.value || {})) {
+      if (assetId && ids.includes(assetId)) return sid;
+    }
+  }
+  return canvasSessionId.value || '';
+}
+
+function sessionHasAssetPath(
+  state: { items?: Record<string, unknown>; shelf?: string[] } | null | undefined,
+  path: string,
+): boolean {
+  if (!state || !path) return false;
+  if (state.items && path in state.items) return true;
+  return (state.shelf || []).includes(path);
+}
+
+function stripAssetFromSessionState(
+  state: import('@/types').CanvasSessionState,
+  path: string,
+): import('@/types').CanvasSessionState {
+  const items = { ...(state.items || {}) };
+  delete items[path];
+  const shelf = (state.shelf || []).filter((p) => p !== path);
+  const overlays = { ...(state.overlays || {}) };
+  for (const kind of CANVAS_OVERLAY_KINDS) {
+    if (overlays[kind]?.path === path) overlays[kind] = null;
+  }
+  const active =
+    state.active_asset_path === path ? '' : state.active_asset_path || '';
+  const edges = (state.edges || []).filter(
+    (e) => e?.from !== path && e?.to !== path,
+  );
+  return {
+    ...state,
+    items,
+    shelf,
+    overlays,
+    active_asset_path: active,
+    edges,
+  };
+}
+
+async function onPreviewTransfer(payload: {
+  item: GalleryItem;
+  targetSessionId: string;
+}) {
+  const path = String(payload?.item?.path || '').trim();
+  const toId = String(payload?.targetSessionId || '').trim();
+  if (!path.startsWith('asset:') || !toId) return;
+
+  const fromId = resolvePreviewSourceSessionId(path);
+  if (!fromId) {
+    toast.error($tt('studio.error', { msg: $tt('canvas.transferNeedSource') }));
+    return;
+  }
+  if (fromId === toId) return;
+
+  try {
+    // Stop local debounce / wait out in-flight writes so they cannot resurrect the asset.
+    await imageCanvas.flushPersistBarrier();
+
+    const [fromDetail, toDetail] = await Promise.all([
+      api.canvas.getSession(fromId),
+      api.canvas.getSession(toId),
+    ]);
+
+    const fromState = stripAssetFromSessionState(fromDetail.state, path);
+    const toItems = { ...(toDetail.state?.items || {}) };
+    const toShelf = [...(toDetail.state?.shelf || [])].filter((p) => p !== path);
+    if (!(path in toItems) && !toShelf.includes(path)) toShelf.push(path);
+    const toState = {
+      ...toDetail.state,
+      items: toItems,
+      shelf: toShelf,
+    };
+
+    await api.canvas.updateSession(fromId, { state: fromState });
+    await api.canvas.updateSession(toId, { state: toState });
+
+    // If a stale persist raced us, source may still list the asset — fix once more.
+    const verifyFrom = await api.canvas.getSession(fromId);
+    if (sessionHasAssetPath(verifyFrom.state, path)) {
+      await api.canvas.updateSession(fromId, {
+        state: stripAssetFromSessionState(verifyFrom.state, path),
+      });
+    }
+
+    const liveId = unref(imageCanvas.sessionId);
+    if (liveId === fromId || liveId === toId) {
+      imageCanvas.cancelPendingPersist();
+      const live = await api.canvas.getSession(liveId);
+      imageCanvas.applyState(live.state);
+    }
+
+    if (stripPreviewOverride.value?.length) {
+      const next = stripPreviewOverride.value.filter((g) => g.path !== path);
+      stripPreviewOverride.value = next.length ? next : null;
+      if (!next.length) {
+        previewVisible.value = false;
+      } else {
+        selectedImageIndex.value = Math.min(
+          selectedImageIndex.value,
+          next.length - 1,
+        );
+      }
+    }
+
+    await imageCanvas.refreshSessions();
+    await rebuildSessionAssetIndex();
+
+    const targetTitle =
+      canvasTitleLabel(
+        (canvasSessions.value || []).find((s) => s.id === toId)?.title || '',
+      ) || toId;
+    toast.success($tt('canvas.transferToCanvasDone', { title: targetTitle }));
+  } catch (e) {
+    toast.error($tt('studio.error', { msg: String(e) }));
   }
 }
 
@@ -489,6 +904,7 @@ function fillComposerFromGalleryItem(item: GalleryItem) {
 }
 
 function onCanvasOpenComposer() {
+  // Asset-driven open (toolbar) may already set img2img; bare open stays text-gen.
   if (canvasSelectedItem.value) {
     fillComposerFromGalleryItem(canvasSelectedItem.value);
   }
@@ -972,9 +1388,18 @@ watch(
 );
 
 function onCanvasOpenPreview(item: GalleryItem) {
-  const idx = galleryItems.value.findIndex((g) => g.path === item.path);
+  previewSourceSessionId.value = canvasSessionId.value || '';
+  const list = previewItems.value;
+  const idx = list.findIndex((g) => g.path === item.path);
   if (idx >= 0) {
     selectedImageIndex.value = idx;
+    previewVisible.value = true;
+    return;
+  }
+  // Node not yet in gallery catalog — fall back to full gallery list.
+  const gIdx = galleryItems.value.findIndex((g) => g.path === item.path);
+  if (gIdx >= 0) {
+    selectedImageIndex.value = gIdx;
     previewVisible.value = true;
   }
 }
@@ -1544,11 +1969,6 @@ function syncResolutionForModel(modelId?: string) {
 
 const imageMode = ref('text2img');
 
-const imageModeOptions = computed(() => [
-  { label: $tt('action.image.text2img'), value: 'text2img' },
-  { label: $tt('action.image.rewrite'), value: 'img2img' },
-]);
-
 function onModeChange(mode: string) {
   imageMode.value = mode;
   if (mode === 'text2img') {
@@ -1726,6 +2146,15 @@ async function ensureGalleryItemsForCanvas(assetIds: string[]): Promise<void> {
   } catch {
     /* staging add still attempts with whatever gallery has */
   }
+  // Still missing → stub so board placement / render never depends on pagination.
+  if (missing().length) {
+    const byPath = new Map(galleryItems.value.map((g) => [g.path, g]));
+    for (const id of missing()) {
+      const path = `asset:${id}`;
+      byPath.set(path, galleryStubForAssetPath(path));
+    }
+    galleryItems.value = Array.from(byPath.values());
+  }
 }
 
 function attachStreamFromSubmit(submitRes: unknown) {
@@ -1790,8 +2219,11 @@ function attachStreamFromSubmit(submitRes: unknown) {
         tasksStore.appendTaskLog(tid, $tt('studio.genComplete'), 'success');
         const ids = await resolveCompletedAssetIds(tid, [...pendingCanvasAssetIds.value]);
         pendingCanvasAssetIds.value = [];
-        const willAutoAdd = shouldAutoAddToCanvas() && ids.length > 0;
-        if (!willAutoAdd) {
+        // Session-tagged results always get membership on that canvas (shelf/board),
+        // even if the user already returned to the strip list.
+        const willPlace = ids.length > 0;
+        const willRevealCanvas = willPlace && shouldAutoAddToCanvas();
+        if (!willRevealCanvas) {
           toast.success($tt('studio.genComplete'));
         }
         void (async () => {
@@ -1800,28 +2232,67 @@ function attachStreamFromSubmit(submitRes: unknown) {
           await new Promise((r) => setTimeout(r, 400));
           await loadGallery(true);
           await nextTick();
-          if (!willAutoAdd) return;
+          if (!willPlace) return;
+          // Land on the session that submitted the task (user may have switched strips).
+          let sid = '';
+          try {
+            const task = (await api.gen.getMediaTask(tid)) as {
+              params?: {
+                request?: { metadata?: { canvas_session_id?: string } };
+                metadata?: { canvas_session_id?: string };
+              };
+            };
+            const params = task?.params || {};
+            sid = String(
+              params.request?.metadata?.canvas_session_id ||
+                params.metadata?.canvas_session_id ||
+                '',
+            ).trim();
+            if (sid && sid !== unref(imageCanvas.sessionId)) {
+              await imageCanvas.switchSession(sid);
+            }
+          } catch {
+            /* keep current session */
+          }
           await ensureGalleryItemsForCanvas(ids);
           await nextTick();
-          await activateCanvasViewForResults(viewMode, syncCompositorOverlaysOnCanvasEnter);
-          await nextTick();
+          if (willRevealCanvas) {
+            await activateCanvasViewForResults(viewMode, syncCompositorOverlaysOnCanvasEnter);
+            await nextTick();
+          }
           const paths = ids.map((id) => `asset:${id}`);
-          let added = addAssetPathsToCanvas(paths, { placement: 'staging' });
+          // Prefer store placement (works even when InfiniteCanvas is unmounted in grid mode).
+          let added = imageCanvas.addPathsFromGallery(paths, galleryItems.value, {
+            placement: 'staging',
+            selectLast: true,
+          });
+          if (!added.length && viewMode.value === 'canvas') {
+            added = addAssetPathsToCanvas(paths, { placement: 'staging', focusLast: true, fit: true });
+          }
           if (!added.length) {
             await ensureGalleryItemsForCanvas(ids);
             await nextTick();
-            added = addAssetPathsToCanvas(paths, { placement: 'staging' });
-          }
-          if (!added.length) {
-            // Last resort: place via shared store even if child ref missed.
             added = imageCanvas.addPathsFromGallery(paths, galleryItems.value, {
               placement: 'staging',
               selectLast: true,
             });
-            imageCanvas.refreshEdges(galleryItems.value);
           }
-          if (!added.length) {
-            toast.warning($tt('canvas.autoAddMissed'));
+          if (added.length) {
+            imageCanvas.refreshEdges(galleryItems.value);
+            await imageCanvas.persist();
+            await nextTick();
+            if (viewMode.value === 'canvas') {
+              infiniteCanvasRef.value?.fitAll?.();
+            }
+          } else {
+            // Fail loud: tagged session must receive the asset; last resort shelf.
+            if (sid || unref(imageCanvas.sessionId)) {
+              imageCanvas.addToShelf(paths);
+              await imageCanvas.persist();
+              toast.warning($tt('canvas.autoAddMissed'));
+            } else {
+              toast.warning($tt('canvas.autoAddMissed'));
+            }
           }
         })();
       } else if (doneData.status === 'failed') {
@@ -2207,11 +2678,19 @@ const resetToDefaults = () => {
 const previewVisible = ref(false);
 const selectedImageIndex = ref(0);
 
+watch(previewVisible, (open) => {
+  if (!open) {
+    stripPreviewOverride.value = null;
+    previewSourceSessionId.value = '';
+  }
+});
+
 function getImageUrl(item: GalleryItem) {
   return api.gallery.getImageUrl(item.path);
 }
 
 function onGallerySelect(item: GalleryItem) {
+  previewSourceSessionId.value = canvasSessionId.value || '';
   const idx = galleryItems.value.findIndex((it) => it.path === item.path);
   selectedImageIndex.value = idx >= 0 ? idx : 0;
   previewVisible.value = true;
@@ -2763,6 +3242,16 @@ onMounted(async () => {
   loadPresets();
   loadRecentImages();
   loadGallery(true);
+  try {
+    const adopt = await imageCanvas.ensureDefaultAndAdoptOrphans();
+    if (adopt.adopted_count > 0) {
+      toast.success($tt('canvas.orphansAdopted', { n: adopt.adopted_count }));
+      await loadGallery(true);
+    }
+    await rebuildSessionAssetIndex();
+  } catch (e) {
+    toast.error($tt('studio.error', { msg: String(e) }));
+  }
   tasksStore.ensureQueuePoller();
   window.addEventListener('keydown', onCreatePageKeydown);
   const promptDraft = consumePromptDraft(DQ_STORAGE.IMAGE_CREATE_PROMPT_DRAFT);
@@ -2897,6 +3386,47 @@ function onCreatePageKeydown(e: KeyboardEvent) {
 
 .studio-drawer-submit {
   margin-top: auto;
+}
+
+.image-create-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.image-create-filters--list {
+  width: 100%;
+  max-width: none;
+}
+
+.image-create-filters__search {
+  flex: 0 1 320px;
+  min-width: 160px;
+  max-width: 420px;
+}
+
+.image-create-filters__spacer {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+
+.image-create-filters__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.image-create-filters__session-title {
+  font-size: var(--dq-font-size-body);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40vw;
 }
 </style>
 

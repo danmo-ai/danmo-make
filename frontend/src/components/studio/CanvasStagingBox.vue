@@ -95,10 +95,10 @@ function onMove(e: MouseEvent) {
       y: originY + (e.clientY - startY) / z,
     });
   } else if (resizing) {
-    emit('resize', {
-      width: Math.max(128, originW + (e.clientX - startX) / z),
-      height: Math.max(128, originH + (e.clientY - startY) / z),
-    });
+    // Soft ceiling matches STAGING_MAX; store clamps again on persist.
+    const nextW = Math.max(160, Math.min(640, originW + (e.clientX - startX) / z));
+    const nextH = Math.max(160, Math.min(640, originH + (e.clientY - startY) / z));
+    emit('resize', { width: nextW, height: nextH });
   }
 }
 

@@ -50,6 +50,37 @@
               <GalleryAssetDetailMeta :item="currentItem" show-prompt />
             </div>
           </div>
+          <DqDropdown
+            v-if="transferTargets.length && currentItem"
+            trigger="click"
+            size="sm"
+            @command="onTransferCommand"
+          >
+            <DqIconButton
+              type="text"
+              size="sm"
+              :label="$t('canvas.transferToCanvas')"
+              :title="$t('canvas.transferToCanvas')"
+            >
+              <DqIcon :size="14"><Library /></DqIcon>
+            </DqIconButton>
+            <template #dropdown>
+              <DqDropdownMenu>
+                <DqDropdownItem disabled>
+                  <span class="gallery-preview-header__menu-hint">{{
+                    $t('canvas.transferToCanvas')
+                  }}</span>
+                </DqDropdownItem>
+                <DqDropdownItem
+                  v-for="target in transferTargets"
+                  :key="target.id"
+                  :command="target.id"
+                >
+                  {{ target.title }}
+                </DqDropdownItem>
+              </DqDropdownMenu>
+            </template>
+          </DqDropdown>
           <DqIconButton
             type="text"
             size="sm"
@@ -180,7 +211,16 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue';
-import { ArrowLeft, ArrowRight, Download, Film, Headset, Picture, ZoomIn } from '@danqing/dq-shell';
+import {
+  ArrowLeft,
+  ArrowRight,
+  Download,
+  Film,
+  Headset,
+  Library,
+  Picture,
+  ZoomIn,
+} from '@danqing/dq-shell';
 import { formatGalleryResolution } from '@/utils/galleryAssetMeta';
 import { api } from '@/utils/api';
 import { $tt } from '@/utils/i18n';
@@ -189,17 +229,29 @@ import CreateVideoPlayer from '@/components/create/CreateVideoPlayer.vue';
 import GalleryAudioDetail from '@/components/gallery/GalleryAudioDetail.vue';
 import GalleryAssetDetailMeta from '@/components/gallery/GalleryAssetDetailMeta.vue';
 
-const props = defineProps<{
-  open: boolean;
-  items: GalleryItem[];
-  index: number;
-  media: 'image' | 'video' | 'audio';
-}>();
+const props = withDefaults(
+  defineProps<{
+    open: boolean;
+    items: GalleryItem[];
+    index: number;
+    media: 'image' | 'video' | 'audio';
+    /** Other canvases the current asset can move into. */
+    transferTargets?: { id: string; title: string }[];
+  }>(),
+  { transferTargets: () => [] },
+);
 
 const emit = defineEmits<{
   (e: 'update:open', value: boolean): void;
   (e: 'update:index', value: number): void;
+  (e: 'transfer', payload: { item: GalleryItem; targetSessionId: string }): void;
 }>();
+
+function onTransferCommand(targetSessionId: string) {
+  const item = currentItem.value;
+  if (!item || !targetSessionId) return;
+  emit('transfer', { item, targetSessionId });
+}
 
 const dialogVisible = computed({
   get: () => props.open,
@@ -496,9 +548,8 @@ onBeforeUnmount(() => {
   min-height: 300px;
 }
 
-.gallery-preview-container:focus-visible {
-  border-radius: var(--dq-radius-control);
-  box-shadow: var(--dq-focus-ring);
+.gallery-preview-container:focus {
+  outline: none;
 }
 
 .gallery-preview-container--image {
@@ -586,6 +637,11 @@ onBeforeUnmount(() => {
   color: var(--dq-label-tertiary);
   font-size: var(--dq-font-size-caption);
   font-variant-numeric: tabular-nums;
+}
+
+.gallery-preview-header__menu-hint {
+  font-size: var(--dq-font-size-caption);
+  color: var(--dq-label-secondary);
 }
 
 .gallery-preview-header__zoom {

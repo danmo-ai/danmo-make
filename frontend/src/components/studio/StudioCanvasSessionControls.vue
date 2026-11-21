@@ -117,10 +117,19 @@ async function onCreateSession() {
 }
 
 async function onDeleteSession(id: string) {
-  const ok = await store.deleteSession(id);
-  if (ok) {
-    emit('composer-restore', { ...store.composerSnapshot });
-    toast.success($tt('canvas.sessionDeleted'));
+  try {
+    const ok = await store.deleteSession(id);
+    if (ok) {
+      emit('composer-restore', { ...store.composerSnapshot });
+      toast.success($tt('canvas.sessionDeleted'));
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('cannot_delete_last_canvas') || msg.includes('last canvas')) {
+      toast.error($tt('canvas.sessionCannotDeleteLast'));
+      return;
+    }
+    throw e;
   }
 }
 

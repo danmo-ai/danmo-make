@@ -19,6 +19,7 @@ import {
 } from '@/utils/canvasOverlays';
 import { buildSessionEdges } from '@/utils/canvasEdges';
 import {
+  clampStagingSize,
   computeStagingDimensions,
   countItemsInStaging,
   layoutInStaging,
@@ -33,13 +34,14 @@ import {
   type DistributeMode,
 } from '@/utils/canvasGeometry';
 import { DQ_STORAGE, getItem, setItem, removeItem } from '@/utils/storage';
+import { galleryStubForAssetPath } from '@/utils/canvasAssets';
 
 const DEFAULT_VIEWPORT: CanvasViewportState = { zoom: 1, panX: 0, panY: 0 };
 const DEFAULT_STAGING: CanvasStagingState = {
   x: 240,
   y: 180,
-  width: 512,
-  height: 512,
+  width: 360,
+  height: 360,
   visible: true,
 };
 
@@ -94,11 +96,15 @@ function normalizeOverlays(v: unknown): CanvasOverlaysState {
 
 function normalizeStaging(v: Record<string, unknown> | undefined): CanvasStagingState {
   if (!v) return { ...DEFAULT_STAGING };
+  const size = clampStagingSize(
+    Number(v.width) || DEFAULT_STAGING.width,
+    Number(v.height) || DEFAULT_STAGING.height,
+  );
   return {
     x: Number(v.x) || DEFAULT_STAGING.x,
     y: Number(v.y) || DEFAULT_STAGING.y,
-    width: Number(v.width) || DEFAULT_STAGING.width,
-    height: Number(v.height) || DEFAULT_STAGING.height,
+    width: size.width,
+    height: size.height,
     visible: v.visible !== false,
   };
 }
@@ -145,8 +151,22 @@ function normalizeComposerSnapshot(v: unknown): CanvasComposerSnapshot {
   return snap;
 }
 
+function normalizeShelf(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of raw) {
+    const p = typeof v === 'string' ? v.trim() : '';
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
+
 function snapshotState(
   items: Record<string, CanvasItemState>,
+  shelf: string[],
   viewport: CanvasViewportState,
   staging: CanvasStagingState,
   activeAssetPath: string,
@@ -156,6 +176,7 @@ function snapshotState(
 ): CanvasSessionState {
   return {
     items: JSON.parse(JSON.stringify(items)),
+    shelf: [...shelf],
     viewport: { ...viewport },
     staging: { ...staging },
     active_asset_path: activeAssetPath,
@@ -196,6 +217,7 @@ function legacyCanvasStorageKey(media: CanvasMedia) {
 function createCanvasStore(media: CanvasMedia) {
   const legacyStorageKey = legacyCanvasStorageKey(media);
   const items = reactive<Record<string, CanvasItemState>>({});
+  const shelf = ref<string[]>([]);
   const viewport = reactive<CanvasViewportState>({ ...DEFAULT_VIEWPORT });
   const staging = reactive<CanvasStagingState>({ ...DEFAULT_STAGING });
   const overlays = reactive<CanvasOverlaysState>(emptyOverlays());
@@ -210,8 +232,12 @@ function createCanvasStore(media: CanvasMedia) {
 
   let nextZIndex = 1;
   let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Bumped to drop stale in-flight persist writes (e.g. after cross-session transfer). */
+  let persistGeneration = 0;
   let lastAddX = 80;
   let lastAddY = 80;
+  let ensurePromise: Promise<void> | null = null;
+  let adoptPromise: Promise<{ adopted_count: number }> | null = null;
 
   function applyState(state: CanvasSessionState) {
     for (const key of Object.keys(items)) {
@@ -222,6 +248,8 @@ function createCanvasStore(media: CanvasMedia) {
       items[key] = normalizeItemState(val as unknown as Record<string, unknown>);
       nextZIndex = Math.max(nextZIndex, items[key].zIndex + 1);
     }
+    // Shelf paths must not also sit on the board.
+    shelf.value = normalizeShelf(state.shelf).filter((p) => !(p in items));
     const vp = state.viewport || DEFAULT_VIEWPORT;
     viewport.zoom = vp.zoom ?? 1;
     viewport.panX = vp.panX ?? 0;
@@ -245,6 +273,32 @@ function createCanvasStore(media: CanvasMedia) {
     Object.assign(composerSnapshot, snap);
   }
 
+  function membershipCount(): number {
+    const ids = new Set<string>();
+    for (const key of Object.keys(items)) {
+      if (key.startsWith('asset:')) ids.add(key.slice('asset:'.length));
+    }
+    for (const path of shelf.value) {
+      if (path.startsWith('asset:')) ids.add(path.slice('asset:'.length));
+    }
+    return ids.size || Object.keys(items).length + shelf.value.length;
+  }
+
+  function previewAssetIds(limit = 6): string[] {
+    const out: string[] = [];
+    for (const key of Object.keys(items)) {
+      if (out.length >= limit) break;
+      if (key.startsWith('asset:')) out.push(key.slice('asset:'.length));
+    }
+    for (const path of shelf.value) {
+      if (out.length >= limit) break;
+      if (!path.startsWith('asset:')) continue;
+      const id = path.slice('asset:'.length);
+      if (!out.includes(id)) out.push(id);
+    }
+    return out;
+  }
+
   function refreshEdges(galleryItems: GalleryItem[]) {
     edges.value = buildSessionEdges(items, galleryItems);
     schedulePersist();
@@ -266,56 +320,183 @@ function createCanvasStore(media: CanvasMedia) {
     }
   }
 
+  function defaultSessionTitle(): string {
+    // Server/API titles stay English; UI localizes display. Matches adopt-orphans default.
+    if (media === 'image') return 'Default canvas';
+    if (media === 'video') return 'Video canvas';
+    if (media === 'audio') return 'Audio canvas';
+    return 'Canvas 1';
+  }
+
+  function isDefaultSessionTitle(title: string | undefined): boolean {
+    const t = String(title || '').trim().toLowerCase();
+    return t === 'default canvas' || t === '默认画布';
+  }
+
   async function ensureSession(): Promise<void> {
     if (ready.value) return;
-    migrateLegacyActiveSessionKey(media);
-    syncing.value = true;
-    try {
-      let list = await api.canvas.listSessions(media);
-      if (list.length === 0) {
-        const legacy = loadLegacyLocal();
-        const created = await api.canvas.createSession({
-          media,
-          title: 'Canvas 1',
-          state: legacy || undefined,
-        });
-        if (legacy) removeItem(legacyStorageKey);
-        sessionId.value = created.id;
-        sessionTitle.value = created.title;
-        applyState(created.state);
-        list = await api.canvas.listSessions(media);
-      } else {
-        const savedId = getItem(activeSessionStorageKey(media));
-        const pick = savedId && list.some((s) => s.id === savedId) ? savedId : list[0].id;
-        const detail = await api.canvas.getSession(pick);
-        sessionId.value = detail.id;
-        sessionTitle.value = detail.title;
-        applyState(detail.state);
-        setItem(activeSessionStorageKey(media), pick);
+    if (ensurePromise) return ensurePromise;
+    ensurePromise = (async () => {
+      migrateLegacyActiveSessionKey(media);
+      syncing.value = true;
+      try {
+        let list = await api.canvas.listSessions(media);
+        if (list.length === 0) {
+          const legacy = loadLegacyLocal();
+          const created = await api.canvas.createSession({
+            media,
+            title: defaultSessionTitle(),
+            state: legacy || undefined,
+          });
+          if (legacy) removeItem(legacyStorageKey);
+          sessionId.value = created.id;
+          sessionTitle.value = created.title;
+          applyState(created.state);
+          list = await api.canvas.listSessions(media);
+        } else {
+          const savedId = getItem(activeSessionStorageKey(media));
+          const pick = savedId && list.some((s) => s.id === savedId) ? savedId : list[0].id;
+          const detail = await api.canvas.getSession(pick);
+          sessionId.value = detail.id;
+          sessionTitle.value = detail.title;
+          applyState(detail.state);
+          setItem(activeSessionStorageKey(media), pick);
+        }
+        sessions.value = list;
+        ready.value = true;
+      } catch (e) {
+        // Fail loud: do not mark ready with a local-only fake session — that hides
+        // server shelf membership (Option A) and blocks later ensureSession retries.
+        console.error('Canvas session load failed:', e);
+        ready.value = false;
+        throw e;
+      } finally {
+        syncing.value = false;
+        ensurePromise = null;
       }
+    })();
+    return ensurePromise;
+  }
+
+  /**
+   * Keep a single named default canvas. Prefer one with assets; else oldest.
+   * Empty duplicate defaults are deleted; non-empty extras are renamed.
+   */
+  async function consolidateDefaultCanvases(): Promise<void> {
+    const list = await api.canvas.listSessions(media);
+    const defaults = list
+      .filter((s) => isDefaultSessionTitle(s.title))
+      .sort((a, b) => {
+        const byCount = (b.item_count || 0) - (a.item_count || 0);
+        if (byCount !== 0) return byCount;
+        const c = String(a.created_at || '').localeCompare(String(b.created_at || ''));
+        if (c !== 0) return c;
+        return String(a.id).localeCompare(String(b.id));
+      });
+    if (defaults.length <= 1) {
       sessions.value = list;
-      ready.value = true;
-    } catch (e) {
-      console.error('Canvas session load failed, using local fallback:', e);
-      const legacy = loadLegacyLocal();
-      if (legacy) applyState(legacy);
-      ready.value = true;
-    } finally {
-      syncing.value = false;
+      return;
     }
+    const keep = defaults[0];
+    const prev = sessionId.value;
+    for (let i = 1; i < defaults.length; i += 1) {
+      const extra = defaults[i];
+      if ((extra.item_count || 0) <= 0) {
+        await api.canvas.deleteSession(extra.id);
+        if (prev === extra.id) {
+          sessionId.value = keep.id;
+          setItem(activeSessionStorageKey(media), keep.id);
+        }
+      } else {
+        const renamed = `Canvas ${list.length + i}`;
+        await api.canvas.updateSession(extra.id, { title: renamed });
+      }
+    }
+    sessions.value = await api.canvas.listSessions(media);
+    if (sessionId.value === keep.id || !sessionId.value) {
+      const detail = await api.canvas.getSession(keep.id);
+      sessionId.value = detail.id;
+      sessionTitle.value = detail.title;
+      applyState(detail.state);
+      setItem(activeSessionStorageKey(media), keep.id);
+    }
+  }
+
+  /** Image: ensure ≥1 session, then adopt orphan gallery assets into default canvas. */
+  async function ensureDefaultAndAdoptOrphans(): Promise<{ adopted_count: number }> {
+    // Guard BEFORE any await so concurrent callers share one run (avoids dual Default canvas).
+    if (adoptPromise) return adoptPromise;
+    adoptPromise = (async () => {
+      // Recover from a prior failed load that left ready=true without a session id.
+      if (ready.value && !sessionId.value) ready.value = false;
+      await ensureSession();
+      if (media !== 'image') return { adopted_count: 0 };
+      syncing.value = true;
+      try {
+        await consolidateDefaultCanvases();
+        let list = sessions.value.length
+          ? sessions.value
+          : await api.canvas.listSessions(media);
+        if (!list.some((s) => isDefaultSessionTitle(s.title))) {
+          // Create via API only — do not use createSession() (it switches focus).
+          await api.canvas.createSession({
+            media,
+            title: defaultSessionTitle(),
+          });
+          // Race-safe: collapse if another tab/call also created one.
+          await consolidateDefaultCanvases();
+          list = sessions.value;
+        }
+        sessions.value = list;
+
+        const result = await api.canvas.adoptOrphans('image');
+        const adopted = result.adopted_count || 0;
+        sessions.value = await api.canvas.listSessions(media);
+        // Re-fetch when orphans landed on the shelf (or to heal a stale board).
+        if (adopted > 0 && sessionId.value) {
+          const detail = await api.canvas.getSession(sessionId.value);
+          applyState(detail.state);
+        }
+        return { adopted_count: adopted };
+      } catch (e) {
+        console.error('Canvas adopt-orphans failed:', e);
+        throw e;
+      } finally {
+        syncing.value = false;
+        adoptPromise = null;
+      }
+    })();
+    return adoptPromise;
+  }
+
+  async function refreshSessions(): Promise<void> {
+    sessions.value = await api.canvas.listSessions(media);
+  }
+
+  function cancelPendingPersist() {
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+    }
+    persistGeneration += 1;
   }
 
   function schedulePersist() {
     if (!ready.value || !sessionId.value) return;
     if (persistTimer) clearTimeout(persistTimer);
-    persistTimer = setTimeout(persist, 400);
+    persistTimer = setTimeout(() => {
+      void persist();
+    }, 400);
   }
 
   async function persist() {
     persistTimer = null;
     if (!sessionId.value) return;
+    const gen = persistGeneration;
+    const sid = sessionId.value;
     const state = snapshotState(
       items,
+      shelf.value,
       viewport,
       staging,
       activeAssetPath.value,
@@ -325,21 +506,36 @@ function createCanvasStore(media: CanvasMedia) {
     );
     syncing.value = true;
     try {
-      const updated = await api.canvas.updateSession(sessionId.value, { state });
+      const updated = await api.canvas.updateSession(sid, { state });
+      // A newer cancel/transfer won — do not clobber session list metadata from a stale write.
+      if (gen !== persistGeneration || sid !== sessionId.value) return;
       sessionTitle.value = updated.title;
-      const idx = sessions.value.findIndex((s) => s.id === sessionId.value);
+      const idx = sessions.value.findIndex((s) => s.id === sid);
       if (idx >= 0) {
         sessions.value[idx] = {
           ...sessions.value[idx],
-          item_count: Object.keys(state.items).length,
+          item_count: membershipCount(),
+          preview_asset_ids: previewAssetIds(6),
           updated_at: updated.updated_at,
         };
       }
     } catch (e) {
       console.error('Canvas session persist failed:', e);
-      setItem(legacyStorageKey, JSON.stringify(state));
+      if (gen === persistGeneration) {
+        setItem(legacyStorageKey, JSON.stringify(state));
+      }
     } finally {
-      syncing.value = false;
+      if (gen === persistGeneration) syncing.value = false;
+      else if (!persistTimer) syncing.value = false;
+    }
+  }
+
+  /** Wait until any in-flight persist finishes (after canceling the debounce timer). */
+  async function flushPersistBarrier(): Promise<void> {
+    cancelPendingPersist();
+    const start = Date.now();
+    while (syncing.value && Date.now() - start < 5000) {
+      await new Promise((r) => setTimeout(r, 20));
     }
   }
 
@@ -358,7 +554,7 @@ function createCanvasStore(media: CanvasMedia) {
     const n = sessions.value.length + 1;
     const created = await api.canvas.createSession({
       media,
-      title: title || `Canvas ${n}`,
+      title: title || (media === 'image' ? `Canvas ${n}` : `Canvas ${n}`),
     });
     sessions.value = await api.canvas.listSessions(media);
     await switchSession(created.id);
@@ -381,7 +577,9 @@ function createCanvasStore(media: CanvasMedia) {
   }
 
   async function deleteSession(id: string) {
-    if (sessions.value.length <= 1) return false;
+    if (sessions.value.length <= 1) {
+      throw new Error('cannot_delete_last_canvas');
+    }
     await api.canvas.deleteSession(id);
     sessions.value = await api.canvas.listSessions(media);
     if (sessionId.value === id) {
@@ -407,6 +605,11 @@ function createCanvasStore(media: CanvasMedia) {
 
   function updateStaging(patch: Partial<CanvasStagingState>) {
     Object.assign(staging, patch);
+    if (patch.width != null || patch.height != null) {
+      const size = clampStagingSize(staging.width, staging.height);
+      staging.width = size.width;
+      staging.height = size.height;
+    }
     schedulePersist();
   }
 
@@ -822,7 +1025,13 @@ function createCanvasStore(media: CanvasMedia) {
     };
   }
 
-  function pruneOrphans(validPaths: Set<string>) {
+  /**
+   * Drop board/shelf paths that are known-deleted.
+   * Caller must pass an authoritative path set (full library), not a single gallery page.
+   */
+  function pruneOrphans(validPaths: Set<string>, opts?: { authoritative?: boolean }) {
+    if (!opts?.authoritative) return;
+    if (validPaths.size === 0) return;
     let changed = false;
     for (const key of Object.keys(items)) {
       if (!validPaths.has(key)) {
@@ -831,7 +1040,65 @@ function createCanvasStore(media: CanvasMedia) {
         changed = true;
       }
     }
+    const nextShelf = shelf.value.filter((p) => validPaths.has(p));
+    if (nextShelf.length !== shelf.value.length) {
+      shelf.value = nextShelf;
+      changed = true;
+    }
     if (changed) schedulePersist();
+  }
+
+  function addToShelf(paths: string[]): string[] {
+    const added: string[] = [];
+    const set = new Set(shelf.value);
+    for (const path of paths) {
+      const p = String(path || '').trim();
+      if (!p || set.has(p) || p in items) continue;
+      set.add(p);
+      added.push(p);
+    }
+    if (added.length) {
+      shelf.value = [...shelf.value, ...added];
+      schedulePersist();
+    }
+    return added;
+  }
+
+  function removeFromShelf(paths: string[]) {
+    const drop = new Set(paths);
+    const next = shelf.value.filter((p) => !drop.has(p));
+    if (next.length !== shelf.value.length) {
+      shelf.value = next;
+      schedulePersist();
+    }
+  }
+
+  /** Promote shelf paths onto the freeform board (removes from shelf). */
+  function promoteToBoard(
+    paths: string[],
+    galleryItems: GalleryItem[],
+    opts?: { placement?: 'staging' | 'center' },
+  ): string[] {
+    removeFromShelf(paths);
+    return addPathsFromGallery(paths, galleryItems, {
+      placement: opts?.placement ?? 'staging',
+      selectLast: true,
+    });
+  }
+
+  /** Remove from board and keep membership on the shelf. */
+  function demoteToShelf(paths: string[]) {
+    const kept: string[] = [];
+    for (const path of paths) {
+      if (!(path in items)) continue;
+      delete items[path];
+      if (activeAssetPath.value === path) activeAssetPath.value = '';
+      kept.push(path);
+    }
+    if (kept.length) {
+      addToShelf(kept);
+      schedulePersist();
+    }
   }
 
   function addPathsFromGallery(
@@ -846,8 +1113,13 @@ function createCanvasStore(media: CanvasMedia) {
     const added: string[] = [];
 
     for (const path of paths) {
-      const item = galleryItems.find((g) => g.path === path);
-      if (!item || hasItem(path)) continue;
+      if (hasItem(path)) continue;
+      const item =
+        galleryItems.find((g) => g.path === path) ||
+        (path.startsWith('asset:') ? galleryStubForAssetPath(path) : null);
+      if (!item) continue;
+      // Board placement wins over shelf membership.
+      removeFromShelf([path]);
 
       const parentPath = parentAssetPath(item);
       if (parentPath && hasItem(parentPath)) {
@@ -905,6 +1177,7 @@ function createCanvasStore(media: CanvasMedia) {
 
   return {
     items,
+    shelf,
     viewport,
     staging,
     overlays,
@@ -919,6 +1192,8 @@ function createCanvasStore(media: CanvasMedia) {
     setComposerSnapshot,
     applyState,
     ensureSession,
+    ensureDefaultAndAdoptOrphans,
+    refreshSessions,
     switchSession,
     createSession,
     renameSession,
@@ -954,7 +1229,15 @@ function createCanvasStore(media: CanvasMedia) {
     worldCenter,
     pruneOrphans,
     addPathsFromGallery,
+    addToShelf,
+    removeFromShelf,
+    promoteToBoard,
+    demoteToShelf,
+    membershipCount,
+    previewAssetIds,
     persist,
+    cancelPendingPersist,
+    flushPersistBarrier,
   };
 }
 

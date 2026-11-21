@@ -471,9 +471,20 @@ impl TaskStore {
     }
 
     pub fn list_canvas(&self, media: &str, limit: i64) -> Result<Vec<CanvasRow>, StoreError> {
+        // Stable order: named default first, then oldest→newest. Do not sort by
+        // updated_at — touching a canvas must not reshuffle the list.
         let mut stmt = self.conn.prepare(
             "SELECT id, media, title, state_json, created_at, updated_at
-             FROM canvas_sessions WHERE media=?1 ORDER BY updated_at DESC LIMIT ?2",
+             FROM canvas_sessions
+             WHERE media=?1
+             ORDER BY
+               CASE
+                 WHEN lower(trim(title)) IN ('default canvas', '默认画布') THEN 0
+                 ELSE 1
+               END ASC,
+               created_at ASC,
+               id ASC
+             LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![media, limit], read_canvas)?;
         rows.collect::<Result<Vec<_>, _>>()

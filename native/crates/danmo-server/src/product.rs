@@ -71,6 +71,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/gallery/upload", post(upload_asset))
         .route("/api/canvas/sessions", get(list_canvas).post(create_canvas))
         .route(
+            "/api/canvas/sessions/adopt-orphans",
+            post(adopt_canvas_orphans),
+        )
+        .route(
             "/api/canvas/sessions/:id",
             get(get_canvas).put(update_canvas).delete(delete_canvas),
         )
@@ -1992,20 +1996,103 @@ fn default_canvas_state() -> Value {
     })
 }
 
+fn canvas_shelf_paths(state: &Value) -> Vec<String> {
+    state
+        .get("shelf")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn asset_id_from_canvas_key(key: &str) -> Option<String> {
+    key.strip_prefix("asset:")
+        .map(str::to_string)
+        .filter(|id| !id.is_empty())
+}
+
+fn preview_asset_ids_from_state(state: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(items) = canvas_items_map(state) {
+        for key in items.keys() {
+            if out.len() >= CANVAS_PREVIEW_LIMIT {
+                break;
+            }
+            if let Some(id) = asset_id_from_canvas_key(key) {
+                out.push(id);
+            }
+        }
+    }
+    if out.len() < CANVAS_PREVIEW_LIMIT {
+        for path in canvas_shelf_paths(state) {
+            if out.len() >= CANVAS_PREVIEW_LIMIT {
+                break;
+            }
+            if let Some(id) = asset_id_from_canvas_key(&path) {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn canvas_membership_count(state: &Value) -> usize {
+    let board = canvas_items_map(state).map(|m| m.len()).unwrap_or(0);
+    let mut ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(items) = canvas_items_map(state) {
+        for key in items.keys() {
+            if let Some(id) = asset_id_from_canvas_key(key) {
+                ids.insert(id);
+            }
+        }
+    }
+    for path in canvas_shelf_paths(state) {
+        if let Some(id) = asset_id_from_canvas_key(&path) {
+            ids.insert(id);
+        }
+    }
+    // Prefer unique asset count when paths are asset:; fall back to board+shelf lens.
+    if ids.is_empty() {
+        board + canvas_shelf_paths(state).len()
+    } else {
+        ids.len()
+    }
+}
+
+fn collect_claimed_asset_ids(state: &Value, claimed: &mut std::collections::HashSet<String>) {
+    if let Some(items) = canvas_items_map(state) {
+        for key in items.keys() {
+            if let Some(id) = asset_id_from_canvas_key(key) {
+                claimed.insert(id);
+            }
+        }
+    }
+    for path in canvas_shelf_paths(state) {
+        if let Some(id) = asset_id_from_canvas_key(&path) {
+            claimed.insert(id);
+        }
+    }
+}
+
 fn canvas_json(row: &CanvasRow) -> Value {
     let state: Value =
         serde_json::from_str(&row.state_json).unwrap_or_else(|_| default_canvas_state());
-    let item_count = state
-        .get("items")
-        .and_then(|v| v.as_object())
-        .map(|map| map.len())
-        .unwrap_or(0);
+    let item_count = canvas_membership_count(&state);
+    let preview_asset_ids = preview_asset_ids_from_state(&state);
     json!({
         "id": row.id,
         "media": row.media,
         "title": row.title,
         "state": state,
         "item_count": item_count,
+        "preview_asset_ids": preview_asset_ids,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     })
@@ -2032,6 +2119,309 @@ async fn list_canvas(
         })
         .collect();
     Ok(Json(json!({ "items": items })))
+}
+
+
+fn is_named_default_canvas_title(title: &str) -> bool {
+    let t = title.trim().to_ascii_lowercase();
+    t == "default canvas" || title.trim() == "默认画布"
+}
+
+/// Adopt gallery assets that are not referenced by any canvas session into the
+/// named default canvas (else oldest). Idempotent.
+///
+/// Also one-shot rehomes shelf-only assets from the previous orphan sink (oldest
+/// non-default canvas) onto the named default when that default is still empty —
+/// so a newly created「默认画布」receives the earlier bulk shelf dump.
+async fn adopt_canvas_orphans(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let media = body
+        .get("media")
+        .and_then(|v| v.as_str())
+        .unwrap_or("image");
+    if media != "image" {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            "adopt-orphans currently supports media=image only",
+        ));
+    }
+
+    let mut rows = state
+        .scheduler
+        .list_canvas(media, 200)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+    if rows.is_empty() {
+        let now = utc_stamp();
+        let row = CanvasRow {
+            id: new_id("cvs_"),
+            media: media.into(),
+            title: "Default canvas".into(),
+            state_json: default_canvas_state().to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        state
+            .scheduler
+            .insert_canvas(&row)
+            .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        rows.push(row);
+    }
+
+    rows.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let named_default = rows
+        .iter()
+        .find(|r| is_named_default_canvas_title(&r.title))
+        .map(|r| r.id.clone());
+    let default_id = named_default
+        .clone()
+        .unwrap_or_else(|| rows[0].id.clone());
+
+    // Parse every session state once.
+    let mut states: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut board_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for row in &rows {
+        let state_val: Value =
+            serde_json::from_str(&row.state_json).unwrap_or_else(|_| default_canvas_state());
+        collect_claimed_asset_ids(&state_val, &mut claimed);
+        if let Some(items) = canvas_items_map(&state_val) {
+            for key in items.keys() {
+                if let Some(id) = asset_id_from_canvas_key(key) {
+                    board_ids.insert(id);
+                }
+            }
+        }
+        states.insert(row.id.clone(), state_val);
+    }
+
+    let mut orphan_ids: Vec<String> = Vec::new();
+    let mut orphan_rows: std::collections::HashMap<String, AssetRow> =
+        std::collections::HashMap::new();
+    let mut offset: i64 = 0;
+    const PAGE: i64 = 500;
+    loop {
+        let (page, total) = state
+            .scheduler
+            .list_assets(Some(media), PAGE, offset, true)
+            .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        for asset in &page {
+            if !claimed.contains(&asset.id) {
+                orphan_ids.push(asset.id.clone());
+                orphan_rows.insert(asset.id.clone(), asset.clone());
+            }
+        }
+        offset += page.len() as i64;
+        if page.is_empty() || offset >= total {
+            break;
+        }
+    }
+
+    let session_ids: std::collections::HashSet<String> =
+        rows.iter().map(|r| r.id.clone()).collect();
+
+    // Prefer the canvas tagged on the source task; else named/oldest default.
+    let target_for_orphan = |asset_id: &str| -> String {
+        let Some(asset) = orphan_rows.get(asset_id) else {
+            return default_id.clone();
+        };
+        let Some(tid) = asset.source_task_id.as_deref().filter(|s| !s.is_empty()) else {
+            return default_id.clone();
+        };
+        let Ok(Some(task)) = state.scheduler.get(tid) else {
+            return default_id.clone();
+        };
+        let params: Value = serde_json::from_str(&task.params).unwrap_or(Value::Null);
+        let sid = params
+            .pointer("/request/metadata/canvas_session_id")
+            .or_else(|| params.pointer("/metadata/canvas_session_id"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("");
+        if !sid.is_empty() && session_ids.contains(sid) {
+            sid.to_string()
+        } else {
+            default_id.clone()
+        }
+    };
+
+    let mut by_target: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for asset_id in &orphan_ids {
+        by_target
+            .entry(target_for_orphan(asset_id))
+            .or_default()
+            .push(asset_id.clone());
+    }
+
+    let mut adopted = 0usize;
+    let mut dirty_sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // 1) True gallery orphans → tagged session shelf (else default).
+    for (target_id, ids) in &by_target {
+        let Some(target_state) = states.get_mut(target_id) else {
+            continue;
+        };
+        let mut present: std::collections::HashSet<String> = std::collections::HashSet::new();
+        collect_claimed_asset_ids(target_state, &mut present);
+        let mut path_set: std::collections::HashSet<String> = canvas_shelf_paths(target_state)
+            .into_iter()
+            .collect();
+        if let Some(items) = canvas_items_map(target_state) {
+            for key in items.keys() {
+                path_set.insert(key.clone());
+            }
+        }
+        let root = target_state
+            .as_object_mut()
+            .ok_or_else(|| fail(StatusCode::INTERNAL_SERVER_ERROR, "invalid canvas state"))?;
+        let shelf_val = root.entry("shelf").or_insert_with(|| json!([]));
+        let shelf_arr = shelf_val
+            .as_array_mut()
+            .ok_or_else(|| fail(StatusCode::INTERNAL_SERVER_ERROR, "invalid canvas shelf"))?;
+        let mut changed = false;
+        for asset_id in ids {
+            if present.contains(asset_id) {
+                continue;
+            }
+            let key = format!("asset:{asset_id}");
+            if path_set.contains(&key) {
+                continue;
+            }
+            shelf_arr.push(Value::String(key.clone()));
+            path_set.insert(key);
+            present.insert(asset_id.clone());
+            adopted += 1;
+            changed = true;
+        }
+        if changed {
+            dirty_sessions.insert(target_id.clone());
+        }
+    }
+
+    let mut default_state = states
+        .remove(&default_id)
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "default canvas session not found"))?;
+    let default_was_empty = canvas_membership_count(&default_state) == 0;
+    let mut present: std::collections::HashSet<String> = std::collections::HashSet::new();
+    collect_claimed_asset_ids(&default_state, &mut present);
+    let mut path_set: std::collections::HashSet<String> = canvas_shelf_paths(&default_state)
+        .into_iter()
+        .collect();
+    if let Some(items) = canvas_items_map(&default_state) {
+        for key in items.keys() {
+            path_set.insert(key.clone());
+        }
+    }
+
+    // 2) One-shot: if named default is empty, pull shelf-only assets off the
+    //    previous orphan sink (oldest non-default). Board nodes stay put.
+    let mut donor_updates: Vec<(String, String)> = Vec::new();
+    if named_default.is_some() && default_was_empty {
+        if let Some(donor) = rows.iter().find(|r| r.id != default_id) {
+            let donor_id = donor.id.clone();
+            if let Some(mut donor_state) = states.remove(&donor_id) {
+                let donor_shelf = canvas_shelf_paths(&donor_state);
+                let mut keep: Vec<String> = Vec::new();
+                let mut move_paths: Vec<String> = Vec::new();
+                for path in donor_shelf {
+                    let Some(id) = asset_id_from_canvas_key(&path) else {
+                        keep.push(path);
+                        continue;
+                    };
+                    if board_ids.contains(&id) {
+                        keep.push(path);
+                        continue;
+                    }
+                    move_paths.push(path);
+                }
+                if !move_paths.is_empty() {
+                    let root = default_state.as_object_mut().ok_or_else(|| {
+                        fail(StatusCode::INTERNAL_SERVER_ERROR, "invalid canvas state")
+                    })?;
+                    let shelf_val = root.entry("shelf").or_insert_with(|| json!([]));
+                    let shelf_arr = shelf_val.as_array_mut().ok_or_else(|| {
+                        fail(StatusCode::INTERNAL_SERVER_ERROR, "invalid canvas shelf")
+                    })?;
+                    for path in &move_paths {
+                        let Some(id) = asset_id_from_canvas_key(path) else {
+                            continue;
+                        };
+                        if path_set.contains(path) || present.contains(&id) {
+                            continue;
+                        }
+                        shelf_arr.push(Value::String(path.clone()));
+                        path_set.insert(path.clone());
+                        present.insert(id);
+                        adopted += 1;
+                    }
+                    if let Some(root) = donor_state.as_object_mut() {
+                        root.insert(
+                            "shelf".into(),
+                            Value::Array(keep.into_iter().map(Value::String).collect()),
+                        );
+                    }
+                    donor_updates.push((donor_id, donor_state.to_string()));
+                } else {
+                    states.insert(donor_id, donor_state);
+                }
+            }
+        }
+    }
+
+    if dirty_sessions.contains(&default_id) || default_was_empty && !donor_updates.is_empty() {
+        // default_state may have gained shelf entries in step 1 and/or rehome.
+        dirty_sessions.insert(default_id.clone());
+    }
+    states.insert(default_id.clone(), default_state);
+
+    if adopted == 0 && donor_updates.is_empty() && dirty_sessions.is_empty() {
+        return Ok(Json(json!({
+            "default_session_id": default_id,
+            "adopted_count": 0,
+        })));
+    }
+
+    let now = utc_stamp();
+    for sid in &dirty_sessions {
+        let Some(st) = states.get(sid) else {
+            continue;
+        };
+        let ok = state
+            .scheduler
+            .update_canvas(sid, None, Some(&st.to_string()), &now)
+            .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        if !ok {
+            return Err(fail(
+                StatusCode::NOT_FOUND,
+                format!("canvas session not found: {sid}"),
+            ));
+        }
+    }
+    for (donor_id, donor_json) in donor_updates {
+        let ok = state
+            .scheduler
+            .update_canvas(&donor_id, None, Some(&donor_json), &now)
+            .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        if !ok {
+            return Err(fail(
+                StatusCode::NOT_FOUND,
+                format!("canvas session not found: {donor_id}"),
+            ));
+        }
+    }
+
+    Ok(Json(json!({
+        "default_session_id": default_id,
+        "adopted_count": adopted,
+    })))
 }
 
 async fn create_canvas(

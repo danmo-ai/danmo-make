@@ -255,6 +255,11 @@ export interface CanvasComposerSnapshot {
 
 export interface CanvasSessionState {
   items: Record<string, CanvasItemState>;
+  /**
+   * Shelf (架上): asset paths (`asset:…`) that belong to this session but are not
+   * freeform board nodes. Orphans / library membership live here.
+   */
+  shelf?: string[];
   viewport: CanvasViewportState;
   staging: CanvasStagingState;
   active_asset_path: string;
@@ -269,6 +274,8 @@ export interface CanvasSessionSummary {
   media: string;
   title: string;
   item_count: number;
+  /** First N asset ids from session items (list summaries only). */
+  preview_asset_ids?: string[];
   created_at: string;
   updated_at: string;
 }
