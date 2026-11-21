@@ -24,6 +24,13 @@ pub fn dmd_distilled_sigmas(num_train_timesteps: usize, num_distill_steps: usize
     sigmas
 }
 
+/// FlowMatchEulerDiscreteScheduler applies its shift even to custom sigmas.
+pub fn apply_scheduler_shift(sigmas: &mut [f32], shift: f32) {
+    for sigma in sigmas {
+        *sigma = shift * *sigma / (1.0 + (shift - 1.0) * *sigma);
+    }
+}
+
 /// One Euler step over the flow-matching sigma schedule:
 /// `x_{i+1} = x_i + (sigma_{i+1} - sigma_i) * velocity`.
 pub fn euler_step(latents: &Array, velocity: &Array, from: f32, to: f32, stream: &Stream) -> Result<Array> {
@@ -56,7 +63,7 @@ pub fn flip_velocity(noise_pred: &Array, stream: &Stream) -> Result<Array> {
 
 #[cfg(test)]
 mod tests {
-    use super::dmd_distilled_sigmas;
+    use super::{apply_scheduler_shift, dmd_distilled_sigmas};
 
     #[test]
     fn dmd_schedule_is_the_eight_step_baseline() {
@@ -68,5 +75,19 @@ mod tests {
         for (got, want) in sigmas.iter().zip(expected) {
             assert!((got - want).abs() < 1e-6, "{got} vs {want}");
         }
+    }
+
+    #[test]
+    fn scheduler_shift_is_applied_to_custom_dmd_sigmas() {
+        let mut sigmas = dmd_distilled_sigmas(1000, 8);
+        let unshifted = sigmas.clone();
+        apply_scheduler_shift(&mut sigmas, 7.0);
+        for (shifted, original) in sigmas.iter().zip(unshifted) {
+            let expected = 7.0 * original / (1.0 + 6.0 * original);
+            assert!((shifted - expected).abs() < 1e-6);
+        }
+        assert_eq!(sigmas[0], 1.0);
+        assert!(sigmas[1] > 0.97);
+        assert!(sigmas.last().unwrap() > &0.49);
     }
 }

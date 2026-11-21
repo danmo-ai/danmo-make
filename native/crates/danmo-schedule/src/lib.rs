@@ -15,8 +15,13 @@ pub struct Scheduler {
 
 impl Scheduler {
     pub fn open(db: &Path, queue_image_first: bool) -> Result<Self, StoreError> {
+        let store = TaskStore::open(db)?;
+        let interrupted = store.fail_interrupted_tasks()?;
+        if interrupted > 0 {
+            eprintln!("recovered {interrupted} task(s) interrupted by the previous process");
+        }
         Ok(Self {
-            store: Arc::new(Mutex::new(TaskStore::open(db)?)),
+            store: Arc::new(Mutex::new(store)),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             queue_image_first,
         })

@@ -338,7 +338,6 @@ const isScriptMode = computed(() => props.mode === 'script');
 
 const modeOptions = computed(() => [
   { label: $tt('avatar.modeLipSync'), value: 'lip_sync' },
-  { label: $tt('avatar.modeScript'), value: 'script' },
 ]);
 
 const paramSchema = computed(() => ((props.currentModelConfig?.parameters as Record<string, unknown>) || {}));

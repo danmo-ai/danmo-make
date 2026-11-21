@@ -275,6 +275,7 @@ const modelReady = computed(() => {
 });
 
 const submitDisabled = computed(() => {
+  if (mode.value === 'script') return true;
   if (generating.value) return true;
   if (!params.model || !modelReady.value) return true;
   if (!portraitAssetId.value && !portraitFile.value) return true;

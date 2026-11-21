@@ -149,7 +149,7 @@ impl AvatarDit {
             .map_err(|e| tag("patch_embed", e))?;
         // ---- timestep embed [B, N_t, tembed] (F32) ----
         let temb = self
-            .timestep_embed(&inputs.timestep, n_t, b, stream)
+            .timestep_embed(&inputs.timestep, n_t, b, inputs.num_cond_latents, stream)
             .map_err(|e| tag("timestep_embed", e))?;
         // ---- caption embed [B, 1, N_text, hidden] ----
         let caption = self
@@ -247,10 +247,16 @@ impl AvatarDit {
             .astype(Dtype::Float32, stream)
     }
 
-    /// Sinusoidal + MLP timestep embedding. The request carries one scalar per
-    /// batch row; the DiT needs one embedding per latent frame, so each row's
-    /// value is broadcast across `n_t` (= baseline `broadcast_to(timestep[:,None], (B,N_t))`).
-    fn timestep_embed(&self, timestep: &Array, n_t: i32, b: i32, stream: &Stream) -> Result<Array> {
+    /// Sinusoidal + MLP timestep embedding. Each batch scalar is broadcast
+    /// across `n_t`, except conditioning latents which use timestep zero.
+    fn timestep_embed(
+        &self,
+        timestep: &Array,
+        n_t: i32,
+        b: i32,
+        num_cond_latents: usize,
+        stream: &Stream,
+    ) -> Result<Array> {
         let dim = self.config.frequency_embedding_size;
         let times = timestep.astype(Dtype::Float32, stream)?;
         let per_batch = times.to_vec_f32(&Stream::cpu()?)?;
@@ -265,7 +271,9 @@ impl AvatarDit {
         }
         let mut flat = Vec::with_capacity(per_batch.len() * n_t as usize);
         for value in &per_batch {
-            flat.extend(std::iter::repeat(*value).take(n_t as usize));
+            for frame in 0..n_t as usize {
+                flat.push(if frame < num_cond_latents { 0.0 } else { *value });
+            }
         }
         let times = flat;
         let half = dim / 2;
@@ -394,32 +402,15 @@ impl AvatarDit {
         }
         // audio_proj: first-frame proj1, subsequent proj1_vf, shared proj2→proj3
         let ctx = self.audio_proj(&first, &latter_s, stream)?;
-        // Pad one copy of the first frame for the reference latent head, then
-        // keep the last N_t rows (baseline semantics).
-        let ctx = {
-            let start = ctx.slice(&[0, 0, 0, 0], &[ctx.shape()[0], 1, ctx.shape()[2], ctx.shape()[3]], &[1, 1, 1, 1], stream)?;
-            let joined = Array::concatenate_axis(&[start, ctx], 1, stream)?;
-            // audio_context output rows = 1 + n_t; fail loud on drift
-            // (an off-by-one here is the (1,200,·) vs (1,199,·) class of bug).
-            if joined.shape()[1] != n_t + 1 {
-                return Err(Error::new(
-                    "longcat_avatar DiT audio",
-                    format!(
-                        "audio context produced {} rows, expected {} (n_t={n_t})",
-                        joined.shape()[1],
-                        n_t + 1
-                    ),
-                ));
-            }
-            joined
-        };
-        let total = ctx.shape()[1];
-        let ctx = ctx.slice(
-            &[0, total - n_t, 0, 0],
-            &[ctx.shape()[0], total, ctx.shape()[2], ctx.shape()[3]],
-            &[1, 1, 1, 1],
-            stream,
-        )?;
+        if ctx.shape()[1] != n_t {
+            return Err(Error::new(
+                "longcat_avatar DiT audio",
+                format!(
+                    "audio context produced {} rows, expected {n_t}",
+                    ctx.shape()[1]
+                ),
+            ));
+        }
         ctx.reshape(&[b * n_t, self.config.context_tokens as i32, self.config.output_dim as i32], stream)
     }
 

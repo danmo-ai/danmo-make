@@ -4,7 +4,7 @@
 use crate::app::AppState;
 use crate::download;
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
@@ -19,6 +19,8 @@ use std::path::{Path as FsPath, PathBuf};
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
+
+const MAX_UPLOAD_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct ApiError {
     pub status: StatusCode,
@@ -60,7 +62,12 @@ pub fn routes() -> Router<AppState> {
         .route("/api/models/install-batch", post(install_batch))
         .route("/api/adapters", get(empty_items))
         .route("/api/setup/recommendations", get(recommendations))
-        .route("/api/assets", get(list_assets).post(upload_asset))
+        .route(
+            "/api/assets",
+            get(list_assets)
+                .post(upload_asset)
+                .layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_BYTES)),
+        )
         .route("/api/assets/groups", get(empty_items))
         .route("/api/assets/batch-delete", post(batch_delete_assets))
         .route("/api/assets/reconcile", post(reconcile_assets))
@@ -68,7 +75,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/assets/:id/file", get(asset_file))
         .route("/api/assets/:id/thumbnail", get(asset_thumbnail))
         .route("/api/assets/:id/lineage", get(asset_lineage))
-        .route("/api/gallery/upload", post(upload_asset))
+        .route(
+            "/api/gallery/upload",
+            post(upload_asset).layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_BYTES)),
+        )
         .route("/api/canvas/sessions", get(list_canvas).post(create_canvas))
         .route(
             "/api/canvas/sessions/adopt-orphans",
@@ -1704,7 +1714,7 @@ async fn upload_asset(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Value>, ApiError> {
-    if body.len() > 64 * 1024 * 1024 {
+    if body.len() > MAX_UPLOAD_BODY_BYTES {
         return Err(fail(
             StatusCode::PAYLOAD_TOO_LARGE,
             "upload is larger than 64MB",
@@ -3944,6 +3954,9 @@ fn run_training_job(
             let resume_adapter = resolve_resume_adapter(scheduler, workspace, request)?;
             let sched = scheduler.clone();
             let tid = task_id.to_string();
+            // Per-step losses are noisy (fresh image/sigma/noise each step);
+            // log a 25-step moving average so multi-hour runs stay readable.
+            let window = std::cell::RefCell::new(Vec::<f32>::with_capacity(25));
             let progress: danmo_engine::train::TrainProgress =
                 Box::new(move |event| match event {
                     TrainEvent::Phase(message) => {
@@ -3951,11 +3964,16 @@ fn run_training_job(
                     }
                     TrainEvent::Step { step, total, loss } => {
                         let _ = sched.set_progress(&tid, step as f64 / total.max(1) as f64);
-                        if step == 1 || step == total || step % 250 == 0 {
+                        let mut window = window.borrow_mut();
+                        window.push(loss);
+                        if step == 1 || step == total || step % 25 == 0 {
+                            let avg =
+                                window.iter().sum::<f32>() / window.len().max(1) as f32;
+                            window.clear();
                             let _ = sched.log(
                                 &tid,
                                 "info",
-                                &format!("step {step}/{total} loss {loss:.5}"),
+                                &format!("step {step}/{total} loss {loss:.4} (avg {avg:.4})"),
                             );
                         }
                     }

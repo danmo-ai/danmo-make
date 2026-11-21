@@ -201,6 +201,20 @@ impl TaskStore {
         Ok(())
     }
 
+    /// Orphan recovery at startup: tasks left `running` by a dead process can
+    /// never finish (their thread is gone), so fail them loudly instead of
+    /// letting them sit in a fake running state forever. Queued tasks stay
+    /// queued — the worker will pick them up.
+    pub fn fail_interrupted_tasks(&self) -> Result<usize, StoreError> {
+        let n = self.conn.execute(
+            "UPDATE tasks SET status='failed', progress=1.0,
+             error_message='process restarted while task was running', completed_at=datetime('now')
+             WHERE status='running'",
+            [],
+        )?;
+        Ok(n)
+    }
+
     pub fn mark_running(&self, id: &str) -> Result<usize, StoreError> {
         let n = self.conn.execute(
             "UPDATE tasks SET status='running', progress=0, started_at=datetime('now')
@@ -590,6 +604,27 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let store = TaskStore::open(&path).expect("open temp store");
         (path, store)
+    }
+
+    #[test]
+    fn interrupted_running_tasks_fail_loud_on_open() {
+        let (path, store) = temp_store("interrupted");
+        store
+            .insert_running_task("tsk_run", "lora.training", "z-image-turbo", "{}", 100)
+            .expect("insert running");
+        store
+            .insert_task("tsk_queued", "image.generation", "z-image-turbo", "{}", 100)
+            .expect("insert queued");
+        assert_eq!(store.fail_interrupted_tasks().expect("recover"), 1);
+        let run = store.get("tsk_run").expect("get").expect("row");
+        assert_eq!(run.status, "failed");
+        assert_eq!(
+            run.error_message.as_deref(),
+            Some("process restarted while task was running")
+        );
+        let queued = store.get("tsk_queued").expect("get").expect("row");
+        assert_eq!(queued.status, "queued");
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -945,6 +945,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn asset_upload_accepts_more_than_the_axum_default_body_limit() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-upload-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = router(&dir.join("studio.db"), &factory_registry());
+        let bytes = vec![7u8; 3 * 1024 * 1024];
+        let response = post_json(
+            &app,
+            "/api/assets",
+            &json!({
+                "filename": "large.png",
+                "data_base64": base64_encode(&bytes),
+            }),
+        )
+        .await;
+        assert_eq!(response.0, StatusCode::OK, "{}", response.1);
+        assert!(response.1["id"].as_str().is_some_and(|id| id.starts_with("ast_")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn qwen_image_edit_fails_without_the_ggml_graph() {
         let dir = std::env::temp_dir().join(format!(
             "danmo-api-edit-{}-{}",

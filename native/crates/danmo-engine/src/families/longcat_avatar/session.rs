@@ -25,7 +25,7 @@ const SCHEDULER_SHIFT: f32 = 7.0;
 const TEXT_GUIDANCE: f32 = 4.0;
 const AUDIO_GUIDANCE: f32 = 4.0;
 const NUM_TRAIN_TIMESTEPS: usize = 1000;
-/// Whisper consumes 16 kHz mono; anything else fails loud (no silent resample).
+/// Whisper consumes 16 kHz mono; other PCM rates are resampled during infer.
 const AUDIO_SAMPLE_RATE: u32 = 16_000;
 
 pub struct LongcatAvatarFamily;
@@ -57,10 +57,9 @@ fn prepare_params(request: &VideoAvatarRequest) -> Result<Prepared, EngineError>
     if !request.script_text.trim().is_empty() && request.audio_asset_id.trim().is_empty() {
         // `avatar_script`: TTS synthesis is a separate family that is not
         // built yet. Fail loud instead of degrading to a silent avatar.
-        return Err(EngineError::GraphNotBuilt {
-            family: "longcat_avatar".into(),
-            shape: "tts_backend".into(),
-        });
+        return Err(EngineError::bad_request(
+            "longcat_avatar script mode requires a TTS backend, which is not installed; use lip-sync mode with reference_asset_id and audio_asset_id",
+        ));
     }
     if request.reference_asset_id.trim().is_empty() {
         return Err(EngineError::bad_request(
@@ -242,15 +241,25 @@ fn infer_mlx_on_stream(
     )
     .map_err(mlx_err)?;
 
-    // ---- voice: 16 kHz PCM16 WAV → Whisper log-mel ----
+    // ---- voice: PCM16 WAV → 16 kHz mono → Whisper log-mel ----
     let (pcm, sample_rate) = crate::common::wav::read_pcm16_interleaved(&prepared.voice_wav)
         .map_err(EngineError::bad_request)?;
-    if sample_rate != AUDIO_SAMPLE_RATE {
-        return Err(EngineError::bad_request(format!(
-            "longcat_avatar voice track must be 16 kHz WAV (got {sample_rate} Hz); resample the asset first"
-        )));
-    }
     let mono: Vec<f32> = pcm.chunks(2).map(|pair| (pair[0] + pair[1]) * 0.5).collect();
+    let mono = if sample_rate == AUDIO_SAMPLE_RATE {
+        mono
+    } else {
+        let resampled = crate::common::wav::resample_mono(&mono, sample_rate, AUDIO_SAMPLE_RATE)
+            .map_err(EngineError::bad_request)?;
+        exec.log(
+            "info",
+            &format!(
+                "longcat_avatar audio resampled: {sample_rate} Hz → {AUDIO_SAMPLE_RATE} Hz ({} → {} mono samples)",
+                mono.len(),
+                resampled.len()
+            ),
+        )?;
+        resampled
+    };
     let mel = super::audio::whisper_log_mel(&mono, stream).map_err(mlx_err)?;
     exec.log(
         "info",
@@ -293,10 +302,11 @@ fn infer_mlx_on_stream(
     )?;
     let mut audio_embs = super::audio::build_avatar_audio_embeddings(&groups, prepared.fps, stream)
         .map_err(|e| EngineError::Resolve(format!("longcat_avatar audio embeddings: {e}")))?;
-    // The DiT audio path needs T_audio = 1 + vae_scale * (T_lat_full - 1)
-    // with T_lat_full = 1 (ref) + t_lat (noise).
+    // The DiT audio path needs T_audio = 1 + vae_scale * (T_lat_full - 1).
+    // T_lat_full already includes the reference latent that replaces the first
+    // noise latent in the official AI2V prepare_latents path.
     let t_lat = 1 + (prepared.frames - 1) / 4;
-    let required = 1 + 4 * ((t_lat as usize + 1) - 1);
+    let required = 1 + 4 * (t_lat as usize - 1);
     let have = audio_embs.shape()[1] as usize;
     exec.log(
         "info",
@@ -320,7 +330,7 @@ fn infer_mlx_on_stream(
     let noise = RandomKey::new(prepared.seed as u64)
         .and_then(|key| {
             key.normal(
-                &[1, 16, t_lat as i32, latent_h as i32, latent_w as i32],
+                &[1, 16, (t_lat - 1) as i32, latent_h as i32, latent_w as i32],
                 Dtype::Float32,
                 stream,
             )
@@ -332,6 +342,7 @@ fn infer_mlx_on_stream(
         .map_err(mlx_err)?;
 
     let mut sigmas = super::conditioning::dmd_distilled_sigmas(NUM_TRAIN_TIMESTEPS, DEFAULT_STEPS as usize);
+    super::conditioning::apply_scheduler_shift(&mut sigmas, SCHEDULER_SHIFT);
     if prepared.steps as usize != sigmas.len() {
         return Err(EngineError::bad_request(format!(
             "longcat_avatar DMD distill fixes steps at {DEFAULT_STEPS} (got {})",
@@ -411,19 +422,28 @@ fn infer_mlx_on_stream(
         )
         .map_err(mlx_err)?;
         let velocity = super::conditioning::flip_velocity(&combined, stream).map_err(mlx_err)?;
-        latents = super::conditioning::euler_step(&latents, &velocity, from, to, stream)
+        let latent_shape = latents.shape();
+        let mut cond_shape = latent_shape.clone();
+        cond_shape[2] = 1;
+        let cond = latents
+            .slice(&[0, 0, 0, 0, 0], &cond_shape, &[1, 1, 1, 1, 1], stream)
             .map_err(mlx_err)?;
+        let noise = latents
+            .slice(&[0, 0, 1, 0, 0], &latent_shape, &[1, 1, 1, 1, 1], stream)
+            .map_err(mlx_err)?;
+        let velocity = velocity
+            .slice(&[0, 0, 1, 0, 0], &latent_shape, &[1, 1, 1, 1, 1], stream)
+            .map_err(mlx_err)?;
+        let next_noise = super::conditioning::euler_step(&noise, &velocity, from, to, stream)
+            .map_err(mlx_err)?;
+        latents = Array::concatenate_axis(&[cond, next_noise], 2, stream).map_err(mlx_err)?;
         exec.progress("denoise", (index + 1) as u32, total_steps as u32)?;
     }
     drop(dit);
 
     // ---- decode ----
     exec.phase("decode")?;
-    let t_full = latents.shape()[2];
-    let denoised = latents
-        .slice(&[0, 0, 1, 0, 0], &[1, 16, t_full, latent_h as i32, latent_w as i32], &[1, 1, 1, 1, 1], stream)
-        .map_err(mlx_err)?;
-    let denormalized = vae.denormalize(&denoised, stream).map_err(mlx_err)?;
+    let denormalized = vae.denormalize(&latents, stream).map_err(mlx_err)?;
     let video = vae.decode(&denormalized, stream).map_err(mlx_err)?;
     drop(vae);
     video.eval().map_err(mlx_err)?;

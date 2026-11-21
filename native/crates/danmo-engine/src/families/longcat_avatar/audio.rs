@@ -6,9 +6,9 @@
 //! bands, resamples 50 Hz → video fps with linear interpolation, and builds
 //! the 5-frame sliding windows the DiT's `audio_proj` consumes.
 //!
-//! Mel extraction is Whisper's exact recipe: 16 kHz mono, 400-sample Hann
-//! window / 160 hop, 128-bin log10 mel (power spectrogram, clamp ≥ 1e-10).
-//! Non-16kHz WAV input fails loud — no silent resample.
+//! Mel extraction follows `WhisperFeatureExtractor`: 16 kHz mono, a centered
+//! 400-sample Hann STFT / 160 hop with reflect padding, Slaney mel filters,
+//! log10 power, an 80 dB dynamic-range clamp, and `(x + 4) / 4` scaling.
 
 use danmo_mlx::{Array, Error, Result, Stream};
 
@@ -207,29 +207,23 @@ fn linear_interpolate(features: &Array, out_len: usize, stream: &Stream) -> Resu
 // ---------------------------------------------------------------------------
 
 /// Compute the Whisper log-mel spectrogram `[1, 128, T]` from mono f32 PCM.
-pub fn whisper_log_mel(samples: &[f32], stream: &Stream) -> Result<Array> {
-    if samples.is_empty() {
+pub fn whisper_log_mel(samples: &[f32], _stream: &Stream) -> Result<Array> {
+    if samples.len() < HOP {
         return Err(Error::new(
             "longcat_avatar audio",
-            "voice track has zero samples",
+            "voice track is too short for one Whisper frame",
         ));
     }
     let filters = mel_filters();
-    let frames = 1 + samples.len() / HOP;
+    let frames = samples.len() / HOP;
     let window = hann_window();
-    // rfft bins actually populated for N_FFT=400.
     let bins = N_FFT / 2 + 1;
     let mut mel = vec![0f32; MEL_BINS * frames];
     let mut frame_buf = vec![0f32; N_FFT];
     for frame in 0..frames {
-        let start = frame * HOP;
         for tap in 0..N_FFT {
-            let sample = if start + tap < samples.len() {
-                samples[start + tap]
-            } else {
-                0.0
-            };
-            frame_buf[tap] = sample * window[tap];
+            let index = (frame * HOP + tap) as isize - (N_FFT / 2) as isize;
+            frame_buf[tap] = samples[reflect_index(index, samples.len())] * window[tap];
         }
         let power = rfft_power(&frame_buf, bins);
         for (bin, p) in power.iter().enumerate() {
@@ -238,10 +232,29 @@ pub fn whisper_log_mel(samples: &[f32], stream: &Stream) -> Result<Array> {
             }
         }
     }
+    let mut max_value = f32::NEG_INFINITY;
     for value in &mut mel {
         *value = value.max(1e-10).log10();
+        max_value = max_value.max(*value);
+    }
+    let floor = max_value - 8.0;
+    for value in &mut mel {
+        *value = (value.max(floor) + 4.0) / 4.0;
     }
     Array::from_f32_slice(&mel, &[1, MEL_BINS as i32, frames as i32])
+}
+
+fn reflect_index(index: isize, len: usize) -> usize {
+    if len <= 1 {
+        return 0;
+    }
+    let period = 2 * len - 2;
+    let reflected = index.rem_euclid(period as isize) as usize;
+    if reflected < len {
+        reflected
+    } else {
+        period - reflected
+    }
 }
 
 fn hann_window() -> Vec<f32> {
@@ -264,26 +277,41 @@ fn rfft_power(frame: &[f32], bins: usize) -> Vec<f32> {
     power
 }
 
-/// HTK-style 128-band mel filterbank over N_FFT/2+1 bins at 16 kHz.
+/// Slaney-scale, area-normalized 128-band filterbank used by Whisper.
 fn mel_filters() -> Vec<f32> {
+    fn hz_to_mel(hz: f64) -> f64 {
+        if hz >= 1000.0 {
+            15.0 + (hz / 1000.0).ln() * (27.0 / 6.4f64.ln())
+        } else {
+            3.0 * hz / 200.0
+        }
+    }
+    fn mel_to_hz(mel: f64) -> f64 {
+        if mel >= 15.0 {
+            1000.0 * ((6.4f64.ln() / 27.0) * (mel - 15.0)).exp()
+        } else {
+            200.0 * mel / 3.0
+        }
+    }
+
     let bins = N_FFT / 2 + 1;
-    let hz_to_mel = |hz: f32| 2595.0 * (1.0 + hz / 700.0).log10();
-    let mel_to_hz = |mel: f32| 700.0 * (10f32.powf(mel / 2595.0) - 1.0);
-    let max_mel = hz_to_mel(SAMPLE_RATE as f32 / 2.0);
-    let mut filters = vec![0f32; MEL_BINS * bins];
-    let freqs: Vec<f32> = (0..bins)
-        .map(|bin| bin as f32 * SAMPLE_RATE as f32 / N_FFT as f32)
+    let max_mel = hz_to_mel(SAMPLE_RATE as f64 / 2.0);
+    let filter_freqs: Vec<f64> = (0..MEL_BINS + 2)
+        .map(|index| mel_to_hz(max_mel * index as f64 / (MEL_BINS + 1) as f64))
         .collect();
+    let mut filters = vec![0f32; MEL_BINS * bins];
     for band in 0..MEL_BINS {
-        let mel_lo = max_mel * band as f32 / (MEL_BINS + 1) as f32;
-        let mel_c = max_mel * (band + 1) as f32 / (MEL_BINS + 1) as f32;
-        let mel_hi = max_mel * (band + 2) as f32 / (MEL_BINS + 1) as f32;
-        let (lo, center, hi) = (mel_to_hz(mel_lo), mel_to_hz(mel_c), mel_to_hz(mel_hi));
-        for (bin, freq) in freqs.iter().enumerate() {
-            let up = (freq - lo) / (center - lo).max(1e-8);
-            let down = (hi - freq) / (hi - center).max(1e-8);
-            let weight = up.min(down).max(0.0);
-            filters[band * bins + bin] = weight;
+        let (lo, center, hi) = (
+            filter_freqs[band],
+            filter_freqs[band + 1],
+            filter_freqs[band + 2],
+        );
+        let normalization = 2.0 / (hi - lo);
+        for bin in 0..bins {
+            let freq = bin as f64 * SAMPLE_RATE as f64 / N_FFT as f64;
+            let up = (freq - lo) / (center - lo);
+            let down = (hi - freq) / (hi - center);
+            filters[band * bins + bin] = (up.min(down).max(0.0) * normalization) as f32;
         }
     }
     filters
@@ -291,7 +319,7 @@ fn mel_filters() -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{mel_filters, whisper_log_mel, N_FFT};
+    use super::{mel_filters, reflect_index, whisper_log_mel, N_FFT};
 
     #[test]
     fn mel_filterbank_shape() {
@@ -307,8 +335,16 @@ mod tests {
         let samples = vec![0.01f32; 1600];
         let mel = whisper_log_mel(&samples, &stream).unwrap();
         assert_eq!(mel.shape()[1], 128);
-        assert_eq!(mel.shape()[2], 11);
+        assert_eq!(mel.shape()[2], 10);
         let values = mel.to_vec_f32(&stream).unwrap();
         assert!(values.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn reflect_padding_does_not_repeat_the_edge_sample() {
+        assert_eq!(reflect_index(-1, 1600), 1);
+        assert_eq!(reflect_index(-200, 1600), 200);
+        assert_eq!(reflect_index(1600, 1600), 1598);
+        assert_eq!(reflect_index(1799, 1600), 1399);
     }
 }

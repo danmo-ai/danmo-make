@@ -77,6 +77,55 @@ pub fn read_pcm16_interleaved(wav: &[u8]) -> Result<(Vec<f32>, u32), String> {
     Ok((out, sample_rate))
 }
 
+/// Resample mono PCM with a 32-tap Blackman-windowed sinc low-pass filter.
+pub fn resample_mono(
+    samples: &[f32],
+    source_rate: u32,
+    target_rate: u32,
+) -> Result<Vec<f32>, String> {
+    if source_rate == 0 || target_rate == 0 {
+        return Err("audio sample rates must be positive".into());
+    }
+    if samples.is_empty() || source_rate == target_rate {
+        return Ok(samples.to_vec());
+    }
+    const HALF_TAPS: i32 = 16;
+    let ratio = source_rate as f64 / target_rate as f64;
+    let cutoff = (target_rate as f64 / source_rate as f64).min(1.0);
+    let output_len = ((samples.len() as u64 * target_rate as u64 + source_rate as u64 / 2)
+        / source_rate as u64) as usize;
+    let mut output = Vec::with_capacity(output_len);
+    for index in 0..output_len {
+        let position = index as f64 * ratio;
+        let left = position.floor() as i32;
+        let mut sum = 0.0f64;
+        let mut weight_sum = 0.0f64;
+        for offset in -HALF_TAPS + 1..=HALF_TAPS {
+            let source_index = left + offset;
+            let distance = position - source_index as f64;
+            let window = 0.42
+                + 0.5 * (std::f64::consts::PI * distance / HALF_TAPS as f64).cos()
+                + 0.08 * (2.0 * std::f64::consts::PI * distance / HALF_TAPS as f64).cos();
+            let x = distance * cutoff;
+            let sinc = if x.abs() < 1e-12 {
+                1.0
+            } else {
+                (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
+            };
+            let weight = cutoff * sinc * window;
+            let sample_index = source_index.clamp(0, samples.len() as i32 - 1) as usize;
+            sum += samples[sample_index] as f64 * weight;
+            weight_sum += weight;
+        }
+        if weight_sum.abs() > 1e-12 {
+            output.push((sum / weight_sum) as f32);
+        } else {
+            output.push(0.0);
+        }
+    }
+    Ok(output)
+}
+
 pub fn write_pcm16(
     path: &Path,
     samples: &[f32],
@@ -140,5 +189,24 @@ mod tests {
         );
         assert_eq!(u16::from_le_bytes(bytes[22..24].try_into().unwrap()), 2);
         assert_eq!(bytes.len(), 52);
+    }
+
+    #[test]
+    fn resample_mono_preserves_passband_waveform() {
+        let source: Vec<f32> = (0..48_000)
+            .map(|index| {
+                (2.0 * std::f32::consts::PI * 1_000.0 * index as f32 / 48_000.0).sin()
+            })
+            .collect();
+        let output = super::resample_mono(&source, 48_000, 16_000).unwrap();
+        assert_eq!(output.len(), 16_000);
+        let mut error = 0.0f32;
+        for (index, value) in output.iter().enumerate().skip(32).take(output.len() - 64) {
+            let expected =
+                (2.0 * std::f32::consts::PI * 1_000.0 * index as f32 / 16_000.0).sin();
+            error += (value - expected).abs();
+        }
+        assert!(error / ((output.len() - 64) as f32) < 0.01);
+        assert!(super::resample_mono(&source, 0, 16_000).is_err());
     }
 }
