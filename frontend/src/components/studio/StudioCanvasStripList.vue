@@ -6,7 +6,7 @@
           v-for="task in activeTasks"
           :key="task.id"
           :task="task"
-          media="image"
+          :media="media"
         />
       </div>
     </div>
@@ -40,7 +40,7 @@
           >
             <span class="studio-canvas-strip__title">{{ sessionDisplayTitle(session) }}</span>
             <span class="studio-canvas-strip__sub">
-              {{ $t('canvas.stripAssetCount', { count: session.item_count || 0 }) }}
+              {{ assetCountLabel(session.item_count || 0) }}
               <template v-if="relativeLabel(session.updated_at)">
                 <span class="studio-canvas-strip__dot" aria-hidden="true">·</span>
                 {{ relativeLabel(session.updated_at) }}
@@ -95,7 +95,56 @@
                 :aria-label="$t('canvas.stripPreviewAsset')"
                 @click.stop="$emit('preview', { sessionId: session.id, assetId: previewIds(session)[0] })"
               >
+                <div
+                  v-if="media === 'audio'"
+                  class="studio-canvas-strip__audio-tile"
+                  :style="audioTileStyle(previewIds(session)[0])"
+                >
+                  <div class="studio-canvas-strip__audio-copy">
+                    <span
+                      v-if="audioTitle(previewIds(session)[0])"
+                      class="studio-canvas-strip__audio-title"
+                    >{{ audioTitle(previewIds(session)[0]) }}</span>
+                    <span
+                      v-for="(line, li) in audioLyricLines(previewIds(session)[0])"
+                      :key="li"
+                      class="studio-canvas-strip__audio-line"
+                    >{{ line }}</span>
+                    <span
+                      v-if="!audioLyricLines(previewIds(session)[0]).length && audioBrief(previewIds(session)[0])"
+                      class="studio-canvas-strip__audio-line studio-canvas-strip__audio-line--brief"
+                    >{{ audioBrief(previewIds(session)[0]) }}</span>
+                    <span
+                      v-if="!audioTitle(previewIds(session)[0]) && !audioLyricLines(previewIds(session)[0]).length && !audioBrief(previewIds(session)[0])"
+                      class="studio-canvas-strip__audio-fallback"
+                    >
+                      <DqIcon :size="18"><Headset /></DqIcon>
+                      {{ $t('gallery.audioLabel') }}
+                    </span>
+                  </div>
+                  <div class="studio-canvas-strip__audio-visualizer" aria-hidden="true">
+                    <span
+                      v-for="i in 8"
+                      :key="i"
+                      class="studio-canvas-strip__audio-bar"
+                      :style="{ '--bar-i': i - 1 }"
+                    />
+                  </div>
+                </div>
+                <template v-else-if="media === 'video'">
+                  <video
+                    class="studio-canvas-strip__thumb studio-canvas-strip__thumb--contain"
+                    :src="fileUrl(previewIds(session)[0])"
+                    muted
+                    playsinline
+                    preload="metadata"
+                  />
+                  <span class="studio-canvas-strip__play" aria-hidden="true">
+                    <DqIcon :size="22"><VideoPlay /></DqIcon>
+                  </span>
+                </template>
                 <img
+                  v-else
                   class="studio-canvas-strip__thumb studio-canvas-strip__thumb--contain"
                   :src="thumbUrl(previewIds(session)[0])"
                   alt=""
@@ -118,7 +167,53 @@
                 :aria-label="$t('canvas.stripPreviewAsset')"
                 @click.stop="onThumbClick(session, id, i)"
               >
+                <div
+                  v-if="media === 'audio'"
+                  class="studio-canvas-strip__audio-tile"
+                  :style="audioTileStyle(id)"
+                >
+                  <div class="studio-canvas-strip__audio-copy">
+                    <span v-if="audioTitle(id)" class="studio-canvas-strip__audio-title">{{ audioTitle(id) }}</span>
+                    <span
+                      v-for="(line, li) in audioLyricLines(id)"
+                      :key="li"
+                      class="studio-canvas-strip__audio-line"
+                    >{{ line }}</span>
+                    <span
+                      v-if="!audioLyricLines(id).length && audioBrief(id)"
+                      class="studio-canvas-strip__audio-line studio-canvas-strip__audio-line--brief"
+                    >{{ audioBrief(id) }}</span>
+                    <span
+                      v-if="!audioTitle(id) && !audioLyricLines(id).length && !audioBrief(id)"
+                      class="studio-canvas-strip__audio-fallback"
+                    >
+                      <DqIcon :size="16"><Headset /></DqIcon>
+                      {{ $t('gallery.audioLabel') }}
+                    </span>
+                  </div>
+                  <div class="studio-canvas-strip__audio-visualizer" aria-hidden="true">
+                    <span
+                      v-for="bi in 8"
+                      :key="bi"
+                      class="studio-canvas-strip__audio-bar"
+                      :style="{ '--bar-i': bi - 1 }"
+                    />
+                  </div>
+                </div>
+                <template v-else-if="media === 'video'">
+                  <video
+                    class="studio-canvas-strip__thumb"
+                    :src="fileUrl(id)"
+                    muted
+                    playsinline
+                    preload="metadata"
+                  />
+                  <span class="studio-canvas-strip__play" aria-hidden="true">
+                    <DqIcon :size="18"><VideoPlay /></DqIcon>
+                  </span>
+                </template>
                 <img
+                  v-else
                   class="studio-canvas-strip__thumb"
                   :src="thumbUrl(id)"
                   alt=""
@@ -152,25 +247,36 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { MoreFilled, Picture } from '@danqing/dq-shell';
+import { Headset, MoreFilled, Picture, VideoPlay } from '@danqing/dq-shell';
 import type { CanvasSessionSummary, Task } from '@/types';
 import ActiveTaskCard from '@/components/studio/ActiveTaskCard.vue';
 
 const STRIP_THUMB_PX = 140;
 const STRIP_THUMB_GAP = 2;
 
-const props = defineProps<{
-  sessions: CanvasSessionSummary[];
-  searchText?: string;
-  /** Full asset-id membership per session (board + shelf). */
-  sessionAssetIds?: Record<string, string[]>;
-  loading?: boolean;
-  activeTasks?: Task[];
-  galleryByAssetId?: Record<
-    string,
-    { prompt?: string; model?: string; title?: string; name?: string; created_at?: string }
-  >;
-}>();
+const props = withDefaults(
+  defineProps<{
+    sessions: CanvasSessionSummary[];
+    searchText?: string;
+    /** Full asset-id membership per session (board + shelf). */
+    sessionAssetIds?: Record<string, string[]>;
+    loading?: boolean;
+    activeTasks?: Task[];
+    media?: 'image' | 'video' | 'audio';
+    galleryByAssetId?: Record<
+      string,
+      {
+        prompt?: string;
+        model?: string;
+        title?: string;
+        name?: string;
+        created_at?: string;
+        lyricsLines?: string[];
+      }
+    >;
+  }>(),
+  { media: 'image' },
+);
 
 const emit = defineEmits<{
   (e: 'open', sessionId: string): void;
@@ -182,6 +288,13 @@ const emit = defineEmits<{
 
 const { t: $t } = useI18n();
 const activeTasks = computed(() => props.activeTasks || []);
+
+function assetCountLabel(count: number): string {
+  if (props.media === 'video') return $t('canvas.stripVideoCount', { count });
+  if (props.media === 'audio') return $t('canvas.stripAudioCount', { count });
+  return $t('canvas.stripAssetCount', { count });
+}
+
 const rootEl = ref<HTMLElement | null>(null);
 const stripInnerWidth = ref(0);
 let stripRo: ResizeObserver | null = null;
@@ -272,6 +385,45 @@ function thumbUrl(assetId: string): string {
   return `/api/assets/${encodeURIComponent(assetId)}/thumbnail`;
 }
 
+/** Full media file — videos have no image poster; gallery cards preview via <video>. */
+function fileUrl(assetId: string): string {
+  return `/api/assets/${encodeURIComponent(assetId)}/file`;
+}
+
+function audioMeta(assetId: string) {
+  return props.galleryByAssetId?.[assetId];
+}
+
+function audioTitle(assetId: string): string {
+  return String(audioMeta(assetId)?.title || '').trim();
+}
+
+function audioLyricLines(assetId: string): string[] {
+  const lines = audioMeta(assetId)?.lyricsLines;
+  return Array.isArray(lines) ? lines.filter((l) => String(l || '').trim()) : [];
+}
+
+function audioBrief(assetId: string): string {
+  const p = String(audioMeta(assetId)?.prompt || '').trim();
+  if (!p) return '';
+  return p.length > 48 ? `${p.slice(0, 48)}…` : p;
+}
+
+/** Hue from lyrics/title so neighboring tracks read as different colors. */
+function audioTileStyle(assetId: string): Record<string, string> {
+  const meta = audioMeta(assetId);
+  const text =
+    (audioLyricLines(assetId).join(' ') ||
+      meta?.title ||
+      meta?.prompt ||
+      meta?.name ||
+      assetId ||
+      '').trim();
+  let h = 0;
+  for (let i = 0; i < text.length; i += 1) h = (h * 31 + text.charCodeAt(i)) % 360;
+  return { '--dq-audio-hue': String(h) };
+}
+
 function relativeLabel(iso: string): string {
   if (!iso) return '';
   const t = Date.parse(iso);
@@ -295,7 +447,13 @@ function sessionAssetIdList(session: CanvasSessionSummary): string[] {
 function assetMatchesQuery(assetId: string, q: string): boolean {
   const meta = props.galleryByAssetId?.[assetId];
   if (!meta) return false;
-  const hay = [meta.prompt, meta.model, meta.title, meta.name]
+  const hay = [
+    meta.prompt,
+    meta.model,
+    meta.title,
+    meta.name,
+    ...(meta.lyricsLines || []),
+  ]
     .filter(Boolean)
     .join(' ')
     .toLowerCase();
@@ -304,7 +462,13 @@ function assetMatchesQuery(assetId: string, q: string): boolean {
 
 function isDefaultCanvasTitle(title: string): boolean {
   const t = (title || '').trim().toLowerCase();
-  return t === 'default canvas' || t === '默认画布';
+  return (
+    t === 'default canvas' ||
+    t === '默认画布' ||
+    t === 'image canvas' ||
+    t === 'video canvas' ||
+    t === 'audio canvas'
+  );
 }
 
 function sessionDisplayTitle(session: CanvasSessionSummary): string {
@@ -551,6 +715,109 @@ function onMenu(sessionId: string, cmd: string) {
   object-fit: cover;
   object-position: center;
   display: block;
+}
+
+.studio-canvas-strip__audio-tile {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+  padding: 10px 10px 22px;
+  background:
+    linear-gradient(
+      180deg,
+      hsl(var(--dq-audio-hue, 220) 28% 18% / 0.35) 0%,
+      transparent 42%
+    ),
+    linear-gradient(
+      145deg,
+      hsl(var(--dq-audio-hue, 220) 32% 24%),
+      hsl(var(--dq-audio-hue, 220) 22% 11%)
+    );
+}
+
+.studio-canvas-strip__audio-copy {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.studio-canvas-strip__audio-title {
+  color: hsl(var(--dq-audio-hue, 220) 40% 92%);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-canvas-strip__audio-line {
+  color: hsl(var(--dq-audio-hue, 220) 28% 82% / 0.92);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-canvas-strip__audio-line--brief {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  white-space: normal;
+  line-clamp: 3;
+  opacity: 0.85;
+}
+
+.studio-canvas-strip__audio-fallback {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--dq-audio-hue, 220) 40% 78%);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.studio-canvas-strip__audio-visualizer {
+  position: absolute;
+  inset: auto 0 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+  height: 18px;
+  padding-bottom: 4px;
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.studio-canvas-strip__audio-bar {
+  width: 2px;
+  height: calc(4px + min(var(--bar-i), 7 - var(--bar-i)) * 3px);
+  border-radius: 1px;
+  background: hsl(var(--dq-audio-hue, 220) 55% 68% / 0.45);
+}
+
+.studio-canvas-strip__play {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dq-label-on-media);
+  background: var(--dq-overlay-light);
+  pointer-events: none;
 }
 
 .studio-canvas-strip__thumb--contain {

@@ -5,21 +5,22 @@
 //! (`latents - model_output`), tiled decode, crop, wavelet + LAB color
 //! correction against the preprocessed source, PNG out.
 
-use super::{color, dit, tiling, vae};
+use super::{color, dit, vae};
 use crate::contract::{Artifact, EngineOutput, EngineRequest, ExecutionContext, ResolvedRun};
 use crate::error::EngineError;
 use crate::families::{FacadeFamily, FacadeSession};
 use crate::ports::ResolvePort;
 use crate::runtime::GgmlContext;
-use crate::weights::{assert_upscale_bundle, f16_to_f32, GgufWeights, WeightError};
+use crate::weights::{WeightError, f16_to_f32};
 use danmo_contracts::ImageUpscaleRequest;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::Path;
 
 const POS_EMB_BYTES: &[u8] = include_bytes!("data/pos_emb.safetensors");
 
 pub struct SeedVr2UpscaleFamily;
 
+#[derive(Clone)]
 struct Prepared {
     request: ImageUpscaleRequest,
     source: (u32, u32),
@@ -32,6 +33,7 @@ struct Prepared {
     pad_h: i64,
     pos_emb: Vec<f32>,
     txt_len: i64,
+    txt_in_dim: i64,
 }
 
 pub struct SeedVr2UpscaleSession {
@@ -75,17 +77,7 @@ impl FacadeFamily for SeedVr2UpscaleFamily {
             resolver.read_source_image(run, &request.source_asset_id)?;
         let true_w = even(source_w as u64 * scale as u64)?;
         let true_h = even(source_h as u64 * scale as u64)?;
-        let (pos_emb, txt_len, txt_in) = load_pos_emb(&run.bundle)?;
-        let dit_weights =
-            GgufWeights::open_parts(&assert_upscale_bundle(&run.bundle)?.transformer)?;
-        let config = dit::DitConfig::infer(&dit_weights, txt_len)?;
-        if config.txt_in_dim != txt_in {
-            return Err(WeightError::NotBuilt(format!(
-                "pos_emb width {txt_in} disagrees with the DiT txt_in_dim {}",
-                config.txt_in_dim
-            ))
-            .into());
-        }
+        let (pos_emb, txt_len, txt_in_dim) = load_pos_emb(&run.bundle)?;
         let resized = preprocess(&rgb, source_w, source_h, true_w, true_h, denoise);
         let pad_w = (16 - true_w as i64 % 16) % 16;
         let pad_h = (16 - true_h as i64 % 16) % 16;
@@ -112,6 +104,7 @@ impl FacadeFamily for SeedVr2UpscaleFamily {
                 pad_h,
                 pos_emb,
                 txt_len,
+                txt_in_dim,
             },
         }))
     }
@@ -120,126 +113,121 @@ impl FacadeFamily for SeedVr2UpscaleFamily {
 impl FacadeSession for SeedVr2UpscaleSession {
     fn infer(
         &mut self,
-        ctx: &GgmlContext,
+        _ctx: &GgmlContext,
         exec: &ExecutionContext,
     ) -> Result<EngineOutput, EngineError> {
-        let prepared = &self.prepared;
-        let files = assert_upscale_bundle(&self.run.bundle)?;
-        let dit_weights = GgufWeights::open_parts(&files.transformer)?;
-        let config = dit::DitConfig::infer(&dit_weights, prepared.txt_len)?;
-        let dit_loaded = dit::load(&dit_weights, &config)?;
-        let vae_weights = GgufWeights::open_parts(&files.vae)?;
-        let spec = vae::VaeSpec::infer(&vae_weights)?;
-        if spec.latent != config.vid_channels - 17 {
-            return Err(WeightError::NotBuilt(format!(
-                "vae latent {} disagrees with the DiT {} channel input (16 noise + latent + mask)",
-                spec.latent, config.vid_channels
+        #[cfg(feature = "mlx")]
+        {
+            let run = self.run.clone();
+            let prepared = self.prepared.clone();
+            let exec = exec.clone();
+            return crate::runtime::mlx_executor()
+                .map_err(mlx_error)?
+                .execute("seedvr2 image upscale", move |_, stream, cache, _events| {
+                    Ok(infer_mlx_on_stream(&run, &prepared, &exec, stream, cache))
+                })
+                .map_err(mlx_error)?;
+        }
+        #[cfg(not(feature = "mlx"))]
+        {
+            let _ = exec;
+            Err(EngineError::message(
+                "SeedVR2 image upscale requires an MLX build",
             ))
-            .into());
         }
-        let vae_loaded = vae::load(&vae_weights, &spec)?;
-        let (pw, ph) = (
-            prepared.true_w as i64 + prepared.pad_w,
-            prepared.true_h as i64 + prepared.pad_h,
-        );
-        let latent = tiling::encode(
-            ctx,
-            vae::encoder_loaded(&vae_loaded),
-            &spec,
-            &prepared.style,
-            pw,
-            ph,
-            1,
-        )?;
-        exec.progress("encode", 1, 1)?;
-        let (lw, lh) = (pw / 8, ph / 8);
-        let latent_ch = spec.latent;
-        let plane = (lw * lh) as usize;
-        let seed = prepared.request.seed.unwrap_or(0);
-        let noise = crate::common::ops::normal_latent(seed, plane * latent_ch as usize);
-        // vid input `[W, H, 33]`: [noise; latent; mask of ones].
-        let mut vid = vec![0f32; plane * config.vid_channels as usize];
-        let lc = latent_ch as usize;
-        for c in 0..lc {
-            vid[c * plane..(c + 1) * plane].copy_from_slice(&noise[c * plane..(c + 1) * plane]);
-            vid[(lc + c) * plane..(lc + c + 1) * plane]
-                .copy_from_slice(&latent[c * plane..(c + 1) * plane]);
-        }
-        for v in &mut vid[2 * latent_ch as usize * plane..] {
-            *v = 1.0;
-        }
-        let velocity = dit::run(
-            ctx,
-            &config,
-            &dit_loaded,
-            &vid,
-            lw,
-            lh,
-            1,
-            &prepared.pos_emb,
-            1000.0,
-        )?;
-        exec.progress("denoise", 1, 1)?;
-        let latents: Vec<f32> = noise.iter().zip(&velocity).map(|(n, v)| n - v).collect();
-        if let Some(detail) = crate::common::ops::non_finite("seedvr2 latent", &latents) {
-            return Err(WeightError::NotBuilt(detail).into());
-        }
-        let decoded = tiling::decode(
-            ctx,
-            vae::decoder_loaded(&vae_loaded),
-            &spec,
-            &latents,
-            lw,
-            lh,
-            1,
-        )?;
-        exec.progress("decode", 1, 1)?;
-        let (tw, th) = (prepared.true_w as usize, prepared.true_h as usize);
-        let decoded = crop_planar(&decoded, pw as usize, ph as usize, tw, th);
-        let style = crop_planar(&prepared.style, pw as usize, ph as usize, tw, th);
-        let corrected = color::correct(&decoded, &style, tw, th)?;
-        let mut rgb = vec![0u8; tw * th * 3];
-        for y in 0..th {
-            for x in 0..tw {
-                for c in 0..3 {
-                    let unit = (corrected[x + y * tw + c * tw * th] + 1.0) * 0.5;
-                    rgb[(y * tw + x) * 3 + c] = (unit.clamp(0.0, 1.0) * 255.0).round() as u8;
-                }
+    }
+}
+
+#[cfg(feature = "mlx")]
+fn infer_mlx_on_stream(
+    run: &ResolvedRun,
+    prepared: &Prepared,
+    exec: &ExecutionContext,
+    stream: &danmo_mlx::Stream,
+    cache: &mut danmo_mlx::ModelCache,
+) -> Result<EngineOutput, EngineError> {
+    let resident = super::mlx::Models::resident(
+        cache,
+        &run.bundle,
+        prepared.pos_emb.clone(),
+        prepared.txt_len,
+        prepared.txt_in_dim,
+        stream,
+    )
+    .map_err(mlx_error)?;
+    exec.log(
+        "info",
+        &format!(
+            "seedvr2_upscale backend=mlx resident_hit={} resident_bytes={}",
+            resident.hit, resident.bytes
+        ),
+    )?;
+    let models = cache
+        .get_mut::<super::mlx::Models>(&super::mlx::cache_key_for(&run.bundle).map_err(mlx_error)?)
+        .map_err(mlx_error)?
+        .ok_or_else(|| EngineError::message("SeedVR2 resident model is missing after admit"))?;
+    let (pw, ph) = (
+        prepared.true_w as i64 + prepared.pad_w,
+        prepared.true_h as i64 + prepared.pad_h,
+    );
+    let seed = prepared.request.seed.unwrap_or(0);
+    exec.progress("encode", 1, 1)?;
+    let decoded = models
+        .restore_chunk(&prepared.style, pw, ph, 1, seed, stream)
+        .map_err(mlx_error)?;
+    exec.progress("decode", 1, 1)?;
+    let (tw, th) = (prepared.true_w as usize, prepared.true_h as usize);
+    let decoded = crop_planar(&decoded, pw as usize, ph as usize, tw, th);
+    let style = crop_planar(&prepared.style, pw as usize, ph as usize, tw, th);
+    let corrected = color::correct_mlx(&decoded, &style, tw, th, stream).map_err(mlx_error)?;
+    let mut rgb = vec![0u8; tw * th * 3];
+    for y in 0..th {
+        for x in 0..tw {
+            for c in 0..3 {
+                let unit = (corrected[x + y * tw + c * tw * th] + 1.0) * 0.5;
+                rgb[(y * tw + x) * 3 + c] = (unit.clamp(0.0, 1.0) * 255.0).round() as u8;
             }
         }
-        let png = crate::common::png::encode_rgb(prepared.true_w, prepared.true_h, &rgb);
-        let metadata = json!({
-            "source_asset_id": prepared.request.source_asset_id,
-            "source_width": prepared.source.0,
-            "source_height": prepared.source.1,
-            "scale": prepared.scale,
-            "denoise": prepared.denoise,
-            "seed": seed,
-            "steps": 1,
-            "timestep": 1000,
-        });
-        let mut artifact = Artifact::png(
-            png,
-            prepared.true_w as i64,
-            prepared.true_h as i64,
-            metadata.clone(),
-        );
-        artifact.source_action = "upscale".into();
-        artifact.parent_asset_id = Some(prepared.request.source_asset_id.clone());
-        artifact.relation_type = Some("upscale".into());
-        let mut output = EngineOutput {
-            steps: 1,
-            width: Some(prepared.true_w),
-            height: Some(prepared.true_h),
-            latent_len: latents.len(),
-            ..EngineOutput::default()
-        };
-        let mut full = metadata;
-        full["request_metadata"] = prepared.request.metadata.clone();
-        output.metadata = full;
-        output.artifacts.push(artifact);
-        Ok(output)
     }
+    let png = crate::common::png::encode_rgb(prepared.true_w, prepared.true_h, &rgb);
+    let metadata = json!({
+        "source_asset_id": prepared.request.source_asset_id,
+        "source_width": prepared.source.0,
+        "source_height": prepared.source.1,
+        "scale": prepared.scale,
+        "denoise": prepared.denoise,
+        "seed": seed,
+        "steps": 1,
+        "timestep": 1000,
+        "backend": "mlx",
+    });
+    let mut artifact = Artifact::png(
+        png,
+        prepared.true_w as i64,
+        prepared.true_h as i64,
+        metadata.clone(),
+    );
+    artifact.source_action = "upscale".into();
+    artifact.parent_asset_id = Some(prepared.request.source_asset_id.clone());
+    artifact.relation_type = Some("upscale".into());
+    let latent_len = (pw / 8 * ph / 8 * 16) as usize;
+    let mut output = EngineOutput {
+        steps: 1,
+        width: Some(prepared.true_w),
+        height: Some(prepared.true_h),
+        latent_len,
+        ..EngineOutput::default()
+    };
+    let mut full = metadata;
+    full["request_metadata"] = prepared.request.metadata.clone();
+    output.metadata = full;
+    output.artifacts.push(artifact);
+    Ok(output)
+}
+
+#[cfg(feature = "mlx")]
+fn mlx_error(error: impl std::fmt::Display) -> EngineError {
+    EngineError::message(error.to_string())
 }
 
 /// `int(w * scale)` floored to even, matching the reference preprocess.
@@ -467,7 +455,7 @@ fn read_single_safetensor(bytes: &[u8], want: &str) -> Result<(Vec<f32>, Vec<u64
 /// Write a deterministic smoke bundle: tiny GGUF DiT, tiny safetensors VAE,
 /// a matching tiny `pos_emb.safetensors`, and the manifest.
 pub fn write_smoke_bundle(dir: &Path) -> Result<(), WeightError> {
-    use crate::weights::{write_f32_nd, write_safetensors, F32Nd, SafeTensor};
+    use crate::weights::{F32Nd, SafeTensor, write_f32_nd, write_safetensors};
     std::fs::create_dir_all(dir).map_err(|err| WeightError::Bundle {
         path: dir.display().to_string(),
         detail: format!("{err}"),
@@ -510,6 +498,29 @@ pub fn write_smoke_bundle(dir: &Path) -> Result<(), WeightError> {
         })
         .collect();
     write_f32_nd(&dir.join("dit_smoke.gguf"), &tensors)?;
+    let safetensors: Vec<SafeTensor> = names
+        .iter()
+        .zip(&dims)
+        .zip(&values)
+        .map(|((name, dims), values)| {
+            let bytes: Vec<u8> = values
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+            let shape: Vec<u64> = if dims[1] != 1 {
+                vec![dims[1] as u64, dims[0] as u64]
+            } else {
+                vec![dims[0] as u64]
+            };
+            SafeTensor {
+                name: Box::leak(name.clone().into_boxed_str()),
+                dtype: "F32",
+                shape: Box::leak(shape.into_boxed_slice()),
+                data: Box::leak(bytes.into_boxed_slice()),
+            }
+        })
+        .collect();
+    write_safetensors(&dir.join("seedvr2_ema_3b_fp16.safetensors"), &safetensors)?;
     vae::write_smoke_vae(dir)?;
     // Tiny pos_emb matching the smoke txt dims `[txt_len, txt_in_dim]`.
     let pos: Vec<f32> = (0..(config.txt_len * config.txt_in_dim) as usize)
@@ -606,6 +617,7 @@ mod tests {
             model: "seedvr2-3b".into(),
             source_asset_id: "ast_src".into(),
             scale: Some(2),
+            tile_size: None,
             denoise: None,
             seed: Some(7),
             metadata: json!({}),

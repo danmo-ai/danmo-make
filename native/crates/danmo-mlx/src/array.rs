@@ -9,20 +9,26 @@ use crate::stream::Stream;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dtype {
+    Bool,
     Float32,
     Float16,
     BFloat16,
     Int32,
+    Int64,
+    UInt8,
     UInt32,
 }
 
 impl Dtype {
     pub(crate) fn raw(self) -> sys::mlx_dtype {
         match self {
+            Self::Bool => sys::mlx_dtype__MLX_BOOL,
             Self::Float32 => sys::mlx_dtype__MLX_FLOAT32,
             Self::Float16 => sys::mlx_dtype__MLX_FLOAT16,
             Self::BFloat16 => sys::mlx_dtype__MLX_BFLOAT16,
             Self::Int32 => sys::mlx_dtype__MLX_INT32,
+            Self::Int64 => sys::mlx_dtype__MLX_INT64,
+            Self::UInt8 => sys::mlx_dtype__MLX_UINT8,
             Self::UInt32 => sys::mlx_dtype__MLX_UINT32,
         }
     }
@@ -104,6 +110,34 @@ impl Array {
         })
     }
 
+    pub fn from_u8_slice(data: &[u8], shape: &[i32]) -> Result<Self> {
+        let expected = shape.iter().try_fold(1usize, |size, &dimension| {
+            usize::try_from(dimension)
+                .ok()
+                .and_then(|dimension| size.checked_mul(dimension))
+        });
+        if expected != Some(data.len()) {
+            return Err(crate::Error::new(
+                "Array::from_u8_slice",
+                format!("shape {shape:?} does not contain {} elements", data.len()),
+            ));
+        }
+        initialize();
+        clear_error();
+        let raw = unsafe {
+            sys::mlx_array_new_data(
+                data.as_ptr().cast(),
+                shape.as_ptr(),
+                shape.len() as i32,
+                Dtype::UInt8.raw(),
+            )
+        };
+        check_infallible("mlx_array_new_data", raw).map(|raw| Self {
+            raw,
+            _thread_affine: PhantomData,
+        })
+    }
+
     pub fn shape(&self) -> Vec<i32> {
         unsafe {
             let dimensions = sys::mlx_array_ndim(self.raw);
@@ -123,6 +157,8 @@ impl Array {
             Dtype::Float16,
             Dtype::BFloat16,
             Dtype::Int32,
+            Dtype::Int64,
+            Dtype::UInt8,
             Dtype::UInt32,
         ]
         .into_iter()
@@ -189,6 +225,38 @@ impl Array {
         check(
             unsafe { sys::mlx_cos(&mut output.raw, self.raw, stream.raw) },
             "mlx_cos",
+        )?;
+        Ok(output)
+    }
+
+    pub fn log(&self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_log(&mut output.raw, self.raw, stream.raw) },
+            "mlx_log",
+        )?;
+        Ok(output)
+    }
+
+    pub fn arctan2(lhs: &Self, rhs: &Self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_arctan2(&mut output.raw, lhs.raw, rhs.raw, stream.raw) },
+            "mlx_arctan2",
+        )?;
+        Ok(output)
+    }
+
+    pub fn clip(&self, min: f32, max: f32, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        let min = Self::scalar_f32(min)?;
+        let max = Self::scalar_f32(max)?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_clip(&mut output.raw, self.raw, min.raw, max.raw, stream.raw) },
+            "mlx_clip",
         )?;
         Ok(output)
     }
@@ -313,6 +381,46 @@ impl Array {
         Ok(output)
     }
 
+    pub fn minimum(lhs: &Self, rhs: &Self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_minimum(&mut output.raw, lhs.raw, rhs.raw, stream.raw) },
+            "mlx_minimum",
+        )?;
+        Ok(output)
+    }
+
+    pub fn greater(lhs: &Self, rhs: &Self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_greater(&mut output.raw, lhs.raw, rhs.raw, stream.raw) },
+            "mlx_greater",
+        )?;
+        Ok(output)
+    }
+
+    pub fn select(condition: &Self, x: &Self, y: &Self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_where(&mut output.raw, condition.raw, x.raw, y.raw, stream.raw) },
+            "mlx_where",
+        )?;
+        Ok(output)
+    }
+
+    pub fn argsort(&self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_argsort(&mut output.raw, self.raw, stream.raw) },
+            "mlx_argsort",
+        )?;
+        Ok(output)
+    }
+
     pub fn isfinite_all(&self, stream: &Stream) -> Result<Self> {
         let finite = Self::empty()?;
         let mut raw = finite.raw;
@@ -401,6 +509,16 @@ impl Array {
         check(
             unsafe { sys::mlx_tanh(&mut output.raw, self.raw, stream.raw) },
             "mlx_tanh",
+        )?;
+        Ok(output)
+    }
+
+    pub fn erf(&self, stream: &Stream) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_erf(&mut output.raw, self.raw, stream.raw) },
+            "mlx_erf",
         )?;
         Ok(output)
     }
@@ -545,6 +663,47 @@ impl Array {
         check(
             unsafe { sys::mlx_expand_dims(&mut output.raw, self.raw, axis, stream.raw) },
             "mlx_expand_dims",
+        )?;
+        Ok(output)
+    }
+
+    pub fn pad(
+        &self,
+        axes: &[i32],
+        low: &[i32],
+        high: &[i32],
+        value: f32,
+        mode: &str,
+        stream: &Stream,
+    ) -> Result<Self> {
+        if axes.len() != low.len() || axes.len() != high.len() {
+            return Err(crate::Error::new(
+                "mlx_pad",
+                "axes, low, and high padding must have the same length",
+            ));
+        }
+        let mut output = Self::empty()?;
+        let value = Self::scalar_f32(value)?;
+        let mode = CString::new(mode)
+            .map_err(|_| crate::Error::new("mlx_pad", "padding mode contains NUL"))?;
+        clear_error();
+        check(
+            unsafe {
+                sys::mlx_pad(
+                    &mut output.raw,
+                    self.raw,
+                    axes.as_ptr(),
+                    axes.len(),
+                    low.as_ptr(),
+                    low.len(),
+                    high.as_ptr(),
+                    high.len(),
+                    value.raw,
+                    mode.as_ptr(),
+                    stream.raw,
+                )
+            },
+            "mlx_pad",
         )?;
         Ok(output)
     }

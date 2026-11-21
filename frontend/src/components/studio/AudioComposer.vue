@@ -506,6 +506,8 @@ const props = defineProps<{
   collapsed?: boolean;
   promptApplyPreview?: string | null;
   lyricsApplyPreview?: string | null;
+  /** Empty = hide create/cover segment (exclusive drawers). */
+  workModeOptions?: Array<{ label: string; value: string }>;
 }>();
 
 const emit = defineEmits<{
@@ -584,10 +586,13 @@ const localWorkMode = computed({
   set: (v) => emit('update:workMode', v),
 });
 
-const workModeOptions = computed(() => [
-  { label: $tt('action.audio.create'), value: 'create' },
-  { label: $tt('action.audio.cover'), value: 'cover' },
-]);
+const workModeOptions = computed(
+  () =>
+    props.workModeOptions || [
+      { label: $tt('action.audio.create'), value: 'create' },
+      { label: $tt('action.audio.cover'), value: 'cover' },
+    ],
+);
 
 const localModel = computed({
   get: () => props.model,

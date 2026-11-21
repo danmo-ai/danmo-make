@@ -1,0 +1,63 @@
+{
+  "date": "2026-11-19",
+  "family": "flux2",
+  "gate": "full_blood_closeout",
+  "build": "release",
+  "platform": "metal",
+  "summary": {
+    "e2e": "16/16 passed",
+    "metal_parity": "16/16 passed (quality/authoritative)",
+    "route": "16/16 passed",
+    "metal_performance_fp16_create": "4/4 passed",
+    "metal_performance_fp16_rewrite": "not_applicable — main fidelity img2img vs rust BFL reference_conditioning",
+    "metal_performance_quant": "not_applicable — AGENTS policy (do not mark quant metal_performance)"
+  },
+  "main_edit_baseline_fix": "danmo-make backend/engine/sessions/phased_create.py: persist_fn is bound session_persist; do not pass ctx again",
+  "rewrite_path_asymmetry": {
+    "main": "image_edit_phases fidelity img2img (flux2 lacks edit_conditioning_concat in registry)",
+    "rust": "families/flux2 reference_conditioning (T=10 concat; authoritative BFL/fal)",
+    "observational_ratios_rust_over_main": {
+      "flux2-klein-4b:fp16": {
+        "rust_warm_p50_s": 2.426914930343628,
+        "main_warm_p50_s": 2.26,
+        "ratio": 1.073856163868862,
+        "note": "observational only — paths not comparable"
+      },
+      "flux2-klein-9b:fp16": {
+        "rust_warm_p50_s": 4.453694820404053,
+        "main_warm_p50_s": 4.042,
+        "ratio": 1.1018542356269305,
+        "note": "observational only — paths not comparable"
+      },
+      "flux2-klein-base-4b:fp16": {
+        "rust_warm_p50_s": 4.455079078674316,
+        "main_warm_p50_s": 5.119916958006797,
+        "ratio": 0.8701467455848533,
+        "note": "observational only — paths not comparable"
+      },
+      "flux2-klein-base-9b:fp16": {
+        "rust_warm_p50_s": 10.90595006942749,
+        "main_warm_p50_s": 12.662338624999393,
+        "ratio": 0.8612903502592921,
+        "note": "observational only — paths not comparable"
+      }
+    },
+    "rust_absolute_warm_p50_s": {
+      "flux2-klein-4b:fp16": 2.426914930343628,
+      "flux2-klein-9b:fp16": 4.453694820404053,
+      "flux2-klein-base-4b:fp16": 4.455079078674316,
+      "flux2-klein-base-9b:fp16": 10.90595006942749
+    },
+    "main_absolute_warm_p50_s": {
+      "flux2-klein-4b:fp16": 2.26,
+      "flux2-klein-9b:fp16": 4.042,
+      "flux2-klein-base-4b:fp16": 5.119916958006797,
+      "flux2-klein-base-9b:fp16": 12.662338624999393
+    }
+  },
+  "evidence_prior": [
+    "tests/parity/evidence/flux2-9b-fp16-fullblood-2026-11-19.json",
+    "tests/parity/evidence/flux2-parallel-converge-2026-11-19.json",
+    "tests/parity/evidence/flux2-installed-e2e-warm-2026-11-19.json"
+  ]
+}

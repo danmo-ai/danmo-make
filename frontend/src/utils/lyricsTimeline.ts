@@ -102,3 +102,26 @@ function lrcStamp(sec: number): string {
 export function linesToLrc(lines: LyricLine[]): string {
   return lines.map((l) => `${lrcStamp(l.start)}${l.text}`).join('\n') + (lines.length ? '\n' : '');
 }
+
+/**
+ * Compact lyric lines for strip / dock tiles.
+ * Prefer ``lyrics_effective``; else concatenate timed segment texts.
+ */
+export function lyricsSnippetLines(
+  source: {
+    lyrics_effective?: unknown;
+    lyrics_segments?: unknown;
+  } | null | undefined,
+  maxLines = 3,
+): string[] {
+  const eff = String(source?.lyrics_effective || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !SECTION_ONLY_RE.test(l));
+  if (eff.length) return eff.slice(0, maxLines);
+
+  const fromSegs = linesFromSegments(source?.lyrics_segments, 0)
+    .map((l) => l.text.trim())
+    .filter(Boolean);
+  return fromSegs.slice(0, maxLines);
+}

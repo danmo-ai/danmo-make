@@ -50,7 +50,7 @@ fn registry_and_family_factory_stay_in_sync() {
 
 #[test]
 fn shared_layers_do_not_dispatch_families() {
-    for directory in ["pipeline", "session", "common", "runtime"] {
+    for directory in ["pipeline", "session", "common", "runtime", "weights"] {
         for path in rust_files(&source_root().join(directory)) {
             if path.file_name().and_then(|name| name.to_str()) == Some("legacy.rs") {
                 continue;
@@ -60,6 +60,59 @@ fn shared_layers_do_not_dispatch_families() {
                 assert!(
                     !source.contains(forbidden),
                     "{} contains forbidden dispatch `{forbidden}`",
+                    path.display()
+                );
+            }
+        }
+    }
+}
+
+/// A family never imports another family's module. Shared traits arrive
+/// through `families::driver` re-exports; everything else under
+/// `crate::families::<id>` inside a different family directory is forbidden.
+#[test]
+fn families_do_not_import_each_other() {
+    let families_root = source_root().join("families");
+    let family_dirs: Vec<String> = std::fs::read_dir(&families_root)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect();
+    for family in &family_dirs {
+        for path in rust_files(&families_root.join(family)) {
+            let source = production_source(&path);
+            for other in &family_dirs {
+                if other == family {
+                    continue;
+                }
+                for forbidden in [
+                    format!("families::{other}::"),
+                    format!("families::{other},"),
+                    format!("families::{{*{other}"),
+                ] {
+                    assert!(
+                        !source.contains(forbidden.as_str()),
+                        "{} imports family `{other}` via `{forbidden}`",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Only `danmo-mlx` may depend on `danmo-mlx-sys`. Engine code reaches MLX
+/// through the `danmo-mlx` wrapper, never through raw C handles.
+#[test]
+fn engine_code_does_not_touch_mlx_sys() {
+    for directory in ["families", "common", "pipeline", "session", "runtime", "weights"] {
+        for path in rust_files(&source_root().join(directory)) {
+            let source = production_source(&path);
+            for forbidden in ["danmo_mlx_sys", "danmo-mlx-sys"] {
+                assert!(
+                    !source.contains(forbidden),
+                    "{} references `{forbidden}`; go through danmo-mlx",
                     path.display()
                 );
             }

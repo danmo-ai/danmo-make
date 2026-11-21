@@ -725,7 +725,6 @@ const localWorkMode = computed({
 const workModeOptions = computed(() => props.workModeOptions || [
   { label: $tt('video.modeCreate'), value: 'create' },
   { label: $tt('video.modeAnimate'), value: 'animate' },
-  { label: $tt('video.modeEdit'), value: 'edit' },
 ]);
 
 const localModel = computed({

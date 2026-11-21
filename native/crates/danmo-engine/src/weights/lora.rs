@@ -35,6 +35,17 @@ pub(crate) enum Part {
     Alpha,
 }
 
+/// Where one LoRA module lands on the graph.
+///
+/// `Split` is a fused matrix (Flux2 QKV) that becomes several parameters.
+/// `Skip` drops a module that is not a linear, such as an RMS norm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoraRoute {
+    One(String),
+    Split(Vec<String>),
+    Skip,
+}
+
 /// Map one published key onto a graph parameter. `lora_base_name` stays strict
 /// and does not accept these suffixes.
 pub(crate) fn resolve_lora_key(
@@ -98,6 +109,17 @@ fn load_lora_factors_with_default_alpha_mapped(
     default_alpha: Option<f32>,
     remap: &dyn Fn(&str) -> Result<String, WeightError>,
 ) -> Result<Vec<LoraFactor>, WeightError> {
+    load_lora_factors_routed(files, layout, default_alpha, &|module| {
+        Ok(LoraRoute::One(remap(module)?))
+    })
+}
+
+pub(crate) fn load_lora_factors_routed(
+    files: &[LoraFile],
+    layout: &[(String, i64, i64)],
+    default_alpha: Option<f32>,
+    route: &dyn Fn(&str) -> Result<LoraRoute, WeightError>,
+) -> Result<Vec<LoraFactor>, WeightError> {
     if default_alpha.is_some_and(|alpha| !alpha.is_finite()) {
         return Err(WeightError::NotBuilt(
             "lora default alpha is not a finite number".into(),
@@ -116,7 +138,7 @@ fn load_lora_factors_with_default_alpha_mapped(
                 file.id
             )));
         }
-        factors.extend(load_file(file, &names, &shapes, default_alpha, remap)?);
+        factors.extend(load_file(file, &names, &shapes, default_alpha, route)?);
     }
     Ok(factors)
 }
@@ -154,100 +176,301 @@ fn load_file(
     names: &HashSet<String>,
     shapes: &HashMap<&str, (i64, i64)>,
     default_alpha: Option<f32>,
-    remap: &dyn Fn(&str) -> Result<String, WeightError>,
+    route: &dyn Fn(&str) -> Result<LoraRoute, WeightError>,
 ) -> Result<Vec<LoraFactor>, WeightError> {
     let weights = GgufWeights::open(&file.path)
         .map_err(|err| WeightError::NotBuilt(format!("lora {}: {err}", file.id)))?;
     let keys: Vec<String> = weights.names().map(str::to_string).collect();
     let mut groups: HashMap<String, Group> = HashMap::new();
+    let mut splits: HashMap<String, SplitGroup> = HashMap::new();
     let mut order = Vec::new();
+    let mut split_order = Vec::new();
+    let mut skipped = 0u32;
     for key in &keys {
-        let (target, part) = resolve_lora_key_mapped(key, names, remap)?;
-        if !groups.contains_key(&target) {
-            order.push(target.clone());
-        }
-        let group = groups.entry(target.clone()).or_default();
-        match part {
-            Part::Alpha => {
-                if group.alpha.is_some() {
-                    return Err(WeightError::NotBuilt(format!(
-                        "lora {key} duplicates alpha for {target}"
-                    )));
+        let (module, part) = match split_lora_suffix(key) {
+            Ok(parts) => parts,
+            Err(error) => {
+                // Non LoRA-A/B tensors (e.g. LTX MSR slot embeddings) may be
+                // skipped by the family route before this becomes a hard error.
+                let stripped = strip_wrappers(key);
+                if matches!(route(key)?, LoraRoute::Skip)
+                    || matches!(route(&stripped)?, LoraRoute::Skip)
+                {
+                    skipped += 1;
+                    continue;
                 }
-                group.alpha = Some(read_alpha(&weights, key)?);
+                return Err(error);
             }
-            Part::Down | Part::Up => {
-                let (matrix, ne0, ne1) = read_matrix(&weights, key)?;
-                let slot = if part == Part::Down {
-                    &mut group.down
-                } else {
-                    &mut group.up
-                };
-                if slot.is_some() {
-                    let which = if part == Part::Down { "down" } else { "up" };
+        };
+        let module = strip_wrappers(&module);
+        match route(&module)? {
+            LoraRoute::Skip => {
+                skipped += 1;
+                continue;
+            }
+            LoraRoute::Split(targets) => {
+                if targets.len() < 2 {
                     return Err(WeightError::NotBuilt(format!(
-                        "lora {key} duplicates the {which} factor for {target}"
+                        "lora {key} split needs at least two targets"
                     )));
                 }
-                *slot = Some(Matrix {
-                    ne0,
-                    ne1,
-                    data: matrix,
-                });
+                if !splits.contains_key(&module) {
+                    split_order.push(module.clone());
+                    splits.insert(
+                        module.clone(),
+                        SplitGroup {
+                            targets,
+                            down: None,
+                            up: None,
+                            alpha: None,
+                        },
+                    );
+                }
+                let group = splits.get_mut(&module).expect("split group");
+                assign_part(
+                    key,
+                    &module,
+                    part,
+                    &weights,
+                    &mut group.down,
+                    &mut group.up,
+                    &mut group.alpha,
+                )?;
+            }
+            LoraRoute::One(mapped) => {
+                let target = lookup_parameter(&mapped, names)?;
+                if !groups.contains_key(&module) {
+                    order.push(module.clone());
+                }
+                let group = groups.entry(module.clone()).or_default();
+                if group.target.is_empty() {
+                    group.target = target;
+                } else if group.target != target {
+                    return Err(WeightError::NotBuilt(format!(
+                        "lora {key} resolves {module} to both {} and {target}",
+                        group.target
+                    )));
+                }
+                let label = group.target.clone();
+                assign_part(
+                    key,
+                    &label,
+                    part,
+                    &weights,
+                    &mut group.down,
+                    &mut group.up,
+                    &mut group.alpha,
+                )?;
             }
         }
     }
     let mut factors = Vec::new();
-    for target in order {
-        let group = groups.remove(&target).unwrap_or_default();
-        let Some((in_dim, out_dim)) = shapes.get(target.as_str()).copied() else {
-            return Err(WeightError::NotBuilt(format!(
-                "lora {target} targets {target}, which is not a graph parameter"
-            )));
+    for module in order {
+        let group = groups.remove(&module).unwrap_or_default();
+        let label = if group.target.is_empty() {
+            module
+        } else {
+            group.target.clone()
         };
-        let down = group.down.ok_or_else(|| {
-            WeightError::NotBuilt(format!("lora {target} is missing the down factor"))
-        })?;
-        let up = group.up.ok_or_else(|| {
-            WeightError::NotBuilt(format!("lora {target} is missing the up factor"))
-        })?;
-        if down.ne1 < 1 || down.ne1 != up.ne0 || down.ne0 != in_dim || up.ne1 != out_dim {
-            return Err(WeightError::Shape {
-                name: target.clone(),
-                expected: vec![in_dim, down.ne1, out_dim],
-                got: vec![down.ne0, down.ne1, up.ne0, up.ne1],
-            });
-        }
-        let rank = down.ne1;
-        let alpha = group
-            .alpha
-            .or(default_alpha)
-            .or(adapter_alpha(&file.path)?)
-            .unwrap_or(rank as f32);
-        if !alpha.is_finite() {
-            return Err(WeightError::NotBuilt(format!(
-                "lora {target} alpha is not a finite number"
-            )));
-        }
-        let scale = file.weight * alpha / (rank as f32);
-        if !scale.is_finite() {
-            return Err(WeightError::NotBuilt(format!(
-                "lora {target} scale is not a finite number"
-            )));
-        }
-        factors.push(LoraFactor {
-            target,
-            in_dim,
-            rank,
-            out_dim,
-            scale,
-            a: down.data,
-            b: up.data,
-        });
+        factors.push(finish_factor(
+            label,
+            group.down,
+            group.up,
+            group.alpha,
+            shapes,
+            file,
+            default_alpha,
+        )?);
+    }
+    for module in split_order {
+        let group = splits.remove(&module).expect("split group");
+        factors.extend(finish_split(
+            &module,
+            group,
+            names,
+            shapes,
+            file,
+            default_alpha,
+        )?);
+    }
+    if factors.is_empty() && skipped > 0 {
+        return Err(WeightError::NotBuilt(format!(
+            "lora {} has no linear factors after dropping non-linear keys",
+            file.id
+        )));
     }
     Ok(factors)
 }
 
+fn assign_part(
+    key: &str,
+    label: &str,
+    part: Part,
+    weights: &GgufWeights,
+    down: &mut Option<Matrix>,
+    up: &mut Option<Matrix>,
+    alpha: &mut Option<f32>,
+) -> Result<(), WeightError> {
+    match part {
+        Part::Alpha => {
+            if alpha.is_some() {
+                return Err(WeightError::NotBuilt(format!(
+                    "lora {key} duplicates alpha for {label}"
+                )));
+            }
+            *alpha = Some(read_alpha(weights, key)?);
+        }
+        Part::Down | Part::Up => {
+            let (matrix, ne0, ne1) = read_matrix(weights, key)?;
+            let slot = if part == Part::Down { down } else { up };
+            if slot.is_some() {
+                let which = if part == Part::Down { "down" } else { "up" };
+                return Err(WeightError::NotBuilt(format!(
+                    "lora {key} duplicates the {which} factor for {label}"
+                )));
+            }
+            *slot = Some(Matrix {
+                ne0,
+                ne1,
+                data: matrix,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn finish_factor(
+    target: String,
+    down: Option<Matrix>,
+    up: Option<Matrix>,
+    alpha: Option<f32>,
+    shapes: &HashMap<&str, (i64, i64)>,
+    file: &LoraFile,
+    default_alpha: Option<f32>,
+) -> Result<LoraFactor, WeightError> {
+    let Some((in_dim, out_dim)) = shapes.get(target.as_str()).copied() else {
+        return Err(WeightError::NotBuilt(format!(
+            "lora {target} targets {target}, which is not a graph parameter"
+        )));
+    };
+    let down = down
+        .ok_or_else(|| WeightError::NotBuilt(format!("lora {target} is missing the down factor")))?;
+    let up = up
+        .ok_or_else(|| WeightError::NotBuilt(format!("lora {target} is missing the up factor")))?;
+    if down.ne1 < 1 || down.ne1 != up.ne0 || down.ne0 != in_dim || up.ne1 != out_dim {
+        return Err(WeightError::Shape {
+            name: target,
+            expected: vec![in_dim, down.ne1, out_dim],
+            got: vec![down.ne0, down.ne1, up.ne0, up.ne1],
+        });
+    }
+    let rank = down.ne1;
+    let alpha = alpha
+        .or(default_alpha)
+        .or(adapter_alpha(&file.path)?)
+        .unwrap_or(rank as f32);
+    if !alpha.is_finite() {
+        return Err(WeightError::NotBuilt(format!(
+            "lora {target} alpha is not a finite number"
+        )));
+    }
+    let scale = file.weight * alpha / (rank as f32);
+    if !scale.is_finite() {
+        return Err(WeightError::NotBuilt(format!(
+            "lora {target} scale is not a finite number"
+        )));
+    }
+    Ok(LoraFactor {
+        target,
+        in_dim,
+        rank,
+        out_dim,
+        scale,
+        a: down.data,
+        b: up.data,
+    })
+}
+
+fn finish_split(
+    module: &str,
+    group: SplitGroup,
+    names: &HashSet<String>,
+    shapes: &HashMap<&str, (i64, i64)>,
+    file: &LoraFile,
+    default_alpha: Option<f32>,
+) -> Result<Vec<LoraFactor>, WeightError> {
+    let parts = group.targets.len() as i64;
+    let down = group.down.ok_or_else(|| {
+        WeightError::NotBuilt(format!("lora {module} is missing the down factor"))
+    })?;
+    let up = group.up.ok_or_else(|| {
+        WeightError::NotBuilt(format!("lora {module} is missing the up factor"))
+    })?;
+    if parts < 2 || up.ne1 % parts != 0 {
+        return Err(WeightError::NotBuilt(format!(
+            "lora {module} fuses {parts} projections but the up matrix out {} is not divisible by {parts}",
+            up.ne1
+        )));
+    }
+    // A shared down factor keeps its rank. A stacked down factor (rank divisible
+    // by the projection count) is cut the same way as the up matrix. That is
+    // the danmo-make `remap_flux2_lora_keys` rule.
+    let split_down = down.ne1 % parts == 0;
+    let mut factors = Vec::with_capacity(group.targets.len());
+    for (index, mapped) in group.targets.iter().enumerate() {
+        let target = lookup_parameter(mapped, names)?;
+        let up_i = slice_ne1(&up, parts, index as i64);
+        let down_i = if split_down {
+            slice_ne1(&down, parts, index as i64)
+        } else {
+            down.clone()
+        };
+        factors.push(finish_factor(
+            target,
+            Some(down_i),
+            Some(up_i),
+            group.alpha,
+            shapes,
+            file,
+            default_alpha,
+        )?);
+    }
+    Ok(factors)
+}
+
+fn lookup_parameter(module: &str, names: &HashSet<String>) -> Result<String, WeightError> {
+    for candidate in [
+        module.to_string(),
+        format!("{module}.weight"),
+        format!("decoder.{module}"),
+        format!("decoder.{module}.weight"),
+    ] {
+        if names.contains(&candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err(WeightError::NotBuilt(format!(
+        "lora targets {module}, which is not a graph parameter"
+    )))
+}
+
+fn slice_ne1(matrix: &Matrix, parts: i64, index: i64) -> Matrix {
+    let chunk = matrix.ne1 / parts;
+    let start = index * chunk;
+    let mut data = Vec::with_capacity((matrix.ne0 * chunk) as usize);
+    for row in start..(start + chunk) {
+        let base = (row * matrix.ne0) as usize;
+        let end = base + matrix.ne0 as usize;
+        data.extend_from_slice(&matrix.data[base..end]);
+    }
+    Matrix {
+        ne0: matrix.ne0,
+        ne1: chunk,
+        data,
+    }
+}
+
+#[derive(Clone)]
 struct Matrix {
     ne0: i64,
     ne1: i64,
@@ -256,6 +479,14 @@ struct Matrix {
 
 #[derive(Default)]
 struct Group {
+    target: String,
+    down: Option<Matrix>,
+    up: Option<Matrix>,
+    alpha: Option<f32>,
+}
+
+struct SplitGroup {
+    targets: Vec<String>,
     down: Option<Matrix>,
     up: Option<Matrix>,
     alpha: Option<f32>,
@@ -398,8 +629,8 @@ fn strip_wrappers(module: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        load_lora_factors, load_lora_factors_mapped, load_lora_factors_with_default_alpha,
-        resolve_lora_key, LoraFile, Part,
+        load_lora_factors, load_lora_factors_mapped, load_lora_factors_routed,
+        load_lora_factors_with_default_alpha, resolve_lora_key, LoraFile, LoraRoute, Part,
     };
     use crate::weights::{write_safetensors, SafeTensor};
     use std::collections::HashSet;
@@ -676,6 +907,90 @@ mod tests {
         )
         .unwrap();
         assert_eq!(factors[0].target, "layers.0.attention.to_out.weight");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fused_qkv_splits_the_up_matrix_and_shares_the_down_factor() {
+        let dir = std::env::temp_dir().join(format!("danmo-split-lora-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fused.safetensors");
+        let down = f32_bytes(&[1.0, 2.0, 3.0, 4.0]);
+        let up: Vec<f32> = (0..12).map(|value| value as f32).collect();
+        let up_bytes = f32_bytes(&up);
+        write_safetensors(
+            &path,
+            &[
+                SafeTensor {
+                    name: "double_blocks.0.img_attn.qkv.lora_A.weight",
+                    dtype: "F32",
+                    shape: &[1, 4],
+                    data: &down,
+                },
+                SafeTensor {
+                    name: "double_blocks.0.img_attn.qkv.lora_B.weight",
+                    dtype: "F32",
+                    shape: &[12, 1],
+                    data: &up_bytes,
+                },
+                SafeTensor {
+                    name: "double_blocks.0.img_attn.norm.lora_A.weight",
+                    dtype: "F32",
+                    shape: &[1, 4],
+                    data: &down,
+                },
+                SafeTensor {
+                    name: "double_blocks.0.img_attn.norm.lora_B.weight",
+                    dtype: "F32",
+                    shape: &[4, 1],
+                    data: &down,
+                },
+            ],
+        )
+        .unwrap();
+        let layout = [
+            ("to_q.weight".into(), 4, 4),
+            ("to_k.weight".into(), 4, 4),
+            ("to_v.weight".into(), 4, 4),
+        ];
+        let factors = load_lora_factors_routed(
+            &[LoraFile {
+                id: "fused".into(),
+                path,
+                weight: 1.0,
+            }],
+            &layout,
+            None,
+            &|module| {
+                if module.ends_with("img_attn.qkv") {
+                    Ok(LoraRoute::Split(vec![
+                        "to_q".into(),
+                        "to_k".into(),
+                        "to_v".into(),
+                    ]))
+                } else if module.contains("norm") {
+                    Ok(LoraRoute::Skip)
+                } else {
+                    Ok(LoraRoute::One(module.to_string()))
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(factors.len(), 3);
+        assert_eq!(factors[0].target, "to_q.weight");
+        assert_eq!(factors[1].target, "to_k.weight");
+        assert_eq!(factors[2].target, "to_v.weight");
+        for factor in &factors {
+            assert_eq!(factor.in_dim, 4);
+            assert_eq!(factor.rank, 1);
+            assert_eq!(factor.out_dim, 4);
+            assert_eq!(factor.a, vec![1.0, 2.0, 3.0, 4.0]);
+            assert!((factor.scale - 1.0).abs() < 1e-6);
+        }
+        assert_eq!(factors[0].b, vec![0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(factors[1].b, vec![4.0, 5.0, 6.0, 7.0]);
+        assert_eq!(factors[2].b, vec![8.0, 9.0, 10.0, 11.0]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

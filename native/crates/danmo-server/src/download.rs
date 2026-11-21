@@ -16,6 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ureq::Agent;
 
 const USER_AGENT: &str = "danmo-make/gguf";
+// `INSTALL_HOOK_INCOMPLETE` is re-exported from danmo-resolve below.
 
 #[derive(Clone)]
 pub struct Downloads {
@@ -106,267 +107,12 @@ struct HubAuth {
     nsfw: bool,
 }
 
-pub fn resolve_model_path(workspace: &Path, path: &str) -> PathBuf {
-    let path = PathBuf::from(path);
-    if path.is_absolute() {
-        path
-    } else {
-        workspace.join(path)
-    }
-}
-
-pub fn version_ready(path: &Path) -> bool {
-    if path.is_file() {
-        return is_bundle_weight_name(path);
-    }
-    let manifest = path.join("bundle.manifest.json");
-    if manifest.is_file() {
-        return manifest_ready(path, &manifest);
-    }
-    let mut weight = false;
-    let mut partial = false;
-    walk_bundle_weights(path, &mut weight, &mut partial);
-    weight && !partial
-}
-
-/// One safetensors adapter inside a registry LoRA install.
-/// A directory with several weight files and no single preferred name fails.
-pub fn lora_weight_file(root: &Path) -> Result<PathBuf, String> {
-    if root.is_file() {
-        let safetensors = root
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("safetensors"));
-        if safetensors {
-            return Ok(root.to_path_buf());
-        }
-        return Err(format!(
-            "lora weight {} is not a safetensors file",
-            root.display()
-        ));
-    }
-    if !root.is_dir() {
-        return Err(format!("lora weight {} is missing", root.display()));
-    }
-    let mut files = Vec::new();
-    collect_safetensors(root, &mut files);
-    if files.is_empty() {
-        return Err(format!(
-            "lora directory {} has no safetensors file",
-            root.display()
-        ));
-    }
-    if files.len() == 1 {
-        return Ok(files.remove(0));
-    }
-    const PREFERRED: &[&str] = &[
-        "final_adapters.safetensors",
-        "adapters.safetensors",
-        "adapter_model.safetensors",
-        "pytorch_lora_weights.safetensors",
-        "model.safetensors",
-    ];
-    for name in PREFERRED {
-        let mut hits = files
-            .iter()
-            .filter(|path| path.file_name().and_then(|file| file.to_str()) == Some(*name));
-        let Some(first) = hits.next() else {
-            continue;
-        };
-        if hits.next().is_some() {
-            return Err(format!(
-                "lora directory {} has more than one {name}",
-                root.display()
-            ));
-        }
-        return Ok(first.clone());
-    }
-    Err(format!(
-        "lora directory {} has {} safetensors files",
-        root.display(),
-        files.len()
-    ))
-}
-
-fn collect_safetensors(path: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(path) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_safetensors(&path, files);
-        } else if path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("safetensors"))
-        {
-            files.push(path);
-        }
-    }
-}
-
-/// Installed weight for one registry LoRA card. `Ok(None)` means that version is not on disk.
-pub fn registry_lora_weight(
-    workspace: &Path,
-    entry: &Value,
-    version: Option<&str>,
-) -> Result<Option<PathBuf>, String> {
-    let versions = entry
-        .pointer("/distribution/versions")
-        .and_then(|value| value.as_object())
-        .ok_or_else(|| "lora card has no versions".to_string())?;
-    let spec = if let Some(version) = version.filter(|version| !version.is_empty()) {
-        versions
-            .get(version)
-            .cloned()
-            .ok_or_else(|| format!("lora version {version} is not published"))?
-    } else {
-        let ready: Vec<Value> = versions
-            .values()
-            .filter(|spec| version_spec_ready(workspace, spec))
-            .cloned()
-            .collect();
-        if ready.is_empty() {
-            return Ok(None);
-        }
-        if let Some(spec) = ready
-            .iter()
-            .find(|spec| spec.get("default").and_then(|value| value.as_bool()) == Some(true))
-        {
-            spec.clone()
-        } else if ready.len() == 1 {
-            ready.into_iter().next().expect("one ready version")
-        } else {
-            return Err("lora has more than one installed version; select id:version".into());
-        }
-    };
-    let local = spec
-        .get("local_path")
-        .and_then(|value| value.as_str())
-        .filter(|path| !path.is_empty())
-        .ok_or_else(|| "lora version has no local_path".to_string())?;
-    let root = resolve_model_path(workspace, local);
-    if !version_ready(&root) {
-        return Ok(None);
-    }
-    lora_weight_file(&root).map(Some)
-}
-
-fn version_spec_ready(workspace: &Path, spec: &Value) -> bool {
-    spec.get("local_path")
-        .and_then(|value| value.as_str())
-        .is_some_and(|path| version_ready(&resolve_model_path(workspace, path)))
-}
-
-fn walk_bundle_weights(path: &Path, weight: &mut bool, partial: &mut bool) {
-    let Ok(entries) = fs::read_dir(path) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            walk_bundle_weights(&path, weight, partial);
-        } else if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with(".partial"))
-        {
-            *partial = true;
-        } else if is_bundle_weight_name(&path) {
-            *weight = true;
-        }
-    }
-}
-
-/// A published weight file, matching the files main treats as an installed bundle.
-fn is_bundle_weight_name(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    let lower = name.to_ascii_lowercase();
-    lower.ends_with(".gguf")
-        || lower.ends_with(".safetensors")
-        || lower.ends_with(".bin")
-        || lower.ends_with(".pt")
-        || lower.ends_with(".ckpt")
-        || name == "model_index.json"
-        || name == "config.json"
-        || name == "pytorch_model.bin.index.json"
-}
-
-fn manifest_ready(root: &Path, manifest: &Path) -> bool {
-    let Ok(text) = fs::read_to_string(manifest) else {
-        return false;
-    };
-    let Ok(body) = serde_json::from_str::<Value>(&text) else {
-        return false;
-    };
-    let listing = body.get("files").or_else(|| {
-        body.get("components")
-            .filter(|components| components.is_object())
-    });
-    let mut weights = Vec::new();
-    collect_manifest_weights(listing, &mut weights);
-    if weights.is_empty() {
-        return false;
-    }
-    if has_partial(root) {
-        return false;
-    }
-    listing
-        .and_then(|files| files.get("transformer"))
-        .is_some_and(|transformer| {
-            let mut required = Vec::new();
-            collect_manifest_weights(Some(transformer), &mut required);
-            !required.is_empty()
-        })
-        && weights.iter().all(|relative| {
-            let path = Path::new(relative);
-            !relative.is_empty()
-                && !path.is_absolute()
-                && !path.components().any(|part| part.as_os_str() == "..")
-                && root.join(path).is_file()
-        })
-}
-
-fn collect_manifest_weights(value: Option<&Value>, out: &mut Vec<String>) {
-    match value {
-        Some(Value::String(path)) => out.push(path.clone()),
-        Some(Value::Array(rows)) => {
-            for row in rows {
-                collect_manifest_weights(Some(row), out);
-            }
-        }
-        Some(Value::Object(rows)) => {
-            for row in rows.values() {
-                collect_manifest_weights(Some(row), out);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn has_partial(path: &Path) -> bool {
-    let Ok(entries) = fs::read_dir(path) else {
-        return false;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if has_partial(&path) {
-                return true;
-            }
-        } else if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with(".partial"))
-        {
-            return true;
-        }
-    }
-    false
-}
+// Bundle path / readiness / LoRA weight rules live in `danmo-resolve` so the
+// HTTP server and the CLI share exactly one implementation.
+pub use danmo_resolve::{
+    is_bundle_weight_name, lora_weight_file, manifest_ready, registry_lora_weight,
+    resolve_model_path, version_ready, INSTALL_HOOK_INCOMPLETE,
+};
 
 impl Downloads {
     pub fn open(workspace: &Path) -> Self {
@@ -749,7 +495,8 @@ impl Downloads {
         match hub {
             "huggingface" => {
                 let url = format!(
-                    "https://huggingface.co/api/models?search={}&limit={limit}&filter=lora",
+                    "{}/api/models?search={}&limit={limit}&filter=lora",
+                    huggingface_origin(),
                     encode_component(query)
                 );
                 let value = self.get_json(&url, token_header("huggingface", auth))?;
@@ -855,17 +602,101 @@ impl Downloads {
         let Plan::Files(files) = plan;
         self.remember_files(id, &files);
         let done = self.run_files(id, &files, force, cancel)?;
-        if matches!(done, Done::Finished) && version_lists_components(spec) {
-            let quant = self.task_version(id)?;
-            let local = spec
-                .get("local_path")
-                .and_then(|v| v.as_str())
-                .filter(|path| !path.is_empty())
-                .ok_or_else(|| "version has no local_path".to_string())?;
-            let root = resolve_model_path(&workspace, local);
-            write_bundle_manifest(&root, &quant, &files)?;
+        if matches!(done, Done::Finished) {
+            let hooks = install_hooks(spec)?;
+            if version_lists_components(spec) || !hooks.is_empty() {
+                let local = spec
+                    .get("local_path")
+                    .and_then(|v| v.as_str())
+                    .filter(|path| !path.is_empty())
+                    .ok_or_else(|| "version has no local_path".to_string())?;
+                let root = resolve_model_path(&workspace, local);
+                if !hooks.is_empty() {
+                    fs::create_dir_all(&root)
+                        .map_err(|error| format!("create {}: {error}", root.display()))?;
+                    fs::write(root.join(INSTALL_HOOK_INCOMPLETE), b"install hooks pending")
+                        .map_err(|error| format!("mark install hooks pending: {error}"))?;
+                    if let Err(error) = self.run_install_hooks(id, &root, hooks, cancel) {
+                        if cancel.load(Ordering::Relaxed) {
+                            return Ok(Done::Cancelled);
+                        }
+                        return Err(error);
+                    }
+                }
+                if version_lists_components(spec) {
+                    let quant = self.task_version(id)?;
+                    write_bundle_manifest(&root, &quant, &files)?;
+                }
+                if !hooks.is_empty() {
+                    fs::remove_file(root.join(INSTALL_HOOK_INCOMPLETE))
+                        .map_err(|error| format!("clear completed install hook marker: {error}"))?;
+                }
+            }
+            self.ensure_bundle_manifest(id, spec, &files)?;
         }
         Ok(done)
+    }
+
+    /// Prequantized image installs often omit `components`. Write the same
+    /// manifest the component path writes, and leave an existing file alone.
+    fn ensure_bundle_manifest(
+        &self,
+        id: &str,
+        spec: &Value,
+        files: &[PlannedFile],
+    ) -> Result<(), String> {
+        let Some(local) = spec
+            .get("local_path")
+            .and_then(|v| v.as_str())
+            .filter(|path| !path.is_empty())
+        else {
+            return Ok(());
+        };
+        let root = resolve_model_path(&self.workspace, local);
+        if !root.is_dir() || root.join("bundle.manifest.json").is_file() {
+            return Ok(());
+        }
+        let quant = self.task_version(id)?;
+        match bundle_manifest_value(&quant, &root, files) {
+            Ok(_) => write_bundle_manifest(&root, &quant, files),
+            Err(err) if err == "bundle manifest has no transformer file" => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn run_install_hooks(
+        &self,
+        id: &str,
+        root: &Path,
+        hooks: &[Value],
+        cancel: &AtomicBool,
+    ) -> Result<(), String> {
+        // Hooks run inside the MLX executor, whose jobs must be 'static; share
+        // the task's Arc cancel flag (tests fall back to a snapshot).
+        let flag = self
+            .lock()
+            .cancels
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(cancel.load(Ordering::Relaxed))));
+        let log_id = id.to_string();
+        for hook in hooks {
+            let hook_type = hook
+                .get("type")
+                .and_then(Value::as_str)
+                .filter(|kind| !kind.is_empty())
+                .ok_or_else(|| "registry install hook lacks a type".to_string())?;
+            let hook_flag = flag.clone();
+            let hook_log_id = log_id.clone();
+            danmo_engine::run_install_hook(
+                hook_type,
+                root,
+                hook,
+                Box::new(move || hook_flag.load(Ordering::Relaxed)),
+                Box::new(move |message| eprintln!("[download {hook_log_id}] {message}")),
+            )?;
+        }
+        Ok(())
     }
 
     fn task_version(&self, id: &str) -> Result<String, String> {
@@ -1418,6 +1249,24 @@ fn partial_path(dest: &Path) -> PathBuf {
     PathBuf::from(format!("{}.partial", dest.display()))
 }
 
+/// Model-library badge is `version.source`, else `catalog.source`.
+/// A version that omits `source` still downloads from that hub.
+pub(crate) fn fill_missing_download_source(spec: &mut Value, catalog_source: Option<&str>) {
+    let Some(source) = catalog_source.map(str::trim).filter(|text| !text.is_empty()) else {
+        return;
+    };
+    let Some(obj) = spec.as_object_mut() else {
+        return;
+    };
+    let present = obj
+        .get("source")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty());
+    if !present {
+        obj.insert("source".to_string(), Value::String(source.to_string()));
+    }
+}
+
 fn plan_version(
     spec: &Value,
     list: &mut dyn FnMut(&RepoQuery) -> Result<Vec<RemoteEntry>, String>,
@@ -1537,10 +1386,9 @@ fn plan_component(
     Ok(files)
 }
 
-/// Optional `role` remaps a flat GGUF companion into `text_encoder/`, `vae/`,
-/// or `tokenizer/` so `bundle.manifest.json` can classify it. The LTX extras
-/// use `audio_vae/`, `connectors/`, and `upscaler/` the same way. Empty role
-/// keeps the remote relative path (Flux2 / Z-Image HF trees).
+/// Optional `role` remaps a flat GGUF companion into a bundle subdirectory so
+/// `bundle.manifest.json` can classify it. Empty role keeps the remote
+/// relative path (Flux2 / Z-Image HF trees).
 fn component_dest(root: &Path, role: &str, remote_path: &str) -> Result<PathBuf, String> {
     if remote_path.is_empty() || remote_path.contains("..") {
         return Err("component path escapes the bundle".into());
@@ -1552,10 +1400,6 @@ fn component_dest(root: &Path, role: &str, remote_path: &str) -> Result<PathBuf,
         "" => root.join(remote_path),
         "text_encoder" => root.join("text_encoder").join(file_name),
         "vae" => root.join("vae").join(file_name),
-        "audio_vae" => root.join("audio_vae").join(file_name),
-        "connectors" => root.join("connectors").join(file_name),
-        "upscaler" => root.join("upscaler").join(file_name),
-        "transformer_stage2" => root.join("transformer_stage2").join(file_name),
         "image_encoder" => root.join("image_encoder").join(file_name),
         "tokenizer" => root.join("tokenizer").join(file_name),
         other => {
@@ -1815,10 +1659,33 @@ fn url_path_is_safetensors(url: &str) -> bool {
     is_safetensors(path)
 }
 
+/// Hugging Face file and API host. `DANQING_HF_ENDPOINT` replaces it; an empty
+/// value keeps the mirror.
+fn huggingface_origin() -> String {
+    huggingface_origin_from(std::env::var("DANQING_HF_ENDPOINT").ok().as_deref())
+}
+
+fn huggingface_origin_from(configured: Option<&str>) -> String {
+    let trimmed = configured.unwrap_or("").trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        "https://hf-mirror.com".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn is_huggingface_url(url: &str) -> bool {
+    let origin = huggingface_origin();
+    url.starts_with(&origin)
+        || url.contains("://huggingface.co/")
+        || url.contains("://hf-mirror.com/")
+}
+
 fn list_url(source: &str, repo_id: &str, revision: &str) -> Result<String, String> {
     match source {
         "huggingface" => Ok(format!(
-            "https://huggingface.co/api/models/{}/tree/{}?recursive=1",
+            "{}/api/models/{}/tree/{}?recursive=1",
+            huggingface_origin(),
             encode_repo_path(repo_id),
             encode_component(revision)
         )),
@@ -1842,7 +1709,8 @@ fn resolve_file_url(
     let file = encode_repo_path(path);
     match source {
         "huggingface" => Ok(format!(
-            "https://huggingface.co/{repo}/resolve/{rev}/{file}"
+            "{}/{repo}/resolve/{rev}/{file}",
+            huggingface_origin()
         )),
         "modelscope" => Ok(format!(
             "https://www.modelscope.cn/models/{repo}/resolve/{rev}/{file}"
@@ -2212,7 +2080,7 @@ fn first_nonempty(values: &[String]) -> String {
 }
 
 fn token_for(url: &str, auth: &HubAuth) -> Option<String> {
-    if url.contains("huggingface.co") && !auth.huggingface.is_empty() {
+    if is_huggingface_url(url) && !auth.huggingface.is_empty() {
         Some(auth.huggingface.clone())
     } else if url.contains("civitai.com") && !auth.civitai.is_empty() {
         Some(auth.civitai.clone())
@@ -2233,6 +2101,85 @@ fn version_lists_components(spec: &Value) -> bool {
     spec.get("components")
         .and_then(|v| v.as_array())
         .is_some_and(|rows| !rows.is_empty())
+}
+
+fn install_hooks(spec: &Value) -> Result<&[Value], String> {
+    match spec.get("install_hooks") {
+        None | Some(Value::Null) => Ok(&[]),
+        Some(Value::Array(hooks)) => Ok(hooks),
+        Some(_) => Err("registry install_hooks must be an array".into()),
+    }
+}
+
+#[cfg(test)]
+mod install_hook_tests {
+    use super::{install_hooks, version_ready, Downloads, INSTALL_HOOK_INCOMPLETE};
+    use serde_json::json;
+    use std::sync::atomic::AtomicBool;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "danmo-download-hook-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn pending_hook_marker_prevents_a_source_only_install_from_looking_ready() {
+        let root = scratch("ready");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("model.safetensors"), b"source").unwrap();
+        assert!(version_ready(&root));
+        std::fs::write(root.join(INSTALL_HOOK_INCOMPLETE), b"pending").unwrap();
+        assert!(!version_ready(&root));
+        std::fs::remove_file(root.join(INSTALL_HOOK_INCOMPLETE)).unwrap();
+        assert!(version_ready(&root));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn hook_spec_requires_an_array_and_a_known_type() {
+        assert!(install_hooks(&json!({"install_hooks": {}})).is_err());
+        let workspace = scratch("dispatch");
+        let downloads = Downloads::open(&workspace);
+        let root = workspace.join("model");
+        std::fs::create_dir_all(&root).unwrap();
+        let spec = json!({"install_hooks": [{"type": "invented_hook"}]});
+        let hooks = install_hooks(&spec).unwrap();
+        let error = downloads
+            .run_install_hooks("test", &root, hooks, &AtomicBool::new(false))
+            .err()
+            .unwrap();
+        assert!(
+            error.contains("unsupported registry install hook"),
+            "{error}"
+        );
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[cfg(not(feature = "mlx"))]
+    #[test]
+    fn ltx25_hook_fails_loud_when_the_binary_has_no_mlx() {
+        let workspace = scratch("no-mlx");
+        let downloads = Downloads::open(&workspace);
+        let root = workspace.join("model");
+        std::fs::create_dir_all(&root).unwrap();
+        let spec = json!({"install_hooks": [{"type": "ltx25_ingest", "source": "."}]});
+        let hooks = install_hooks(&spec).unwrap();
+        let error = downloads
+            .run_install_hooks("test", &root, hooks, &AtomicBool::new(false))
+            .err()
+            .unwrap();
+        assert!(
+            error.contains("requires a binary built with MLX"),
+            "{error}"
+        );
+        let _ = std::fs::remove_dir_all(workspace);
+    }
 }
 
 #[cfg(test)]
@@ -2293,7 +2240,10 @@ mod inference_stack_tests {
         assert_eq!(stacked.len(), 1);
         assert_eq!(stacked[0].id, "companion:bf16");
         assert_eq!(stacked[0].weight, 1.0);
-        assert!(downloads.inference_stack("user-lora-plain").unwrap().is_empty());
+        assert!(downloads
+            .inference_stack("user-lora-plain")
+            .unwrap()
+            .is_empty());
         let text = downloads.inference_stack("user-lora-text").unwrap();
         assert_eq!(text[0].id, "patch:bf16");
         assert_eq!(text[0].weight, 1.0);
@@ -2339,92 +2289,6 @@ mod component_role_tests {
             "/models/Audio/ace-step-xl-turbo/q8_0/nested/file.gguf"
         );
     }
-
-    #[test]
-    fn ltx_roles_land_in_their_bundle_subdirs() {
-        let root = PathBuf::from("/models/Video/ltx-2.3-dev/bf16");
-        for (role, remote, expect) in [
-            (
-                "audio_vae",
-                "vae/ltx-2.3-22b-dev_audio_vae.safetensors",
-                "/models/Video/ltx-2.3-dev/bf16/audio_vae/ltx-2.3-22b-dev_audio_vae.safetensors",
-            ),
-            (
-                "connectors",
-                "text_encoders/ltx-2.3-22b-dev_embeddings_connectors.safetensors",
-                "/models/Video/ltx-2.3-dev/bf16/connectors/ltx-2.3-22b-dev_embeddings_connectors.safetensors",
-            ),
-            (
-                "upscaler",
-                "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
-                "/models/Video/ltx-2.3-dev/bf16/upscaler/ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
-            ),
-            (
-                "transformer_stage2",
-                "distilled/ltx-2.3-22b-distilled-BF16.gguf",
-                "/models/Video/ltx-2.3-dev/bf16/transformer_stage2/ltx-2.3-22b-distilled-BF16.gguf",
-            ),
-        ] {
-            assert_eq!(
-                component_dest(&root, role, remote)
-                    .unwrap()
-                    .display()
-                    .to_string(),
-                expect
-            );
-        }
-        let err = component_dest(&root, "vocoder", "vocoder.gguf").unwrap_err();
-        assert!(err.contains("is not a known bundle component"), "{err}");
-    }
-
-    #[test]
-    fn manifest_collects_the_ltx_component_roles() {
-        use super::{bundle_manifest_value, PlannedFile};
-        use std::path::Path;
-
-        let root = Path::new("/models/Video/ltx-2.3-distilled/bf16");
-        let file = |dest: &str| PlannedFile {
-            url: String::new(),
-            dest: format!("{root}/{dest}", root = root.display(), dest = dest),
-            size: None,
-        };
-        let files = vec![
-            file("ltx-2.3-22b-distilled.safetensors"),
-            file("text_encoder/gemma-3-12b-it.safetensors"),
-            file("vae/ltx-2.3-22b-distilled_video_vae.safetensors"),
-            file("audio_vae/ltx-2.3-22b-distilled_audio_vae.safetensors"),
-            file("connectors/ltx-2.3-22b-distilled_embeddings_connectors.safetensors"),
-            file("upscaler/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"),
-            file("transformer_stage2/ltx-2.3-22b-distilled.safetensors"),
-        ];
-        let manifest = bundle_manifest_value("mlx-bf16", root, &files).unwrap();
-        let files = &manifest["files"];
-        assert_eq!(manifest["format"], "safetensors");
-        assert_eq!(
-            files["transformer"].as_str().unwrap(),
-            "ltx-2.3-22b-distilled.safetensors"
-        );
-        assert_eq!(
-            files["audio_vae"].as_str().unwrap(),
-            "audio_vae/ltx-2.3-22b-distilled_audio_vae.safetensors"
-        );
-        assert_eq!(
-            files["connectors"].as_str().unwrap(),
-            "connectors/ltx-2.3-22b-distilled_embeddings_connectors.safetensors"
-        );
-        assert_eq!(
-            files["upscaler"].as_str().unwrap(),
-            "upscaler/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
-        );
-        assert_eq!(
-            files["transformer_stage2"].as_str().unwrap(),
-            "transformer_stage2/ltx-2.3-22b-distilled.safetensors"
-        );
-        let files = vec![file("ltx-2.3-22b-distilled.safetensors")];
-        let manifest = bundle_manifest_value("mlx-bf16", root, &files).unwrap();
-        assert!(manifest["files"].get("upscaler").is_none());
-        assert!(manifest["files"].get("audio_vae").is_none());
-    }
 }
 
 fn write_bundle_manifest(root: &Path, quant: &str, files: &[PlannedFile]) -> Result<(), String> {
@@ -2442,10 +2306,6 @@ fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Res
     let mut transformer = Vec::new();
     let mut text_encoder = Vec::new();
     let mut vae = Vec::new();
-    let mut audio_vae = Vec::new();
-    let mut connectors = Vec::new();
-    let mut upscaler = Vec::new();
-    let mut transformer_stage2 = Vec::new();
     let mut image_encoder = Vec::new();
     for file in files {
         let rel = rel_under(root, &file.dest)?;
@@ -2456,10 +2316,6 @@ fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Res
             "transformer" => &mut transformer,
             "text_encoder" => &mut text_encoder,
             "vae" => &mut vae,
-            "audio_vae" => &mut audio_vae,
-            "connectors" => &mut connectors,
-            "upscaler" => &mut upscaler,
-            "transformer_stage2" => &mut transformer_stage2,
             "image_encoder" => &mut image_encoder,
             _ => continue,
         };
@@ -2470,10 +2326,6 @@ fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Res
     transformer.sort();
     text_encoder.sort();
     vae.sort();
-    audio_vae.sort();
-    connectors.sort();
-    upscaler.sort();
-    transformer_stage2.sort();
     image_encoder.sort();
     if transformer.is_empty() {
         return Err("bundle manifest has no transformer file".into());
@@ -2492,18 +2344,6 @@ fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Res
     }
     if !vae.is_empty() {
         files_map["vae"] = role_value(vae);
-    }
-    if !audio_vae.is_empty() {
-        files_map["audio_vae"] = role_value(audio_vae);
-    }
-    if !connectors.is_empty() {
-        files_map["connectors"] = role_value(connectors);
-    }
-    if !upscaler.is_empty() {
-        files_map["upscaler"] = role_value(upscaler);
-    }
-    if !transformer_stage2.is_empty() {
-        files_map["transformer_stage2"] = role_value(transformer_stage2);
     }
     if !image_encoder.is_empty() {
         files_map["image_encoder"] = role_value(image_encoder);
@@ -2548,14 +2388,6 @@ fn manifest_role(rel: &str) -> Option<&'static str> {
         Some("text_encoder")
     } else if rel.starts_with("vae/") {
         Some("vae")
-    } else if rel.starts_with("audio_vae/") {
-        Some("audio_vae")
-    } else if rel.starts_with("connectors/") {
-        Some("connectors")
-    } else if rel.starts_with("upscaler/") {
-        Some("upscaler")
-    } else if rel.starts_with("transformer_stage2/") {
-        Some("transformer_stage2")
     } else if rel.starts_with("image_encoder/") {
         Some("image_encoder")
     } else {
@@ -3246,6 +3078,65 @@ mod tests {
     }
 
     #[test]
+    fn omitted_version_source_uses_the_catalog_hub() {
+        let mut spec = json!({
+            "repo_id": "Qwen/Qwen-Image-Edit-2511",
+            "local_path": "models/Image/qwen-image-edit-2511-fp16"
+        });
+        fill_missing_download_source(&mut spec, Some("modelscope"));
+        assert_eq!(spec["source"], "modelscope");
+        fill_missing_download_source(&mut spec, Some("huggingface"));
+        assert_eq!(spec["source"], "modelscope");
+
+        let mut explicit = json!({ "source": "huggingface", "repo_id": "acme/demo" });
+        fill_missing_download_source(&mut explicit, Some("modelscope"));
+        assert_eq!(explicit["source"], "huggingface");
+        fill_missing_download_source(&mut explicit, None);
+        assert_eq!(explicit["source"], "huggingface");
+    }
+
+    #[test]
+    fn qwen_image_edit_full_card_downloads_from_modelscope() {
+        let spec = published_version("qwen-image-edit", "fp16");
+        assert_eq!(spec["source"], "modelscope");
+        let workspace = PathBuf::from("/tmp/danmo-qwen-edit-fp16-source");
+        let plan = plan_version(
+            &spec,
+            &mut |query| {
+                assert_eq!(query.source, "modelscope");
+                assert_eq!(query.repo_id, "Qwen/Qwen-Image-Edit-2511");
+                Ok(vec![entry("transformer/diffusion_pytorch_model.safetensors", 8)])
+            },
+            &|path| resolve_model_path(&workspace, path),
+        )
+        .unwrap();
+        let Plan::Files(files) = plan;
+        assert!(
+            files
+                .iter()
+                .all(|file| file.url.starts_with("https://www.modelscope.cn/")),
+            "{files:?}"
+        );
+    }
+
+    #[test]
+    fn huggingface_downloads_default_to_hf_mirror() {
+        assert_eq!(huggingface_origin_from(None), "https://hf-mirror.com");
+        assert_eq!(huggingface_origin_from(Some("  ")), "https://hf-mirror.com");
+        assert_eq!(
+            huggingface_origin_from(Some("https://huggingface.co/")),
+            "https://huggingface.co"
+        );
+        let mirror = huggingface_origin_from(None);
+        assert!(is_huggingface_url(&format!(
+            "{mirror}/acme/demo/resolve/main/w.safetensors"
+        )));
+        assert!(is_huggingface_url(
+            "https://huggingface.co/acme/demo/resolve/main/w.safetensors"
+        ));
+    }
+
+    #[test]
     fn repo_listing_builds_the_resolve_url_from_published_names() {
         let spec = json!({
             "local_path": "/tmp/danmo-demo",
@@ -3269,7 +3160,10 @@ mod tests {
         let Plan::Files(files) = plan;
         assert_eq!(
             files[0].url,
-            "https://huggingface.co/acme/demo/resolve/main/weights.safetensors"
+            format!(
+                "{}/acme/demo/resolve/main/weights.safetensors",
+                huggingface_origin()
+            )
         );
     }
 

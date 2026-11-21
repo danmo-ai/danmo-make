@@ -1,67 +1,39 @@
-//! Flux2 edit (operation `rewrite`): reference img2img. The source image is
-//! aligned to 16 and center-cropped, encoded to the packed batch-normed
-//! latent, blended with noise at `sigma[init_timestep]`, and denoised from
-//! that timestep. `init_timestep` is `max(1, int(steps * source_fidelity))`
-//! with the reference default fidelity 0.6. The negative prompt stays unbuilt,
-//! matching create.
+//! Flux2 rewrite. Matches BFL / diffusers `Flux2KleinPipeline` edit:
+//! encode the source through the MLX VAE (`conv_out`, `quant_conv`, mean,
+//! 2×2 patch, batch norm), keep those packed tokens as reference context at
+//! `T = 10`, sample target noise for the output grid, and denoise the full
+//! schedule while concatenating `[target | reference]` each step. Only target
+//! tokens are stepped. LoRA and a guidance embedder follow the checkpoint,
+//! the same as create.
 
-use super::transformer::Flux2Denoise;
-use super::weights::{weight_layout, Flux2Config};
 use crate::contract::{Artifact, EngineOutput, EngineRequest, ExecutionContext, ResolvedRun};
 use crate::error::EngineError;
 use crate::families::{FacadeFamily, FacadeSession};
 use crate::ports::ResolvePort;
 use crate::runtime::GgmlContext;
-use crate::weights::{assert_gguf_bundle, load_lora_factors, GgufWeights, LoraFile, WeightError};
+use crate::weights::{LoraFile, WeightError};
 use danmo_contracts::ImageEditRequest;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 
 pub struct Flux2EditFamily;
 
 struct Prepared {
     request: ImageEditRequest,
-    config: Flux2Config,
     source: (u32, u32),
     width: u32,
     height: u32,
     reference: Vec<f32>,
-    txt: Vec<f32>,
-    seq_txt: i64,
+    ids: Vec<i32>,
+    valid: Vec<bool>,
     sigmas: Vec<f32>,
-    init: usize,
+    bundle: std::path::PathBuf,
     loras: Vec<LoraFile>,
-}
-
-pub struct Flux2EditSession {
-    run: ResolvedRun,
-    prepared: Prepared,
-}
-
-fn init_timestep(steps: u32, fidelity: f32) -> Result<usize, EngineError> {
-    if !fidelity.is_finite() {
-        return Err(EngineError::bad_request(format!(
-            "source_fidelity {fidelity} is not finite"
-        )));
-    }
-    let fidelity = fidelity.clamp(0.0, 1.0);
-    if fidelity <= 0.0 {
-        return Ok(0);
-    }
-    let init = ((steps as f64) * (fidelity as f64)) as usize;
-    let init = init.max(1);
-    if init as u32 >= steps {
-        return Err(EngineError::bad_request(format!(
-            "source_fidelity {fidelity} implies init_timestep {init} >= steps {steps}; no denoising steps remain"
-        )));
-    }
-    Ok(init)
 }
 
 impl FacadeFamily for Flux2EditFamily {
     fn prepare(
         &self,
-        ctx: &GgmlContext,
+        _ctx: &GgmlContext,
         run: &ResolvedRun,
         request: &EngineRequest,
         resolver: &dyn ResolvePort,
@@ -109,220 +81,218 @@ impl FacadeFamily for Flux2EditFamily {
                 "flux2 edit source_asset_id is empty",
             ));
         }
-        let files = assert_gguf_bundle(&run.bundle)?;
-        let loaded = GgufWeights::open_parts(&files.transformer)?;
-        let config = super::config_from_weights(&loaded)?;
-        let (rgb, source_w, source_h) =
-            resolver.read_source_image(run, &request.source_asset_id)?;
-        let (rgb, width, height) =
-            crate::common::image::center_crop_align(&rgb, source_w, source_h, 16)?;
-        let scale = config.vae_scale.max(1);
-        if width % scale != 0 || height % scale != 0 {
-            return Err(WeightError::NotBuilt(format!(
-                "size {width}x{height} is not divisible by vae scale {scale}"
-            ))
-            .into());
-        }
-        if let Some(max_edge) = super::manifest_max_edge(&run.bundle)? {
-            if width > max_edge || height > max_edge {
-                return Err(WeightError::NotBuilt(format!(
-                    "this bundle accepts edges up to {max_edge}, got {width}x{height}"
-                ))
-                .into());
+        if let Some(value) = request.guidance {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(EngineError::bad_request(format!(
+                    "Flux2 guidance {value} is not a positive finite number"
+                )));
             }
         }
         let steps = request.steps.unwrap_or(4);
-        if steps < 2 {
+        if steps < 1 {
             return Err(EngineError::bad_request(format!(
-                "flux2 edit steps {steps} is below 2"
+                "flux2 edit steps {steps} is below 1"
             )));
         }
-        let fidelity = request.source_fidelity.unwrap_or(0.6);
-        let init = init_timestep(steps, fidelity)?;
-        let n11 = crate::common::image::rgb_to_n11_planar(&rgb, width, height)?;
-        let reference = super::vae::encode_packed(ctx, &files.vae, &n11, width, height)?;
-        let grid_w = (width / scale) as i64;
-        let grid_h = (height / scale) as i64;
-        let expect = (config.in_channels * grid_w * grid_h) as usize;
-        if reference.len() != expect {
-            return Err(WeightError::NotBuilt(format!(
-                "vae encode produced {} values but the DiT latent is {expect}; check the VAE latent channels against in_channels {}",
-                reference.len(),
-                config.in_channels
-            ))
+        if request.seed.is_none() {
+            return Err(EngineError::bad_request("Flux2 Klein edit requires a seed"));
+        }
+        #[cfg(not(feature = "mlx"))]
+        {
+            let _ = (run, resolver, exec);
+            return Err(WeightError::NotBuilt(
+                "flux2 image edit no longer has a ggml graph; build with the mlx feature".into(),
+            )
             .into());
         }
-        let tokenizer = crate::common::qwen3::load_tokenizer(&run.bundle)?;
-        let (txt, seq_txt) = super::text_tokens(
-            ctx,
-            &files.text_encoder,
-            &tokenizer,
-            &request.prompt,
-            config.joint_attention_dim,
-        )?;
-        let sigmas = super::schedule(steps, grid_w, grid_h);
-        let loras = crate::pipeline::lora_files(&request.adapters)?;
-        exec.log(
-            "info",
-            &format!(
-                "flux2_edit source={source_w}x{source_h} out={width}x{height} steps={steps} init={init}"
-            ),
-        )?;
-        Ok(Box::new(Flux2EditSession {
-            run: run.clone(),
-            prepared: Prepared {
-                request: request.clone(),
-                config,
-                source: (source_w, source_h),
-                width,
-                height,
-                reference,
-                txt,
-                seq_txt,
-                sigmas,
-                init,
-                loras,
-            },
-        }))
+        #[cfg(feature = "mlx")]
+        {
+            if !crate::weights::is_safetensors_image_bundle(&run.bundle) {
+                return Err(WeightError::NotBuilt(
+                    "flux2 image edit no longer has a ggml graph; install the safetensors bundle and build with the mlx feature"
+                        .into(),
+                )
+                .into());
+            }
+            let (rgb, source_w, source_h) =
+                resolver.read_source_image(run, &request.source_asset_id)?;
+            let (rgb, width, height) =
+                crate::common::image::center_crop_align(&rgb, source_w, source_h, 16)?;
+            if let Some(max_edge) = super::manifest_max_edge(&run.bundle)? {
+                if width > max_edge || height > max_edge {
+                    return Err(WeightError::NotBuilt(format!(
+                        "this bundle accepts edges up to {max_edge}, got {width}x{height}"
+                    ))
+                    .into());
+                }
+            }
+            let image = crate::common::image::rgb_to_n11_planar(&rgb, width, height)?;
+            let reference =
+                super::mlx::session::encode_packed_image(&run.bundle, &image, width, height)?;
+            let grid_w = width / 16;
+            let grid_h = height / 16;
+            let expect = (grid_w * grid_h * 128) as usize;
+            if reference.len() != expect {
+                return Err(WeightError::NotBuilt(format!(
+                    "vae encode produced {} values but the DiT latent is {expect}",
+                    reference.len()
+                ))
+                .into());
+            }
+            let loras = crate::pipeline::lora_files(&request.adapters)?;
+            let (ids, valid) = super::mlx::session::prompt_batch(&run.bundle, &request.prompt)?;
+            let sigmas = super::schedule(steps, i64::from(grid_w), i64::from(grid_h));
+            if sigmas.len() != steps as usize + 1 {
+                return Err(WeightError::NotBuilt(format!(
+                    "scheduler returned {} sigmas for {steps} steps",
+                    sigmas.len()
+                ))
+                .into());
+            }
+            if let Some(fidelity) = request.source_fidelity {
+                if !fidelity.is_finite() {
+                    return Err(EngineError::bad_request(format!(
+                        "source_fidelity {fidelity} is not finite"
+                    )));
+                }
+                exec.log(
+                    "info",
+                    &format!(
+                        "flux2_edit source_fidelity={fidelity} is ignored; Klein edit uses reference conditioning (BFL/diffusers)"
+                    ),
+                )?;
+            }
+            exec.log(
+                "info",
+                &format!(
+                    "flux2_edit mode=reference_conditioning source={source_w}x{source_h} out={width}x{height} steps={steps} refs=1 t_offset={}",
+                    super::mlx::forward::REF_T_SCALE
+                ),
+            )?;
+            Ok(Box::new(Flux2EditSession {
+                prepared: Prepared {
+                    request: request.clone(),
+                    source: (source_w, source_h),
+                    width,
+                    height,
+                    reference,
+                    ids,
+                    valid,
+                    sigmas,
+                    bundle: run.bundle.clone(),
+                    loras,
+                },
+            }))
+        }
     }
+}
+
+struct Flux2EditSession {
+    prepared: Prepared,
 }
 
 impl FacadeSession for Flux2EditSession {
     fn infer(
         &mut self,
-        ctx: &GgmlContext,
+        _ctx: &GgmlContext,
         exec: &ExecutionContext,
     ) -> Result<EngineOutput, EngineError> {
-        let prepared = &self.prepared;
-        let files = assert_gguf_bundle(&self.run.bundle)?;
-        let loaded = GgufWeights::open_parts(&files.transformer)?;
-        let layout = weight_layout(prepared.config);
-        let factors = load_lora_factors(&prepared.loras, &layout)?;
-        let mut types = HashMap::new();
-        let mut stored = Vec::new();
-        for (name, ne0, ne1) in &layout {
-            let ggml_type = loaded.ggml_type_of(name)?;
-            super::check_stored_type(name, ggml_type, *ne0)?;
-            types.insert(name.clone(), ggml_type);
-            stored.push((name.clone(), loaded.raw_exact(name, &[*ne0, *ne1])?));
+        #[cfg(not(feature = "mlx"))]
+        {
+            let _ = exec;
+            return Err(WeightError::NotBuilt(
+                "flux2 image edit no longer has a ggml graph".into(),
+            )
+            .into());
         }
-        let grid_w = (prepared.width / prepared.config.vae_scale.max(1)) as i64;
-        let grid_h = (prepared.height / prepared.config.vae_scale.max(1)) as i64;
-        let mut denoise = Flux2Denoise::build_typed(
-            ctx,
-            prepared.config,
-            grid_w,
-            grid_h,
-            prepared.seq_txt,
-            &types,
-            &factors,
-        )?;
-        for (name, raw) in &stored {
-            denoise.load_bytes(name, raw)?;
-        }
-        for (index, factor) in factors.iter().enumerate() {
-            denoise.load_f32(&format!("lora.{index}.a"), &factor.a)?;
-            denoise.load_f32(&format!("lora.{index}.b"), &factor.b)?;
-        }
-        let steps = prepared.request.steps.unwrap_or(4);
-        let guidance = prepared.request.guidance.unwrap_or(1.0);
-        let sigma_blend = prepared.sigmas[prepared.init];
-        let sigmas = &prepared.sigmas[prepared.init..];
-        let count = prepared.request.n.clamp(1, 8);
-        let mut output = EngineOutput {
-            steps,
-            width: Some(prepared.width),
-            height: Some(prepared.height),
-            ..EngineOutput::default()
-        };
-        let mut items: Vec<Value> = Vec::with_capacity(count as usize);
-        for index in 0..count {
-            exec.check_cancelled()?;
-            let seed = if count > 1 {
-                Some(prepared.request.seed.unwrap_or(0) + index as i64)
-            } else {
-                prepared.request.seed
+        #[cfg(feature = "mlx")]
+        {
+            let prepared = &self.prepared;
+            let steps = prepared.request.steps.unwrap_or(4);
+            let guidance = prepared.request.guidance.unwrap_or(1.0);
+            let count = prepared.request.n.clamp(1, 8);
+            let mut output = EngineOutput {
+                steps,
+                width: Some(prepared.width),
+                height: Some(prepared.height),
+                ..EngineOutput::default()
             };
-            let noise = match seed {
-                Some(seed) => crate::common::ops::normal_latent(seed, denoise.latent_len()),
-                None => vec![0.1f32; denoise.latent_len()],
-            };
-            let latent: Vec<f32> = prepared
-                .reference
-                .iter()
-                .zip(&noise)
-                .map(|(reference, noise)| (1.0 - sigma_blend) * reference + sigma_blend * noise)
-                .collect();
-            let mut callback_error = None;
-            let result = denoise.denoise(latent, &prepared.txt, sigmas, guidance, |step, total| {
-                if callback_error.is_none() {
-                    if let Err(error) = exec.progress("denoise", step, total) {
-                        callback_error = Some(error);
-                    }
+            let mut items: Vec<Value> = Vec::with_capacity(count as usize);
+            let grid_w = (prepared.width / 16) as i32;
+            let grid_h = (prepared.height / 16) as i32;
+            for index in 0..count {
+                exec.check_cancelled()?;
+                let seed = prepared.request.seed.unwrap_or(0) + index as i64;
+                let noise = crate::runtime::mlx_executor()
+                    .map_err(|error| EngineError::message(error.to_string()))?
+                    .execute("flux2 edit noise", move |_, stream, _, _| {
+                        super::mlx::session::packed_noise(seed, 128, grid_h, grid_w, stream)
+                    })
+                    .map_err(|error| EngineError::message(error.to_string()))?;
+                if noise.len() != prepared.reference.len() {
+                    return Err(EngineError::message(format!(
+                        "edit noise has {} values, reference has {}",
+                        noise.len(),
+                        prepared.reference.len()
+                    )));
                 }
-            });
-            if let Some(error) = callback_error {
-                return Err(error);
+                let latents = super::mlx::session::denoise_latents(
+                    &prepared.bundle,
+                    &prepared.ids,
+                    &prepared.valid,
+                    grid_h,
+                    grid_w,
+                    &noise,
+                    Some(&prepared.reference),
+                    &prepared.sigmas,
+                    prepared.request.guidance,
+                    &prepared.loras,
+                    exec,
+                )?;
+                let png = super::mlx::session::decode_png(
+                    &prepared.bundle,
+                    &latents,
+                    grid_w,
+                    grid_h,
+                    prepared.width,
+                    prepared.height,
+                )?;
+                let metadata = json!({
+                    "operation": prepared.request.operation,
+                    "prompt": prepared.request.prompt,
+                    "title": prepared.request.title,
+                    "source_asset_id": prepared.request.source_asset_id,
+                    "source_width": prepared.source.0,
+                    "source_height": prepared.source.1,
+                    "edit_mode": "reference_conditioning",
+                    "reference_t_offset": super::mlx::forward::REF_T_SCALE,
+                    "source_fidelity": prepared.request.source_fidelity,
+                    "steps": steps,
+                    "guidance": guidance,
+                    "seed": seed,
+                    "batch_index": index,
+                    "batch_count": count,
+                });
+                items.push(metadata.clone());
+                let mut artifact =
+                    Artifact::png(png, prepared.width as i64, prepared.height as i64, metadata);
+                artifact.source_action = "edit".into();
+                artifact.parent_asset_id = Some(prepared.request.source_asset_id.clone());
+                artifact.relation_type = Some(edit_relation_type(&prepared.request));
+                output.artifacts.push(artifact);
+                output.latent_len = latents.len();
             }
-            let latents = result?;
-            if let Some(detail) = crate::common::ops::non_finite("flux2-edit latent", &latents) {
-                return Err(WeightError::NotBuilt(detail).into());
-            }
-            let png = super::vae::decode(
-                ctx,
-                &files.vae,
-                &latents,
-                prepared.config.in_channels,
-                grid_w,
-                grid_h,
-                prepared.width,
-                prepared.height,
-            )?;
-            let fidelity = prepared.request.source_fidelity.unwrap_or(0.6);
-            let mut metadata = json!({
-                "operation": prepared.request.operation,
-                "prompt": prepared.request.prompt,
-                "title": prepared.request.title,
-                "source_asset_id": prepared.request.source_asset_id,
-                "source_width": prepared.source.0,
-                "source_height": prepared.source.1,
-                "source_fidelity": fidelity,
-                "init_timestep": prepared.init,
-                "steps": steps,
-                "guidance": guidance,
-                "seed": seed,
-                "batch_index": index,
-                "batch_count": count,
-            });
-            if !prepared.request.adapters.is_empty() {
-                metadata["adapters"] = json!(prepared
-                    .request
-                    .adapters
-                    .iter()
-                    .map(|adapter| json!({ "id": adapter.id, "weight": adapter.weight }))
-                    .collect::<Vec<_>>());
-            }
-            items.push(metadata.clone());
-            let mut artifact =
-                Artifact::png(png, prepared.width as i64, prepared.height as i64, metadata);
-            artifact.source_action = "edit".into();
-            artifact.parent_asset_id = Some(prepared.request.source_asset_id.clone());
-            artifact.relation_type = Some(edit_relation_type(&prepared.request));
-            output.artifacts.push(artifact);
-            output.latent_len = latents.len();
+            output.graph_computes = (prepared.sigmas.len().saturating_sub(1) as u32) * count;
+            let first = items.first().cloned().unwrap_or_else(|| json!({}));
+            let mut metadata = first;
+            metadata["items"] = json!(items);
+            metadata["request_metadata"] = prepared.request.metadata.clone();
+            output.metadata = metadata;
+            Ok(output)
         }
-        output.graph_computes = denoise.graph_computes();
-        let first = items.first().cloned().unwrap_or_else(|| json!({}));
-        let mut metadata = first;
-        metadata["items"] = json!(items);
-        metadata["request_metadata"] = prepared.request.metadata.clone();
-        output.metadata = metadata;
-        Ok(output)
     }
 }
 
-/// Canvas edge label: prefer client `metadata.relation_type`, else map
-/// known edit ops; rewrite/unknown stay `edit`.
 fn edit_relation_type(request: &ImageEditRequest) -> String {
     if let Some(relation) = request
         .metadata
@@ -348,11 +318,7 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
 
-    struct StubResolver {
-        rgb: Vec<u8>,
-        width: u32,
-        height: u32,
-    }
+    struct StubResolver;
 
     impl ResolvePort for StubResolver {
         fn resolve(&self, _model: &str, _action: Action) -> Result<ResolvedRun, EngineError> {
@@ -379,29 +345,10 @@ mod tests {
         fn read_source_image(
             &self,
             _run: &ResolvedRun,
-            asset: &str,
+            _asset: &str,
         ) -> Result<(Vec<u8>, u32, u32), EngineError> {
-            if asset != "ast_src" {
-                return Err(EngineError::Resolve(format!(
-                    "source asset {asset} is missing"
-                )));
-            }
-            Ok((self.rgb.clone(), self.width, self.height))
+            unreachable!()
         }
-    }
-
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "danmo-flux2-edit-{name}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
     }
 
     fn request() -> ImageEditRequest {
@@ -428,79 +375,30 @@ mod tests {
         }
     }
 
-    fn run(dir: PathBuf) -> ResolvedRun {
+    fn run() -> ResolvedRun {
         ResolvedRun {
             model: "flux2-klein-4b".into(),
-            version: Some("q4_k".into()),
+            version: Some("mlx-q4".into()),
             family: "flux2".into(),
             action: Action::ImageEdit,
-            bundle: dir,
+            bundle: PathBuf::from("missing"),
             backend: BackendKind::Cpu,
         }
     }
 
     #[test]
-    fn init_timestep_follows_the_reference_math() {
-        assert_eq!(init_timestep(4, 0.6).unwrap(), 2);
-        assert_eq!(init_timestep(28, 0.5).unwrap(), 14);
-        assert_eq!(init_timestep(4, 0.0).unwrap(), 0);
-        assert!(init_timestep(4, 1.0).is_err());
-    }
-
-    #[test]
-    fn edit_facade_encodes_blends_and_decodes_a_png() {
-        let dir = scratch("facade");
-        super::super::write_edit_smoke_bundle(&dir).unwrap();
-        let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
-        let exec = ExecutionContext::new("edit", std::sync::Arc::new(NoopObserver));
-        let resolver = StubResolver {
-            rgb: vec![128u8; 32 * 32 * 3],
-            width: 32,
-            height: 32,
-        };
-        let family = Flux2EditFamily;
-        let mut session = family
-            .prepare(
-                &ctx,
-                &run(dir.clone()),
-                &EngineRequest::ImageEdit(request()),
-                &resolver,
-                &exec,
-            )
-            .expect("prepare");
-        let output = session.infer(&ctx, &exec).expect("infer");
-        assert_eq!(output.width, Some(32));
-        assert_eq!(output.height, Some(32));
-        assert_eq!(output.artifacts.len(), 1);
-        let artifact = &output.artifacts[0];
-        assert!(artifact.bytes.starts_with(b"\x89PNG"));
-        assert_eq!(artifact.parent_asset_id.as_deref(), Some("ast_src"));
-        assert_eq!(artifact.relation_type.as_deref(), Some("edit"));
-        assert_eq!(output.metadata["init_timestep"], json!(2));
-        assert!(output.graph_computes >= 2);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn edit_facade_rejects_unbuilt_modes_loud() {
-        let dir = scratch("reject");
-        super::super::write_edit_smoke_bundle(&dir).unwrap();
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
         let exec = ExecutionContext::new("edit", std::sync::Arc::new(NoopObserver));
-        let resolver = StubResolver {
-            rgb: vec![0u8; 32 * 32 * 3],
-            width: 32,
-            height: 32,
-        };
         let family = Flux2EditFamily;
         let negative = family.prepare(
             &ctx,
-            &run(dir.clone()),
+            &run(),
             &EngineRequest::ImageEdit(ImageEditRequest {
                 negative_prompt: "blurry".into(),
                 ..request()
             }),
-            &resolver,
+            &StubResolver,
             &exec,
         );
         let err = match negative {
@@ -510,12 +408,12 @@ mod tests {
         assert!(err.to_string().contains("negative prompt"), "{err}");
         let retouch = family.prepare(
             &ctx,
-            &run(dir.clone()),
+            &run(),
             &EngineRequest::ImageEdit(ImageEditRequest {
                 operation: "retouch".into(),
                 ..request()
             }),
-            &resolver,
+            &StubResolver,
             &exec,
         );
         let err = match retouch {
@@ -523,7 +421,6 @@ mod tests {
             Ok(_) => panic!("retouch operation was accepted"),
         };
         assert!(err.to_string().contains("retouch"), "{err}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

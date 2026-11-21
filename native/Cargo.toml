@@ -6,10 +6,12 @@ members = [
     "crates/danmo-mlx",
     "crates/danmo-contracts",
     "crates/danmo-catalog",
+    "crates/danmo-resolve",
     "crates/danmo-store",
     "crates/danmo-schedule",
     "crates/danmo-engine",
     "crates/danmo-server",
+    "crates/danmo-cli",
 ]
 
 [workspace.package]

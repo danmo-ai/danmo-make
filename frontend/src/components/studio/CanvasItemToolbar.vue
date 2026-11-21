@@ -144,9 +144,6 @@
             </DqDropdownItem>
           </template>
           <template v-else-if="pageMedia === 'video' && isVideo">
-            <DqDropdownItem command="use-animate-source">
-              {{ $t('canvas.useAsAnimateSource') }}
-            </DqDropdownItem>
             <DqDropdownItem command="use-video-source">
               {{ $t('canvas.useAsVideoSource') }}
             </DqDropdownItem>

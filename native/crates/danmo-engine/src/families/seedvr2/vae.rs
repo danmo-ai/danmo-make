@@ -5,7 +5,7 @@
 //! `ema_vae_fp16.safetensors` (PyTorch layout); the flat bytes double as the
 //! ggml `[KW, KH, KD, IC * OC]` kernel and `[IC, OC]` linear without a repack.
 
-use crate::runtime::{shape, GgmlContext, GraphBuilder, RuntimeError, Tensor};
+use crate::runtime::{GgmlContext, GraphBuilder, RuntimeError, Tensor, shape};
 use crate::weights::{GgufWeights, WeightError};
 use std::collections::HashMap;
 
@@ -1161,7 +1161,7 @@ pub fn decoder_loaded(loaded: &LoadedVae) -> &[(String, Vec<f32>)] {
 /// Convs map the ggml `[KW, KH, KD, IC*OC]` back to PyTorch
 /// `[OC, IC, KD, KH, KW]`; both flatten identically.
 pub fn write_smoke_vae(dir: &std::path::Path) -> Result<std::path::PathBuf, WeightError> {
-    use crate::weights::{write_safetensors, SafeTensor};
+    use crate::weights::{SafeTensor, write_safetensors};
     let spec = VaeSpec::smoke();
     let mut names: Vec<String> = Vec::new();
     let mut shapes: Vec<Vec<u64>> = Vec::new();
@@ -1208,7 +1208,7 @@ pub fn write_smoke_vae(dir: &std::path::Path) -> Result<std::path::PathBuf, Weig
 mod tests {
     use super::*;
     use crate::runtime::BackendKind;
-    use crate::weights::{write_safetensors, SafeTensor};
+    use crate::weights::{SafeTensor, write_safetensors};
     use std::collections::HashMap;
     use std::path::PathBuf;
 

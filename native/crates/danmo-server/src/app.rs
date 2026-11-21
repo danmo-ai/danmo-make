@@ -652,131 +652,10 @@ fn png_size(png: &[u8]) -> (i64, i64) {
     (width as i64, height as i64)
 }
 
-/// Resolve a model id to its installed bundle. `id:version` pins the tier.
-/// A bare id picks the first **installed** tier, so a registry `default` the
-/// user never downloaded cannot win over one they did.
+/// Resolve a model id to its installed bundle. Resolution rules live in
+/// `danmo-resolve` (shared with the CLI); this wrapper only plugs AppState.
 pub(crate) fn gguf_bundle(state: &AppState, model: &str) -> Result<PathBuf, String> {
-    let catalog = Catalog::open(&state.registry).map_err(|e| e.to_string())?;
-    let (bare, requested) = match model.split_once(':') {
-        Some((bare, version)) if !bare.is_empty() && !version.is_empty() => (bare, Some(version)),
-        _ => (model, None),
-    };
-    if let Some(version) = requested {
-        if danmo_catalog::GGUF_VERSION_KEYS.contains(&version) {
-            let path = catalog.gguf_local_path(model).map_err(|e| e.to_string())?;
-            return Ok(download::resolve_model_path(&state.workspace, &path));
-        }
-        return safetensors_bundle(&state.workspace, catalog.root(), bare, version);
-    }
-    if let Some(version) = installed_version(&state.workspace, catalog.root(), bare) {
-        let path = catalog
-            .gguf_local_path(&format!("{bare}:{version}"))
-            .map_err(|e| e.to_string())?;
-        return Ok(download::resolve_model_path(&state.workspace, &path));
-    }
-    if let Some(version) = installed_safetensors_version(&state.workspace, catalog.root(), bare) {
-        return safetensors_bundle(&state.workspace, catalog.root(), bare, &version);
-    }
-    let path = catalog.gguf_local_path(model).map_err(|e| e.to_string())?;
-    Ok(download::resolve_model_path(&state.workspace, &path))
-}
-
-fn safetensors_bundle(
-    workspace: &std::path::Path,
-    root: &serde_json::Value,
-    model: &str,
-    version: &str,
-) -> Result<PathBuf, String> {
-    let path = version_local_path(root, model, version)?;
-    let resolved = download::resolve_model_path(workspace, &path);
-    if danmo_engine::is_safetensors_image_bundle(&resolved)
-        || danmo_engine::is_ace_step_safetensors_bundle(&resolved)
-        || danmo_engine::is_controlnet_safetensors_dir(&resolved)
-    {
-        return Ok(resolved);
-    }
-    Err(format!(
-        "{model}:{version} is not an installed safetensors bundle at {}",
-        resolved.display()
-    ))
-}
-
-fn version_local_path(
-    root: &serde_json::Value,
-    model: &str,
-    version: &str,
-) -> Result<String, String> {
-    root.pointer(&format!(
-        "/models/{model}/distribution/versions/{version}/local_path"
-    ))
-    .and_then(|value| value.as_str())
-    .filter(|path| !path.is_empty())
-    .map(|path| path.to_string())
-    .ok_or_else(|| format!("{model}:{version} has no local_path"))
-}
-
-fn installed_safetensors_version(
-    workspace: &std::path::Path,
-    root: &serde_json::Value,
-    model_id: &str,
-) -> Option<String> {
-    let versions = root
-        .pointer(&format!("/models/{model_id}/distribution/versions"))?
-        .as_object()?;
-    let ready = |key: &str| {
-        let path = versions
-            .get(key)
-            .and_then(|version| version.get("local_path"))
-            .and_then(|value| value.as_str())
-            .filter(|path| !path.is_empty())?;
-        {
-            let resolved = download::resolve_model_path(workspace, path);
-            (danmo_engine::is_safetensors_image_bundle(&resolved)
-                || danmo_engine::is_ace_step_safetensors_bundle(&resolved)
-                || danmo_engine::is_controlnet_safetensors_dir(&resolved))
-                .then_some(key.to_string())
-        }
-    };
-    for key in danmo_catalog::SAFETENSORS_VERSION_KEYS {
-        if versions
-            .get(*key)
-            .and_then(|version| version.get("default"))
-            .and_then(|value| value.as_bool())
-            == Some(true)
-        {
-            if let Some(key) = ready(key) {
-                return Some(key);
-            }
-        }
-    }
-    danmo_catalog::SAFETENSORS_VERSION_KEYS
-        .iter()
-        .find_map(|key| ready(key))
-}
-
-/// First tier whose directory is a ready GGUF bundle, in bf16 / q8_0 / q4_k order.
-pub(crate) fn installed_version(
-    workspace: &std::path::Path,
-    root: &serde_json::Value,
-    model_id: &str,
-) -> Option<String> {
-    let versions = root
-        .pointer(&format!("/models/{model_id}/distribution/versions"))?
-        .as_object()?;
-    for key in danmo_catalog::GGUF_VERSION_KEYS {
-        let Some(path) = versions
-            .get(*key)
-            .and_then(|v| v.get("local_path"))
-            .and_then(|v| v.as_str())
-            .filter(|path| !path.is_empty())
-        else {
-            continue;
-        };
-        if download::version_ready(&download::resolve_model_path(workspace, path)) {
-            return Some((*key).to_string());
-        }
-    }
-    None
+    danmo_resolve::resolve_bundle(&state.workspace, &state.registry, model)
 }
 
 #[cfg(any())]
@@ -989,9 +868,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flux2_generation_loads_gguf_bundle() {
+    async fn flux2_safetensors_create_does_not_use_the_gguf_graph() {
         let dir = std::env::temp_dir().join(format!(
-            "danmo-api-ok-{}-{}",
+            "danmo-api-flux2-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -999,53 +878,44 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let (model, local_path) = published_weight("flux2-klein-4b", "q4_k");
-        let bundle = dir.join(&local_path);
-        danmo_engine::write_smoke_bundle(&bundle, 4).unwrap();
-        let app = router(&dir.join("studio.db"), &factory_registry());
+        let mut registry: Value =
+            serde_json::from_str(&std::fs::read_to_string(factory_registry()).unwrap()).unwrap();
+        let local = "models/Image/flux2-klein-4b-mlx-q4";
+        registry["models"]["flux2-klein-4b"]["distribution"]["versions"]["mlx-q4"]["local_path"] =
+            json!(local);
+        let bundle = dir.join(local);
+        for role in ["transformer", "text_encoder", "vae"] {
+            let role_dir = bundle.join(role);
+            std::fs::create_dir_all(&role_dir).unwrap();
+            std::fs::write(role_dir.join("model.safetensors"), b"not a real shard").unwrap();
+        }
+        let registry_path = dir.join("registry.json");
+        std::fs::write(&registry_path, serde_json::to_string(&registry).unwrap()).unwrap();
+        let app = router(&dir.join("studio.db"), &registry_path);
         let body = serde_json::json!({
-            "model": model,
+            "model": "flux2-klein-4b:mlx-q4",
             "prompt": "a cat",
             "size": "64x64",
-            "steps": 2
+            "steps": 2,
+            "seed": 1
         });
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/images/generations")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::ACCEPTED);
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let accepted: Value = serde_json::from_slice(&bytes).unwrap();
-        let id = accepted["id"].as_str().unwrap();
-        let task = wait_terminal(&app, id).await;
-        assert_eq!(task["status"], "completed", "task {task}");
-        let ids = task["result"]["asset_ids"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        assert_eq!(ids.len(), 1, "task {task}");
-        let assets = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/assets")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(assets.status(), StatusCode::OK);
-        let bytes = assets.into_body().collect().await.unwrap().to_bytes();
-        let listed: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(listed["items"][0]["id"], ids[0]);
+        let create = post_json(&app, "/api/images/generations", &body).await;
+        assert_eq!(create.0, StatusCode::ACCEPTED, "{}", create.1);
+        let id = create.1["id"].as_str().unwrap();
+        let task = wait_terminal_for(&app, id, 80, 40).await;
+        assert_eq!(task["status"], "failed", "task {task}");
+        let err = task["error"].as_str().unwrap_or("");
+        assert!(
+            !err.contains("no GGUF"),
+            "safetensors bundle was rejected as GGUF: {task}"
+        );
+        assert!(
+            err.contains("no longer has a ggml graph")
+                || err.contains("safetensors")
+                || err.contains("missing")
+                || err.contains("not a"),
+            "task {task}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1075,7 +945,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn qwen_image_edit_runs_end_to_end() {
+    async fn qwen_image_edit_fails_without_the_ggml_graph() {
         let dir = std::env::temp_dir().join(format!(
             "danmo-api-edit-{}-{}",
             std::process::id(),
@@ -1085,10 +955,19 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let (model, local_path) = published_weight("qwen-image-edit", "q4_k");
-        let bundle = dir.join(&local_path);
-        danmo_engine::write_edit_smoke_bundle(&bundle).unwrap();
-        let app = router(&dir.join("studio.db"), &factory_registry());
+        let mut registry: Value =
+            serde_json::from_str(&std::fs::read_to_string(factory_registry()).unwrap()).unwrap();
+        let local = "models/Image/qwen-image-edit/q4_k";
+        registry["models"]["qwen-image-edit"]["distribution"]["versions"]["q4_k"] = json!({
+            "name": { "zh": "Q4_K", "en": "Q4_K" },
+            "size": "1GB",
+            "local_path": local
+        });
+        let registry_path = dir.join("registry.json");
+        std::fs::write(&registry_path, serde_json::to_string(&registry).unwrap()).unwrap();
+        std::fs::create_dir_all(dir.join(local)).unwrap();
+        let app = router(&dir.join("studio.db"), &registry_path);
+        let model = "qwen-image-edit:q4_k";
         let rgb = vec![128u8; 48 * 32 * 3];
         let png = danmo_engine::png::encode_rgb(48, 32, &rgb);
         let upload = post_json(
@@ -1120,37 +999,10 @@ mod tests {
         .await;
         assert_eq!(edit.0, StatusCode::ACCEPTED, "{}", edit.1);
         let id = edit.1["id"].as_str().unwrap();
-        let task = wait_terminal_for(&app, id, 300, 100).await;
-        assert_eq!(task["status"], "completed", "task {task}");
-        assert_eq!(task["result"]["width"], 48, "task {task}");
-        assert_eq!(task["result"]["height"], 32, "task {task}");
-        assert_eq!(task["result"]["source_asset_id"], json!(source_id));
-        let ids = task["result"]["asset_ids"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        assert_eq!(ids.len(), 1, "task {task}");
-        let assets = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/assets")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let bytes = assets.into_body().collect().await.unwrap().to_bytes();
-        let listed: Value = serde_json::from_slice(&bytes).unwrap();
-        let edited = listed["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|item| item["id"] == ids[0])
-            .cloned()
-            .unwrap_or(json!({}));
-        assert_eq!(edited["parent_asset_id"], json!(source_id), "{edited}");
-        assert_eq!(edited["relation_type"], "edit", "{edited}");
+        let task = wait_terminal_for(&app, id, 50, 40).await;
+        assert_eq!(task["status"], "failed", "task {task}");
+        let err = task["error"].as_str().unwrap_or("");
+        assert!(err.contains("no longer has a ggml graph"), "task {task}");
         let unbuilt = post_json(
             &app,
             "/api/images/edits",
@@ -1164,87 +1016,6 @@ mod tests {
         )
         .await;
         assert_eq!(unbuilt.0, StatusCode::NOT_IMPLEMENTED, "{}", unbuilt.1);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    async fn rewrite_edit_runs_end_to_end(model: &str, write_bundle: fn(&std::path::Path)) {
-        let dir = std::env::temp_dir().join(format!(
-            "danmo-api-edit-{}-{}-{}",
-            model.replace(':', "-"),
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let (model, local_path) = published_weight(model, "q4_k");
-        let bundle = dir.join(&local_path);
-        write_bundle(&bundle);
-        let app = router(&dir.join("studio.db"), &factory_registry());
-        let rgb = vec![128u8; 32 * 32 * 3];
-        let png = danmo_engine::png::encode_rgb(32, 32, &rgb);
-        let upload = post_json(
-            &app,
-            "/api/assets",
-            &json!({
-                "filename": "source.png",
-                "data_base64": base64_encode(&png),
-            }),
-        )
-        .await;
-        assert_eq!(upload.0, StatusCode::OK, "{}", upload.1);
-        let source_id = upload.1["id"].as_str().unwrap().to_string();
-        let edit = post_json(
-            &app,
-            "/api/images/edits",
-            &json!({
-                "model": model,
-                "operation": "rewrite",
-                "source_asset_id": source_id,
-                "title": "smoke edit",
-                "prompt": "make it blue",
-                "steps": 4,
-                "guidance": 1.0,
-                "seed": 1,
-                "priority": "normal"
-            }),
-        )
-        .await;
-        assert_eq!(edit.0, StatusCode::ACCEPTED, "{}", edit.1);
-        let id = edit.1["id"].as_str().unwrap();
-        let task = wait_terminal_for(&app, id, 300, 100).await;
-        assert_eq!(task["status"], "completed", "task {task}");
-        assert_eq!(task["result"]["width"], 32, "task {task}");
-        assert_eq!(task["result"]["height"], 32, "task {task}");
-        assert_eq!(task["result"]["source_asset_id"], json!(source_id));
-        assert_eq!(task["result"]["init_timestep"], json!(2), "task {task}");
-        let ids = task["result"]["asset_ids"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        assert_eq!(ids.len(), 1, "task {task}");
-        let assets = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/assets")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let bytes = assets.into_body().collect().await.unwrap().to_bytes();
-        let listed: Value = serde_json::from_slice(&bytes).unwrap();
-        let edited = listed["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|item| item["id"] == ids[0])
-            .cloned()
-            .unwrap_or(json!({}));
-        assert_eq!(edited["parent_asset_id"], json!(source_id), "{edited}");
-        assert_eq!(edited["relation_type"], "edit", "{edited}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1311,11 +1082,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flux2_edit_runs_end_to_end() {
-        rewrite_edit_runs_end_to_end("flux2-klein-4b", |bundle| {
-            danmo_engine::write_flux2_edit_smoke_bundle(bundle).unwrap()
-        })
+    async fn flux2_edit_does_not_use_the_gguf_graph() {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-api-flux2-edit-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut registry: Value =
+            serde_json::from_str(&std::fs::read_to_string(factory_registry()).unwrap()).unwrap();
+        let local = "models/Image/flux2-klein-4b-mlx-q4";
+        registry["models"]["flux2-klein-4b"]["distribution"]["versions"]["mlx-q4"]["local_path"] =
+            json!(local);
+        let bundle = dir.join(local);
+        for role in ["transformer", "text_encoder", "vae"] {
+            let role_dir = bundle.join(role);
+            std::fs::create_dir_all(&role_dir).unwrap();
+            std::fs::write(role_dir.join("model.safetensors"), b"not a real shard").unwrap();
+        }
+        let registry_path = dir.join("registry.json");
+        std::fs::write(&registry_path, serde_json::to_string(&registry).unwrap()).unwrap();
+        let app = router(&dir.join("studio.db"), &registry_path);
+        let rgb = vec![128u8; 32 * 32 * 3];
+        let png = danmo_engine::png::encode_rgb(32, 32, &rgb);
+        let upload = post_json(
+            &app,
+            "/api/assets",
+            &json!({
+                "filename": "source.png",
+                "data_base64": base64_encode(&png),
+            }),
+        )
         .await;
+        assert_eq!(upload.0, StatusCode::OK, "{}", upload.1);
+        let source_id = upload.1["id"].as_str().unwrap();
+        let edit_resp = post_json(
+            &app,
+            "/api/images/edits",
+            &json!({
+                "model": "flux2-klein-4b:mlx-q4",
+                "operation": "rewrite",
+                "source_asset_id": source_id,
+                "prompt": "make it blue",
+                "steps": 4,
+                "guidance": 1.0,
+                "seed": 1
+            }),
+        )
+        .await;
+        assert_eq!(edit_resp.0, StatusCode::ACCEPTED, "{}", edit_resp.1);
+        let id = edit_resp.1["id"].as_str().unwrap();
+        let task = wait_terminal_for(&app, id, 80, 40).await;
+        assert_eq!(task["status"], "failed", "task {task}");
+        let err = task["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("no longer has a ggml graph")
+                || err.contains("safetensors")
+                || err.contains("missing")
+                || err.contains("not a")
+                || err.contains("conv_out")
+                || err.contains("quant_conv"),
+            "task {task}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1416,9 +1248,11 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let (model, local_path) = published_weight("seedvr2-video-3b", "q4_k");
+        let model = "seedvr2-video-3b:fp16".to_string();
+        let local_path = "models/Upscaler/seedvr2-3b-fp16".to_string();
         let bundle = dir.join(&local_path);
         danmo_engine::write_seedvr2_smoke_bundle(&bundle).unwrap();
+        std::fs::remove_file(bundle.join("dit_smoke.gguf")).unwrap();
         // Five 32x32 frames at 5 fps.
         let source_mp4 = dir.join("source.mp4");
         let rendered = std::process::Command::new("ffmpeg")
@@ -1715,104 +1549,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ltx_video_create_runs_end_to_end() {
-        let have_ffmpeg = ["ffmpeg", "ffprobe"].iter().all(|tool| {
-            std::process::Command::new(tool)
-                .arg("-version")
-                .output()
-                .map(|out| out.status.success())
-                .unwrap_or(false)
-        });
-        if !have_ffmpeg {
-            eprintln!("ffmpeg/ffprobe not installed; skipping ltx t2v e2e");
-            return;
-        }
-        let dir = std::env::temp_dir().join(format!(
-            "danmo-api-ltx-t2v-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let (model, local_path) = published_weight("ltx-2.3-dev", "bf16");
-        danmo_engine::write_ltx_smoke_bundle(&dir.join(&local_path)).unwrap();
-        let app = router(&dir.join("studio.db"), &factory_registry());
-        let create = post_json(
-            &app,
-            "/api/videos/generations",
-            &json!({
-                "model": model,
-                "prompt": "a cat",
-                // The smoke bundle ships a toy tokenizer with a tiny alphabet.
-                "negative_prompt": "b",
-                "size": "64x64",
-                "num_frames": 9,
-                "fps": 8,
-                "steps": 2,
-                "guidance": 2.0,
-                "seed": 3,
-                "priority": "normal"
-            }),
-        )
-        .await;
-        assert_eq!(create.0, StatusCode::ACCEPTED, "{}", create.1);
-        let id = create.1["id"].as_str().unwrap();
-        let task = wait_terminal_for(&app, id, 300, 100).await;
-        assert_eq!(task["status"], "completed", "task {task}");
-        assert_eq!(task["result"]["width"], 64, "task {task}");
-        assert_eq!(task["result"]["height"], 64, "task {task}");
-        assert_eq!(task["result"]["frames"], 9, "task {task}");
-        assert_eq!(task["result"]["steps"], 5, "task {task}");
-        let ids = task["result"]["asset_ids"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        assert_eq!(ids.len(), 1, "task {task}");
-        let asset_id = ids[0].as_str().unwrap();
-        let mp4 = dir
-            .join("outputs")
-            .join("assets")
-            .join(format!("{asset_id}.mp4"));
-        let probe = std::process::Command::new("ffprobe")
-            .args([
-                "-v",
-                "error",
-                "-show_entries",
-                "stream=codec_type,width,height,nb_frames,avg_frame_rate,sample_rate,channels",
-                "-of",
-                "json",
-            ])
-            .arg(&mp4)
-            .output()
-            .expect("spawn ffprobe");
-        assert!(
-            probe.status.success(),
-            "{}",
-            String::from_utf8_lossy(&probe.stderr)
-        );
-        let probe_json: Value = serde_json::from_slice(&probe.stdout).unwrap();
-        let streams = probe_json["streams"].as_array().unwrap();
-        let video = streams
-            .iter()
-            .find(|s| s["codec_type"] == "video")
-            .unwrap_or_else(|| panic!("no video stream: {probe_json}"));
-        assert_eq!(video["width"], 64, "{probe_json}");
-        assert_eq!(video["height"], 64, "{probe_json}");
-        assert_eq!(video["avg_frame_rate"], "8/1", "{probe_json}");
-        assert_eq!(video["nb_frames"], "9", "{probe_json}");
-        // LTX generates the 48 kHz stereo track alongside the video.
-        let audio = streams
-            .iter()
-            .find(|s| s["codec_type"] == "audio")
-            .unwrap_or_else(|| panic!("no audio stream: {probe_json}"));
-        assert_eq!(audio["sample_rate"], "48000", "{probe_json}");
-        assert_eq!(audio["channels"], 2, "{probe_json}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[tokio::test]
     async fn z_image_controlnet_create_fails_without_the_ggml_graph() {
         let dir = std::env::temp_dir().join(format!(
             "danmo-api-control-{}-{}",
@@ -1978,10 +1714,7 @@ mod tests {
         .await;
         assert_eq!(enhance.0, StatusCode::SERVICE_UNAVAILABLE, "{}", enhance.1);
         assert!(
-            enhance.1["detail"]
-                .as_str()
-                .unwrap()
-                .contains("not wired"),
+            enhance.1["detail"].as_str().unwrap().contains("not wired"),
             "{}",
             enhance.1
         );
@@ -1999,7 +1732,12 @@ mod tests {
             &json!({ "kind": "lyrics", "prompt": "dreamy synth pop" }),
         )
         .await;
-        assert_eq!(assistant.0, StatusCode::SERVICE_UNAVAILABLE, "{}", assistant.1);
+        assert_eq!(
+            assistant.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{}",
+            assistant.1
+        );
         let put = put_json(
             &app,
             "/api/settings",
@@ -2679,7 +2417,14 @@ mod tests {
         let bytes = system.into_body().collect().await.unwrap().to_bytes();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["env_ready"], true);
-        assert_eq!(body["runtime"], "ggml");
+        assert_eq!(
+            body["runtime"],
+            if cfg!(feature = "mlx") {
+                "mlx"
+            } else {
+                "unavailable"
+            }
+        );
 
         let queue = app
             .clone()
@@ -3264,7 +3009,9 @@ fn validate_structural_guide(
     entry: &danmo_catalog::ModelEntry,
     guide: &danmo_contracts::StructuralGuide,
 ) -> Result<(), ApiError> {
-    if entry.family != "z_image" {
+    let supports_guide =
+        danmo_engine::spec(&entry.family).is_some_and(|spec| spec.structural_guide);
+    if !supports_guide {
         return Err(fail(
             StatusCode::NOT_IMPLEMENTED,
             format!(
@@ -3294,7 +3041,10 @@ fn validate_structural_guide(
         .ok_or_else(|| {
             fail(
                 StatusCode::BAD_REQUEST,
-                format!("structural_guide.model_id {} missing from registry", controlnet.id),
+                format!(
+                    "structural_guide.model_id {} missing from registry",
+                    controlnet.id
+                ),
             )
         })?;
     let category = cn_root
@@ -3625,6 +3375,41 @@ fn fill_registry_defaults(catalog: &Catalog, id: &str, body: &mut Value) {
         }
         obj.insert((*key).to_string(), default.clone());
     }
+    stamp_edit_card(params, obj);
+}
+
+/// Copy Qwen-Image edit card flags into request metadata. The family reads
+/// them there; they are not fields of `ImageEditRequest`.
+fn stamp_edit_card(
+    params: &serde_json::Map<String, Value>,
+    body: &mut serde_json::Map<String, Value>,
+) {
+    const KEYS: &[&str] = &[
+        "edit_use_vl_vision",
+        "edit_conditioning_latent_concat",
+        "edit_use_picture_prefix",
+        "edit_plus_multi_image",
+        "edit_max_reference_images",
+    ];
+    if !KEYS.iter().any(|key| params.contains_key(*key)) {
+        return;
+    }
+    let metadata = body
+        .entry("metadata".to_string())
+        .or_insert_with(|| json!({}));
+    let Some(metadata) = metadata.as_object_mut() else {
+        return;
+    };
+    for key in KEYS {
+        if metadata.contains_key(*key) {
+            continue;
+        }
+        if let Some(value) = params.get(*key) {
+            if value.is_boolean() || value.is_number() {
+                metadata.insert((*key).to_string(), value.clone());
+            }
+        }
+    }
 }
 
 fn text_field<'a>(body: &'a Value, key: &str) -> Option<&'a str> {
@@ -3633,9 +3418,9 @@ fn text_field<'a>(body: &'a Value, key: &str) -> Option<&'a str> {
 
 async fn video_generations(
     State(state): State<AppState>,
-    Json(body): Json<VideoGenerationRequest>,
-) -> Result<(StatusCode, Json<TaskAccepted>), (StatusCode, String)> {
-    let mut body = body;
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<TaskAccepted>), ApiError> {
+    let mut body: VideoGenerationRequest = prepare_video_request(&state, body)?;
     ensure_seed(&mut body.seed);
     let accepted = accept(
         &state,
@@ -3643,8 +3428,31 @@ async fn video_generations(
         &body.model,
         &body,
         &body.priority,
-    )?;
+    )
+    .map_err(|(status, detail)| fail(status, detail))?;
     Ok((StatusCode::ACCEPTED, accepted))
+}
+
+fn prepare_video_request(
+    state: &AppState,
+    mut body: Value,
+) -> Result<VideoGenerationRequest, ApiError> {
+    let model = body
+        .get("model")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    if model.is_empty() {
+        return Err(fail(StatusCode::BAD_REQUEST, "model is required"));
+    }
+    let catalog = Catalog::open(&state.registry)
+        .map_err(|error| fail(StatusCode::BAD_REQUEST, error.to_string()))?;
+    let entry = catalog
+        .model(&model)
+        .map_err(|error| fail(StatusCode::BAD_REQUEST, error.to_string()))?;
+    reject_unbuilt_inference(&entry.family, &body, false)?;
+    bind_installed_loras(state, &model, &mut body)?;
+    serde_json::from_value(body).map_err(|error| fail(StatusCode::BAD_REQUEST, error.to_string()))
 }
 
 async fn video_edits(

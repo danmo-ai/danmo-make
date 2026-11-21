@@ -471,6 +471,8 @@ mod tests {
             seed: None,
             num_frames: None,
             fps: None,
+            media_references: Vec::new(),
+            adapters: Vec::new(),
             metadata: serde_json::Value::Null,
             priority: "normal".into(),
         }

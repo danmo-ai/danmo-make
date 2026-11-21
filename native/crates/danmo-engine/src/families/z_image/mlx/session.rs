@@ -955,7 +955,7 @@ pub(crate) fn decode_latent(
     Ok(crate::common::png::encode_rgb(width, height, &pixels))
 }
 
-fn vae_spec() -> crate::common::vae::VaeSpec {
+pub(crate) fn vae_spec() -> crate::common::vae::VaeSpec {
     crate::common::vae::VaeSpec {
         latent_channels: 16,
         block_out: vec![128, 256, 512, 512],
@@ -980,7 +980,7 @@ fn resident_weights<'a>(
     })
 }
 
-fn text_config() -> Qwen3Config {
+pub(crate) fn text_config() -> Qwen3Config {
     Qwen3Config {
         vocab: 151_936,
         hidden: 2560,

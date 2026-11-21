@@ -1,0 +1,80 @@
+{
+  "model": "seedvr2-video-7b:fp16",
+  "family": "seedvr2",
+  "action": "video.upscale",
+  "status": "in_progress",
+  "commit": null,
+  "platform": "macOS arm64 / Apple M5 Max",
+  "backend": "metal",
+  "mlx_version": "0.32.4",
+  "weight_dtype": "F16",
+  "bundle": "/Users/nil.luo/Workspace/studio-workspace/models/Upscaler/seedvr2-7b-fp16",
+  "fixture": {
+    "frames": 5,
+    "width": 16,
+    "height": 16,
+    "seed": 42,
+    "input": "sin(i * 0.017) * 0.5 in NCTHW order",
+    "reference": "danmo-make main MLX; mx.repeat compatibility shim for MLX 0.32.4"
+  },
+  "parity": {
+    "latent": { "mse": 0.000019366, "max_abs": 0.013430, "rel_l2": 0.002889 },
+    "noise": { "mse": 0.0, "max_abs": 0.0, "rel_l2": 0.0 },
+    "velocity": { "mse": 0.000054737, "max_abs": 0.025489, "rel_l2": 0.004767 },
+    "restored": { "mse": 0.000054737, "max_abs": 0.025489, "rel_l2": 0.005433 },
+    "decoded": { "mse": 0.000015297, "max_abs": 0.035066, "rel_l2": 0.005248 },
+    "dit_final_velocity_stage_probe": { "rel_l2": 0.003220 },
+    "vae_encoder_conv_out": { "mse": 0.000016734, "max_abs": 0.014674, "rel_l2": 0.000949 },
+    "vae_decoder_conv_out": { "mse": 0.000005023, "max_abs": 0.015774, "rel_l2": 0.003008 },
+    "threshold": "all asserted stage rel_l2 < 0.01"
+  },
+  "e2e": [
+    {
+      "task_id": "69a70d5c-c233-4166-a805-0d3f86e56aa1",
+      "source_asset_id": "ast_d0f860486ccc4b8c80f3",
+      "asset_id": "ast_7c26beec2e0b42d383a0",
+      "output": "/Users/nil.luo/Workspace/studio-workspace/outputs/assets/ast_7c26beec2e0b42d383a0.mp4",
+      "status": "completed",
+      "width": 32,
+      "height": 32,
+      "fps": 24,
+      "frame_count": 5,
+      "duration_seconds": 0.208333,
+      "video_codec": "h264",
+      "audio": "AAC 48000 Hz mono",
+      "relation_type": "upscale"
+    },
+    {
+      "task_id": "df1c4b70-4b05-4539-82ee-213c074b5c97",
+      "source_asset_id": "ast_6a22064c45e041ad9f20",
+      "asset_id": "ast_2f06b7eab13f41318bb6",
+      "output": "/Users/nil.luo/Workspace/studio-workspace/outputs/assets/ast_2f06b7eab13f41318bb6.mp4",
+      "status": "completed",
+      "width": 32,
+      "height": 32,
+      "fps": 24,
+      "frame_count": 4,
+      "duration_seconds": 0.166667,
+      "video_codec": "h264",
+      "audio": "AAC 48000 Hz mono",
+      "note": "tail repeats the last source frame to five inference frames, output remains four frames"
+    }
+  ],
+  "commands": [
+    "cargo check --manifest-path native/Cargo.toml -p danmo-engine --features mlx-metal",
+    "cargo test --manifest-path native/Cargo.toml -p danmo-engine --features mlx-metal --lib seedvr2",
+    "cargo test --manifest-path native/Cargo.toml -p danmo-server --features metal,mlx-metal seedvr2_video_upscale_runs_end_to_end -- --nocapture",
+    "DANQING_TEST_SEEDVR2_BUNDLE=... DANQING_TEST_SEEDVR2_REFERENCE=out/seedvr2-parity-main.json cargo test --manifest-path native/Cargo.toml -p danmo-engine --features mlx-metal --lib real_seedvr2_7b_video_chunk_is_finite -- --ignored --nocapture",
+    "DANQING_TEST_SEEDVR2_BUNDLE=... DANQING_TEST_SEEDVR2_DIT_STAGES=out/seedvr2-dit-stages-main.json cargo test --manifest-path native/Cargo.toml -p danmo-engine --features mlx-metal --lib real_dit_stages_match_main -- --ignored --nocapture",
+    "DANQING_TEST_SEEDVR2_BUNDLE=... DANQING_TEST_SEEDVR2_VAE_STAGES=out/seedvr2-vae-stages-main.json cargo test --manifest-path native/Cargo.toml -p danmo-engine --features mlx-metal --lib real_vae_encoder_stages_match_main -- --ignored --nocapture",
+    "DANQING_TEST_SEEDVR2_BUNDLE=... DANQING_TEST_SEEDVR2_VAE_DECODER_STAGES=out/seedvr2-vae-decoder-stages-main.json cargo test --manifest-path native/Cargo.toml -p danmo-engine --features mlx-metal --lib real_vae_decoder_stages_match_main -- --ignored --nocapture",
+    "cargo test --manifest-path native/Cargo.toml -p danmo-engine --features mlx-metal --lib mux_with_audio_preserves_the_video_tail_frame"
+  ],
+  "remaining": [
+    "warm p50 performance and peak-memory gates against main",
+    "large spatial tiled inputs, multi-chunk videos, cancellation, restart, cache hit and unload",
+    "temporal VAE stream-cache parity and long-run memory measurements",
+    "SeedVR2 3B video and SeedVR2 image MLX migration",
+    "CUDA implementation and validation"
+  ]
+}

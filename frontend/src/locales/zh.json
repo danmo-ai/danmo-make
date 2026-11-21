@@ -1434,6 +1434,8 @@
     "stripCreate": "创作",
     "stripPreviewAsset": "预览图片",
     "stripAssetCount": "{count} 张",
+    "stripVideoCount": "{count} 个视频",
+    "stripAudioCount": "{count} 首",
     "stripEmptyCanvas": "空画布",
     "stripEmpty": "还没有画布",
     "stripEmptyHint": "点右上角「新建画布」开始一组创作",

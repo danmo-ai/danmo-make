@@ -62,6 +62,20 @@ impl Scheduler {
             .insert_task(id, kind, model_id, params, priority)
     }
 
+    /// Submit a task directly in the running state, bypassing the queue
+    /// worker. For jobs that execute on their own thread (LoRA training).
+    pub fn submit_running(
+        &self,
+        id: &str,
+        kind: &str,
+        model_id: &str,
+        params: &str,
+        priority: i64,
+    ) -> Result<(), StoreError> {
+        self.lock()
+            .insert_running_task(id, kind, model_id, params, priority)
+    }
+
     pub fn dequeue(&self) -> Result<Option<TaskRow>, StoreError> {
         let store = self.lock();
         let queued = store.list_queued(self.queue_image_first)?;

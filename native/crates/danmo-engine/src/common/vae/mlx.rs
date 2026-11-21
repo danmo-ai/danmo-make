@@ -149,8 +149,28 @@ pub fn encode(
     image: &Array,
     stream: &Stream,
 ) -> Result<Array> {
-    if spec.latent_channels < 1 || spec.groups < 1 || spec.resnets < 1 || spec.block_out.len() < 2
-    {
+    let x = conv_out(weights, spec, image, stream)?;
+    let channels = spec.latent_channels as i32;
+    let mean = x.slice(
+        &[0, 0, 0, 0],
+        &[x.shape()[0], channels, x.shape()[2], x.shape()[3]],
+        &[1, 1, 1, 1],
+        stream,
+    )?;
+    let scaling = scalar(spec.scaling, mean.dtype(), stream)?;
+    let shift = scalar(spec.shift, mean.dtype(), stream)?;
+    Array::multiply(&Array::subtract(&mean, &shift, stream)?, &scaling, stream)
+}
+
+/// Encoder through `conv_out`, NCHW `[1, 2C, H/f, W/f]`, before the mean split.
+/// Flux2 applies `quant_conv` to this tensor and then keeps the mean half.
+pub fn conv_out(
+    weights: &MlxWeights,
+    spec: &VaeSpec,
+    image: &Array,
+    stream: &Stream,
+) -> Result<Array> {
+    if spec.latent_channels < 1 || spec.groups < 1 || spec.resnets < 1 || spec.block_out.len() < 2 {
         return Err(Error::new("VAE MLX encode", "invalid VaeSpec"));
     }
     if image.shape().len() != 4 || image.shape()[0] != 1 || image.shape()[1] != 3 {
@@ -228,15 +248,7 @@ pub fn encode(
             "conv_out is not mean and logvar",
         ));
     }
-    let mean = x.slice(
-        &[0, 0, 0, 0],
-        &[x.shape()[0], channels, x.shape()[2], x.shape()[3]],
-        &[1, 1, 1, 1],
-        stream,
-    )?;
-    let scaling = scalar(spec.scaling, mean.dtype(), stream)?;
-    let shift = scalar(spec.shift, mean.dtype(), stream)?;
-    Array::multiply(&Array::subtract(&mean, &shift, stream)?, &scaling, stream)
+    Ok(x)
 }
 
 pub fn decode(
@@ -564,7 +576,15 @@ fn conv(weights: &MlxWeights, prefix: &str, input: &Array, stream: &Stream) -> R
     } else {
         1
     };
-    conv_kernel(weights, prefix, input, &kernel, [1, 1], [padding, padding], stream)
+    conv_kernel(
+        weights,
+        prefix,
+        input,
+        &kernel,
+        [1, 1],
+        [padding, padding],
+        stream,
+    )
 }
 
 fn conv_sized(
@@ -944,6 +964,9 @@ mod tests {
         let latent = super::encode(&weights, &spec, &image, &stream).unwrap();
         assert_eq!(latent.shape(), vec![1, 4, 4, 4]);
         let values = latent.to_vec_f32(&stream).unwrap();
-        assert!(values.iter().all(|value| (value - 1.0).abs() < 1e-4), "{values:?}");
+        assert!(
+            values.iter().all(|value| (value - 1.0).abs() < 1e-4),
+            "{values:?}"
+        );
     }
 }

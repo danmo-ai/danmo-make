@@ -13,7 +13,8 @@ export const CANVAS_OVERLAY_KINDS = [
 export const OVERLAY_KINDS_BY_MEDIA: Record<CanvasMedia, CanvasOverlayKind[]> = {
   image: ['control'],
   video: ['start_frame', 'tail_frame', 'video_source'],
-  audio: ['cover_source'],
+  // Cover source binds in the composer only — no canvas overlay layer for audio.
+  audio: [],
 };
 
 export const OVERLAY_LABEL_KEYS: Record<CanvasOverlayKind, string> = {

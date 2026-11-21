@@ -71,9 +71,17 @@ pub fn adamw_update(
     let m_hat = Array::divide(&state.m, &Array::scalar_f32(bias1)?, stream)?;
     let v_hat = Array::divide(&state.v, &Array::scalar_f32(bias2)?, stream)?;
 
-    let denom = Array::add(&v_hat.sqrt(stream)?, &Array::scalar_f32(config.eps)?, stream)?;
+    let denom = Array::add(
+        &v_hat.sqrt(stream)?,
+        &Array::scalar_f32(config.eps)?,
+        stream,
+    )?;
     let step_size = Array::divide(&m_hat, &denom, stream)?;
-    let lr_step = Array::multiply(&step_size, &Array::scalar_f32(config.learning_rate)?, stream)?;
+    let lr_step = Array::multiply(
+        &step_size,
+        &Array::scalar_f32(config.learning_rate)?,
+        stream,
+    )?;
 
     let decayed = if config.weight_decay != 0.0 {
         let scale = Array::scalar_f32(1.0 - config.learning_rate * config.weight_decay)?;

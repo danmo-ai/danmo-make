@@ -322,15 +322,19 @@ function createCanvasStore(media: CanvasMedia) {
 
   function defaultSessionTitle(): string {
     // Server/API titles stay English; UI localizes display. Matches adopt-orphans default.
-    if (media === 'image') return 'Default canvas';
-    if (media === 'video') return 'Video canvas';
-    if (media === 'audio') return 'Audio canvas';
-    return 'Canvas 1';
+    return 'Default canvas';
   }
 
   function isDefaultSessionTitle(title: string | undefined): boolean {
     const t = String(title || '').trim().toLowerCase();
-    return t === 'default canvas' || t === '默认画布';
+    // Include legacy media-specific defaults created before titles were unified.
+    return (
+      t === 'default canvas' ||
+      t === '默认画布' ||
+      t === 'image canvas' ||
+      t === 'video canvas' ||
+      t === 'audio canvas'
+    );
   }
 
   async function ensureSession(): Promise<void> {
@@ -383,7 +387,24 @@ function createCanvasStore(media: CanvasMedia) {
    * Empty duplicate defaults are deleted; non-empty extras are renamed.
    */
   async function consolidateDefaultCanvases(): Promise<void> {
-    const list = await api.canvas.listSessions(media);
+    let list = await api.canvas.listSessions(media);
+    // Unify legacy media-specific default titles onto "Default canvas".
+    let renamed = false;
+    for (const s of list) {
+      const raw = String(s.title || '').trim();
+      const lower = raw.toLowerCase();
+      if (
+        lower === 'video canvas' ||
+        lower === 'audio canvas' ||
+        lower === 'image canvas' ||
+        raw === '默认画布'
+      ) {
+        await api.canvas.updateSession(s.id, { title: defaultSessionTitle() });
+        renamed = true;
+      }
+    }
+    if (renamed) list = await api.canvas.listSessions(media);
+
     const defaults = list
       .filter((s) => isDefaultSessionTitle(s.title))
       .sort((a, b) => {
@@ -422,7 +443,7 @@ function createCanvasStore(media: CanvasMedia) {
     }
   }
 
-  /** Image: ensure ≥1 session, then adopt orphan gallery assets into default canvas. */
+  /** Ensure ≥1 session, then adopt orphan gallery assets of this media into default canvas. */
   async function ensureDefaultAndAdoptOrphans(): Promise<{ adopted_count: number }> {
     // Guard BEFORE any await so concurrent callers share one run (avoids dual Default canvas).
     if (adoptPromise) return adoptPromise;
@@ -430,7 +451,6 @@ function createCanvasStore(media: CanvasMedia) {
       // Recover from a prior failed load that left ready=true without a session id.
       if (ready.value && !sessionId.value) ready.value = false;
       await ensureSession();
-      if (media !== 'image') return { adopted_count: 0 };
       syncing.value = true;
       try {
         await consolidateDefaultCanvases();
@@ -449,8 +469,16 @@ function createCanvasStore(media: CanvasMedia) {
         }
         sessions.value = list;
 
-        const result = await api.canvas.adoptOrphans('image');
-        const adopted = result.adopted_count || 0;
+        let adopted = 0;
+        try {
+          const result = await api.canvas.adoptOrphans(media);
+          adopted = result.adopted_count || 0;
+        } catch (e) {
+          // Keep the default canvas usable even if adopt fails (stale API, etc.).
+          console.error('Canvas adopt-orphans failed:', e);
+          sessions.value = await api.canvas.listSessions(media);
+          throw e;
+        }
         sessions.value = await api.canvas.listSessions(media);
         // Re-fetch when orphans landed on the shelf (or to heal a stale board).
         if (adopted > 0 && sessionId.value) {
@@ -459,7 +487,7 @@ function createCanvasStore(media: CanvasMedia) {
         }
         return { adopted_count: adopted };
       } catch (e) {
-        console.error('Canvas adopt-orphans failed:', e);
+        console.error('Canvas ensureDefaultAndAdoptOrphans failed:', e);
         throw e;
       } finally {
         syncing.value = false;

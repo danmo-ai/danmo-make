@@ -58,7 +58,43 @@
                 :aria-label="item.title || item.name || item.path"
                 @click="onTileClick(item)"
               >
+                <div
+                  v-if="isAudioThumb(item)"
+                  class="canvas-shelf-dock__audio-tile"
+                  :style="audioTileStyle(item)"
+                  :title="audioTileTitle(item)"
+                >
+                  <div class="canvas-shelf-dock__audio-copy">
+                    <span v-if="audioTileHeading(item)" class="canvas-shelf-dock__audio-heading">
+                      {{ audioTileHeading(item) }}
+                    </span>
+                    <span
+                      v-for="(line, li) in audioTileLines(item)"
+                      :key="li"
+                      class="canvas-shelf-dock__audio-line"
+                    >{{ line }}</span>
+                    <span
+                      v-if="!audioTileHeading(item) && !audioTileLines(item).length"
+                      class="canvas-shelf-dock__audio-fallback"
+                    >
+                      <DqIcon :size="14"><Headset /></DqIcon>
+                    </span>
+                  </div>
+                </div>
+                <template v-else-if="isVideoThumb(item)">
+                  <video
+                    class="canvas-shelf-dock__thumb"
+                    :src="fileUrl(item)"
+                    muted
+                    playsinline
+                    preload="metadata"
+                  />
+                  <span class="canvas-shelf-dock__play" aria-hidden="true">
+                    <DqIcon :size="14"><VideoPlay /></DqIcon>
+                  </span>
+                </template>
                 <img
+                  v-else
                   class="canvas-shelf-dock__thumb"
                   :src="thumbUrl(item)"
                   alt=""
@@ -92,19 +128,29 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Upload } from '@danqing/dq-shell';
+import { Headset, Upload, VideoPlay } from '@danqing/dq-shell';
 import type { GalleryItem } from '@/types';
-import { galleryThumbnailUrl } from '@/utils/canvasAssets';
+import {
+  galleryThumbnailUrl,
+  isAudioGalleryItem,
+  isVideoGalleryItem,
+} from '@/utils/canvasAssets';
+import { lyricsSnippetLines } from '@/utils/lyricsTimeline';
 import ComposerIconTip from '@/components/studio/ComposerIconTip.vue';
+import { api } from '@/utils/api';
 
-const props = defineProps<{
-  /** All canvas membership paths (board ∪ shelf). */
-  paths: string[];
-  /** Paths currently on the freeform board. */
-  boardPaths?: string[];
-  galleryItems: GalleryItem[];
-  selectedPath?: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    /** All canvas membership paths (board ∪ shelf). */
+    paths: string[];
+    /** Paths currently on the freeform board. */
+    boardPaths?: string[];
+    galleryItems: GalleryItem[];
+    selectedPath?: string;
+    media?: 'image' | 'video' | 'audio';
+  }>(),
+  { media: 'image' },
+);
 
 const emit = defineEmits<{
   (e: 'select', item: GalleryItem): void;
@@ -231,6 +277,54 @@ const dayGroups = computed((): DayGroup[] => {
 
 function thumbUrl(item: GalleryItem): string {
   return galleryThumbnailUrl(item) || item.thumbnail || '';
+}
+
+function fileUrl(item: GalleryItem): string {
+  return api.gallery.getImageUrl(item.path);
+}
+
+function isAudioThumb(item: GalleryItem): boolean {
+  return props.media === 'audio' || isAudioGalleryItem(item);
+}
+
+function isVideoThumb(item: GalleryItem): boolean {
+  return props.media === 'video' || isVideoGalleryItem(item);
+}
+
+function audioTileLines(item: GalleryItem): string[] {
+  const meta = (item.metadata || {}) as {
+    lyrics_effective?: unknown;
+    lyrics_segments?: unknown;
+  };
+  // Dock tiles are ~88px — one readable line beats two clipped ones.
+  return lyricsSnippetLines(meta, 1);
+}
+
+function audioTileHeading(item: GalleryItem): string {
+  const t = String(item.title || '').trim();
+  if (t) return t.length > 16 ? `${t.slice(0, 16)}…` : t;
+  if (audioTileLines(item).length) return '';
+  const p = String(item.prompt || '').trim();
+  if (p) return p.length > 16 ? `${p.slice(0, 16)}…` : p;
+  return '';
+}
+
+function audioTileTitle(item: GalleryItem): string {
+  const lines = audioTileLines(item);
+  return [item.title, ...lines, item.prompt, item.name].filter(Boolean).join('\n');
+}
+
+function audioTileStyle(item: GalleryItem): Record<string, string> {
+  const text =
+    (audioTileLines(item).join(' ') ||
+      item.title ||
+      item.prompt ||
+      item.name ||
+      item.path ||
+      '').trim();
+  let h = 0;
+  for (let i = 0; i < text.length; i += 1) h = (h * 31 + text.charCodeAt(i)) % 360;
+  return { '--dq-audio-hue': String(h) };
 }
 </script>
 
@@ -384,6 +478,79 @@ function thumbUrl(item: GalleryItem): string {
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+.canvas-shelf-dock__play {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dq-label-on-media);
+  background: var(--dq-overlay-light);
+  pointer-events: none;
+}
+
+.canvas-shelf-dock__audio-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  padding: 10px 8px;
+  box-sizing: border-box;
+  background: linear-gradient(
+    145deg,
+    hsl(var(--dq-audio-hue, 220) 28% 24%),
+    hsl(var(--dq-audio-hue, 220) 22% 12%)
+  );
+}
+
+.canvas-shelf-dock__audio-copy {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+  text-align: center;
+}
+
+.canvas-shelf-dock__audio-heading {
+  color: hsl(var(--dq-audio-hue, 220) 45% 94%);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.canvas-shelf-dock__audio-line {
+  color: hsl(var(--dq-audio-hue, 220) 30% 86%);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.canvas-shelf-dock__audio-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: hsl(var(--dq-audio-hue, 220) 52% 72%);
 }
 
 /* Top-right promote control */

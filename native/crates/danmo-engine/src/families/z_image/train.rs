@@ -7,7 +7,8 @@
 
 use crate::error::EngineError;
 use crate::train::{
-    export_lora_adapters, init_lora_params, run_lora_train_steps, TrainStepConfig, TrainStepResult,
+    export_lora_adapters, init_lora_params, run_lora_train_steps, TrainEvent, TrainProgress,
+    TrainStepConfig, TrainStepResult,
 };
 use danmo_contracts::{
     merge_lora_train_request, resolve_lora_train_preset, LoraInferenceRecipe, LoraTrainingRequest,
@@ -16,6 +17,9 @@ use danmo_contracts::{
 use danmo_mlx::{Array, RandomKey, Stream};
 use serde_json::json;
 use std::path::{Path, PathBuf};
+
+use super::mlx::{self, MlxZImageConfig};
+use crate::weights::WeightDtype;
 
 pub struct ZImageTrainOutput {
     pub result: LoraTrainingResult,
@@ -75,16 +79,10 @@ pub fn run_z_image_lora_training(
         preset.lora_rank as i32
     };
     let alpha = rank as f32;
-    let mut params = vec![init_lora_params(
-        "proj",
-        feat,
-        feat,
-        rank,
-        alpha,
-        &rng,
-        stream,
-    )
-    .map_err(|e| EngineError::message(e.to_string()))?];
+    let mut params = vec![
+        init_lora_params("proj", feat, feat, rank, alpha, &rng, stream)
+            .map_err(|e| EngineError::message(e.to_string()))?,
+    ];
 
     let iterations = if smoke {
         preset.iterations.min(32)
@@ -162,12 +160,181 @@ pub fn run_z_image_lora_training(
     })
 }
 
+/// Full-blood training entry: real VAE latents, Qwen3 captions, and
+/// Flow-Match SFT through the actual DiT on the MLX executor. Fails loud on
+/// anything the pipeline cannot honor (face detection, grad accumulation,
+/// unknown module keys) — no silent downgrade to the probe path.
+pub fn run_z_image_full_training(
+    request: &LoraTrainingRequest,
+    bundle: &Path,
+    pairs: &[(PathBuf, String)],
+    resume_adapter: Option<&Path>,
+    work_dir: &Path,
+    progress: TrainProgress,
+) -> Result<LoraTrainingResult, EngineError> {
+    let mid = request
+        .base_model
+        .split(':')
+        .next()
+        .unwrap_or(&request.base_model)
+        .trim();
+    if mid != "z-image" && mid != "z-image-turbo" {
+        return Err(EngineError::message(format!(
+            "Z-Image trainer only supports z-image|z-image-turbo, got {mid:?}"
+        )));
+    }
+    let preset = resolve_lora_train_preset(&request.preset, &request.base_model)
+        .map_err(EngineError::message)?;
+    let mut preset = merge_lora_train_request(request, preset).map_err(EngineError::message)?;
+    if preset.grad_accumulate != 1 {
+        return Err(EngineError::message(format!(
+            "grad_accumulate {} is not wired; set the recipe to 1",
+            preset.grad_accumulate
+        )));
+    }
+    match request.face_crop.as_deref().map(str::trim) {
+        None | Some("") | Some("off") => {}
+        Some("auto") => progress(TrainEvent::Phase(
+            "face_crop=auto: face detection is not wired; using center crop".into(),
+        )),
+        Some("on") => {
+            return Err(EngineError::message(
+                "face_crop=on needs face detection, which is not wired; \
+                 recrop the dataset or set face_crop=off",
+            ))
+        }
+        Some(other) => {
+            return Err(EngineError::message(format!(
+                "unknown face_crop value {other:?}"
+            )))
+        }
+    }
+    // Diagnostic override for short E2E runs; always logged, never silent.
+    if let Some(iterations) = request.metadata.get("iterations").and_then(|v| v.as_u64()) {
+        if !(1..=100_000).contains(&iterations) {
+            return Err(EngineError::message(format!(
+                "metadata.iterations {iterations} is outside 1..=100000"
+            )));
+        }
+        progress(TrainEvent::Phase(format!(
+            "metadata override: iterations {} -> {iterations}",
+            preset.iterations
+        )));
+        preset.iterations = iterations as u32;
+    }
+    let [width, height] = preset.resolution;
+    let align = 2 * MlxZImageConfig::published().vae_scale as u32;
+    if width % align != 0 || height % align != 0 {
+        return Err(EngineError::message(format!(
+            "resolution {width}x{height} is not divisible by {align}"
+        )));
+    }
+    if pairs.is_empty() {
+        return Err(EngineError::message("training dataset is empty"));
+    }
+
+    progress(TrainEvent::Phase(format!(
+        "preprocessing {} images at {width}x{height}",
+        pairs.len()
+    )));
+    let mut images = Vec::with_capacity(pairs.len());
+    let mut caption_ids = Vec::with_capacity(pairs.len());
+    let config = MlxZImageConfig::published();
+    for (path, caption) in pairs {
+        images.push(preprocess_image(path, width, height)?);
+        caption_ids.push(
+            config
+                .token_ids(bundle, caption)
+                .map_err(|e| EngineError::message(e.to_string()))?,
+        );
+    }
+    // Caption dropout uses the ChatML scaffold with empty user content
+    // (DiffSynth encodes "" through the same template); generation's
+    // non-empty prompt guard stays untouched.
+    let tokenizer = crate::common::qwen3::load_tokenizer(bundle)
+        .map_err(|e| EngineError::message(e.to_string()))?;
+    let empty_ids = crate::common::qwen3::tokenize_chat_empty(&tokenizer, config.vocab, true)
+        .map_err(|e| EngineError::message(e.to_string()))?;
+
+    let dit_dir = bundle.join("transformer");
+    let text_dir = bundle.join("text_encoder");
+    let vae_dir = bundle.join("vae");
+    for (dir, role) in [
+        (&dit_dir, "transformer"),
+        (&text_dir, "text encoder"),
+        (&vae_dir, "vae"),
+    ] {
+        if !dir.is_dir() {
+            return Err(EngineError::message(format!(
+                "bundle {} is missing the {role} component",
+                bundle.display()
+            )));
+        }
+    }
+    progress(TrainEvent::Phase(
+        "loading transformer, text encoder, vae".into(),
+    ));
+    mlx::resident::load_transformer(&dit_dir, config, WeightDtype::Native, None)
+        .map_err(|e| EngineError::message(e.to_string()))?;
+    mlx::resident::load_text_encoder(&text_dir).map_err(|e| EngineError::message(e.to_string()))?;
+    mlx::resident::load_vae(&vae_dir).map_err(|e| EngineError::message(e.to_string()))?;
+    let job = mlx::train::TrainJob {
+        request: request.clone(),
+        preset,
+        caption_ids,
+        empty_ids,
+        images,
+        width,
+        height,
+        resume_adapter: resume_adapter.map(Path::to_path_buf),
+        work_dir: work_dir.to_path_buf(),
+        dit_key: mlx::resident::cache_key(&dit_dir)
+            .map_err(|e| EngineError::message(e.to_string()))?,
+        text_key: mlx::resident::cache_key(&text_dir)
+            .map_err(|e| EngineError::message(e.to_string()))?,
+        vae_key: mlx::resident::cache_key(&vae_dir)
+            .map_err(|e| EngineError::message(e.to_string()))?,
+    };
+    crate::runtime::mlx_executor()
+        .map_err(|e| EngineError::message(e.to_string()))?
+        .execute("z_image lora train", move |_, stream, cache, _| {
+            Ok(mlx::train::train_on_executor(job, stream, cache, progress))
+        })
+        .map_err(|e| EngineError::message(e.to_string()))?
+}
+
+/// Resize so the shorter side covers the target, then center-crop to the
+/// recipe resolution (DiffSynth bucket behavior for a fixed bucket).
+fn preprocess_image(path: &Path, width: u32, height: u32) -> Result<Vec<f32>, EngineError> {
+    let (rgb, w, h) = crate::common::image::decode_file_rgb(path).map_err(EngineError::message)?;
+    let scale = (width as f64 / w as f64).max(height as f64 / h as f64);
+    let nw = ((w as f64 * scale).ceil() as u32).max(width);
+    let nh = ((h as f64 * scale).ceil() as u32).max(height);
+    let rgb = if nw == w && nh == h {
+        rgb
+    } else {
+        crate::common::image::resize_lanczos(&rgb, w, h, nw, nh)
+            .map_err(|e| EngineError::message(e.to_string()))?
+    };
+    let (dx, dy) = ((nw - width) / 2, (nh - height) / 2);
+    let (nwu, wu) = (nw as usize, width as usize);
+    let mut cropped = vec![0u8; wu * height as usize * 3];
+    for row in 0..height as usize {
+        let src = ((row + dy as usize) * nwu + dx as usize) * 3;
+        let dst = row * wu * 3;
+        cropped[dst..dst + wu * 3].copy_from_slice(&rgb[src..src + wu * 3]);
+    }
+    crate::common::image::rgb_to_n11_planar(&cropped, width, height)
+        .map_err(|e| EngineError::message(e.to_string()))
+}
+
 fn identity_weight(dim: i32, stream: &Stream) -> Result<Array, EngineError> {
     let mut data = vec![0.0f32; (dim * dim) as usize];
     for i in 0..dim as usize {
         data[i * dim as usize + i] = 1.0;
     }
-    let w = Array::from_f32_slice(&data, &[dim, dim]).map_err(|e| EngineError::message(e.to_string()))?;
+    let w = Array::from_f32_slice(&data, &[dim, dim])
+        .map_err(|e| EngineError::message(e.to_string()))?;
     let _ = stream;
     Ok(w)
 }
@@ -180,8 +347,8 @@ mod tests {
     #[test]
     fn z_image_turbo_sft_smoke_train() {
         let stream = Stream::cpu().unwrap();
-        let x0 = Array::from_f32_slice(&[0.2, -0.1, 0.4, 0.05, -0.3, 0.15, 0.0, 0.25], &[4, 2])
-            .unwrap();
+        let x0 =
+            Array::from_f32_slice(&[0.2, -0.1, 0.4, 0.05, -0.3, 0.15, 0.0, 0.25], &[4, 2]).unwrap();
         let dir = std::env::temp_dir().join(format!("zimg-train-{}", std::process::id()));
         let req = LoraTrainingRequest {
             base_model: "z-image-turbo".into(),
@@ -211,7 +378,10 @@ mod tests {
         let n = losses.len();
         let first = losses[..n / 4].iter().sum::<f64>() / (n / 4) as f64;
         let last = losses[3 * n / 4..].iter().sum::<f64>() / (n / 4) as f64;
-        assert!(last < first * 0.95, "mean loss did not drop: {first} → {last}");
+        assert!(
+            last < first * 0.95,
+            "mean loss did not drop: {first} → {last}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -6,69 +6,89 @@
     @scroll="onCanvasScroll"
   >
     <template #filters>
-      <StudioGalleryFilters
-        :filter-time="filterTime"
-        :filter-models="filterModels"
-        :search-text="searchText"
-        :time-options="timeOptions"
-        :model-options="allModelOptions"
-        :selection-mode="selectionMode"
-        :selected-count="selectedPaths.size"
-        :all-selected="allLoadedSelected"
-        :view-mode="viewMode"
-        :supports-canvas="true"
-        canvas-media="audio"
-        :composer-busy="composerBusy"
-        @update:filter-time="filterTime = $event"
-        @update:filter-models="filterModels = $event"
-        @update:search-text="searchText = $event"
-        @refresh="refreshGallery"
-        @toggle-selection-mode="toggleSelectionMode"
-        @select-all="selectAllLoaded"
-        @batch-delete="batchDeleteSelected"
-        @clear-selection="clearSelection"
-        @update:view-mode="onViewModeChange"
-        @composer-restore="onCanvasComposerRestore"
-        @open-composer="openComposerDrawer()"
-      />
+      <div v-if="viewMode === 'grid'" class="create-filters create-filters--list">
+        <DqInput
+          v-model="stripSearchText"
+          size="sm"
+          class="create-filters__search"
+          :placeholder="$t('canvas.stripSearchPlaceholder')"
+          clearable
+        >
+          <template #prefix><DqIcon><Search /></DqIcon></template>
+        </DqInput>
+        <div class="create-filters__spacer" aria-hidden="true" />
+        <div class="create-filters__actions">
+          <DqButton size="sm" @click="onNewCanvas(() => onViewModeChange('canvas'))">
+            {{ $t('canvas.newCanvas') }}
+          </DqButton>
+          <DqIconButton
+            type="text"
+            size="sm"
+            :label="$t('common.refresh')"
+            @click="refreshStripList"
+          >
+            <DqIcon><Refresh /></DqIcon>
+          </DqIconButton>
+        </div>
+      </div>
+      <div v-else class="create-filters create-filters--detail">
+        <DqButton size="sm" type="text" @click="onBackToStripList(onViewModeChange)">
+          ← {{ $t('canvas.backToCanvasList') }}
+        </DqButton>
+        <span class="create-filters__session-title" :title="canvasSessionTitle">
+          {{ canvasSessionTitle }}
+        </span>
+        <div class="create-filters__spacer" />
+        <DqIconButton
+          type="text"
+          size="sm"
+          :label="$t('common.refresh')"
+          @click="refreshGallery"
+        >
+          <DqIcon><Refresh /></DqIcon>
+        </DqIconButton>
+        <DqButton
+          type="primary"
+          size="sm"
+          :class="{ 'is-busy': composerBusy }"
+          @click="openGenerationComposer()"
+        >
+          {{ $t('studio.openComposer') }}
+        </DqButton>
+      </div>
     </template>
     <template #canvas>
-      <StudioCanvas
+      <StudioCanvasStripList
         v-if="viewMode === 'grid'"
-        :items="galleryItems"
-        :active-tasks="activeAudioTasks"
-        :loading="galleryLoading"
-        :has-more="galleryHasMore"
         media="audio"
-        :has-active-filters="hasActiveFilters"
-        :selection-mode="selectionMode"
-        :selected-paths="selectedPaths"
-        :all-selected="allLoadedSelected"
-        @select="onGallerySelect"
-        @card-action="onCardAction"
-        @reset-filters="resetGalleryFilters"
-        @load-more="loadGallery(false)"
-        @toggle-select="toggleSelect"
-        @select-all="selectAllLoaded"
-        @batch-delete="batchDeleteSelected"
-        @clear-selection="clearSelection"
-        @open-composer="openComposerDrawer()"
+        :sessions="canvasSessions"
+        :search-text="stripSearchText"
+        :session-asset-ids="sessionAssetIdsBySession"
+        :loading="!canvasReady"
+        :active-tasks="activeAudioTasks"
+        :gallery-by-asset-id="galleryByAssetId"
+        @open="(id) => onStripOpen(id, onViewModeChange)"
+        @preview="onStripPreview"
+        @create="onStripCreate"
+        @rename="onStripRename"
+        @delete="onStripDelete"
       />
       <InfiniteCanvas
         v-else
         ref="infiniteCanvasRef"
-        :items="galleryItems"
+        :items="enrichedGalleryItems"
         media="audio"
+        hide-composer-entry
         @card-action="onCardAction"
         @download="downloadAudioItem"
-        @toggle-grid-view="() => onViewModeChange('grid')"
+        @toggle-grid-view="() => onBackToStripList(onViewModeChange)"
         @node-selected="onCanvasNodeSelected"
         @session-ready="onCanvasSessionReady"
         @open-preview="onCanvasOpenPreview"
         @composer-restore="onCanvasComposerRestore"
         @overlay-cleared="onCanvasOverlayCleared"
         @use-as-cover-source="onCanvasUseAsCoverSource"
-        @open-composer="onCanvasOpenComposer()"
+        @open-composer="onCanvasOpenComposer"
         @request-close-composer="closeComposerDrawer()"
       />
     </template>
@@ -76,7 +96,7 @@
 
   <StudioComposerHost
     v-model:open="composerDrawerOpen"
-    :drawer-title="$t('studio.composerDrawerTitle')"
+    :drawer-title="composerDrawerTitle"
   >
     <AudioComposer
         v-model="params.prompt"
@@ -85,6 +105,7 @@
         v-model:model="selectedModelVersion"
         v-model:duration="params.duration"
         v-model:batch-count="params.n"
+        :work-mode-options="composerWorkModeOptions"
         :composer-busy="composerBusy"
         :submitting="queueSubmitting"
         :generating="generating"
@@ -127,9 +148,28 @@
   <GalleryPreviewDialog
     v-model:open="audioPreviewVisible"
     v-model:index="selectedAudioIndex"
-    :items="galleryItems"
+    :items="previewItems"
     media="audio"
+    :transfer-targets="previewTransferTargets"
+    @transfer="onPreviewTransfer"
   />
+
+  <DqDialog
+    v-model:open="stripRenameOpen"
+    :title="$t('canvas.renameSession')"
+    width="360px"
+  >
+    <DqInput
+      v-model="stripRenameDraft"
+      size="sm"
+      :placeholder="$t('canvas.sessionSelect')"
+      @keydown.enter="commitStripRename"
+    />
+    <template #footer>
+      <DqButton size="sm" @click="stripRenameOpen = false">{{ $t('common.cancel') }}</DqButton>
+      <DqButton type="primary" @click="commitStripRename">{{ $t('common.confirm') }}</DqButton>
+    </template>
+  </DqDialog>
 
   <StudioLineagePanel
     v-model:modelValue="showLineageDrawer"
@@ -160,9 +200,9 @@ import { warnIfRiskyMemory } from '@/composables/memoryHint';
 import type { SystemInfo, Task, GalleryItem } from '@/types';
 import { assetDisplayLabel, previewDisplayCaption } from '@/utils/assetDisplay';
 import { seedForSubmit } from '@/utils/seed';
+import { Refresh, Search } from '@danqing/dq-shell';
 import StudioLayout from '@/components/studio/StudioLayout.vue';
-import StudioCanvas from '@/components/studio/StudioCanvas.vue';
-import StudioGalleryFilters from '@/components/studio/StudioGalleryFilters.vue';
+import StudioCanvasStripList from '@/components/studio/StudioCanvasStripList.vue';
 import AudioComposer from '@/components/studio/AudioComposer.vue';
 import StudioComposerHost from '@/components/studio/StudioComposerHost.vue';
 import InfiniteCanvas from '@/components/studio/InfiniteCanvas.vue';
@@ -170,6 +210,7 @@ import StudioLineagePanel from '@/components/studio/StudioLineagePanel.vue';
 import GalleryPreviewDialog from '@/components/gallery/GalleryPreviewDialog.vue';
 import { useStudioGallery } from '@/composables/useStudioGallery';
 import { canvasAutoAddEnabled, useCanvasStore } from '@/composables/useCanvasStore';
+import { useCanvasStripIa } from '@/composables/useCanvasStripIa';
 import { useComposerDrawer } from '@/composables/useComposerDrawer';
 import {
   activateCanvasViewForResults,
@@ -224,12 +265,10 @@ const TSU = {
   statusText: (s: string) => s || ''
 };
 
-// ---- Tab navigation ----
+// ---- Work mode (create vs cover are exclusive drawers — no in-drawer tab switch) ----
 const audioWorkTab = ref('create');
-const audioWorkSegmentOptions = computed(() => [
-  { label: $tt('action.audio.create'), value: 'create' },
-  { label: $tt('action.audio.cover'), value: 'cover' },
-]);
+/** Hide create/cover segment; each entry point opens a single-purpose drawer. */
+const composerWorkModeOptions = computed(() => [] as Array<{ label: string; value: string }>);
 
 // ---- State ----
 const generating = ref(false);
@@ -833,7 +872,7 @@ function onCanvasUseAsCoverSource(payload: { path: string; previewUrl: string; q
   coverSourceSrc.value = payload.previewUrl || '';
   const item = galleryItems.value.find((g) => g.path === payload.path);
   coverSourceName.value = item?.title || item?.name || $tt('audio.coverSource');
-  syncCanvasCoverOverlay(payload.path);
+  audioCanvas.clearOverlay('cover_source');
   if (!payload.quiet) toast.success($tt('canvas.coverSourceBound'));
 }
 
@@ -1314,6 +1353,17 @@ onMounted(async () => {
   loadRecentAudio();
   loadGallery();
   loadPresets();
+  try {
+    await audioCanvas.ensureDefaultAndAdoptOrphans();
+  } catch (e) {
+    console.error('audio canvas adopt failed', e);
+  }
+  try {
+    await audioCanvas.refreshSessions();
+    await rebuildSessionAssetIndex();
+  } catch (e) {
+    console.error('audio canvas strip index failed', e);
+  }
   window.addEventListener('keydown', onCreatePageKeydown);
 });
 
@@ -1338,7 +1388,7 @@ function onCreatePageKeydown(e: KeyboardEvent) {
   }
   if (e.key.toLowerCase() === 'c' && !e.metaKey && !e.ctrlKey && !e.altKey) {
     e.preventDefault();
-    openComposerDrawer();
+    openGenerationComposer();
   }
 }
 
@@ -1419,39 +1469,13 @@ const viewMode = ref<'grid' | 'canvas'>(
   savedViewMode === 'canvas' || savedViewMode === 'grid' ? savedViewMode : 'grid'
 );
 
+const audioPreviewVisible = ref(false);
+const selectedAudioIndex = ref(0);
+
 watch(viewMode, (mode) => {
   setItem(DQ_STORAGE.AUDIO_VIEW_MODE, mode);
+  if (mode === 'grid') closeComposerDrawer();
 });
-
-function onViewModeChange(mode: 'grid' | 'canvas') {
-  if (viewMode.value === mode) return;
-  const batchPaths =
-    mode === 'canvas' && selectedPaths.value.size > 0
-      ? Array.from(selectedPaths.value)
-      : [];
-  viewMode.value = mode;
-  if (mode === 'canvas') {
-    clearSelection();
-    maybeShowCanvasWorkspaceHint();
-    const batchCount = batchPaths.length;
-    nextTick(() => {
-      syncCompositorOverlaysOnCanvasEnter();
-      persistComposerSnapshot();
-      if (batchCount > 0) {
-        addAssetPathsToCanvas(batchPaths, {
-          fit: true,
-          placement: 'center',
-          focusLast: false,
-        });
-        toast.success($tt('canvas.batchAdded', { n: batchCount }));
-      } else if (Object.keys(audioCanvas.items).length > 0) {
-        infiniteCanvasRef.value?.fitAll();
-      }
-    });
-  } else {
-    clearSelection();
-  }
-}
 
 const lineageTargetAssetId = ref('');
 
@@ -1505,30 +1529,9 @@ function onCanvasSessionReady(_payload: { sessionId: string }) {
   }
 }
 
-function syncCanvasCoverOverlay(path: string | null) {
-  if (!path) {
-    audioCanvas.clearOverlay('cover_source');
-    return;
-  }
-  const item = galleryItems.value.find((g) => g.path === path) ?? undefined;
-  audioCanvas.setOverlay('cover_source', path, item);
-}
-
-function restoreComposerFromCanvasOverlays() {
-  const cov = audioCanvas.overlays.cover_source;
-  if (!coverSourceAssetPath.value && cov?.path) {
-    const item = galleryItems.value.find((g) => g.path === cov.path);
-    coverSourceAssetPath.value = cov.path;
-    coverSourceSrc.value = item ? previewUrlForGalleryItem(item) : '';
-    coverSourceName.value = item?.title || item?.name || $tt('audio.coverSource');
-    coverSourceFile.value = null;
-    audioWorkTab.value = 'cover';
-  }
-}
-
 function syncCompositorOverlaysOnCanvasEnter() {
-  restoreComposerFromCanvasOverlays();
-  syncCanvasCoverOverlay(coverSourceAssetPath.value || null);
+  // Cover source lives in the composer only (no canvas COVER overlay — unlike image refs).
+  audioCanvas.clearOverlay('cover_source');
 }
 
 function onCanvasOverlayCleared(kind: import('@/types').CanvasOverlayKind) {
@@ -1543,11 +1546,30 @@ function fillComposerFromGalleryItem(item: GalleryItem) {
   persistComposerSnapshot();
 }
 
-function onCanvasOpenComposer() {
+const composerDrawerTitle = computed(() =>
+  audioWorkTab.value === 'cover'
+    ? $tt('action.audio.cover')
+    : $tt('action.audio.create'),
+);
+
+function openGenerationComposer() {
+  if (audioWorkTab.value === 'cover') {
+    audioWorkTab.value = 'create';
+  }
+  openComposerDrawer();
+}
+
+function onCanvasOpenComposer(payload?: { intent?: 'generate' | 'edit' | 'cover' }) {
   if (canvasSelectedItem.value) {
     fillComposerFromGalleryItem(canvasSelectedItem.value);
   }
-  openComposerDrawer();
+  // Toolbar「重新演绎」— cover-only drawer (no create tab).
+  if (payload?.intent === 'cover' || (audioWorkTab.value === 'cover' && payload?.intent !== 'generate')) {
+    audioWorkTab.value = 'cover';
+    openComposerDrawer();
+    return;
+  }
+  openGenerationComposer();
 }
 
 function onCanvasNodeSelected(item: GalleryItem | null) {
@@ -1625,7 +1647,7 @@ function onCanvasComposerRestore(snapshot: {
 watch(coverSourceAssetPath, () => {
   persistComposerSnapshot();
   if (viewMode.value === 'canvas') {
-    syncCanvasCoverOverlay(coverSourceAssetPath.value || null);
+    audioCanvas.clearOverlay('cover_source');
   }
 });
 
@@ -1643,9 +1665,17 @@ function buildCanvasMeta(extra: Record<string, unknown> = {}): Record<string, un
 }
 
 function onCanvasOpenPreview(item: GalleryItem) {
-  const idx = galleryItems.value.findIndex((g) => g.path === item.path);
+  markPreviewSource(audioCanvas.sessionId.value);
+  const list = previewItems.value;
+  const idx = list.findIndex((g) => g.path === item.path);
   if (idx >= 0) {
     selectedAudioIndex.value = idx;
+    audioPreviewVisible.value = true;
+    return;
+  }
+  const gIdx = galleryItems.value.findIndex((g) => g.path === item.path);
+  if (gIdx >= 0) {
+    selectedAudioIndex.value = gIdx;
     audioPreviewVisible.value = true;
   }
 }
@@ -1682,6 +1712,67 @@ const {
   batchDeleteSelected,
   clearSelection,
 } = useStudioGallery('audio');
+
+const {
+  stripSearchText,
+  stripRenameOpen,
+  stripRenameDraft,
+  sessionAssetIdsBySession,
+  canvasSessions,
+  canvasSessionTitle,
+  canvasReady,
+  galleryByAssetId,
+  enrichedGalleryItems,
+  previewItems,
+  previewTransferTargets,
+  rebuildSessionAssetIndex,
+  onStripOpen,
+  onStripPreview,
+  onStripCreate,
+  onBackToStripList,
+  onNewCanvas,
+  refreshStripList,
+  onStripRename,
+  commitStripRename,
+  onStripDelete,
+  markPreviewSource,
+  clearPreviewOverride,
+  onPreviewTransfer,
+} = useCanvasStripIa({
+  media: 'audio',
+  store: audioCanvas,
+  galleryItems,
+  viewMode,
+  previewVisible: audioPreviewVisible,
+  selectedIndex: selectedAudioIndex,
+  onComposerRestore: (snap) => onCanvasComposerRestore(snap as any),
+  openCreateComposer: () => openGenerationComposer(),
+  reloadGallery: () => loadGallery(true),
+});
+
+watch(audioPreviewVisible, (open) => {
+  if (!open) clearPreviewOverride();
+});
+
+function onViewModeChange(mode: 'grid' | 'canvas') {
+  if (viewMode.value === mode) return;
+  viewMode.value = mode;
+  if (mode === 'canvas') {
+    clearSelection();
+    maybeShowCanvasWorkspaceHint();
+    nextTick(() => {
+      syncCompositorOverlaysOnCanvasEnter();
+      persistComposerSnapshot();
+      if (Object.keys(audioCanvas.items).length > 0) {
+        infiniteCanvasRef.value?.fitAll();
+      }
+    });
+  } else {
+    clearSelection();
+    closeComposerDrawer();
+    void audioCanvas.refreshSessions().then(() => rebuildSessionAssetIndex());
+  }
+}
 
 async function addGalleryItemToCanvas(
   item: GalleryItem,
@@ -1720,20 +1811,10 @@ const composerBusy = computed(() => {
   );
 });
 
-// ---- Gallery preview dialog ----
-const audioPreviewVisible = ref(false);
-const selectedAudioIndex = ref(0);
-
-function onGallerySelect(item: any) {
-  const idx = galleryItems.value.findIndex((it) => it.path === item.path);
-  selectedAudioIndex.value = idx >= 0 ? idx : 0;
-  audioPreviewVisible.value = true;
-}
-
 function onCardAction({ action, item }: { action: string; item: any }) {
   if (action === 'compose-from-item') {
     fillComposerFromGalleryItem(item);
-    openComposerDrawer();
+    openGenerationComposer();
   } else if (action === 'add-to-canvas') {
     void addGalleryItemToCanvas(item, { fit: true });
   } else if (action === 'delete') {
@@ -1808,5 +1889,44 @@ async function loadPresets() {
 </script>
 
 <style scoped>
-/* AudioCreateView styles moved to AudioComposer.vue */
+.create-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.create-filters--list {
+  width: 100%;
+  max-width: none;
+}
+
+.create-filters__search {
+  flex: 0 1 320px;
+  min-width: 160px;
+  max-width: 420px;
+}
+
+.create-filters__spacer {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+
+.create-filters__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.create-filters__session-title {
+  font-size: var(--dq-font-size-body);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40vw;
+}
 </style>

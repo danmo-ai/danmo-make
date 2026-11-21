@@ -351,7 +351,6 @@ pub fn mux_png_sequence_to_mp4(
             "aac".to_string(),
             "-b:a".to_string(),
             "192k".to_string(),
-            "-shortest".to_string(),
             "-movflags".to_string(),
             "+faststart".to_string(),
             output_mp4.display().to_string(),
@@ -495,6 +494,65 @@ mod tests {
         assert_eq!((w, h), (32, 32));
         assert_eq!(rgb.len(), 32 * 32 * 3);
         assert!(decode_ppm(b"P3\n2 2\n255\n0 0 0").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mux_with_audio_preserves_the_video_tail_frame() {
+        if Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let dir = scratch("audio-tail");
+        let source = dir.join("source.mp4");
+        let status = Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=16x16:rate=24",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000",
+                "-frames:v",
+                "5",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-shortest",
+            ])
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(status.status.success());
+        let frames = dir.join("frames");
+        assert_eq!(extract_ppm_frames(&source, &frames, 5).unwrap(), 5);
+        let output = dir.join("output.mp4");
+        mux_png_sequence_to_mp4(&frames.join("frame_%06d.ppm"), Some(&source), &output, 24.0)
+            .unwrap();
+        let probe = Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=nb_frames",
+                "-of",
+                "json",
+            ])
+            .arg(&output)
+            .output()
+            .unwrap();
+        let probe: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+        assert_eq!(probe["streams"][0]["nb_frames"], "5");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

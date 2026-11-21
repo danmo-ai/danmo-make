@@ -30,10 +30,9 @@ impl ValueAndGrad {
         }
         initialize();
         clear_error();
-        let mut raw = check_infallible(
-            "mlx_closure_value_and_grad_new",
-            unsafe { sys::mlx_closure_value_and_grad_new() },
-        )?;
+        let mut raw = check_infallible("mlx_closure_value_and_grad_new", unsafe {
+            sys::mlx_closure_value_and_grad_new()
+        })?;
         clear_error();
         check(
             unsafe {
@@ -87,5 +86,57 @@ impl Drop for ValueAndGrad {
             let _ = sys::mlx_closure_value_and_grad_free(self.raw);
         }
         clear_error();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Array, Stream};
+
+    fn loss(ins: &[Array], stream: &Stream) -> Result<Array> {
+        let projected = Array::matmul(&ins[0], &ins[1], stream)?;
+        let squared = projected.square(stream)?;
+        squared.mean(false, stream)
+    }
+
+    #[test]
+    fn checkpointed_closure_matches_plain_value_and_grad() {
+        let stream = Stream::cpu().unwrap();
+        let x = Array::from_f32_slice(&[1.0, -2.0, 0.5, 3.0], &[2, 2]).unwrap();
+        let w = Array::from_f32_slice(&[0.25, -0.5, 1.5, 0.75], &[2, 2]).unwrap();
+        let inputs = vec![x, w];
+
+        let plain = ValueAndGrad::new(Closure::new(stream.clone(), loss).unwrap(), &[1]).unwrap();
+        let (plain_values, plain_grads) = plain.apply(&inputs).unwrap();
+        let checkpointed = ValueAndGrad::new(
+            Closure::new(stream.clone(), loss)
+                .unwrap()
+                .checkpoint()
+                .unwrap(),
+            &[1],
+        )
+        .unwrap();
+        let (ckpt_values, ckpt_grads) = checkpointed.apply(&inputs).unwrap();
+
+        let plain_loss = plain_values[0].to_vec_f32(&stream).unwrap()[0];
+        let ckpt_loss = ckpt_values[0].to_vec_f32(&stream).unwrap()[0];
+        assert!(
+            (plain_loss - ckpt_loss).abs() < 1e-6,
+            "{plain_loss} != {ckpt_loss}"
+        );
+        let plain_grad = plain_grads[0].to_vec_f32(&stream).unwrap();
+        let ckpt_grad = ckpt_grads[0].to_vec_f32(&stream).unwrap();
+        assert_eq!(plain_grad.len(), ckpt_grad.len());
+        for (index, (plain, ckpt)) in plain_grad.iter().zip(&ckpt_grad).enumerate() {
+            assert!(
+                (plain - ckpt).abs() < 1e-5,
+                "grad[{index}]: {plain} != {ckpt}"
+            );
+        }
+        assert!(
+            plain_grad.iter().any(|value| value.abs() > 1e-6),
+            "gradient vanished: {plain_grad:?}"
+        );
     }
 }

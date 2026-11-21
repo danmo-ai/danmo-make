@@ -716,7 +716,15 @@ const previewItems = computed(() => {
 
 function canvasTitleLabel(title: string): string {
   const t = (title || '').trim().toLowerCase();
-  if (t === 'default canvas' || t === '默认画布') return $tt('canvas.defaultCanvasTitle');
+  if (
+    t === 'default canvas' ||
+    t === '默认画布' ||
+    t === 'image canvas' ||
+    t === 'video canvas' ||
+    t === 'audio canvas'
+  ) {
+    return $tt('canvas.defaultCanvasTitle');
+  }
   return title || $tt('canvas.untitledSession');
 }
 

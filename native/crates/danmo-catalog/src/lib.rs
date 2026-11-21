@@ -18,10 +18,10 @@ pub enum CatalogError {
     #[error("model {model} has no family")]
     MissingFamily { model: String },
     #[error(
-        "{model} has no GGUF download (bf16, q8_0, q4_k). Re-download; safetensors and MLX weights are not loaded. Registry versions: {found}"
+        "{model} has no GGUF tier (bf16, q8_0, q4_k) in the registry. Published versions: {found}. Product MLX/safetensors installs resolve through safetensors version keys, not this GGUF path"
     )]
     NoGguf { model: String, found: String },
-    #[error("model {model} GGUF version {version} has no local_path")]
+    #[error("model {model} version {version} has no local_path")]
     MissingPath { model: String, version: String },
     #[error("{0}")]
     Invalid(String),
@@ -111,7 +111,7 @@ impl Catalog {
     }
 
     /// Install path for a published GGUF tier. `id:version` selects that download.
-    /// Legacy MLX version keys are not returned.
+    /// Safetensors / MLX version keys are not returned here — use resolve.
     pub fn gguf_local_path(&self, id: &str) -> Result<String, CatalogError> {
         let (bare, requested) = split_model_version(id);
         let entry = self
@@ -529,7 +529,8 @@ mod tests {
             }
         }));
         let err = catalog.gguf_local_path("flux2-klein-4b").unwrap_err();
-        assert!(err.to_string().contains("Re-download"), "{err}");
+        assert!(err.to_string().contains("no GGUF tier"), "{err}");
+        assert!(err.to_string().contains("safetensors"), "{err}");
         let public = catalog.public_registry().unwrap();
         let versions = public
             .pointer("/models/flux2-klein-4b/distribution/versions")

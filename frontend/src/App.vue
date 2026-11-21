@@ -358,8 +358,7 @@ onMounted(async () => {
 
   tasksStore.ensureQueuePoller();
 
-  // First launch: no completion marker yet. The wizard is skipped once the user
-  // finishes it (Finish), which writes ONBOARDED.
+  // First launch: no completion marker yet. Skipped after Finish /「不再提示」+ close.
   showOnboarding.value = !getItem(DQ_STORAGE.ONBOARDED);
 
   appEvents.on('open-global-task-queue', onOpenGlobalTaskQueue);

@@ -191,6 +191,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "danmo-cli"
+version = "0.1.0"
+dependencies = [
+ "danmo-catalog",
+ "danmo-engine",
+ "danmo-mlx-sys",
+ "danmo-resolve",
+ "serde_json",
+]
+
+[[package]]
 name = "danmo-contracts"
 version = "0.1.0"
 dependencies = [
@@ -235,6 +246,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "danmo-resolve"
+version = "0.1.0"
+dependencies = [
+ "danmo-catalog",
+ "danmo-engine",
+ "serde_json",
+]
+
+[[package]]
 name = "danmo-schedule"
 version = "0.1.0"
 dependencies = [
@@ -253,6 +273,7 @@ dependencies = [
  "danmo-contracts",
  "danmo-engine",
  "danmo-mlx",
+ "danmo-resolve",
  "danmo-schedule",
  "danmo-store",
  "http-body-util",

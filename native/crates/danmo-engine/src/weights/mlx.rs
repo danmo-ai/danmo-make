@@ -218,11 +218,24 @@ impl MlxWeights {
         stream: &Stream,
         remap: &dyn Fn(&str) -> std::result::Result<String, super::WeightError>,
     ) -> std::result::Result<Self, super::WeightError> {
+        self.attach_lora_routed(files, stream, &|module| {
+            Ok(super::LoraRoute::One(remap(module)?))
+        })
+    }
+
+    /// Same residual as [`attach_lora_mapped`]. `route` may split one fused
+    /// matrix onto several parameters or skip a non-linear module.
+    pub fn attach_lora_routed(
+        self,
+        files: &[super::LoraFile],
+        stream: &Stream,
+        route: &dyn Fn(&str) -> std::result::Result<super::LoraRoute, super::WeightError>,
+    ) -> std::result::Result<Self, super::WeightError> {
         if files.is_empty() {
             return Ok(self);
         }
         let layout = self.linear_layout();
-        let factors = super::load_lora_factors_mapped(files, &layout, remap)?;
+        let factors = super::lora::load_lora_factors_routed(files, &layout, None, route)?;
         let mut grouped: BTreeMap<String, Vec<danmo_mlx::LoraResidual>> = BTreeMap::new();
         for factor in factors {
             let dtype = self
@@ -322,6 +335,18 @@ fn lora_matrix(
     Ok(array)
 }
 
+/// Load one safetensors component without admitting sibling bundles.
+///
+/// LTX-style flat bundles keep several independently quantized components in
+/// one directory, so loading the whole directory would mix their contracts.
+pub fn load_file(
+    path: &Path,
+    dtype: WeightDtype,
+    expected: Option<AffineQuantization>,
+) -> Result<MlxWeights> {
+    load_paths(&[path.to_path_buf()], dtype, expected)
+}
+
 /// Load every `*.safetensors` shard in `directory`.
 ///
 /// `expected` is the registry's declared quantization. When it is set, the
@@ -360,10 +385,18 @@ pub fn load_directory(
         ));
     }
 
+    load_paths(&paths, dtype, expected)
+}
+
+fn load_paths(
+    paths: &[std::path::PathBuf],
+    dtype: WeightDtype,
+    expected: Option<AffineQuantization>,
+) -> Result<MlxWeights> {
     let io = Stream::cpu()?;
     let mut raw = BTreeMap::new();
     let mut metadata_bits = None;
-    for path in &paths {
+    for path in paths {
         let tensors = SafeTensors::load(path, &io)?;
         if let Some(bits) = shard_bits(&tensors, path)? {
             if metadata_bits.is_some_and(|previous| previous != bits) {
@@ -477,6 +510,18 @@ fn group(
     }
 
     for (name, tensor) in raw {
+        // Diffusers stores the BatchNorm update counter as int64. Inference
+        // reads `bn.running_mean` and `bn.running_var`. Any other int64 tensor
+        // is not a weight.
+        if tensor.dtype() == Dtype::Int64 {
+            if name == "bn.num_batches_tracked" {
+                continue;
+            }
+            return Err(Error::new(
+                "MLX safetensors",
+                format!("{name} is int64, which is not a model weight"),
+            ));
+        }
         if tensor.dtype() == Dtype::UInt32 {
             return Err(Error::new(
                 "MLX affine quantization",
@@ -543,7 +588,7 @@ fn infer(
                     "{name}: weight {weight:?} with scales {scales:?} does not fit {} affine packing",
                     bits.map_or("4- or 8-bit".to_string(), |bits| format!("{bits}-bit"))
                 ),
-            ))
+            ));
         }
         _ => {
             return Err(Error::new(
@@ -551,7 +596,7 @@ fn infer(
                 format!(
                     "{name}: weight {weight:?} with scales {scales:?} fits both 4 and 8 bits; set shard metadata quantization_level or the registry quantization"
                 ),
-            ))
+            ));
         }
     };
     if let Some(expected) = expected {
@@ -565,10 +610,98 @@ fn infer(
     Ok(layer)
 }
 
+/// Header-light integrity probe for a converted affine bundle. Returns the
+/// inferred quantization, `Ok(None)` when the file has no packed linears, and
+/// fails on malformed packed tensors. Does not dequantize or materialize the
+/// full file.
+pub fn probe_affine_quantization(path: &Path) -> Result<Option<AffineQuantization>> {
+    let io = Stream::cpu()?;
+    let tensors = SafeTensors::load(path, &io)?;
+    let names = tensors.names()?;
+    let Some(scales_name) = names
+        .iter()
+        .find(|name| name.ends_with(".scales"))
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let base = scales_name.trim_end_matches(".scales").to_string();
+    let required = |name: &str| -> Result<Array> {
+        tensors.get(name)?.ok_or_else(|| {
+            Error::new(
+                "MLX safetensors",
+                format!("{}: missing {name}", path.display()),
+            )
+        })
+    };
+    let weight = required(&format!("{base}.weight"))?;
+    let scales = required(&scales_name)?;
+    let biases = required(&format!("{base}.biases"))?;
+    if !matches!(weight.dtype(), Dtype::UInt8 | Dtype::UInt32) {
+        return Err(Error::new(
+            "MLX affine quantization",
+            format!(
+                "{}: {base}.weight must retain packed uint bits, got {:?}",
+                path.display(),
+                weight.dtype()
+            ),
+        ));
+    }
+    if !scales.dtype().is_floating() {
+        return Err(Error::new(
+            "MLX affine quantization",
+            format!(
+                "{}: {scales_name} is not a floating scale tensor",
+                path.display()
+            ),
+        ));
+    }
+    let packed = QuantizedArray {
+        weight,
+        scales,
+        biases,
+    };
+    infer(&base, &packed, None, shard_bits(&tensors, path)?).map(Some)
+}
+
+/// Raw one-file read for install-hook checkpoint converters. Returns every
+/// tensor plus the `config` metadata string when present. Inference loads go
+/// through [`load_file`] / [`load_directory`]; this entry exists so converters
+/// do not open safetensors inside a family.
+pub fn read_component(
+    path: &Path,
+    stream: &Stream,
+) -> Result<(BTreeMap<String, Array>, Option<String>)> {
+    let tensors = SafeTensors::load(path, stream)?;
+    let config = tensors.metadata("config")?;
+    let mut weights = BTreeMap::new();
+    for name in tensors.names()? {
+        let tensor = tensors.get(&name)?.ok_or_else(|| {
+            Error::new(
+                "MLX safetensors",
+                format!("{}: missing {name}", path.display()),
+            )
+        })?;
+        weights.insert(name, tensor);
+    }
+    Ok((weights, config))
+}
+
+/// Affine-pack one dense matrix for a converted bundle. The returned triple
+/// keeps the checkpoint layout (`weight`, `scales`, `biases`).
+pub fn pack_affine(
+    tensor: &Array,
+    group_size: i32,
+    bits: i32,
+    stream: &Stream,
+) -> Result<QuantizedArray> {
+    tensor.quantize_affine(group_size, bits, stream)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{load_directory, WeightDtype};
-    use danmo_mlx::{save_safetensors, AffineQuantization, Array, Dtype, LinearWeight, Stream};
+    use super::{WeightDtype, load_directory};
+    use danmo_mlx::{AffineQuantization, Array, Dtype, LinearWeight, Stream, save_safetensors};
     use std::path::PathBuf;
 
     struct Scratch(PathBuf);
@@ -740,18 +873,22 @@ mod tests {
     fn registry_and_metadata_conflicts_fail_loud() {
         let scratch = Scratch::new();
         write_bundle(&scratch.0, 4, Some("4"));
-        assert!(load_directory(
-            &scratch.0,
-            WeightDtype::Native,
-            Some(AffineQuantization::new(8, 32).unwrap())
-        )
-        .is_err());
-        assert!(load_directory(
-            &scratch.0,
-            WeightDtype::Native,
-            Some(AffineQuantization::new(4, 128).unwrap())
-        )
-        .is_err());
+        assert!(
+            load_directory(
+                &scratch.0,
+                WeightDtype::Native,
+                Some(AffineQuantization::new(8, 32).unwrap())
+            )
+            .is_err()
+        );
+        assert!(
+            load_directory(
+                &scratch.0,
+                WeightDtype::Native,
+                Some(AffineQuantization::new(4, 128).unwrap())
+            )
+            .is_err()
+        );
     }
 
     #[test]

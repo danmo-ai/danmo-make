@@ -7,7 +7,9 @@
 
 use std::collections::BTreeMap;
 
-use danmo_mlx::{Array, CacheKey, CacheRevision, Dtype, Error, ModelCache, Result, Stream, UnaryClosure};
+use danmo_mlx::{
+    Array, CacheKey, CacheRevision, Dtype, Error, ModelCache, Result, Stream, UnaryClosure,
+};
 
 use crate::weights::MlxWeights;
 
@@ -66,7 +68,12 @@ pub fn cached<'a>(
     })
 }
 
-fn decode(weights: &MlxWeights, scale: PreviewScale, latent: &Array, stream: &Stream) -> Result<Array> {
+fn decode(
+    weights: &MlxWeights,
+    scale: PreviewScale,
+    latent: &Array,
+    stream: &Stream,
+) -> Result<Array> {
     let shape = latent.shape();
     let batched = match shape.as_slice() {
         [1, channels, _, _] if *channels == LATENT_CHANNELS => latent.clone(),
@@ -180,24 +187,35 @@ fn load_weights(stream: &Stream) -> Result<MlxWeights> {
 
 fn read_tensors(bytes: &[u8]) -> Result<Vec<(String, Vec<u64>, Vec<f32>)>> {
     if bytes.len() < 8 {
-        return Err(Error::new("TAEF1 preview", "safetensors header is truncated"));
+        return Err(Error::new(
+            "TAEF1 preview",
+            "safetensors header is truncated",
+        ));
     }
     let header_len = u64::from_le_bytes(bytes[..8].try_into().unwrap()) as usize;
-    let header_end = 8usize.checked_add(header_len).filter(|end| *end <= bytes.len()).ok_or_else(|| {
-        Error::new("TAEF1 preview", "safetensors header extends past the file")
-    })?;
-    let header: serde_json::Value = serde_json::from_slice(&bytes[8..header_end]).map_err(|error| {
-        Error::new("TAEF1 preview", format!("safetensors header is not json: {error}"))
-    })?;
-    let object = header.as_object().ok_or_else(|| {
-        Error::new("TAEF1 preview", "safetensors header is not an object")
-    })?;
+    let header_end = 8usize
+        .checked_add(header_len)
+        .filter(|end| *end <= bytes.len())
+        .ok_or_else(|| Error::new("TAEF1 preview", "safetensors header extends past the file"))?;
+    let header: serde_json::Value =
+        serde_json::from_slice(&bytes[8..header_end]).map_err(|error| {
+            Error::new(
+                "TAEF1 preview",
+                format!("safetensors header is not json: {error}"),
+            )
+        })?;
+    let object = header
+        .as_object()
+        .ok_or_else(|| Error::new("TAEF1 preview", "safetensors header is not an object"))?;
     let mut tensors = Vec::new();
     for (name, meta) in object {
         if name == "__metadata__" {
             continue;
         }
-        let dtype = meta.get("dtype").and_then(|value| value.as_str()).unwrap_or("");
+        let dtype = meta
+            .get("dtype")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
         if dtype != "BF16" {
             return Err(Error::new(
                 "TAEF1 preview",
@@ -214,9 +232,16 @@ fn read_tensors(bytes: &[u8]) -> Result<Vec<(String, Vec<u64>, Vec<f32>)>> {
         let offsets = meta
             .get("data_offsets")
             .and_then(|value| value.as_array())
-            .ok_or_else(|| Error::new("TAEF1 preview", format!("{name} is missing data offsets")))?;
-        let start = offsets.first().and_then(|value| value.as_u64()).unwrap_or(0) as usize + header_end;
-        let end = offsets.get(1).and_then(|value| value.as_u64()).unwrap_or(0) as usize + header_end;
+            .ok_or_else(|| {
+                Error::new("TAEF1 preview", format!("{name} is missing data offsets"))
+            })?;
+        let start = offsets
+            .first()
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0) as usize
+            + header_end;
+        let end =
+            offsets.get(1).and_then(|value| value.as_u64()).unwrap_or(0) as usize + header_end;
         if end > bytes.len() || end < start {
             return Err(Error::new(
                 "TAEF1 preview",
@@ -255,7 +280,10 @@ mod tests {
         assert_eq!(TAEF1_BYTES.len(), 2_464_414);
         let tensors = read_tensors(TAEF1_BYTES).unwrap();
         assert_eq!(tensors.len(), 67);
-        let stem = tensors.iter().find(|(name, _, _)| name == "1.weight").unwrap();
+        let stem = tensors
+            .iter()
+            .find(|(name, _, _)| name == "1.weight")
+            .unwrap();
         assert_eq!(stem.1, vec![64, 16, 3, 3]);
         assert!(tensors.iter().any(|(name, _, _)| name == "19.bias"));
         assert!(tensors.iter().all(|(name, _, _)| name != "7.bias"));

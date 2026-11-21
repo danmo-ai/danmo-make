@@ -208,6 +208,20 @@ impl Closure {
         Ok(output)
     }
 
+    /// Gradient checkpointing (`mx.checkpoint`): the applied closure keeps no
+    /// intermediate activations; backward recomputes the forward from the
+    /// saved inputs. Inputs that need gradients must be passed to `apply`,
+    /// not captured — captured arrays are constants to the recomputation.
+    pub fn checkpoint(self) -> Result<Self> {
+        let mut output = Self::empty()?;
+        clear_error();
+        check(
+            unsafe { sys::mlx_checkpoint(&mut output.raw, self.raw) },
+            "mlx_checkpoint",
+        )?;
+        Ok(output)
+    }
+
     pub fn apply(&self, inputs: &[Array]) -> Result<Array> {
         let input = VectorArray::from_arrays(inputs)?;
         let mut output = VectorArray::new()?;

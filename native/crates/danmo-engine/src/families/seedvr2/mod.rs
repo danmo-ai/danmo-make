@@ -8,10 +8,12 @@
 
 pub mod color;
 pub mod dit;
+#[cfg(feature = "mlx")]
+pub mod mlx;
 pub mod session;
 pub mod tiling;
 pub mod vae;
 pub mod video_session;
 
-pub use session::{write_smoke_bundle, SeedVr2UpscaleFamily};
+pub use session::{SeedVr2UpscaleFamily, write_smoke_bundle};
 pub use video_session::SeedVr2VideoUpscaleFamily;

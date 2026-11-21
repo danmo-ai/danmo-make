@@ -60,6 +60,54 @@ pub(crate) fn encode(
     Ok(ids)
 }
 
+/// SentencePiece-style BPE over Unicode scalar symbols with `<0xXX>` fallback.
+/// Normalization and pre-tokenization remain the model family's responsibility.
+pub(crate) fn encode_byte_fallback(
+    text: &str,
+    vocab: &HashMap<String, i32>,
+    ranks: &HashMap<(String, String), usize>,
+    specials: &[(String, i32)],
+    vocab_size: i64,
+) -> Result<Vec<i32>, WeightError> {
+    let mut ids = Vec::new();
+    for piece in split_specials(text, specials) {
+        match piece {
+            Piece::Special(token) => {
+                let id = specials
+                    .iter()
+                    .find(|(name, _)| name == token)
+                    .map(|(_, id)| i64::from(*id))
+                    .ok_or_else(|| {
+                        WeightError::NotBuilt(format!("tokenizer has no id for {token}"))
+                    })?;
+                push_id(&mut ids, id, vocab_size, token)?;
+            }
+            Piece::Plain(plain) => {
+                let symbols = plain.chars().map(|ch| ch.to_string()).collect();
+                for token in merge(symbols, ranks) {
+                    if let Some(id) = vocab.get(&token).copied() {
+                        push_id(&mut ids, i64::from(id), vocab_size, &token)?;
+                        continue;
+                    }
+                    for byte in token.as_bytes() {
+                        let fallback = format!("<0x{byte:02X}>");
+                        let id = vocab.get(&fallback).copied().ok_or_else(|| {
+                            WeightError::NotBuilt(format!(
+                                "tokenizer has neither {token:?} nor byte fallback {fallback}"
+                            ))
+                        })?;
+                        push_id(&mut ids, i64::from(id), vocab_size, &fallback)?;
+                    }
+                }
+            }
+        }
+    }
+    if ids.is_empty() {
+        return Err(WeightError::NotBuilt("prompt has no tokens".into()));
+    }
+    Ok(ids)
+}
+
 pub(crate) fn pretokenize(text: &str) -> Result<Vec<String>, WeightError> {
     let mut index = 0;
     let mut out = Vec::new();
@@ -253,14 +301,14 @@ impl Qwen2Tokenizer {
         let vocab_json: serde_json::Value = serde_json::from_str(&vocab_text).map_err(|err| {
             WeightError::NotBuilt(format!("tokenizer vocab.json is not json: {err}"))
         })?;
-        let vocab = vocab_map(&vocab_json)?;
+        let mut vocab = vocab_map(&vocab_json)?;
         let merges_text =
             std::fs::read_to_string(&merges_path).map_err(|err| WeightError::Open {
                 path: merges_path.display().to_string(),
                 detail: err.to_string(),
             })?;
         let ranks = merge_ranks(&merges_text)?;
-        let specials = added_specials(&root.join("tokenizer_config.json"), &vocab)?;
+        let specials = added_specials(&root.join("tokenizer_config.json"), &mut vocab)?;
         Ok(Self {
             vocab,
             ranks,
@@ -332,7 +380,7 @@ fn merge_ranks(text: &str) -> Result<HashMap<(String, String), usize>, WeightErr
 
 fn added_specials(
     path: &std::path::Path,
-    vocab: &HashMap<String, i32>,
+    vocab: &mut HashMap<String, i32>,
 ) -> Result<Vec<(String, i32)>, WeightError> {
     if !path.is_file() {
         return Err(WeightError::NotBuilt(format!(
@@ -372,16 +420,30 @@ fn added_specials(
         let id = key.parse::<i64>().map_err(|_| {
             WeightError::NotBuilt(format!("tokenizer added token id {key} is not an integer"))
         })?;
-        let Some(vocab_id) = vocab.get(content).copied() else {
-            return Err(WeightError::NotBuilt(format!(
-                "tokenizer has no vocab id for {content}"
-            )));
+        let vocab_id = match vocab.get(content).copied() {
+            Some(vocab_id) => {
+                if i64::from(vocab_id) != id {
+                    return Err(WeightError::NotBuilt(format!(
+                        "tokenizer id for {content} is {vocab_id} in vocab and {id} in added_tokens_decoder"
+                    )));
+                }
+                vocab_id
+            }
+            None => {
+                let Some(vocab_id) = i32::try_from(id).ok() else {
+                    return Err(WeightError::NotBuilt(format!(
+                        "tokenizer added token id {id} for {content} does not fit"
+                    )));
+                };
+                if vocab.values().any(|existing| *existing == vocab_id) {
+                    return Err(WeightError::NotBuilt(format!(
+                        "tokenizer added token {content} reuses id {vocab_id}"
+                    )));
+                }
+                vocab.insert(content.to_string(), vocab_id);
+                vocab_id
+            }
         };
-        if i64::from(vocab_id) != id {
-            return Err(WeightError::NotBuilt(format!(
-                "tokenizer id for {content} is {vocab_id} in vocab and {id} in added_tokens_decoder"
-            )));
-        }
         specials.push((content.to_string(), vocab_id));
     }
     specials.sort_by_key(|(token, _)| std::cmp::Reverse(token.len()));

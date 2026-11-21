@@ -162,7 +162,7 @@ fn embed_caption(
     Ok(embedded)
 }
 
-fn run_block(
+pub(crate) fn run_block(
     weights: &MlxWeights,
     config: MlxZImageConfig,
     prefix: &str,
@@ -213,14 +213,14 @@ fn run_block(
 }
 
 #[derive(Clone)]
-struct ForwardRope {
-    image: Array,
-    caption: Array,
-    unified: Array,
+pub(crate) struct ForwardRope {
+    pub(crate) image: Array,
+    pub(crate) caption: Array,
+    pub(crate) unified: Array,
 }
 
 impl ForwardRope {
-    fn new(config: MlxZImageConfig, grid: TokenGrid, stream: &Stream) -> Result<Self> {
+    pub(crate) fn new(config: MlxZImageConfig, grid: TokenGrid, stream: &Stream) -> Result<Self> {
         let ids = geom::positions_image_first(grid);
         let (image_ids, caption_ids) = ids.split_at(grid.img_len as usize);
         let axes = config.axes.map(|value| value as i32);
@@ -783,7 +783,7 @@ fn forward_with_timestep_observed(
 /// (VideoX `ZImageControlTransformer2DModel` single-pass: main refiner blocks
 /// are `BaseZImageTransformerBlock`s that add `hints[block_id] * scale`), then
 /// computes control layer hints from the hinted unified stream.
-fn unified_before(
+pub(crate) fn unified_before(
     weights: &MlxWeights,
     config: MlxZImageConfig,
     grid: TokenGrid,
@@ -972,7 +972,7 @@ fn unpatchify_velocity(
 }
 
 /// FinalLayer + unpatchify + sign, shared by the eager and compiled paths.
-fn final_velocity(
+pub(crate) fn final_velocity(
     weights: &MlxWeights,
     config: MlxZImageConfig,
     grid: TokenGrid,

@@ -76,7 +76,6 @@ pub fn velocity(
     unpatchify(&real, grid, config.in_channels as usize)
 }
 
-
 fn timestep_mlp(
     weights: &HashMap<String, Vec<f32>>,
     config: ZImageConfig,

@@ -186,6 +186,8 @@ pub struct ImageUpscaleRequest {
     /// Output scale over the source short edge. None is the reference default
     /// 2. Only 2 and 4 are registered.
     pub scale: Option<u32>,
+    /// Spatial input tile edge. Zero disables tiling; None uses the model default.
+    pub tile_size: Option<u32>,
     /// Softness of the bicubic pre-downscale (0 sharp .. 1 strong). None is
     /// the reference default 0.
     pub denoise: Option<f32>,
@@ -221,6 +223,14 @@ pub struct VideoUpscaleRequest {
     pub priority: String,
 }
 
+/// One reference media row for video create (LTX Ref2VA / similar).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaReference {
+    /// `image`, `audio`, or `video`.
+    pub kind: String,
+    pub asset_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoGenerationRequest {
     pub model: String,
@@ -239,6 +249,12 @@ pub struct VideoGenerationRequest {
     pub num_frames: Option<u32>,
     /// None is the reference default 16.
     pub fps: Option<u32>,
+    /// Ref2VA / multi-subject reference rows. Empty means pure T2V.
+    #[serde(default)]
+    pub media_references: Vec<MediaReference>,
+    /// Optional LoRA adapters (e.g. LTX MSR). Paths are filled on accept.
+    #[serde(default)]
+    pub adapters: Vec<ImageAdapter>,
     #[serde(default)]
     pub metadata: Value,
     #[serde(default = "default_priority")]
@@ -265,6 +281,42 @@ pub struct VideoEditRequest {
     /// (num_frames - 1) % 4 == 0.
     pub num_frames: Option<u32>,
     /// None is the family default (hunyuan: 24).
+    pub fps: Option<u32>,
+    #[serde(default)]
+    pub metadata: Value,
+    #[serde(default = "default_priority")]
+    pub priority: String,
+}
+
+/// Audio-driven digital human (LongCat-Avatar ATI2V): portrait + voice track
+/// → lip-synced video. `avatar_script` reuses this shape with `script_text`
+/// set and no `audio_asset_id`; the TTS family is not built yet, so the
+/// session fails loud on that path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoAvatarRequest {
+    pub model: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub prompt: String,
+    #[serde(default)]
+    pub negative_prompt: String,
+    /// Portrait image asset.
+    pub reference_asset_id: String,
+    /// Voice track asset; empty when `script_text` drives the task.
+    #[serde(default)]
+    pub audio_asset_id: String,
+    /// Text for future TTS synthesis (`avatar_script`).
+    #[serde(default)]
+    pub script_text: String,
+    /// "WxH"; None is the family default 512x512.
+    pub size: Option<String>,
+    /// None is the family default 8 (DMD distill).
+    pub steps: Option<u32>,
+    pub seed: Option<i64>,
+    /// None is the family default 93; requires (num_frames - 1) % 4 == 0.
+    pub num_frames: Option<u32>,
+    /// None is the family default 25.
     pub fps: Option<u32>,
     #[serde(default)]
     pub metadata: Value,

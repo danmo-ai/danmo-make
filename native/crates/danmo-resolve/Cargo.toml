@@ -1,0 +1,11 @@
+[package]
+name = "danmo-resolve"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+danmo-catalog = { path = "../danmo-catalog" }
+danmo-engine = { path = "../danmo-engine" }
+serde_json = "1"

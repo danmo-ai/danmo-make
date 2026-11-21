@@ -1,5 +1,6 @@
-//! GGUF bundles. Tensor names in the file are graph parameter names.
-//! Nothing in this module rewrites a key.
+//! Weight bundles. Product loads are safetensors/MLX; GGUF helpers remain for
+//! families that still open a GGUF DiT. Tensor names in a file are graph
+//! parameter names — nothing in this module rewrites a key.
 
 mod bundle;
 mod cache;
@@ -9,9 +10,9 @@ mod lora;
 mod mlx;
 
 pub use bundle::{
-    assert_gguf_bundle, assert_hunyuan_bundle, assert_ltx_bundle, assert_upscale_bundle,
-    is_ace_step_safetensors_bundle, is_controlnet_safetensors_dir, is_safetensors_image_bundle,
-    HunyuanBundle, LtxBundle, UpscaleBundle,
+    assert_gguf_bundle, assert_hunyuan_bundle, is_ace_step_safetensors_bundle,
+    is_controlnet_safetensors_dir, is_safetensors_bundle, is_safetensors_image_bundle,
+    is_seedvr2_safetensors_bundle, HunyuanBundle,
 };
 pub use cache::{resident_bytes, revision};
 pub(crate) use gguf::f16_to_f32;
@@ -22,24 +23,23 @@ pub use gguf::{
 };
 pub use lora::{
     bind_lora_factors, load_lora_factors, load_lora_factors_mapped,
-    load_lora_factors_with_default_alpha, LoraFactor, LoraFile,
+    load_lora_factors_with_default_alpha, LoraFactor, LoraFile, LoraRoute,
 };
 #[cfg(feature = "mlx")]
-pub use mlx::{load_directory as load_mlx_directory, MlxWeights, WeightDtype};
+pub use mlx::{
+    load_directory as load_mlx_directory, load_file as load_mlx_file, pack_affine,
+    probe_affine_quantization, read_component, MlxWeights, WeightDtype,
+};
 
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum WeightError {
     #[error(
-        "{path} is not a weight file for this role. The DiT is GGUF (bf16, q8_0, or q4_k). The text encoder and VAE are GGUF or safetensors"
+        "{path} is not a weight file for this role. A GGUF DiT family expects .gguf for the transformer; companions may be GGUF or safetensors"
     )]
     NotGguf { path: String },
-    #[error(
-        "{path} is an old MLX or safetensors bundle. Re-download the GGUF version (bf16, q8_0, or q4_k)"
-    )]
-    LegacyBundle { path: String },
-    #[error("{path} is not a ready GGUF bundle: {detail}. Re-download the GGUF version (bf16, q8_0, or q4_k)")]
+    #[error("{path} is not a ready weight bundle: {detail}")]
     Bundle { path: String, detail: String },
     #[error("failed to read weights {path}: {detail}")]
     Open { path: String, detail: String },

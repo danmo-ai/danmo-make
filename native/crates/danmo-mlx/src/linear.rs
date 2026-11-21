@@ -181,12 +181,24 @@ impl LinearWeight {
             if !lora.scale.is_finite() {
                 return Err(Error::new("MLX LoRA", "scale is not a finite number"));
             }
+            // Training keeps LoRA factors in F32 on a BF16 base; inference
+            // attaches factors already at the compute dtype, making the casts
+            // no-ops. The delta rejoins at the output dtype either way.
+            let lora_dtype = lora.a.dtype();
+            let input = match input.dtype() == lora_dtype {
+                true => input.clone(),
+                false => input.astype(lora_dtype, stream)?,
+            };
             let a = lora.a.matrix_transpose(stream)?;
-            let ax = Array::matmul(input, &a, stream)?;
+            let ax = Array::matmul(&input, &a, stream)?;
             let b = lora.b.matrix_transpose(stream)?;
             let delta = Array::matmul(&ax, &b, stream)?;
             let scale = Array::from_f32_slice(&[lora.scale], &[1])?;
             let delta = Array::multiply(&delta, &scale, stream)?;
+            let delta = match delta.dtype() == output.dtype() {
+                true => delta,
+                false => delta.astype(output.dtype(), stream)?,
+            };
             output = Array::add(&output, &delta, stream)?;
         }
         Ok(output)

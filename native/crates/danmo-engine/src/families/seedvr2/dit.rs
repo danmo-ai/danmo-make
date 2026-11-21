@@ -9,8 +9,8 @@
 //! (7B). `last_layer_vid_only` follows the SwiGLU split: both published
 //! checkpoints agree with it. An unknown layout fails, it is never guessed.
 
-use crate::runtime::{flash_attend, GgmlContext, GraphBuilder, RuntimeError, Tensor};
-use crate::weights::{matmul_type, type_block, GgufWeights, WeightError};
+use crate::runtime::{GgmlContext, GraphBuilder, RuntimeError, Tensor, flash_attend};
+use crate::weights::{GgufWeights, WeightError, matmul_type, type_block};
 use std::collections::HashMap;
 
 const GRAPH_MEM: usize = 256 * 1024 * 1024;
@@ -152,11 +152,7 @@ impl DitConfig {
     }
 
     fn side(&self, layer: usize) -> &'static str {
-        if layer < self.mm_layers {
-            "vid"
-        } else {
-            "all"
-        }
+        if layer < self.mm_layers { "vid" } else { "all" }
     }
 }
 
@@ -427,7 +423,7 @@ fn axial_freqs(pos: &[f64], freqs: &[f32], per_axis: usize) -> Vec<f64> {
 
 /// Port of `RoPEModule._get_axial_freqs` + `_apply_mm_rope_3d` for one
 /// window or the text span. Returns `[tokens][rot_dim]` angles.
-fn window_angles(
+pub(crate) fn window_angles(
     freqs: &[f32],
     pixel: bool,
     txt_len: i64,
@@ -1052,7 +1048,7 @@ fn declare_weights(
                 _ => {
                     return Err(WeightError::NotBuilt(format!(
                         "{name} is not loaded as a matmul weight"
-                    )))
+                    )));
                 }
             };
             b.tensor_2d(&name, ggml_type, dims[0], dims[1], true)
@@ -1117,7 +1113,7 @@ pub fn run(
                 return Err(WeightError::NotBuilt(format!(
                     "{} diverges from blocks.0 rope freqs",
                     freqs_name(i)
-                )))
+                )));
             }
         }
     }
@@ -1283,7 +1279,7 @@ fn weight_err(err: RuntimeError) -> WeightError {
 mod tests {
     use super::*;
     use crate::runtime::BackendKind;
-    use crate::weights::{write_f32_nd, F32Nd};
+    use crate::weights::{F32Nd, write_f32_nd};
     use std::path::PathBuf;
 
     fn fill(

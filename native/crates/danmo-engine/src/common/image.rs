@@ -4,6 +4,100 @@
 //! (diffusers img2img normalization). No family ids appear here.
 
 use crate::weights::WeightError;
+use std::path::Path;
+use std::process::Command;
+
+/// Decode an image file to interleaved RGB24. Stored-deflate PNGs decode
+/// in-process; everything else (JPEG, WebP, compressed PNG) goes through the
+/// ffmpeg CLI. Shared by the HTTP asset reader and the CLI.
+pub fn decode_file_rgb(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("source image {}: {error}", path.display()))?;
+    if let Some((rgb, width, height)) = super::png::decode_rgb(&bytes) {
+        return Ok((rgb, width, height));
+    }
+    decode_with_ffmpeg(path)
+}
+
+fn decode_with_ffmpeg(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
+    let ffprobe = std::env::var_os("DANQING_FFPROBE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("ffprobe"));
+    let probe = Command::new(&ffprobe)
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .map_err(|error| {
+            format!(
+                "image decode needs ffprobe on PATH for {}: {error}",
+                path.display()
+            )
+        })?;
+    if !probe.status.success() {
+        return Err(format!(
+            "ffprobe could not read {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&probe.stderr).trim()
+        ));
+    }
+    let text = String::from_utf8_lossy(&probe.stdout);
+    let line = text.lines().next().unwrap_or("");
+    let (width, height) = line
+        .split_once(',')
+        .and_then(|(w, h)| {
+            w.trim()
+                .parse::<u32>()
+                .ok()
+                .zip(h.trim().parse::<u32>().ok())
+        })
+        .filter(|(w, h)| *w > 0 && *h > 0)
+        .ok_or_else(|| {
+            format!(
+                "ffprobe returned no video dimensions for {}",
+                path.display()
+            )
+        })?;
+    let ffmpeg = std::env::var_os("DANQING_FFMPEG")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("ffmpeg"));
+    let decoded = Command::new(&ffmpeg)
+        .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
+        .arg(path)
+        .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
+        .output()
+        .map_err(|error| {
+            format!(
+                "image decode needs ffmpeg on PATH for {}: {error}",
+                path.display()
+            )
+        })?;
+    if !decoded.status.success() {
+        return Err(format!(
+            "ffmpeg could not decode {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&decoded.stderr).trim()
+        ));
+    }
+    let expect = width as usize * height as usize * 3;
+    if decoded.stdout.len() != expect {
+        return Err(format!(
+            "ffmpeg decoded {} bytes for {}x{} rgb24, expected {expect}",
+            decoded.stdout.len(),
+            width,
+            height
+        ));
+    }
+    Ok((decoded.stdout, width, height))
+}
 
 /// Floor `width`/`height` to multiples of `align` and center-crop the
 /// interleaved RGB buffer. Returns `(rgb, width, height)`.

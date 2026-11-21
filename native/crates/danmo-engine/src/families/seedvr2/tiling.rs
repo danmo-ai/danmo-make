@@ -26,7 +26,7 @@ fn cos_ramp(n: usize) -> Vec<f32> {
 
 /// Slice `[tw, th, F, C]` out of a `[W, H, F, C]` buffer (w fastest, then h,
 /// frame, channel).
-fn slice_plane(
+pub(crate) fn slice_plane(
     src: &[f32],
     w: i64,
     h: i64,

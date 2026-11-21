@@ -1433,6 +1433,8 @@
     "stripCreate": "Create",
     "stripPreviewAsset": "Preview image",
     "stripAssetCount": "{count} items",
+    "stripVideoCount": "{count} videos",
+    "stripAudioCount": "{count} tracks",
     "stripEmptyCanvas": "Empty canvas",
     "stripEmpty": "No canvases yet",
     "stripEmptyHint": "Use New canvas to start a project",

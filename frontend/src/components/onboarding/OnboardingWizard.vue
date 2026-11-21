@@ -71,6 +71,8 @@ const selected = ref<Record<string, boolean>>({});
 const installing = ref(false);
 const finished = ref<Record<string, boolean>>({});
 const applyingDefaults = ref(false);
+/** When set, closing the dialog (X) marks onboarding seen so it won't auto-open again. */
+const dismissForever = ref(false);
 
 const { downloading, progressByKey, installModel, uiKey } = useModelInstall();
 
@@ -263,11 +265,22 @@ async function applyRecommendedDefaults() {
   }
 }
 
-function close() {
-  // Any dismissal (Finish / Go to create / close button) marks onboarding as seen,
-  // otherwise the wizard would reappear on every launch.
+function markCompleted() {
   emit('completed');
+}
+
+function close() {
+  // Finish / Go to create always marks onboarding as seen.
+  markCompleted();
   emit('update:open', false);
+}
+
+function onOpenChange(open: boolean) {
+  if (!open) {
+    // X / Esc: only persist skip when the user opted into「不再提示」.
+    if (dismissForever.value) markCompleted();
+  }
+  emit('update:open', open);
 }
 
 function next() {
@@ -331,6 +344,7 @@ watch(
     installing.value = false;
     finished.value = {};
     pickedPath.value = '';
+    dismissForever.value = false;
     void loadRecommendations();
   },
   { immediate: true },
@@ -343,7 +357,7 @@ watch(
     :title="$tt('settings.quickSetupTitle')"
     width="640px"
     :closable="!installing"
-    @update:open="emit('update:open', $event)"
+    @update:open="onOpenChange"
   >
     <div class="onboard">
       <ol class="onboard__steps">
@@ -508,6 +522,14 @@ watch(
     </div>
 
     <template #footer>
+      <DqCheckbox
+        v-model="dismissForever"
+        size="sm"
+        class="onboard__dismiss"
+        :disabled="installing"
+      >
+        {{ $tt('settings.quickSetupDismissForever') }}
+      </DqCheckbox>
       <DqButton v-if="stepIndex > 0 && step !== 'install' && step !== 'done'" size="sm" @click="back">
         {{ $tt('settings.quickSetupBack') }}
       </DqButton>
@@ -692,5 +714,10 @@ watch(
 }
 .onboard__spacer {
   flex: 1;
+}
+.onboard__dismiss {
+  margin-right: 4px;
+  color: var(--dq-label-secondary);
+  font-size: var(--dq-font-size-caption);
 }
 </style>

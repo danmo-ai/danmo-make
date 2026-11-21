@@ -1,0 +1,37 @@
+{
+  "date": "2026-11-19",
+  "family": "flux2",
+  "model": "flux2-klein-4b:mlx-q4",
+  "action": "create",
+  "platform": "metal",
+  "size": "512x512",
+  "steps": 4,
+  "guidance": 1.0,
+  "seed": 1,
+  "scheduler": "flow_match_euler_discrete",
+  "main_cli": "danmo-make bin/danqing-generate (resident warm report)",
+  "main_warm_p50_s": 2.239749917003792,
+  "rust_warm_p50_s": 2.5449438095092773,
+  "rust_over_main": 1.1363,
+  "pixel_mse_vs_main": 9.665874481201172,
+  "pixel_equal": false,
+  "main_sha256_16": "7c44f5210b4aae6b",
+  "rust_sha256_16": "5d90eacea3c986a7",
+  "fixes": [
+    "RandomKey NCHW seeded_randn + pack to match main",
+    "Qwen3 added_tokens encode includes special:false <think>/</think>",
+    "bf16 latent/temb casts aligned with main",
+    "Flux2 encode_ids_full RoPE follows activation dtype (F32 on q4), matching get_prompt_embeds"
+  ],
+  "caption_mse_vs_main": 0.0013956330949440598,
+  "caption_maxabs_vs_main": 15.84375,
+  "matrix": "unchecked \u2014 not bit-exact; warm ~114% of main debug API",
+  "artifacts": {
+    "main": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/main-resident-4b-q4-512-seed1-pass2.png",
+    "rust": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-tok-4b-q4-512-seed1-pass2.png",
+    "rewrite_green": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-rewrite-green-apple.png"
+  },
+  "caption_valid_token_mse": 1.1825991350633558e-05,
+  "base_fp16_512_4step_seed1_mse_vs_main_cli": 3.0591761271158853,
+  "note_base": "main CLI base log used flux2 preview VAE decode path; treat base MSE as provisional"
+}

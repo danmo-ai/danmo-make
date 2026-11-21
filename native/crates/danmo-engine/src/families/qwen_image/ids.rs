@@ -59,32 +59,49 @@ pub fn position_ids_edit(
     cond_w: i64,
     seq_txt: i64,
 ) -> Result<RopeIds, RuntimeError> {
-    if target_h < 1 || target_w < 1 || cond_h < 1 || cond_w < 1 {
+    position_ids_frames(&[(target_h, target_w), (cond_h, cond_w)], seq_txt)
+}
+
+/// One row per image: the target grid, then each reference grid.
+/// Frame ids are the image index (`0` target, `1` the first reference).
+/// Text starts at `max(h/2, w/2)` over every grid. This is
+/// `QwenEmbedRopeMLX` with `scale_rope=True` and `video_fhw` a list.
+pub fn position_ids_frames(
+    grids: &[(i64, i64)],
+    seq_txt: i64,
+) -> Result<RopeIds, RuntimeError> {
+    if grids.is_empty() || seq_txt < 1 {
         return Err(RuntimeError::Message("qwen edit rope grid is empty".into()));
     }
-    let target_height = spatial_axis(target_h);
-    let target_width = spatial_axis(target_w);
-    let cond_height = spatial_axis(cond_h);
-    let cond_width = spatial_axis(cond_w);
-    let start = (target_h / 2)
-        .max(target_w / 2)
-        .max(cond_h / 2)
-        .max(cond_w / 2) as i32;
+    let mut start = 0i64;
+    let mut tokens = 0i64;
+    for (height, width) in grids {
+        if *height < 1 || *width < 1 {
+            return Err(RuntimeError::Message("qwen edit rope grid is empty".into()));
+        }
+        start = start.max(*height / 2).max(*width / 2);
+        tokens += height * width;
+    }
+    let start = i32::try_from(start).map_err(|_| {
+        RuntimeError::Message("qwen edit rope text start does not fit".into())
+    })?;
     let text = (0..seq_txt)
         .map(|j| {
             let id = start + j as i32;
             [id, id, id]
         })
         .collect();
-    let mut image = Vec::with_capacity((target_h * target_w + cond_h * cond_w) as usize);
-    for row in 0..target_h {
-        for col in 0..target_w {
-            image.push([0, target_height[row as usize], target_width[col as usize]]);
-        }
-    }
-    for row in 0..cond_h {
-        for col in 0..cond_w {
-            image.push([1, cond_height[row as usize], cond_width[col as usize]]);
+    let mut image = Vec::with_capacity(tokens as usize);
+    for (frame, (height, width)) in grids.iter().enumerate() {
+        let rows = spatial_axis(*height);
+        let cols = spatial_axis(*width);
+        let frame = i32::try_from(frame).map_err(|_| {
+            RuntimeError::Message("qwen edit rope frame index does not fit".into())
+        })?;
+        for row in 0..*height {
+            for col in 0..*width {
+                image.push([frame, rows[row as usize], cols[col as usize]]);
+            }
         }
     }
     Ok(RopeIds { text, image })
@@ -167,6 +184,11 @@ mod tests {
         assert_eq!(ids.image.len(), 5);
         assert_eq!(ids.image[0][0], 0);
         assert_eq!(ids.image[4][0], 1);
+        let frames = super::position_ids_frames(&[(2, 2), (1, 1), (2, 1)], 1).unwrap();
+        assert_eq!(frames.image.len(), 4 + 1 + 2);
+        assert_eq!(frames.image[4][0], 1);
+        assert_eq!(frames.image[5][0], 2);
+        assert_eq!(frames.text[0][0], 1);
     }
 
     #[test]

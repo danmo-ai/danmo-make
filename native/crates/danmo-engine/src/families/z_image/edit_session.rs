@@ -108,16 +108,13 @@ impl FacadeFamily for ZImageEditFamily {
         }
         let loras = crate::pipeline::lora_files(&request.adapters)?;
         if request.seed.is_none() {
-            return Err(EngineError::bad_request(
-                "MLX Z-Image edit requires a seed",
-            ));
+            return Err(EngineError::bad_request("MLX Z-Image edit requires a seed"));
         }
         #[cfg(not(feature = "mlx"))]
         {
             let _ = (run, resolver, exec, init, loras);
             return Err(WeightError::NotBuilt(
-                "z_image image edit no longer has a ggml graph; build with the mlx feature"
-                    .into(),
+                "z_image image edit no longer has a ggml graph; build with the mlx feature".into(),
             )
             .into());
         }
@@ -135,8 +132,7 @@ impl FacadeFamily for ZImageEditFamily {
             let (rgb, width, height) =
                 crate::common::image::center_crop_align(&rgb, source_w, source_h, 16)?;
             let image = rgb_to_n11_nchw(&rgb, width, height)?;
-            let reference =
-                super::mlx::session::encode_image(&run.bundle, &image, width, height)?;
+            let reference = super::mlx::session::encode_image(&run.bundle, &image, width, height)?;
             let config = super::mlx::MlxZImageConfig::published();
             let grid = geom::token_grid(width, height, 1, config.vae_scale)?;
             let expect = (grid.latent_w * grid.latent_h * config.in_channels) as usize;
@@ -242,7 +238,8 @@ impl FacadeSession for ZImageEditSession {
                     &prepared.loras,
                     exec,
                 )?;
-                if let Some(detail) = crate::common::ops::non_finite("z-image-edit latent", &latents)
+                if let Some(detail) =
+                    crate::common::ops::non_finite("z-image-edit latent", &latents)
                 {
                     return Err(WeightError::NotBuilt(detail).into());
                 }

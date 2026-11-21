@@ -44,6 +44,8 @@ export type Ref2VASpec = {
   pairedAudio: boolean;
   backgroundIsLastImage: boolean;
   hintKey: string;
+  /** Registry id that must be installed and sent with Ref2VA (e.g. ltx25-msr-lora). */
+  requiresAdapter: string;
 };
 
 const REF2VA_KINDS: ReadonlySet<string> = new Set(['image', 'video', 'audio']);
@@ -81,6 +83,7 @@ export function ref2vaSpec(
     pairedAudio: false,
     backgroundIsLastImage: false,
     hintKey: 'create.ref2vaHintPacked',
+    requiresAdapter: '',
   };
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return empty;
   const cfg = raw as Record<string, unknown>;
@@ -93,6 +96,7 @@ export function ref2vaSpec(
   const sum = maxImages + maxVideos + maxAudios;
   const maxTotal = Math.max(1, asNonNegInt(cfg.max_total, sum || 1));
   const hintKey = String(cfg.hint_key || '').trim() || 'create.ref2vaHintPacked';
+  const requiresAdapter = String(cfg.requires_adapter || '').trim();
   return {
     enabled: true,
     maxTotal,
@@ -103,6 +107,7 @@ export function ref2vaSpec(
     pairedAudio: Boolean(cfg.paired_audio),
     backgroundIsLastImage: Boolean(cfg.background_is_last_image),
     hintKey,
+    requiresAdapter,
   };
 }
 

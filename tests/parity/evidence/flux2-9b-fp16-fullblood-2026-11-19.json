@@ -1,0 +1,84 @@
+{
+  "date": "2026-11-19",
+  "family": "flux2",
+  "gate": "full_blood_acceptance",
+  "build": "release",
+  "platform": "metal",
+  "e2e": {
+    "flux2-klein-9b:fp16": {
+      "create": {
+        "task_id": "88e836c4-b35c-42b3-935e-6509206931b0",
+        "asset_id": "ast_d144c1a1428748809e20",
+        "png": "tests/parity/evidence/flux2-klein-9b-fp16-create-2026-11-19.png",
+        "size": "512x512",
+        "steps": 4,
+        "guidance": 1.0,
+        "seed": 1
+      },
+      "rewrite": {
+        "task_id": "39384771-ce2b-44a6-917f-605271ec8853",
+        "asset_id": "ast_1ebc17a11c054aff8e2d",
+        "png": "tests/parity/evidence/flux2-klein-9b-fp16-rewrite-2026-11-19.png",
+        "edit_mode": "reference_conditioning",
+        "reference_t_offset": 10,
+        "prompt": "make the apple green"
+      }
+    }
+  },
+  "metal_performance": {
+    "flux2-klein-9b:fp16:create": {
+      "rust_warm_p50_s": 2.4798669815063477,
+      "rust_samples_s": [
+        2.4058139324188232,
+        2.410468816757202,
+        2.4798669815063477,
+        2.539680004119873
+      ],
+      "main_warm_p50_s": 3.9797934160160366,
+      "main_samples_s": [
+        3.9548020829970483,
+        3.851987250003731,
+        3.9797934160160366,
+        4.046605125011411
+      ],
+      "ratio": 0.6231144992417252,
+      "passed": true,
+      "gate": "<=1.05 vs main resident create"
+    },
+    "flux2-klein-base-9b:fp16:create": {
+      "rust_warm_p50_s": 4.765919923782349,
+      "rust_samples_s": [
+        4.544837236404419,
+        4.673269987106323,
+        4.765919923782349,
+        4.899134874343872
+      ],
+      "main_warm_p50_s": 8.45467437498155,
+      "main_samples_s": [
+        8.45467437498155,
+        8.32194054199499,
+        8.266229541011853,
+        8.491646999988006
+      ],
+      "ratio": 0.5637023630248029,
+      "passed": true,
+      "gate": "<=1.05 vs main resident create",
+      "steps": 8
+    }
+  },
+  "rewrite_rust_warm_p50_s": {
+    "flux2-klein-4b:fp16": 2.426914930343628,
+    "flux2-klein-9b:fp16": 4.453694820404053,
+    "flux2-klein-base-4b:fp16": 4.455079078674316,
+    "flux2-klein-base-9b:fp16": 10.90595006942749
+  },
+  "pixel_mse_observational": {
+    "9b_fp16_create_vs_main": 5.455282688140869
+  },
+  "blocked": {
+    "rewrite_metal_performance_vs_main": "danmo-make ImageEditRunContext.session_persist TypeError (takes 2 positional args but 3 given); cannot collect main resident rewrite baseline"
+  },
+  "policy": [
+    "do not mark quant metal_performance"
+  ]
+}

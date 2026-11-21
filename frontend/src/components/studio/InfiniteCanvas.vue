@@ -132,6 +132,7 @@
 
     <CanvasShelfDock
       v-if="showShelfDock"
+      :media="media"
       :paths="dockAssetPaths"
       :board-paths="dockBoardPaths"
       :gallery-items="items"
@@ -225,7 +226,7 @@ const emit = defineEmits<{
   (e: 'open-preview', item: GalleryItem): void;
   (e: 'composer-restore', snapshot: import('@/types').CanvasComposerSnapshot): void;
   (e: 'overlay-cleared', kind: CanvasOverlayKind): void;
-  (e: 'open-composer'): void;
+  (e: 'open-composer', payload?: { intent?: 'generate' | 'edit' | 'cover' }): void;
   (e: 'request-close-composer'): void;
 }>();
 
@@ -413,13 +414,9 @@ async function onToolbarRename() {
 }
 
 function onRemoveItem(path: string) {
-  // Image: leave session membership on the bottom dock; only leave the freeform board.
-  if (props.media === 'image') {
-    store.demoteToShelf([path]);
-    toast.success($tt('canvas.shelfDemoted'));
-  } else {
-    store.removeItem(path);
-  }
+  // Leave session membership on the bottom dock; only leave the freeform board.
+  store.demoteToShelf([path]);
+  toast.success($tt('canvas.shelfDemoted'));
   selectedPaths.value = selectedPaths.value.filter((p) => p !== path);
   if (selectedPaths.value.length === 0) onClearSelection();
   else emitPrimarySelection();
@@ -428,18 +425,14 @@ function onRemoveItem(path: string) {
 
 function onRemoveSelected() {
   const paths = [...selectedPaths.value];
-  if (props.media === 'image') {
-    store.demoteToShelf(paths);
-    toast.success($tt('canvas.shelfDemoted'));
-  } else {
-    store.removeItems(paths);
-  }
+  store.demoteToShelf(paths);
+  toast.success($tt('canvas.shelfDemoted'));
   selectedPaths.value = [];
   onClearSelection();
   store.refreshEdges(props.items);
 }
 
-const showShelfDock = computed(() => props.media === 'image');
+const showShelfDock = computed(() => true);
 const dockBoardPaths = computed(() =>
   Object.keys(store.items).filter((p) => p.startsWith('asset:')),
 );
@@ -527,22 +520,13 @@ function toggleRegionGuides() {
 
 function onGalleryPickerImport(paths: string[]) {
   if (paths.length === 0) return;
-  // Image: imports land on the shelf (board stays freeform). Other media: board.
-  if (props.media === 'image') {
-    const added = store.addToShelf(paths);
-    if (added.length === 0) {
-      toast.info($tt('canvas.importNothingNew'));
-      return;
-    }
-    toast.success($tt('canvas.shelfImported', { n: added.length }));
-    return;
-  }
-  const added = addPathsToCanvas(paths, { placement: 'center', focusLast: false, fit: true });
+  // Imports land on the shelf; board stays freeform (上画布 promotes).
+  const added = store.addToShelf(paths);
   if (added.length === 0) {
     toast.info($tt('canvas.importNothingNew'));
     return;
   }
-  toast.success($tt('canvas.batchAdded', { n: added.length }));
+  toast.success($tt('canvas.shelfImported', { n: added.length }));
 }
 
 function onOpenPreview(path: string) {
@@ -636,7 +620,7 @@ function onToolbarAction(action: string) {
         const payload = bindPayload(path, item);
         emit('use-as-start-frame', { ...payload, quiet: true });
         toast.success($tt('canvas.animateBranchHint'));
-        emit('open-composer');
+        emit('open-composer', { intent: 'generate' });
       }
       break;
     case 'use-start-frame': {
@@ -655,7 +639,7 @@ function onToolbarAction(action: string) {
         const payload = bindPayload(path, item);
         emit('use-as-animate-source', { ...payload, quiet: true });
         toast.success($tt('canvas.animateVideoBranchHint'));
-        emit('open-composer');
+        emit('open-composer', { intent: 'edit' });
       }
       break;
     case 'use-animate-source': {
@@ -669,18 +653,16 @@ function onToolbarAction(action: string) {
       break;
     }
     case 'quick-cover':
-      store.placeStagingBeside(path, props.items);
       {
         const payload = bindPayload(path, item);
+        // Cover binds into the composer only — no canvas overlay / staging (unlike image refs).
         emit('use-as-cover-source', { ...payload, quiet: true });
-        store.setOverlay('cover_source', path, item);
-        toast.success($tt('canvas.coverBranchHint'));
+        emit('open-composer', { intent: 'cover' });
       }
       break;
     case 'use-cover-source': {
       const payload = bindPayload(path, item);
       emit('use-as-cover-source', payload);
-      store.setOverlay('cover_source', path, item);
       break;
     }
     case 'snap-staging':
@@ -691,7 +673,7 @@ function onToolbarAction(action: string) {
     case 'branch':
       store.placeStagingBeside(path, props.items);
       toast.info($tt('canvas.branchHint'));
-      emit('open-composer');
+      emit('open-composer', { intent: 'generate' });
       break;
     case 'remove':
       onRemoveItem(path);

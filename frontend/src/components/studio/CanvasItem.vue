@@ -13,10 +13,45 @@
     @dblclick.stop="$emit('open-preview')"
   >
     <div class="canvas-item__card">
-      <div v-if="isAudio" class="canvas-item__audio-card">
-        <DqIcon :size="28"><Headset /></DqIcon>
-        <span class="canvas-item__audio-title">{{ truncate(nodeTitle, 24) }}</span>
+      <div v-if="isAudio" class="canvas-item__audio-card" :style="audioCardStyle">
+        <div class="canvas-item__audio-copy">
+          <span v-if="audioHeading" class="canvas-item__audio-heading">{{ audioHeading }}</span>
+          <span
+            v-for="(line, i) in audioLyricLines"
+            :key="i"
+            class="canvas-item__audio-line"
+          >{{ line }}</span>
+          <span
+            v-if="!audioLyricLines.length && audioBrief"
+            class="canvas-item__audio-line canvas-item__audio-line--brief"
+          >{{ audioBrief }}</span>
+          <span
+            v-if="!audioHeading && !audioLyricLines.length && !audioBrief"
+            class="canvas-item__audio-fallback"
+          >
+            <DqIcon :size="20"><Headset /></DqIcon>
+            {{ $t('gallery.audioLabel') }}
+          </span>
+        </div>
+        <div class="canvas-item__audio-visualizer" aria-hidden="true">
+          <span
+            v-for="i in 8"
+            :key="i"
+            class="canvas-item__audio-bar"
+            :style="{ '--bar-i': i - 1 }"
+          />
+        </div>
       </div>
+      <template v-else-if="isVideo">
+        <video
+          class="canvas-item__img"
+          :src="videoUrl"
+          muted
+          playsinline
+          preload="metadata"
+          :draggable="false"
+        />
+      </template>
       <template v-else>
         <img
           v-if="!thumbFailed"
@@ -62,12 +97,14 @@ import { ref, computed } from 'vue';
 import { PictureFilled, Headset } from '@danqing/dq-shell';
 import { useI18n } from 'vue-i18n';
 import type { GalleryItem, CanvasItemState } from '@/types';
+import { api } from '@/utils/api';
 import {
   formatGalleryDuration,
   isAudioGalleryItem,
   isVideoGalleryItem,
   previewUrlForGalleryItem,
 } from '@/utils/canvasAssets';
+import { lyricsSnippetLines } from '@/utils/lyricsTimeline';
 import { lineageRelationLabel } from '@/utils/lineageRelationLabel';
 
 const props = defineProps<{
@@ -98,6 +135,17 @@ const isVideo = computed(() => isVideoGalleryItem(props.item));
 
 const thumbUrl = computed(() => previewUrlForGalleryItem(props.item ?? null));
 
+/** Most videos have no image poster; load the file like StudioCard / strip thumbs. */
+const videoUrl = computed(() => {
+  const item = props.item;
+  if (!item?.path) return '';
+  try {
+    return api.gallery.getImageUrl(item.path);
+  } catch {
+    return thumbUrl.value;
+  }
+});
+
 function formatDuration(sec: number): string {
   return formatGalleryDuration(sec);
 }
@@ -110,17 +158,41 @@ const relationBadge = computed(() => {
   if (!rt || rt === 'create') return '';
   return lineageRelationLabel(rt);
 });
-const nodeTitle = computed(
-  () =>
-    displayLabel.value ||
-    props.item?.title ||
-    props.item?.name ||
-    $t('gallery.audioLabel')
-);
+const audioHeading = computed(() => {
+  const t = String(props.item?.title || displayLabel.value || '').trim();
+  return t ? truncate(t, 28) : '';
+});
+
+const audioLyricLines = computed(() => {
+  const meta = (props.item?.metadata || {}) as {
+    lyrics_effective?: unknown;
+    lyrics_segments?: unknown;
+  };
+  return lyricsSnippetLines(meta, 3);
+});
+
+const audioBrief = computed(() => {
+  const p = String(props.item?.prompt || '').trim();
+  if (!p) return '';
+  return truncate(p, 72);
+});
+
+const audioCardStyle = computed(() => {
+  const text =
+    (audioLyricLines.value.join(' ') ||
+      props.item?.title ||
+      props.item?.prompt ||
+      props.item?.name ||
+      props.item?.path ||
+      '').trim();
+  let h = 0;
+  for (let i = 0; i < text.length; i += 1) h = (h * 31 + text.charCodeAt(i)) % 360;
+  return { '--dq-audio-hue': String(h) } as Record<string, string>;
+});
 
 const itemStyle = computed(() => {
-  const w = isAudio.value ? 280 : props.item?.width || 512;
-  const h = isAudio.value ? 120 : props.item?.height || 512;
+  const w = isAudio.value ? 300 : props.item?.width || 512;
+  const h = isAudio.value ? 168 : props.item?.height || 512;
   const sw = w * props.state.scale;
   const sh = h * props.state.scale;
   return {
@@ -229,27 +301,94 @@ function onMouseDown(e: MouseEvent) {
 }
 
 .canvas-item__audio-card {
+  position: relative;
   width: 100%;
   height: 100%;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 12px;
-  background: linear-gradient(
-    145deg,
-    hsl(var(--dq-audio-hue, 220) 35% 22%),
-    hsl(var(--dq-audio-hue, 220) 45% 14%)
-  );
+  justify-content: flex-end;
+  gap: 0;
+  padding: 14px 14px 28px;
+  background:
+    linear-gradient(
+      180deg,
+      hsl(var(--dq-audio-hue, 220) 28% 18% / 0.35) 0%,
+      transparent 42%
+    ),
+    linear-gradient(
+      145deg,
+      hsl(var(--dq-audio-hue, 220) 32% 24%),
+      hsl(var(--dq-audio-hue, 220) 22% 11%)
+    );
   color: var(--dq-label-primary);
 }
 
-.canvas-item__audio-title {
+.canvas-item__audio-copy {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.canvas-item__audio-heading {
+  color: hsl(var(--dq-audio-hue, 220) 40% 92%);
+  font-size: var(--dq-font-size-body);
+  font-weight: 650;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-item__audio-line {
+  color: hsl(var(--dq-audio-hue, 220) 28% 82% / 0.94);
   font-size: var(--dq-font-size-caption);
-  text-align: center;
-  line-height: 1.3;
-  opacity: 0.9;
+  font-weight: 500;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.canvas-item__audio-line--brief {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  white-space: normal;
+  opacity: 0.88;
+}
+
+.canvas-item__audio-fallback {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: hsl(var(--dq-audio-hue, 220) 40% 78%);
+  font-size: var(--dq-font-size-caption);
+  font-weight: 600;
+}
+
+.canvas-item__audio-visualizer {
+  position: absolute;
+  inset: auto 0 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+  height: 20px;
+  padding-bottom: 6px;
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.canvas-item__audio-bar {
+  width: 2px;
+  height: calc(4px + min(var(--bar-i), 7 - var(--bar-i)) * 3px);
+  border-radius: 1px;
+  background: hsl(var(--dq-audio-hue, 220) 55% 68% / 0.45);
 }
 
 .canvas-item__rel-badge {

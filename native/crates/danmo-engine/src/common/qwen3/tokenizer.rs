@@ -14,12 +14,44 @@ use unicode_normalization::UnicodeNormalization;
 const MAX_TEXT_TOKENS: usize = 512;
 const QWEN_SPLIT: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
-pub(crate) fn load_tokenizer(bundle: &Path) -> Result<String, WeightError> {
-    let path = if bundle.join("tokenizer.json").is_file() {
-        bundle.join("tokenizer.json")
+/// Encode raw text. Official Qwen bundles ship `vocab.json` + `merges.txt`
+/// instead of `tokenizer.json`; that pair is the same byte-level BPE.
+pub(crate) fn encode_plain(
+    bundle: &Path,
+    text: &str,
+    vocab_size: i64,
+) -> Result<Vec<i32>, WeightError> {
+    if tokenizer_json(bundle).is_some() {
+        let tokenizer = load_tokenizer(bundle)?;
+        return tokenize_plain(&tokenizer, text, vocab_size);
+    }
+    let root = if bundle.join("vocab.json").is_file() {
+        bundle.to_path_buf()
     } else {
-        bundle.join("tokenizer").join("tokenizer.json")
+        bundle.join("tokenizer")
     };
+    let tokenizer = crate::common::bpe::Qwen2Tokenizer::load(&root)?;
+    let text: String = text.nfc().collect();
+    tokenizer.encode(&text, vocab_size)
+}
+
+fn tokenizer_json(bundle: &Path) -> Option<std::path::PathBuf> {
+    let root = bundle.join("tokenizer.json");
+    if root.is_file() {
+        return Some(root);
+    }
+    let nested = bundle.join("tokenizer").join("tokenizer.json");
+    nested.is_file().then_some(nested)
+}
+
+pub(crate) fn load_tokenizer(bundle: &Path) -> Result<String, WeightError> {
+    let path = tokenizer_json(bundle).ok_or_else(|| WeightError::Open {
+        path: bundle
+            .join("tokenizer/tokenizer.json")
+            .display()
+            .to_string(),
+        detail: "file not found".into(),
+    })?;
     let json = std::fs::read_to_string(&path).map_err(|err| WeightError::Open {
         path: path.display().to_string(),
         detail: err.to_string(),
@@ -199,9 +231,6 @@ fn tokenize_bpe(
         ));
     }
     assert_qwen_pretokenizer(value.get("pre_tokenizer"))?;
-    let vocab = vocab_map(model)?;
-    let ranks = merge_ranks(model)?;
-    let specials = special_tokens(&vocab, value.get("added_tokens"))?;
     let text = if wrap_chat {
         let template = chat_template(value)?;
         match template {
@@ -211,8 +240,60 @@ fn tokenize_bpe(
     } else {
         prompt.to_string()
     };
-    let text = normalize_text(&text, normalizer)?;
+    tokenize_bpe_text(value, model, &text, normalizer, vocab_size, max_tokens)
+}
+
+/// ChatML scaffold with empty user content: the caption-dropout "empty
+/// prompt". DiffSynth encodes `""` through the same chat template, which
+/// still yields the scaffold tokens. Generation keeps rejecting empty
+/// prompts; this exists for the training dropout variant only.
+#[cfg(feature = "mlx")]
+pub(crate) fn tokenize_chat_empty(
+    json: &str,
+    vocab_size: i64,
+    thinking: bool,
+) -> Result<Vec<i32>, WeightError> {
+    let value: Value = serde_json::from_str(json)
+        .map_err(|err| WeightError::NotBuilt(format!("tokenizer.json is not json: {err}")))?;
+    let model = value
+        .get("model")
+        .ok_or_else(|| WeightError::NotBuilt("tokenizer model is missing".into()))?;
+    let normalizer = normalizer_kind(&value)?;
+    assert_qwen_pretokenizer(value.get("pre_tokenizer"))?;
+    let Some(template) = chat_template(&value)? else {
+        return Err(WeightError::NotBuilt(
+            "empty caption needs the chat template".into(),
+        ));
+    };
+    let text = chat_text("", thinking, template.contains("enable_thinking"));
+    tokenize_bpe_text(
+        &value,
+        model,
+        &text,
+        normalizer,
+        vocab_size,
+        MAX_TEXT_TOKENS,
+    )
+}
+
+/// BPE-encode already-templated text (shared by the guarded prompt path and
+/// the empty-scaffold path).
+fn tokenize_bpe_text(
+    value: &Value,
+    model: &Value,
+    text: &str,
+    normalizer: Option<&str>,
+    vocab_size: i64,
+    max_tokens: usize,
+) -> Result<Vec<i32>, WeightError> {
+    let vocab = vocab_map(model)?;
+    let ranks = merge_ranks(model)?;
+    let specials = special_tokens(&vocab, value.get("added_tokens"))?;
+    let text = normalize_text(text, normalizer)?;
     let ids = crate::common::bpe::encode(&text, &vocab, &ranks, &specials, vocab_size)?;
+    if ids.is_empty() {
+        return Err(WeightError::NotBuilt("prompt has no tokens".into()));
+    }
     if ids.len() > max_tokens {
         return Err(WeightError::NotBuilt(format!(
             "prompt tokenized to {} tokens, the text encoder accepts {max_tokens}",
@@ -404,6 +485,11 @@ fn special_tokens(
     vocab: &HashMap<String, i32>,
     added: Option<&Value>,
 ) -> Result<Vec<(String, i32)>, WeightError> {
+    // Encode-time atomic matches. Hugging Face matches every `added_tokens`
+    // entry as a whole piece; the `special` flag only affects decode/skip.
+    // Qwen3 ships `<think>` / `</think>` with `special: false` and not in the
+    // BPE vocab, so filtering on `special` alone drops the empty-CoT suffix
+    // that Flux2 / ACE inject when thinking is off.
     let mut out = Vec::new();
     if let Some(added) = added {
         let Some(rows) = added.as_array() else {
@@ -412,9 +498,6 @@ fn special_tokens(
             ));
         };
         for row in rows {
-            if row.get("special").and_then(|item| item.as_bool()) != Some(true) {
-                continue;
-            }
             let Some(content) = row.get("content").and_then(|item| item.as_str()) else {
                 return Err(WeightError::NotBuilt(
                     "tokenizer added token has no content".into(),
@@ -895,6 +978,31 @@ mod tests {
         assert_eq!(
             chat_text("hi", false, false),
             "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n"
+        );
+    }
+
+    #[test]
+    fn think_added_tokens_encode_when_not_marked_special() {
+        // Published Qwen3 packs `<think>` / `</think>` as added_tokens with
+        // special=false and omits them from the BPE vocab table.
+        let mut vocab = String::from("{");
+        for byte in 0..256 {
+            if byte > 0 {
+                vocab.push(',');
+            }
+            let token = crate::common::bpe::byte_token(byte as u8).to_string();
+            vocab.push_str(&serde_json::to_string(&token).unwrap());
+            vocab.push(':');
+            vocab.push_str(&byte.to_string());
+        }
+        vocab.push('}');
+        let json = format!(
+            r#"{{"pre_tokenizer":{{"type":"Sequence","pretokenizers":[{{"type":"Split","pattern":{{"Regex":"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{{L}}\\p{{N}}]?\\p{{L}}+|\\p{{N}}| ?[^\\s\\p{{L}}\\p{{N}}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"}},"behavior":"Isolated"}},{{"type":"ByteLevel","add_prefix_space":false,"use_regex":false}}]}},"added_tokens":[{{"id":256,"content":"<|im_start|>","special":true}},{{"id":257,"content":"<|im_end|>","special":true}},{{"id":258,"content":"<think>","special":false}},{{"id":259,"content":"</think>","special":false}}],"chat_template":"<|im_start|>user\n{{{{ content }}}}<|im_end|>\n{{% if enable_thinking is defined and enable_thinking is false %}}<think>\n\n</think>\n\n{{% endif %}}","model":{{"type":"BPE","vocab":{vocab},"merges":[]}}}}"#
+        );
+        let ids = tokenize(&json, "hi", 260, false).unwrap();
+        assert!(
+            ids.contains(&258) && ids.contains(&259),
+            "empty CoT must keep added <think>/</think> ids, got {ids:?}"
         );
     }
 }

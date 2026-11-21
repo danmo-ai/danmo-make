@@ -1,0 +1,127 @@
+{
+  "schema_version": 1,
+  "model_id": "ltx-2.5-distilled",
+  "family": "ltx25",
+  "action": "create",
+  "size": "640x640",
+  "num_frames": 25,
+  "fps": 24,
+  "seed": 7,
+  "prompt": "Acceptance cube: a red cube rotates slowly on a white desk, soft daylight.",
+  "cli": "danmo-video-generate --features mlx-metal release",
+  "date": "2026-11-19",
+  "runs": [
+    {
+      "version": "mlx-q8",
+      "tag": "cold",
+      "real_s": 15.7,
+      "mp4_bytes": 88946,
+      "ok": true
+    },
+    {
+      "version": "mlx-q8",
+      "tag": "warm1",
+      "real_s": 15.83,
+      "mp4_bytes": 88946,
+      "ok": true
+    },
+    {
+      "version": "mlx-q8",
+      "tag": "warm2",
+      "real_s": 16.62,
+      "mp4_bytes": 88946,
+      "ok": true
+    },
+    {
+      "version": "mlx-q8",
+      "tag": "warm3",
+      "real_s": 16.38,
+      "mp4_bytes": 88946,
+      "ok": true
+    },
+    {
+      "version": "mlx-q4",
+      "tag": "cold",
+      "real_s": 15.63,
+      "mp4_bytes": 146717,
+      "ok": true
+    },
+    {
+      "version": "mlx-q4",
+      "tag": "warm1",
+      "real_s": 15.36,
+      "mp4_bytes": 146717,
+      "ok": true
+    },
+    {
+      "version": "mlx-q4",
+      "tag": "warm2",
+      "real_s": 15.41,
+      "mp4_bytes": 146717,
+      "ok": true
+    },
+    {
+      "version": "mlx-q4",
+      "tag": "warm3",
+      "real_s": 15.46,
+      "mp4_bytes": 146717,
+      "ok": true
+    }
+  ],
+  "warm_p50_s": {
+    "mlx-q8": 16.38,
+    "mlx-q4": 15.41
+  },
+  "notes": [
+    "q8 create E2E via CLI after hook relayout of upsampler + audio_vae/vocoder (incl. ConvTranspose1d ups.*).",
+    "Quant metal_performance not marked per AGENTS policy; timings observational for q4 vs q8.",
+    "danmo-make main baseline not run in this pass."
+  ],
+  "animate": {
+    "mlx-q8": {
+      "real_s": 23.95,
+      "output": "tests/parity/evidence/ltx25-mlx-q8-animate-2026-11-19.mp4"
+    },
+    "mlx-q4": {
+      "real_s": 16.12,
+      "output": "tests/parity/evidence/ltx25-mlx-q4-animate-2026-11-19.mp4"
+    }
+  },
+  "ref2va_q8": {
+    "task_id": "179a44df-bf14-41f0-9791-9ae6e532d007",
+    "asset_id": "ast_8e34c6216b6c460da6c9",
+    "refs": 2,
+    "msr": "ltx25-msr-lora",
+    "output": "tests/parity/evidence/ltx25-mlx-q8-ref2va-2026-11-19.mp4"
+  },
+  "vs_main_q4_create": {
+    "schema_version": 1,
+    "family": "ltx25",
+    "model_id": "ltx-2.5-distilled",
+    "version": "mlx-q4",
+    "action": "create",
+    "size": "640x640",
+    "num_frames": 25,
+    "fps": 24,
+    "seed": 7,
+    "rust_warm_p50_s": 15.41,
+    "main_warm_p50_s": 17.7,
+    "rust_to_main_ratio": 0.8706214689265537,
+    "main_warm_s": [
+      17.2,
+      17.7,
+      18.4
+    ],
+    "rust_warm_s": [
+      15.36,
+      15.41,
+      15.46
+    ],
+    "mid_frame_mse_observational": 1788.32275390625,
+    "notes": [
+      "Quality-first metal_parity: both rust and danmo-make main produce coherent red-cube create under same prompt/seed/size.",
+      "Quant metal_performance not_applicable per AGENTS despite rust/main warm ratio.",
+      "Peak memory left pending (no formal MLX peak harness for LTX; capacity.managed_bytes incomplete)."
+    ]
+  }
+}

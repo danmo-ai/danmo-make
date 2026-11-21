@@ -84,7 +84,6 @@ mod tests {
     use super::*;
     use crate::contract::{Action, Artifact, ResolvedRun, RunObserver};
     use crate::ports::PersistedAsset;
-    use crate::{image_create, write_smoke_bundle};
     use danmo_contracts::ImageGenerationRequest;
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -182,12 +181,10 @@ mod tests {
     }
 
     #[test]
-    fn phased_engine_matches_legacy_flux2_and_persists_artifacts() {
+    fn flux2_gguf_create_fails_loud() {
         let dir = std::env::temp_dir().join(format!("danmo-engine-phased-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        write_smoke_bundle(&dir, 4).unwrap();
-        let expected =
-            image_create(&request(), "flux2", &dir, BackendKind::Cpu, |_, _| ()).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
         let run = ResolvedRun {
             model: request().model,
             version: Some("bf16".into()),
@@ -199,20 +196,15 @@ mod tests {
         let resolver = Resolver { run };
         let sink = Sink::default();
         let observer = std::sync::Arc::new(Observer::default());
-        let result = Engine::new(&resolver, &sink, BackendKind::Cpu)
+        let err = Engine::new(&resolver, &sink, BackendKind::Cpu)
             .execute(
                 EngineRequest::ImageCreate(request()),
-                ExecutionContext::new("task", observer.clone()),
+                ExecutionContext::new("task", observer),
             )
-            .unwrap();
-        assert_eq!(result.asset_ids, ["asset-0"]);
-        assert_eq!(result.output.latent_len, expected.latents.len());
-        let artifacts = sink.artifacts.lock().unwrap();
-        assert_eq!(artifacts.len(), 1);
-        assert_eq!(artifacts[0].bytes, expected.preview_png);
-        assert_eq!(
-            *observer.phases.lock().unwrap(),
-            ["resolve", "load", "encode", "schedule", "infer", "decode", "persist"]
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("no longer has a ggml graph"),
+            "{err}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

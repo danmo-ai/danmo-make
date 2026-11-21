@@ -813,7 +813,7 @@ export const api = {
       await client.delete(`/api/canvas/sessions/${encodeURIComponent(sessionId)}`);
     },
 
-    /** Adopt gallery assets not on any canvas into the default (oldest) session. Image only. */
+    /** Adopt gallery assets not on any canvas into the default session (image|video|audio). */
     async adoptOrphans(
       media: string = 'image',
     ): Promise<{ default_session_id: string; adopted_count: number }> {

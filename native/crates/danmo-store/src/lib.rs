@@ -155,6 +155,14 @@ impl TaskStore {
             CREATE INDEX IF NOT EXISTS idx_canvas_sessions_media ON canvas_sessions(media);
             ",
         )?;
+        let has_group_id: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('assets') WHERE name='group_id')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_group_id {
+            conn.execute("ALTER TABLE assets ADD COLUMN group_id TEXT", [])?;
+        }
         Ok(Self { conn })
     }
 
@@ -169,6 +177,25 @@ impl TaskStore {
         self.conn.execute(
             "INSERT INTO tasks (id, kind, model_id, status, priority, progress, params, created_at)
              VALUES (?1, ?2, ?3, 'queued', ?4, 0, ?5, datetime('now'))",
+            params![id, kind, model_id, priority, params],
+        )?;
+        Ok(())
+    }
+
+    /// Insert a task that is already running. Used by jobs that own their
+    /// lifecycle outside the queue worker (e.g. LoRA training), so the
+    /// generic worker never dequeues and double-executes them.
+    pub fn insert_running_task(
+        &self,
+        id: &str,
+        kind: &str,
+        model_id: &str,
+        params: &str,
+        priority: i64,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO tasks (id, kind, model_id, status, priority, progress, params, created_at, started_at)
+             VALUES (?1, ?2, ?3, 'running', ?4, 0, ?5, datetime('now'), datetime('now'))",
             params![id, kind, model_id, priority, params],
         )?;
         Ok(())
@@ -547,4 +574,49 @@ fn read_canvas(row: &rusqlite::Row<'_>) -> rusqlite::Result<CanvasRow> {
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn temp_store(name: &str) -> (PathBuf, TaskStore) {
+        let path = std::env::temp_dir().join(format!(
+            "danmo-store-test-{}-{}.db",
+            name,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let store = TaskStore::open(&path).expect("open temp store");
+        (path, store)
+    }
+
+    #[test]
+    fn running_task_skips_queue_and_finishes_once() {
+        let (path, store) = temp_store("running-task");
+        store
+            .insert_running_task("tsk_run", "lora.training", "z-image-turbo", "{}", 100)
+            .expect("insert running");
+        // A running task must never be handed to the queue worker.
+        assert!(store
+            .list_queued(false)
+            .expect("list queued")
+            .iter()
+            .all(|row| row.id != "tsk_run"));
+        let row = store.get("tsk_run").expect("get").expect("row");
+        assert_eq!(row.status, "running");
+        assert!(row.started_at.is_some());
+        // First finish wins; a racing second finish is a no-op.
+        store
+            .finish("tsk_run", "completed", 1.0, Some("{}"), None)
+            .expect("finish ok");
+        store
+            .finish("tsk_run", "failed", 1.0, None, Some("late error"))
+            .expect("finish err");
+        let row = store.get("tsk_run").expect("get").expect("row");
+        assert_eq!(row.status, "completed");
+        assert!(row.error_message.is_none());
+        let _ = std::fs::remove_file(path);
+    }
 }

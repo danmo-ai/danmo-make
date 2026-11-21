@@ -43,7 +43,62 @@ pub fn encode_ids(
     }
     let sequence = ids.len() as i32;
     let indices = Array::from_i32_slice(ids, &[sequence])?;
-    encode_token_array(weights, config, prefix, &indices, valid, selected, stream)
+    encode_token_array(
+        weights,
+        config,
+        prefix,
+        &indices,
+        valid,
+        selected,
+        true,
+        // Z-Image: cast embed to BF16, build RoPE from that cast, then the
+        // quantized tower may promote activations to F32.
+        RopeSource::Embedding,
+        stream,
+    )
+}
+
+/// Same tower as [`encode_ids`], but padding positions stay in the sequence.
+///
+/// Flux2 Klein concatenates layers 9/18/27 over the padded chat length. The
+/// causal mask still blocks pad keys. Dropping those positions would move
+/// every later RoPE id.
+pub fn encode_ids_full(
+    weights: &MlxWeights,
+    config: Qwen3Config,
+    prefix: &str,
+    ids: &[i32],
+    valid: &[bool],
+    selected: &[i64],
+    stream: &Stream,
+) -> Result<Array> {
+    if ids.is_empty() || ids.len() != valid.len() || selected.is_empty() {
+        return Err(Error::new(
+            "Qwen3 MLX encode",
+            "empty or mismatched token inputs",
+        ));
+    }
+    let sequence = ids.len() as i32;
+    let indices = Array::from_i32_slice(ids, &[sequence])?;
+    encode_token_array(
+        weights,
+        config,
+        prefix,
+        &indices,
+        valid,
+        selected,
+        false,
+        // Flux2 `Qwen3EncoderModel.get_prompt_embeds`: cast embed to F32 first,
+        // then `rotary_emb(hidden)` so cos/sin follow the activation dtype.
+        RopeSource::Activation,
+        stream,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum RopeSource {
+    Embedding,
+    Activation,
 }
 
 fn encode_token_array(
@@ -53,6 +108,8 @@ fn encode_token_array(
     indices: &danmo_mlx::Array,
     valid: &[bool],
     selected: &[i64],
+    trim_padding: bool,
+    rope: RopeSource,
     stream: &Stream,
 ) -> Result<danmo_mlx::Array> {
     let last = selected.iter().max().copied().unwrap_or(0);
@@ -78,10 +135,11 @@ fn encode_token_array(
         .reshape(&[1, sequence, config.hidden as i32], stream)?
         .astype(tower_dtype, stream)?;
     let mask = causal_padding_mask(valid, stream)?;
-    // main builds the rotary table from the BF16 embedding cast (before the
-    // quantized tower's F32 promotion), so cos/sin stay BF16 even when the
-    // tower computes in F32.
-    let (cos, sin) = position_embeddings(config, sequence, embedding.dtype(), stream)?;
+    let rope_dtype = match rope {
+        RopeSource::Embedding => embedding.dtype(),
+        RopeSource::Activation => tower_dtype,
+    };
+    let (cos, sin) = position_embeddings(config, sequence, rope_dtype, stream)?;
     let mut captured = Vec::new();
     for layer in 0..last {
         hidden = layer_forward(
@@ -92,13 +150,15 @@ fn encode_token_array(
         }
     }
     let mut output = Array::concatenate_axis(&captured, 2, stream)?;
-    let valid_count = valid.iter().filter(|value| **value).count() as i32;
-    output = output.slice(
-        &[0, 0, 0],
-        &[1, valid_count, output.shape()[2]],
-        &[1, 1, 1],
-        stream,
-    )?;
+    if trim_padding {
+        let valid_count = valid.iter().filter(|value| **value).count() as i32;
+        output = output.slice(
+            &[0, 0, 0],
+            &[1, valid_count, output.shape()[2]],
+            &[1, 1, 1],
+            stream,
+        )?;
+    }
     Ok(output)
 }
 

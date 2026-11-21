@@ -22,6 +22,7 @@ mlx-cuda = ["mlx", "cuda", "danmo-engine/mlx-cuda", "danmo-mlx/cuda"]
 danmo-engine = { path = "../danmo-engine" }
 danmo-contracts = { path = "../danmo-contracts" }
 danmo-catalog = { path = "../danmo-catalog" }
+danmo-resolve = { path = "../danmo-resolve" }
 danmo-schedule = { path = "../danmo-schedule" }
 danmo-store = { path = "../danmo-store" }
 danmo-mlx = { path = "../danmo-mlx", optional = true }

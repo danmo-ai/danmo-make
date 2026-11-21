@@ -1,5 +1,9 @@
-//! Installed bundle: GGUF DiT, GGUF or safetensors text encoder and VAE,
-//! tokenizer, and `bundle.manifest.json`. Old MLX directories are refused.
+//! Installed bundle layouts.
+//!
+//! Product MLX paths are safetensors (image create tree, SeedVR2 flat files,
+//! ACE-Step, ControlNet). [`assert_gguf_bundle`] / [`assert_hunyuan_bundle`]
+//! remain only for families that still load a GGUF DiT; they never treat a
+//! safetensors install as "legacy" or ask the user to re-download GGUF.
 
 use super::WeightError;
 use serde::Deserialize;
@@ -11,25 +15,6 @@ pub struct GgufBundle {
     pub quant: String,
     pub transformer: Vec<PathBuf>,
     pub text_encoder: Vec<PathBuf>,
-    pub vae: Vec<PathBuf>,
-}
-
-/// LTX bundle: the base GGUF bundle plus the audio VAE, the text-embedding
-/// connectors, and (distilled stage 2) the latent upscaler.
-pub struct LtxBundle {
-    pub base: GgufBundle,
-    pub audio_vae: Vec<PathBuf>,
-    pub connectors: Vec<PathBuf>,
-    pub upscaler: Vec<PathBuf>,
-    pub stage2_transformer: Vec<PathBuf>,
-}
-
-/// Upscale bundle (SeedVR2): GGUF DiT plus a GGUF or safetensors VAE. There
-/// is no text encoder and no tokenizer.
-pub struct UpscaleBundle {
-    pub root: PathBuf,
-    pub quant: String,
-    pub transformer: Vec<PathBuf>,
     pub vae: Vec<PathBuf>,
 }
 
@@ -55,14 +40,6 @@ struct ManifestFiles {
     text_encoder: Option<FileList>,
     #[serde(default)]
     vae: Option<FileList>,
-    #[serde(default)]
-    audio_vae: Option<FileList>,
-    #[serde(default)]
-    connectors: Option<FileList>,
-    #[serde(default)]
-    upscaler: Option<FileList>,
-    #[serde(default)]
-    transformer_stage2: Option<FileList>,
     #[serde(default)]
     image_encoder: Option<FileList>,
 }
@@ -94,10 +71,24 @@ pub fn is_safetensors_image_bundle(dir: &Path) -> bool {
             .all(|role| contains_extension(&dir.join(role), "safetensors"))
 }
 
+/// SeedVR2 flat layout: DiT + VAE safetensors at the bundle root (no GGUF).
+pub fn is_seedvr2_safetensors_bundle(dir: &Path) -> bool {
+    if !dir.is_dir() || contains_gguf(dir) {
+        return false;
+    }
+    let dit = dir.join("seedvr2_ema_7b_fp16.safetensors").is_file()
+        || dir.join("seedvr2_ema_3b_fp16.safetensors").is_file();
+    dit && dir.join("ema_vae_fp16.safetensors").is_file()
+}
+
 /// ControlNet (or similar) adapter directory: one or more top-level
 /// `*.safetensors` files without the full image create layout.
 pub fn is_controlnet_safetensors_dir(dir: &Path) -> bool {
-    if !dir.is_dir() || is_safetensors_image_bundle(dir) || contains_gguf(dir) {
+    if !dir.is_dir()
+        || is_safetensors_image_bundle(dir)
+        || is_seedvr2_safetensors_bundle(dir)
+        || contains_gguf(dir)
+    {
         return false;
     }
     contains_extension(dir, "safetensors")
@@ -116,14 +107,22 @@ pub fn is_ace_step_safetensors_bundle(dir: &Path) -> bool {
         && contains_safetensors(&vae)
         && (dir.join("model.safetensors.index.json").is_file()
             || std::fs::read_dir(dir).ok().is_some_and(|entries| {
-                entries.flatten().any(|entry| {
-                    entry.path().join("model.safetensors.index.json").is_file()
-                })
+                entries
+                    .flatten()
+                    .any(|entry| entry.path().join("model.safetensors.index.json").is_file())
             }))
 }
 
+/// True when the directory is a product safetensors / MLX install (any known layout).
+pub fn is_safetensors_bundle(dir: &Path) -> bool {
+    is_safetensors_image_bundle(dir)
+        || is_seedvr2_safetensors_bundle(dir)
+        || is_ace_step_safetensors_bundle(dir)
+        || is_controlnet_safetensors_dir(dir)
+}
+
 pub fn assert_gguf_bundle(dir: &Path) -> Result<GgufBundle, WeightError> {
-    let (root, manifest) = read_manifest(dir)?;
+    let (root, manifest) = read_gguf_manifest(dir)?;
     if !tokenizer_ready(&root) {
         return Err(WeightError::Bundle {
             path: root.display().to_string(),
@@ -155,52 +154,11 @@ pub fn assert_gguf_bundle(dir: &Path) -> Result<GgufBundle, WeightError> {
     })
 }
 
-/// The LTX bundle: everything [`assert_gguf_bundle`] checks plus the audio
-/// VAE, connectors, and (distilled) latent upscaler lists. Audio VAE and
-/// connectors are mandatory; the upscaler is required only by the distilled
-/// two-stage pipeline, so it stays optional here and the distilled session
-/// asserts it.
-pub fn assert_ltx_bundle(dir: &Path) -> Result<LtxBundle, WeightError> {
-    let base = assert_gguf_bundle(dir)?;
-    let (_, manifest) = read_manifest(dir)?;
-    let audio_vae = manifest
-        .files
-        .audio_vae
-        .as_ref()
-        .ok_or_else(|| WeightError::Bundle {
-            path: base.root.display().to_string(),
-            detail: "audio_vae file list is missing".into(),
-        })?;
-    let connectors = manifest
-        .files
-        .connectors
-        .as_ref()
-        .ok_or_else(|| WeightError::Bundle {
-            path: base.root.display().to_string(),
-            detail: "connectors file list is missing".into(),
-        })?;
-    let upscaler = match &manifest.files.upscaler {
-        Some(list) => resolve_role(&base.root, "upscaler", list.names())?,
-        None => Vec::new(),
-    };
-    let stage2_transformer = match &manifest.files.transformer_stage2 {
-        Some(list) => resolve_role(&base.root, "transformer_stage2", list.names())?,
-        None => Vec::new(),
-    };
-    Ok(LtxBundle {
-        audio_vae: resolve_role(&base.root, "audio_vae", audio_vae.names())?,
-        connectors: resolve_role(&base.root, "connectors", connectors.names())?,
-        upscaler,
-        stage2_transformer,
-        base,
-    })
-}
-
 /// The Hunyuan i2v bundle: everything [`assert_gguf_bundle`] checks plus the
 /// mandatory SigLIP image encoder list.
 pub fn assert_hunyuan_bundle(dir: &Path) -> Result<HunyuanBundle, WeightError> {
     let base = assert_gguf_bundle(dir)?;
-    let (_, manifest) = read_manifest(dir)?;
+    let (_, manifest) = read_gguf_manifest(dir)?;
     let image_encoder =
         manifest
             .files
@@ -216,25 +174,7 @@ pub fn assert_hunyuan_bundle(dir: &Path) -> Result<HunyuanBundle, WeightError> {
     })
 }
 
-pub fn assert_upscale_bundle(dir: &Path) -> Result<UpscaleBundle, WeightError> {
-    let (root, manifest) = read_manifest(dir)?;
-    let vae = manifest
-        .files
-        .vae
-        .as_ref()
-        .ok_or_else(|| WeightError::Bundle {
-            path: root.display().to_string(),
-            detail: "vae file list is missing".into(),
-        })?;
-    Ok(UpscaleBundle {
-        transformer: resolve_role(&root, "transformer", manifest.files.transformer.names())?,
-        vae: resolve_role(&root, "vae", vae.names())?,
-        quant: manifest.quant,
-        root,
-    })
-}
-
-fn read_manifest(dir: &Path) -> Result<(PathBuf, Manifest), WeightError> {
+fn read_gguf_manifest(dir: &Path) -> Result<(PathBuf, Manifest), WeightError> {
     let root = dir.to_path_buf();
     if !root.is_dir() {
         return Err(WeightError::Bundle {
@@ -242,18 +182,11 @@ fn read_manifest(dir: &Path) -> Result<(PathBuf, Manifest), WeightError> {
             detail: "directory is missing".into(),
         });
     }
-    let dir_name = root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
-    if is_legacy_dir(dir_name) {
-        return Err(WeightError::LegacyBundle {
+    if is_safetensors_bundle(&root) {
+        return Err(WeightError::Bundle {
             path: root.display().to_string(),
-        });
-    }
-    if contains_safetensors(&root) && !contains_gguf(&root) {
-        return Err(WeightError::LegacyBundle {
-            path: root.display().to_string(),
+            detail: "directory is a safetensors/MLX bundle; this family still expects a GGUF DiT layout"
+                .into(),
         });
     }
     let manifest_path = root.join("bundle.manifest.json");
@@ -275,6 +208,12 @@ fn read_manifest(dir: &Path) -> Result<(PathBuf, Manifest), WeightError> {
         return Err(WeightError::Bundle {
             path: root.display().to_string(),
             detail: format!("quant {} is not bf16, q8_0, or q4_k", manifest.quant),
+        });
+    }
+    if !contains_gguf(&root) {
+        return Err(WeightError::Bundle {
+            path: root.display().to_string(),
+            detail: "no .gguf files under the bundle".into(),
         });
     }
     Ok((root, manifest))
@@ -316,9 +255,7 @@ fn resolve_role(root: &Path, role: &str, names: &[String]) -> Result<Vec<PathBuf
 fn role_file(role: &str, ext: Option<&str>) -> bool {
     match (role, ext) {
         ("transformer", Some("gguf")) => true,
-        ("transformer_stage2", Some("gguf")) => true,
         ("text_encoder" | "vae", Some("gguf" | "safetensors")) => true,
-        ("audio_vae" | "connectors" | "upscaler", Some("gguf" | "safetensors")) => true,
         ("image_encoder", Some("gguf" | "safetensors")) => true,
         _ => false,
     }
@@ -334,15 +271,6 @@ fn tokenizer_ready(root: &Path) -> bool {
     }
     let tok = root.join("tokenizer");
     tok.join("vocab.json").is_file() && tok.join("merges.txt").is_file()
-}
-
-fn is_legacy_dir(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    name.contains("mlx-")
-        || name.ends_with("-fp16")
-        || name.ends_with("-int8")
-        || name.ends_with("-int4")
-        || name.ends_with("-fp8")
 }
 
 fn contains_safetensors(dir: &Path) -> bool {

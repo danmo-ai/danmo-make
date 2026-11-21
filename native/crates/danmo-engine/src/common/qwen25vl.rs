@@ -62,29 +62,6 @@ impl Qwen25VlConfig {
             mrope: [1, 0, 0],
         }
     }
-
-    /// Smoke tower wide enough for the byte-level test tokenizer specials.
-    pub fn create_smoke() -> Self {
-        Self {
-            vocab: 258,
-            hidden: 8,
-            layers: 1,
-            heads: 4,
-            kv_heads: 2,
-            head_dim: 2,
-            intermediate: 8,
-            rope_theta: 1_000_000.0,
-            mrope: [1, 0, 0],
-        }
-    }
-
-    /// Create smoke plus the three vision specials the edit prompt needs.
-    pub fn edit_smoke() -> Self {
-        Self {
-            vocab: 261,
-            ..Self::create_smoke()
-        }
-    }
 }
 
 /// Which hidden state the tower returns. `FinalNormed` runs every layer and
