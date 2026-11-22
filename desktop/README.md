@@ -115,17 +115,15 @@ CI：`.github/workflows/release.yml` 在 macOS job 中调用 `scripts/ci_import_
 | `DANQING_WORKSPACE` | 工作区根（模型 / 输出） |
 | `DANQING_USER_DATA_DIR` | 控制面根目录，默认 `~/.danmo-make` |
 
-## 安装后提示「已损坏，无法打开」
+## 安装后打开
 
-从浏览器 / GitHub Release 下载的 `.dmg` 会带 **隔离属性**（quarantine），且当前构建 **未做 Apple 公证**，系统常误报为「损坏」。应用本身通常没问题。
+正式 Release（CI 已配置 `APPLE_*` secrets）为 **Developer ID 签名**；配齐公证凭据时还会 **notarize + staple**。拖入「应用程序」后一般可 **双击直接打开**。
 
-**任选一种方式：**
+若本机未配证书（ad-hoc 包）或 Gatekeeper 仍拦截一次：
 
-1. **右键打开**：在「应用程序」里找到 **Danmo Make** → 按住 Control 点按 → **打开** → 再点 **打开**（仅首次）。
-2. **去掉隔离属性**（把路径换成你的 `.app` 实际位置）：
+1. **系统设置 → 隐私与安全性 → 仍要打开**（仅签名未公证时较常见）。
+2. 或去掉隔离属性（把路径换成你的 `.app` 实际位置）：
 
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Danmo Make.app"
 ```
-
-发布构建会在 `make pack-macos-desktop` 末尾对 `.app` 做 **ad-hoc 签名**，减轻该问题；正式分发仍建议配置 **Developer ID + 公证（notarize）**。

@@ -96,14 +96,12 @@ ComfyUI 强项是 **任意节点工作流** 与 **海量自定义节点**。Danm
 
 ### macOS（Apple Silicon）— `.dmg`
 
+发布包已做 **Developer ID 签名**（CI 配齐 Apple 凭据时还会公证）。
+
 1. 打开 DMG，将 **Danmo Make.app** 拖入「应用程序」。
-2. 首次打开可能被拦截（未公证 / 隔离属性）。可用 **按住 Control 点按 → 打开**，或：
+2. 双击即可打开，无需再清隔离属性或右键「打开」。
 
-```bash
-xattr -dr com.apple.quarantine "/Applications/Danmo Make.app"
-```
-
-更多说明见 [desktop/README.md](desktop/README.md) →「已损坏，无法打开」。
+若系统仍弹一次拦截，到 **系统设置 → 隐私与安全性 → 仍要打开**。更多说明见 [desktop/README.md](desktop/README.md)。
 
 ### Linux（x86_64 + NVIDIA）— thin 服务端 `.tar.gz`
 

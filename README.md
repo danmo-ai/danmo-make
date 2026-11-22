@@ -97,14 +97,12 @@ Download from [GitHub Releases](https://github.com/danmo-ai/danmo-make/releases)
 
 ### macOS (Apple Silicon) — `.dmg`
 
+Release builds are **Developer ID signed** (and notarized when Apple credentials are present in CI).
+
 1. Open the DMG and drag **Danmo Make.app** into Applications.
-2. First launch may be blocked (unsigned / quarantine). Prefer **Control-click → Open**, or:
+2. Double-click to open — no quarantine workaround needed.
 
-```bash
-xattr -dr com.apple.quarantine "/Applications/Danmo Make.app"
-```
-
-More detail: [desktop/README.md](desktop/README.md) → quarantine tip.
+If Gatekeeper still prompts once, use **System Settings → Privacy & Security → Open Anyway**. Details: [desktop/README.md](desktop/README.md).
 
 ### Linux (x86_64 + NVIDIA) — thin server `.tar.gz`
 
