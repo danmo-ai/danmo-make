@@ -169,9 +169,18 @@ jobs:
           path: dq-ui
 
       - name: Extra swap (MLX CUDA link memory)
-        uses: pierotofy/set-swap-space@fc79b3f67fa8a838184ce84a674ca12238d2c761
-        with:
-          swap-size-gb: 16
+        run: |
+          set -euo pipefail
+          SWAP=/swapfile
+          if swapon --show 2>/dev/null | grep -q "$SWAP"; then
+            free -h
+            exit 0
+          fi
+          fallocate -l 16G "$SWAP" 2>/dev/null || dd if=/dev/zero of="$SWAP" bs=1M count=16384 status=none
+          chmod 600 "$SWAP"
+          mkswap "$SWAP"
+          swapon "$SWAP"
+          free -h
 
       - name: Install system dependencies
         run: |
@@ -299,9 +308,18 @@ jobs:
           path: dq-ui
 
       - name: Extra swap (MLX CUDA link memory)
-        uses: pierotofy/set-swap-space@fc79b3f67fa8a838184ce84a674ca12238d2c761
-        with:
-          swap-size-gb: 16
+        run: |
+          set -euo pipefail
+          SWAP=/swapfile
+          if swapon --show 2>/dev/null | grep -q "$SWAP"; then
+            free -h
+            exit 0
+          fi
+          fallocate -l 16G "$SWAP" 2>/dev/null || dd if=/dev/zero of="$SWAP" bs=1M count=16384 status=none
+          chmod 600 "$SWAP"
+          mkswap "$SWAP"
+          swapon "$SWAP"
+          free -h
 
       - name: Install system dependencies
         run: |

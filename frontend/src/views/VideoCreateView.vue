@@ -561,7 +561,11 @@ function fillComposerFromGalleryItem(item: GalleryItem) {
   persistComposerSnapshot();
 }
 
-function onCanvasOpenComposer(payload?: { intent?: 'generate' | 'edit' }) {
+function onCanvasOpenComposer(
+  payload?: {
+    intent?: 'generate' | 'edit' | 'cover' | 'repaint' | 'lego' | 'extract' | 'complete';
+  },
+) {
   if (canvasSelectedItem.value) {
     fillComposerFromGalleryItem(canvasSelectedItem.value);
   }
