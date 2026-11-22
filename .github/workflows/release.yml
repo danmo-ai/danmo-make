@@ -192,7 +192,7 @@ jobs:
           apt-get install -y \
             build-essential \
             ninja-build \
-            g++ \
+            software-properties-common \
             pkg-config \
             libclang-dev \
             libwebkit2gtk-4.1-dev \
@@ -210,8 +210,20 @@ jobs:
           curl -fsSL https://github.com/Kitware/CMake/releases/download/v3.30.5/cmake-3.30.5-linux-x86_64.tar.gz \
             | tar -xz -C /usr/local --strip-components=1
           cmake --version
-          # Ensure kitware cmake wins over any later apt cmake install.
           hash -r || true
+          # mlx-c uses std::format (C++20); GCC 11 on jammy lacks it — need GCC ≥ 13.
+          add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          apt-get update
+          apt-get install -y gcc-13 g++-13
+          {
+            echo "CC=gcc-13"
+            echo "CXX=g++-13"
+            echo "CUDAHOSTCXX=g++-13"
+            echo "CMAKE_C_COMPILER=gcc-13"
+            echo "CMAKE_CXX_COMPILER=g++-13"
+            echo "CMAKE_CUDA_HOST_COMPILER=g++-13"
+          } >> "$GITHUB_ENV"
+          g++-13 --version | head -1
 
       - name: Configure CUDA env (preinstalled toolkit)
         working-directory: danmo-make
@@ -228,6 +240,8 @@ jobs:
           cmake --version | head -1
           # Fail loud if PATH still points at apt cmake 3.22.
           cmake --version | grep -qE 'version 3\.(2[5-9]|[3-9][0-9])|version [4-9]\.'
+          test "$(basename "$CXX")" = "g++-13"
+          "$CXX" --version | head -1
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -344,7 +358,7 @@ jobs:
           apt-get install -y \
             build-essential \
             ninja-build \
-            g++ \
+            software-properties-common \
             pkg-config \
             libclang-dev \
             wget \
@@ -355,6 +369,19 @@ jobs:
             | tar -xz -C /usr/local --strip-components=1
           cmake --version
           hash -r || true
+          # mlx-c uses std::format (C++20); GCC 11 on jammy lacks it — need GCC ≥ 13.
+          add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          apt-get update
+          apt-get install -y gcc-13 g++-13
+          {
+            echo "CC=gcc-13"
+            echo "CXX=g++-13"
+            echo "CUDAHOSTCXX=g++-13"
+            echo "CMAKE_C_COMPILER=gcc-13"
+            echo "CMAKE_CXX_COMPILER=g++-13"
+            echo "CMAKE_CUDA_HOST_COMPILER=g++-13"
+          } >> "$GITHUB_ENV"
+          g++-13 --version | head -1
 
       - name: Configure CUDA env (preinstalled toolkit)
         working-directory: danmo-make
@@ -370,6 +397,8 @@ jobs:
           cmake --version | head -1
           cmake --version | grep -qE 'version 3\.(2[5-9]|[3-9][0-9])|version [4-9]\.'
           command -v curl
+          test "$(basename "$CXX")" = "g++-13"
+          "$CXX" --version | head -1
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
