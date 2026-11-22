@@ -87,10 +87,7 @@ mod tests {
 
     #[test]
     fn gguf_create_fails_loud_without_the_ggml_graph() {
-        let dir = std::env::temp_dir().join(format!(
-            "qwen-image-gguf-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("qwen-image-gguf-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let request = ImageGenerationRequest {
@@ -106,6 +103,7 @@ mod tests {
             scheduler: None,
             scheduler_shift: None,
             use_empirical_mu: false,
+            use_pe: None,
             adapters: Vec::new(),
             structural_guide: None,
             metadata: serde_json::json!({}),

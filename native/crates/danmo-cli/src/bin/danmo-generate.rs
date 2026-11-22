@@ -34,10 +34,20 @@ fn run() -> Result<(), String> {
         "negative_prompt".into(),
         json!(args.get("negative-prompt").unwrap_or("")),
     );
+    if args.has("no-pe") {
+        request.insert("use_pe".into(), json!(false));
+    }
     danmo_cli::apply_options(
         &mut request,
         &args,
-        &["size", "steps", "guidance", "seed", "scheduler", "scheduler-shift"],
+        &[
+            "size",
+            "steps",
+            "guidance",
+            "seed",
+            "scheduler",
+            "scheduler-shift",
+        ],
     )?;
     let loras = danmo_cli::collect_loras(&host, &args)?;
     if !loras.is_empty() {
@@ -60,7 +70,7 @@ fn run() -> Result<(), String> {
 
 const USAGE: &str = "danmo-generate --model ID[:version] --prompt TEXT --output FILE
   [--negative-prompt TEXT] [--size WxH] [--steps N] [--guidance F] [--seed N]
-  [--scheduler ID] [--scheduler-shift F]
+  [--scheduler ID] [--scheduler-shift F] [--no-pe]
   [--lora ID|PATH[:WEIGHT]]... (weight 0..2, default 1.0)
   [--controlnet MODEL --control-image PATH [--controlnet-strength F]]
   [--workspace DIR] [--registry FILE]";

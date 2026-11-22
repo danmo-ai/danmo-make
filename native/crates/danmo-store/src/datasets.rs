@@ -65,7 +65,8 @@ fn skipped_from_meta(meta: &serde_json::Value) -> Vec<String> {
 }
 
 fn read_meta_json(dir: &Path) -> Result<serde_json::Value, StoreError> {
-    let text = fs::read_to_string(meta_path(dir)).map_err(|e| StoreError::Message(e.to_string()))?;
+    let text =
+        fs::read_to_string(meta_path(dir)).map_err(|e| StoreError::Message(e.to_string()))?;
     serde_json::from_str(&text).map_err(|e| StoreError::Message(e.to_string()))
 }
 
@@ -76,8 +77,7 @@ pub fn summarize_dataset(
     let dir = dataset_dir(project_root, dataset_id);
     let raw = read_meta_json(&dir)?;
     let rows = read_train_jsonl(&jsonl_path(&dir))?;
-    let present: std::collections::HashSet<String> =
-        rows.iter().map(|r| r.image.clone()).collect();
+    let present: std::collections::HashSet<String> = rows.iter().map(|r| r.image.clone()).collect();
     let skipped: Vec<String> = skipped_from_meta(&raw)
         .into_iter()
         .filter(|rel| present.contains(rel))
@@ -161,10 +161,7 @@ pub fn create_dataset(
             "dataset kind must be concept|style, got {kind:?}"
         )));
     }
-    let id = format!(
-        "ds_{}",
-        &uuid_like()[..12]
-    );
+    let id = format!("ds_{}", &uuid_like()[..12]);
     let dir = dataset_dir(project_root, &id);
     fs::create_dir_all(images_dir(&dir)).map_err(|e| StoreError::Message(e.to_string()))?;
     let meta = LoraDatasetMeta {
@@ -252,8 +249,7 @@ pub fn load_training_pairs(
     let meta = load_dataset_meta(project_root, dataset_id)?;
     let dir = dataset_dir(project_root, dataset_id);
     let raw = read_meta_json(&dir)?;
-    let skipped: std::collections::HashSet<String> =
-        skipped_from_meta(&raw).into_iter().collect();
+    let skipped: std::collections::HashSet<String> = skipped_from_meta(&raw).into_iter().collect();
     let rows = read_dataset_rows(project_root, dataset_id)?;
     let active: Vec<_> = rows
         .into_iter()
@@ -273,7 +269,10 @@ pub fn load_training_pairs(
     }
     if meta.kind == "concept" {
         let trigger = meta.trigger_word.trim();
-        if !trigger.is_empty() && !caption.to_ascii_lowercase().contains(&trigger.to_ascii_lowercase())
+        if !trigger.is_empty()
+            && !caption
+                .to_ascii_lowercase()
+                .contains(&trigger.to_ascii_lowercase())
         {
             return Err(StoreError::Message(format!(
                 "concept caption must contain trigger_word {trigger:?}"
@@ -290,9 +289,7 @@ pub fn load_training_pairs(
         }
         let path = dir.join(rel);
         if !path.is_file() {
-            return Err(StoreError::Message(format!(
-                "dataset image missing: {rel}"
-            )));
+            return Err(StoreError::Message(format!("dataset image missing: {rel}")));
         }
         let prompt = if meta.kind == "concept" {
             caption.to_string()
@@ -431,8 +428,7 @@ pub fn set_skipped_images(
 ) -> Result<serde_json::Value, StoreError> {
     let dir = dataset_dir(project_root, dataset_id);
     let rows = read_train_jsonl(&jsonl_path(&dir))?;
-    let present: std::collections::HashSet<&str> =
-        rows.iter().map(|r| r.image.as_str()).collect();
+    let present: std::collections::HashSet<&str> = rows.iter().map(|r| r.image.as_str()).collect();
     let skipped: Vec<String> = files
         .iter()
         .map(|s| s.trim().to_string())
@@ -489,7 +485,11 @@ pub fn dataset_health_report(
     let missing = detail
         .get("images")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter(|img| img.get("exists") == Some(&json!(false))).count())
+        .map(|arr| {
+            arr.iter()
+                .filter(|img| img.get("exists") == Some(&json!(false)))
+                .count()
+        })
         .unwrap_or(0);
     let mut hints = Vec::new();
     let mut score = 80i64;
@@ -541,10 +541,12 @@ fn sanitize_filename(name: &str) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or("image.jpg");
     base.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
-            c
-        } else {
-            '_'
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
         })
         .collect()
 }
@@ -650,8 +652,7 @@ mod tests {
         .unwrap();
         let err = load_training_pairs(&root, &meta.id, "a person").unwrap_err();
         assert!(err.to_string().contains("trigger_word"));
-        let (_meta, pairs) =
-            load_training_pairs(&root, &meta.id, "ohwx person smiling").unwrap();
+        let (_meta, pairs) = load_training_pairs(&root, &meta.id, "ohwx person smiling").unwrap();
         assert_eq!(pairs.len(), 3);
         assert!(pairs.iter().all(|(_, p)| p == "ohwx person smiling"));
         let _ = fs::remove_dir_all(&root);

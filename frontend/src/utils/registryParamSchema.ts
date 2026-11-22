@@ -54,7 +54,6 @@ const PREFERRED_ORDER = [
   'cfg_renorm_min',
   'strength',
   'controlnet_strength',
-  'redux_strength',
 ];
 
 export function sortParamKeys(keys: string[]): string[] {

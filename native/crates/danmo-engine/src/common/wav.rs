@@ -57,11 +57,7 @@ pub fn read_pcm16_interleaved(wav: &[u8]) -> Result<(Vec<f32>, u32), String> {
         return Err("WAV PCM16 data length is odd".into());
     }
     let samples = pcm.len() / 2;
-    let mut out = Vec::with_capacity(if channels == 1 {
-        samples * 2
-    } else {
-        samples
-    });
+    let mut out = Vec::with_capacity(if channels == 1 { samples * 2 } else { samples });
     if channels == 1 {
         for i in 0..samples {
             let s = i16::from_le_bytes(pcm[i * 2..i * 2 + 2].try_into().unwrap()) as f32 / 32768.0;
@@ -194,16 +190,13 @@ mod tests {
     #[test]
     fn resample_mono_preserves_passband_waveform() {
         let source: Vec<f32> = (0..48_000)
-            .map(|index| {
-                (2.0 * std::f32::consts::PI * 1_000.0 * index as f32 / 48_000.0).sin()
-            })
+            .map(|index| (2.0 * std::f32::consts::PI * 1_000.0 * index as f32 / 48_000.0).sin())
             .collect();
         let output = super::resample_mono(&source, 48_000, 16_000).unwrap();
         assert_eq!(output.len(), 16_000);
         let mut error = 0.0f32;
         for (index, value) in output.iter().enumerate().skip(32).take(output.len() - 64) {
-            let expected =
-                (2.0 * std::f32::consts::PI * 1_000.0 * index as f32 / 16_000.0).sin();
+            let expected = (2.0 * std::f32::consts::PI * 1_000.0 * index as f32 / 16_000.0).sin();
             error += (value - expected).abs();
         }
         assert!(error / ((output.len() - 64) as f32) < 0.01);

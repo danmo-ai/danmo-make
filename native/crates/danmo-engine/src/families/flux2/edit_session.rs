@@ -378,7 +378,7 @@ mod tests {
     fn run() -> ResolvedRun {
         ResolvedRun {
             model: "flux2-klein-4b".into(),
-            version: Some("mlx-q4".into()),
+            version: Some("q4-mixed".into()),
             family: "flux2".into(),
             action: Action::ImageEdit,
             bundle: PathBuf::from("missing"),

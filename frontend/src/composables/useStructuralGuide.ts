@@ -15,9 +15,7 @@ export type StructuralGuideType =
   | 'mlsd'
   | 'scribble'
   | 'gray'
-  | 'auto'
-  | 'redux'
-  | 'fill';
+  | 'auto';
 export type ControlNetScope = 'create' | 'retouch' | 'extend';
 export type ControlBinding = 'structural' | 'standalone_edit';
 
@@ -92,9 +90,7 @@ export function controlNetGuideType(
     t === 'mlsd' ||
     t === 'scribble' ||
     t === 'gray' ||
-    t === 'auto' ||
-    t === 'redux' ||
-    t === 'fill'
+    t === 'auto'
   ) {
     return t;
   }
@@ -295,13 +291,9 @@ export function controlNetRegistryDefaultsPatch(
   const patch: Partial<{ guidance: number; steps: number; controlnet_strength: number }> = {};
   if (typeof raw.guidance?.default === 'number') patch.guidance = raw.guidance.default;
   if (typeof raw.steps?.default === 'number') patch.steps = raw.steps.default;
-  const strength =
-    typeof raw.controlnet_strength?.default === 'number'
-      ? raw.controlnet_strength.default
-      : typeof raw.redux_strength?.default === 'number'
-        ? raw.redux_strength.default
-        : undefined;
-  if (typeof strength === 'number') patch.controlnet_strength = strength;
+  if (typeof raw.controlnet_strength?.default === 'number') {
+    patch.controlnet_strength = raw.controlnet_strength.default;
+  }
   return patch;
 }
 
@@ -319,7 +311,6 @@ export function resolveControlAssetId(
 
 export type StructuralGuideValidationCode =
   | 'fill_edit_only'
-  | 'flux_only'
   | 'no_img2img'
   | 'missing_control_image'
   | 'controlnet_not_ready'

@@ -7,9 +7,9 @@ use std::path::Path;
 
 use danmo_mlx::{Array, Dtype, Result, Stream};
 
-use super::super::dit::{DitConfig, plan_windows, timestep_features, window_angles};
+use super::super::dit::{plan_windows, timestep_features, window_angles, DitConfig};
 use crate::common::mlx_ops::gelu_tanh;
-use crate::weights::{MlxWeights, WeightDtype, WeightError, load_mlx_file};
+use crate::weights::{load_mlx_file, MlxWeights, WeightDtype, WeightError};
 
 const RMS_EPS: f32 = 1e-5;
 
@@ -416,7 +416,11 @@ impl Dit {
 }
 
 fn video_text_offset(config: &DitConfig) -> i64 {
-    if config.pixel_rope { 0 } else { config.txt_len }
+    if config.pixel_rope {
+        0
+    } else {
+        config.txt_len
+    }
 }
 
 fn infer_config(weights: &MlxWeights, txt_len: i64) -> std::result::Result<DitConfig, WeightError> {

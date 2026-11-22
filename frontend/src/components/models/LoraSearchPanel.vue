@@ -74,8 +74,8 @@ async function loadBaseModels() {
     baseModels.value = rows || [];
     if (!searchScopeModel.value && baseModels.value.length) {
       const preferred =
-        baseModels.value.find((m) => m.id === 'flux1-dev') ||
         baseModels.value.find((m) => m.id === 'z-image-turbo') ||
+        baseModels.value.find((m) => m.id === 'flux2-klein-4b') ||
         baseModels.value[0];
       searchScopeModel.value = preferred.id;
     }

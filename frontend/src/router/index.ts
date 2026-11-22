@@ -32,6 +32,11 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/LoraTrainView.vue'),
   },
   {
+    path: '/task_queue',
+    name: 'task_queue',
+    component: () => import('@/views/TasksView.vue'),
+  },
+  {
     path: '/models',
     name: 'models',
     component: () => import('@/views/ModelsView.vue'),

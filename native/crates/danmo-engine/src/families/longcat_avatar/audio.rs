@@ -27,7 +27,10 @@ pub fn group_pool_hidden_states(hidden: &[Array], stream: &Stream) -> Result<Arr
     if hidden.len() != (WHISPER_LAYERS + 1) as usize {
         return Err(Error::new(
             "longcat_avatar audio",
-            format!("Whisper hidden states: expected 33 layers, got {}", hidden.len()),
+            format!(
+                "Whisper hidden states: expected 33 layers, got {}",
+                hidden.len()
+            ),
         ));
     }
     let mut bands: Vec<Array> = Vec::with_capacity(5);
@@ -75,11 +78,7 @@ pub fn encode_audio_to_groups(
 
 /// `[B, T_enc, 5, d]` groups → `[B, T_video, W=5, 5, d]` windowed per-frame
 /// features at `fps` with linear resampling from `ENC_FPS`.
-pub fn build_avatar_audio_embeddings(
-    groups: &Array,
-    fps: u32,
-    stream: &Stream,
-) -> Result<Array> {
+pub fn build_avatar_audio_embeddings(groups: &Array, fps: u32, stream: &Stream) -> Result<Array> {
     let shape = groups.shape();
     if shape.len() != 4 {
         return Err(Error::new(

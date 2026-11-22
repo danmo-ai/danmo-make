@@ -48,7 +48,14 @@ fn run() -> Result<(), String> {
     danmo_cli::apply_options(
         &mut request,
         &args,
-        &["source-fidelity", "size", "steps", "guidance", "seed", "scheduler"],
+        &[
+            "source-fidelity",
+            "size",
+            "steps",
+            "guidance",
+            "seed",
+            "scheduler",
+        ],
     )?;
     if let Some(metadata) = args.get("metadata") {
         let metadata: serde_json::Value =
@@ -65,7 +72,8 @@ fn run() -> Result<(), String> {
     danmo_cli::run_task(&host, "image.edit", &model, json!(request))
 }
 
-const USAGE: &str = "danmo-edit --model ID[:version] --operation OP --source-image PATH --prompt TEXT --output FILE
+const USAGE: &str =
+    "danmo-edit --model ID[:version] --operation OP --source-image PATH --prompt TEXT --output FILE
   OP: rewrite | retouch | extend (family-dependent)
   [--mask-image PATH] [--reference-image PATH]... [--source-fidelity F]
   [--size WxH] [--steps N] [--guidance F] [--seed N] [--scheduler ID]

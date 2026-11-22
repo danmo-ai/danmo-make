@@ -209,9 +209,9 @@ mod tests {
         }
     }
 
-    /// Published prequantized bundle (mflux mlx-q4/q8): every shard loads,
-    /// the remap has no collisions, affine linears stay packed, and the
-    /// registry bits/group size validate against the shard metadata.
+    /// Locally derived q4-mixed bundle: every shard loads, the remap has no
+    /// collisions, affine linears stay packed, and the recipe bits/group size
+    /// validate against the shard metadata.
     #[test]
     #[ignore]
     fn real_quantized_bundle_loads_packed_without_remap_collisions() {

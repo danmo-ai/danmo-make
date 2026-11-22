@@ -104,7 +104,7 @@
             <DqIcon :size="14"><Picture /></DqIcon>
           </DqIconButton>
         </ComposerIconTip>
-        <ComposerIconTip v-else-if="!referenceImage && !referencesBlocked" :content="$t('create.composerTip.refImage')">
+        <ComposerIconTip v-else-if="!referenceImage" :content="$t('create.composerTip.refImage')">
           <DqIconButton
             type="text"
             size="sm"
@@ -220,10 +220,6 @@
 
     <ComposerToolbar>
       <template #actions>
-        <span
-          v-if="generateBlockReason"
-          class="studio-composer-toolbar__generate-reason"
-        >{{ generateBlockReason }}</span>
         <DqButton
           type="primary"
           size="sm"
@@ -336,10 +332,6 @@ const props = withDefaults(defineProps<{
   lockSize?: boolean;
   /** Override primary generate button label. */
   generateLabel?: string;
-  /** Selected version cannot take reference images (HiDream mlx-q8). */
-  referencesBlocked?: boolean;
-  /** Shown beside the generate button when references are blocked. */
-  generateBlockReason?: string;
   promptApplyPreview?: string | null;
   successorHint?: { successorId: string; successorName: string } | null;
 }>(), {
@@ -348,8 +340,6 @@ const props = withDefaults(defineProps<{
   embedded: false,
   lockSize: false,
   extraReferenceImages: () => [],
-  referencesBlocked: false,
-  generateBlockReason: '',
 });
 
 const emit = defineEmits<{
@@ -381,7 +371,6 @@ const emit = defineEmits<{
 const { t: $t } = useI18n();
 
 const extraReferenceCap = computed(() => {
-  if (props.referencesBlocked) return 0;
   const raw = props.currentModelConfig?.parameters as Record<string, unknown> | undefined;
   return extraReferenceSlotCap(raw);
 });
@@ -599,14 +588,6 @@ function onStyleCommand(command: string) {
   height: 20px;
   object-fit: cover;
   border-radius: 3px;
-}
-
-.studio-composer-toolbar__generate-reason {
-  max-width: 16rem;
-  font-size: var(--dq-font-size-caption);
-  line-height: 1.3;
-  color: var(--dq-label-secondary);
-  text-align: right;
 }
 
 .image-composer__ref-add {

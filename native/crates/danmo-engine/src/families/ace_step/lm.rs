@@ -1,5 +1,5 @@
-//! ACE-Step 5Hz LM checkpoint metadata. The ggml prefill graph is gone;
-//! generate fails loud until an MLX forward exists.
+//! ACE-Step 5Hz LM GGUF metadata retained for legacy smoke fixtures.
+//! Product inference uses the safetensors MLX implementation.
 
 use crate::weights::{GgufWeights, WeightError};
 use std::path::Path;

@@ -1,12 +1,14 @@
 //! Safetensors Z-Image create on the process MLX executor.
 //!
 //! The three component directories are admitted into `ModelCache`, then
-//! encode, denoise, and decode run on that thread. Guidance 0 and 1 are the
-//! single-forward path. Any other guidance or a negative prompt fails instead
-//! of being dropped. A structural guide with weight > 0 runs the eager DiT
-//! path with ControlNet hint injection (compiled DiT has no control hooks).
-//! LoRA is the shared residual on a clone of the DiT; the compiled graph for
-//! that clone is keyed by the adapter files.
+//! encode, denoise, and decode run on that thread. Guidance ≤ 0 is the
+//! single-forward path (Turbo). Guidance > 0 runs Diffusers Z-Image CFG:
+//! `pred = pos + scale * (pos - neg)`, with an empty ChatML caption when the
+//! negative prompt is blank. A non-empty negative with guidance ≤ 0 fails
+//! loud. A structural guide with weight > 0 runs the eager DiT path with
+//! ControlNet hint injection (compiled DiT has no control hooks). LoRA is the
+//! shared residual on a clone of the DiT; the compiled graph for that clone is
+//! keyed by the adapter files.
 
 use std::path::{Path, PathBuf};
 
@@ -48,6 +50,9 @@ pub(crate) struct MlxSession {
     request: ImageGenerationRequest,
     loras: Vec<LoraFile>,
     ids: Vec<i32>,
+    /// Present when `guidance > 0` (CFG). Empty-prompt ChatML when the user
+    /// left the negative blank.
+    negative_ids: Option<Vec<i32>>,
     sigmas: Option<Vec<f32>>,
     width: u32,
     height: u32,
@@ -71,14 +76,15 @@ impl MlxSession {
                 bundle.display()
             )));
         }
-        if !guidance_is_single_pass(request.guidance) {
-            return Err(EngineError::bad_request(
-                "MLX Z-Image create does not apply guidance other than 0 or 1",
-            ));
+        let guidance = request.guidance.unwrap_or(0.0);
+        if !guidance.is_finite() || guidance < 0.0 {
+            return Err(EngineError::bad_request(format!(
+                "MLX Z-Image guidance {guidance} must be finite and >= 0"
+            )));
         }
-        if !request.negative_prompt.trim().is_empty() {
+        if guidance <= 0.0 && !request.negative_prompt.trim().is_empty() {
             return Err(EngineError::bad_request(
-                "MLX Z-Image create does not apply a negative prompt",
+                "MLX Z-Image negative prompt requires guidance > 0",
             ));
         }
         if let Some(guide) = &request.structural_guide {
@@ -134,6 +140,7 @@ impl MlxSession {
             request: request.clone(),
             loras,
             ids: Vec::new(),
+            negative_ids: None,
             sigmas: None,
             width,
             height,
@@ -143,7 +150,7 @@ impl MlxSession {
 }
 
 impl DitImageSession for MlxSession {
-    fn encode(&mut self, _ctx: &GgmlContext) -> Result<(), EngineError> {
+    fn encode(&mut self, _ctx: &GgmlContext, _exec: &ExecutionContext) -> Result<(), EngineError> {
         let config = MlxZImageConfig::published();
         resident::load_transformer(
             &self.bundle.join("transformer"),
@@ -158,6 +165,17 @@ impl DitImageSession for MlxSession {
             resident::load_controlnet(&control.controlnet, config.patch).map_err(from_mlx)?;
         }
         self.ids = config.token_ids(&self.bundle, &self.request.prompt)?;
+        let guidance = self.request.guidance.unwrap_or(0.0);
+        self.negative_ids = if guidance > 0.0 {
+            let negative = self.request.negative_prompt.trim();
+            Some(if negative.is_empty() {
+                config.empty_token_ids(&self.bundle)?
+            } else {
+                config.token_ids(&self.bundle, negative)?
+            })
+        } else {
+            None
+        };
         Ok(())
     }
 
@@ -216,6 +234,8 @@ impl DitImageSession for MlxSession {
             .map(|inpaint| inpaint.preserve_hw.clone());
         let vae_key = cache_key(&self.bundle.join("vae")).map_err(from_mlx)?;
         let ids = self.ids.clone();
+        let negative_ids = self.negative_ids.clone();
+        let guidance = self.request.guidance.unwrap_or(0.0);
         let width = self.width;
         let height = self.height;
         let exec = exec.clone();
@@ -234,6 +254,8 @@ impl DitImageSession for MlxSession {
                     control_inpaint_source.as_deref(),
                     control_preserve.as_deref(),
                     &ids,
+                    negative_ids.as_deref(),
+                    guidance,
                     width,
                     height,
                     seed as u64,
@@ -267,6 +289,7 @@ impl DitImageSession for MlxSession {
         Ok(DitDecode {
             preview_png: crate::common::png::encode_rgb(width, height, &pixels),
             graph_computes: 1,
+            metadata: serde_json::json!({}),
         })
     }
 }
@@ -418,7 +441,7 @@ fn downsample_preserve_mask(
     Array::from_f32_slice(&out, &[1, 1, latent_h as i32, latent_w as i32])
 }
 
-fn denoise(
+pub(crate) fn denoise(
     cache: &mut danmo_mlx::ModelCache,
     text_key: &danmo_mlx::CacheKey,
     dit_key: &danmo_mlx::CacheKey,
@@ -429,6 +452,8 @@ fn denoise(
     control_inpaint_source: Option<&[f32]>,
     control_preserve: Option<&[f32]>,
     ids: &[i32],
+    negative_ids: Option<&[i32]>,
+    guidance: f32,
     width: u32,
     height: u32,
     seed: u64,
@@ -439,27 +464,37 @@ fn denoise(
     stream: &Stream,
 ) -> danmo_mlx::Result<Vec<f32>> {
     let config = MlxZImageConfig::published();
+    let apply_cfg = guidance > 0.0;
+    if apply_cfg && negative_ids.is_none() {
+        return Err(Error::new(
+            "Z-Image denoise",
+            "guidance > 0 requires negative caption ids",
+        ));
+    }
+    if !guidance.is_finite() || guidance < 0.0 {
+        return Err(Error::new(
+            "Z-Image denoise",
+            format!("guidance {guidance} must be finite and >= 0"),
+        ));
+    }
     let grid = super::super::geom::token_grid(width, height, ids.len() as i64, config.vae_scale)
         .map_err(|error| Error::new("Z-Image denoise", error.to_string()))?;
-    let caption = {
-        let text = resident_weights(cache, text_key, "text encoder")?;
-        let caption = crate::common::qwen3::mlx::encode_ids(
-            text,
-            text_config(),
-            "model.",
-            ids,
-            &vec![true; ids.len()],
-            &[35],
-            stream,
-        )?;
-        caption
-            .squeeze_axis(0, stream)?
-            .astype(Dtype::BFloat16, stream)?
-    };
+    let caption = encode_caption(cache, text_key, ids, stream)?;
     caption.eval()?;
     let weights = resident_weights(cache, dit_key, "transformer")?.clone();
     let weights = attach_dit_lora(weights, loras, config.patch, stream)?;
     let caption_cache = CaptionCache::new(&weights, config, grid, &caption, stream)?;
+    let (neg_grid, neg_caption_cache) = if let Some(neg_ids) = negative_ids.filter(|_| apply_cfg) {
+        let neg_grid =
+            super::super::geom::token_grid(width, height, neg_ids.len() as i64, config.vae_scale)
+                .map_err(|error| Error::new("Z-Image denoise", error.to_string()))?;
+        let neg_caption = encode_caption(cache, text_key, neg_ids, stream)?;
+        neg_caption.eval()?;
+        let neg_cache = CaptionCache::new(&weights, config, neg_grid, &neg_caption, stream)?;
+        (Some(neg_grid), Some(neg_cache))
+    } else {
+        (None, None)
+    };
     let control_active = control_key.is_some();
     let control_weights = match control_key {
         Some(key) => Some(resident_weights(cache, key, "controlnet")?.clone()),
@@ -548,17 +583,13 @@ fn denoise(
         None
     };
     let lora_key = lora_cache_tag(loras);
-    let compiled_key = danmo_mlx::CacheKey {
-        id: format!(
-            "{}#compiled-dit#{}x{}#cap{}{lora_key}",
-            dit_key.id, grid.tokens_w, grid.tokens_h, grid.cap_len
-        ),
-        revision: dit_key.revision,
-    };
-    if !control_active && cache.get::<CompiledCompute>(&compiled_key)?.is_none() {
-        let compiled = CompiledCompute::new(&weights, config, grid, stream)?;
-        let bytes = weights.nbytes();
-        cache.insert(compiled_key.clone(), compiled, bytes)?;
+    let compiled_key = compiled_dit_key(dit_key, grid, &lora_key);
+    let neg_compiled_key = neg_grid.map(|g| compiled_dit_key(dit_key, g, &lora_key));
+    if !control_active {
+        ensure_compiled(cache, &compiled_key, &weights, config, grid, stream)?;
+        if let (Some(neg_grid), Some(neg_key)) = (neg_grid, neg_compiled_key.as_ref()) {
+            ensure_compiled(cache, neg_key, &weights, config, neg_grid, stream)?;
+        }
     }
     let latent_h = (height as i64 / config.vae_scale) as i32;
     let latent_w = (width as i64 / config.vae_scale) as i32;
@@ -601,6 +632,7 @@ fn denoise(
         }
     };
     let mut step_cache = StepCache::z_image(sigmas.len().saturating_sub(1));
+    let mut neg_step_cache = StepCache::z_image(sigmas.len().saturating_sub(1));
     let total = (sigmas.len().saturating_sub(1)) as u32;
     let interval = exec.observer.preview_interval_steps();
     let max_edge = exec.observer.preview_max_edge();
@@ -611,6 +643,16 @@ fn denoise(
         ));
     }
     let mut current = latent;
+    let cfg_note = if apply_cfg {
+        format!(", cfg={guidance}")
+    } else {
+        String::new()
+    };
+    exec.log(
+        "info",
+        &format!("z-image denoise starting ({total} steps{cfg_note})"),
+    )
+    .map_err(|error| Error::new("Z-Image denoise", error.to_string()))?;
     for step_index in 0..sigmas.len() - 1 {
         if exec.check_cancelled().is_err() {
             return Err(Error::new(
@@ -618,50 +660,63 @@ fn denoise(
                 format!("cancelled at step {step_index}"),
             ));
         }
-        exec.progress("denoise", step_index as u32, total)
+        // Report completed steps (1..=total), matching flux2 / qwen / wan.
+        // A 0-based index left finished runs stuck at "(total-1)/total".
+        exec.progress("denoise", step_index as u32 + 1, total)
             .map_err(|error| Error::new("Z-Image denoise", error.to_string()))?;
-        let velocity = if let (Some(control_weights), Some(context), Some(scale)) = (
+        let control = || match (
             control_weights.as_ref(),
             control_context.as_ref(),
             control_scale,
         ) {
-            forward_cached_with_control(
+            (Some(weights), Some(context), Some(scale)) => Some(ControlConditioning {
+                weights,
+                context,
+                scale,
+            }),
+            _ => None,
+        };
+        let pos = branch_velocity(
+            cache,
+            &weights,
+            config,
+            grid,
+            &compiled_key,
+            &current,
+            &caption_cache,
+            sigmas[step_index],
+            &mut step_cache,
+            step_index,
+            control(),
+            stream,
+        )?;
+        let velocity = if apply_cfg {
+            let neg_grid = neg_grid.ok_or_else(|| {
+                Error::new("Z-Image denoise", "CFG negative grid is missing")
+            })?;
+            let neg_caption = neg_caption_cache.as_ref().ok_or_else(|| {
+                Error::new("Z-Image denoise", "CFG negative caption is missing")
+            })?;
+            let neg_key = neg_compiled_key.as_ref().ok_or_else(|| {
+                Error::new("Z-Image denoise", "CFG negative compiled key is missing")
+            })?;
+            let neg = branch_velocity(
+                cache,
                 &weights,
                 config,
-                grid,
+                neg_grid,
+                neg_key,
                 &current,
-                &caption_cache,
+                neg_caption,
                 sigmas[step_index],
-                &mut step_cache,
+                &mut neg_step_cache,
                 step_index,
-                ControlConditioning {
-                    weights: control_weights,
-                    context,
-                    scale,
-                },
-                stream,
-            )?
-        } else {
-            let compiled = cache
-                .get::<CompiledCompute>(&compiled_key)?
-                .ok_or_else(|| {
-                    Error::new(
-                        "Z-Image denoise",
-                        "compiled DiT is not in the executor cache",
-                    )
-                })?;
-            let (velocity, _) = forward_compiled_with_step_cache(
-                &weights,
-                config,
-                compiled,
-                &current,
-                &caption_cache,
-                sigmas[step_index],
-                &mut step_cache,
-                step_index,
+                control(),
                 stream,
             )?;
-            velocity
+            apply_z_image_cfg(&pos, &neg, guidance, stream)?
+        } else {
+            pos
         };
         let velocity = if velocity.dtype() == current.dtype() {
             velocity
@@ -689,6 +744,118 @@ fn denoise(
     }
     current.eval()?;
     current.to_vec_f32(stream)
+}
+
+fn encode_caption(
+    cache: &mut danmo_mlx::ModelCache,
+    text_key: &danmo_mlx::CacheKey,
+    ids: &[i32],
+    stream: &Stream,
+) -> danmo_mlx::Result<Array> {
+    let text = resident_weights(cache, text_key, "text encoder")?;
+    let caption = crate::common::qwen3::mlx::encode_ids(
+        text,
+        text_config(),
+        "model.",
+        ids,
+        &vec![true; ids.len()],
+        &[35],
+        stream,
+    )?;
+    caption
+        .squeeze_axis(0, stream)?
+        .astype(Dtype::BFloat16, stream)
+}
+
+fn compiled_dit_key(
+    dit_key: &danmo_mlx::CacheKey,
+    grid: super::super::geom::TokenGrid,
+    lora_key: &str,
+) -> danmo_mlx::CacheKey {
+    danmo_mlx::CacheKey {
+        id: format!(
+            "{}#compiled-dit#{}x{}#cap{}{lora_key}",
+            dit_key.id, grid.tokens_w, grid.tokens_h, grid.cap_len
+        ),
+        revision: dit_key.revision,
+    }
+}
+
+fn ensure_compiled(
+    cache: &mut danmo_mlx::ModelCache,
+    key: &danmo_mlx::CacheKey,
+    weights: &MlxWeights,
+    config: MlxZImageConfig,
+    grid: super::super::geom::TokenGrid,
+    stream: &Stream,
+) -> danmo_mlx::Result<()> {
+    if cache.get::<CompiledCompute>(key)?.is_none() {
+        let compiled = CompiledCompute::new(weights, config, grid, stream)?;
+        let bytes = weights.nbytes();
+        cache.insert(key.clone(), compiled, bytes)?;
+    }
+    Ok(())
+}
+
+fn branch_velocity(
+    cache: &mut danmo_mlx::ModelCache,
+    weights: &MlxWeights,
+    config: MlxZImageConfig,
+    grid: super::super::geom::TokenGrid,
+    compiled_key: &danmo_mlx::CacheKey,
+    current: &Array,
+    caption_cache: &CaptionCache,
+    sigma: f32,
+    step_cache: &mut StepCache,
+    step_index: usize,
+    control: Option<ControlConditioning<'_>>,
+    stream: &Stream,
+) -> danmo_mlx::Result<Array> {
+    if let Some(control) = control {
+        forward_cached_with_control(
+            weights,
+            config,
+            grid,
+            current,
+            caption_cache,
+            sigma,
+            step_cache,
+            step_index,
+            control,
+            stream,
+        )
+    } else {
+        let compiled = cache.get::<CompiledCompute>(compiled_key)?.ok_or_else(|| {
+            Error::new(
+                "Z-Image denoise",
+                "compiled DiT is not in the executor cache",
+            )
+        })?;
+        let (velocity, _) = forward_compiled_with_step_cache(
+            weights,
+            config,
+            compiled,
+            current,
+            caption_cache,
+            sigma,
+            step_cache,
+            step_index,
+            stream,
+        )?;
+        Ok(velocity)
+    }
+}
+
+/// Diffusers Z-Image CFG: `pred = pos + scale * (pos - neg)`.
+fn apply_z_image_cfg(
+    pos: &Array,
+    neg: &Array,
+    scale: f32,
+    stream: &Stream,
+) -> danmo_mlx::Result<Array> {
+    let delta = Array::subtract(pos, neg, stream)?;
+    let scale = Array::from_f32_slice(&[scale], &[])?.astype(pos.dtype(), stream)?;
+    Array::add(pos, &Array::multiply(&delta, &scale, stream)?, stream)
 }
 
 fn cached_decoder<'a>(
@@ -797,7 +964,7 @@ fn step_preview_png(
     Ok(crate::common::png::encode_rgb(dw, dh, &rgb))
 }
 
-fn decode_pixels(
+pub(crate) fn decode_pixels(
     cache: &mut danmo_mlx::ModelCache,
     vae_key: &danmo_mlx::CacheKey,
     latents: &[f32],
@@ -924,6 +1091,8 @@ pub(crate) fn denoise_reference(
                 None,
                 None,
                 &ids,
+                None,
+                0.0,
                 width,
                 height,
                 seed,
@@ -1025,16 +1194,9 @@ fn from_mlx(error: Error) -> EngineError {
     }
 }
 
-fn guidance_is_single_pass(guidance: Option<f32>) -> bool {
-    match guidance {
-        None => true,
-        Some(value) => value.abs() < 1e-6 || (value - 1.0).abs() < 1e-6,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{is_mlx_bundle, should_emit_preview, MlxSession};
+    use super::{apply_z_image_cfg, is_mlx_bundle, should_emit_preview, MlxSession};
     use crate::contract::{ExecutionContext, NoopObserver};
     use crate::families::DitImageSession;
     use crate::runtime::{BackendKind, GgmlContext};
@@ -1051,6 +1213,62 @@ mod tests {
         assert_eq!(emit, vec![1, 2, 4, 6, 8, 9]);
         assert!(should_emit_preview(2, 2, 2));
         assert!(!should_emit_preview(3, 9, 2));
+    }
+
+    #[test]
+    fn z_image_cfg_matches_diffusers_formula() {
+        let stream = Stream::cpu().unwrap();
+        let pos = Array::from_f32_slice(&[1.0, 2.0, 3.0, 4.0], &[1, 4]).unwrap();
+        let neg = Array::from_f32_slice(&[0.0, 1.0, 1.0, 2.0], &[1, 4]).unwrap();
+        let guided = apply_z_image_cfg(&pos, &neg, 4.0, &stream).unwrap();
+        guided.eval().unwrap();
+        // pred = pos + 4 * (pos - neg) = 5*pos - 4*neg
+        assert_eq!(
+            guided.to_vec_f32(&stream).unwrap(),
+            vec![5.0, 6.0, 11.0, 12.0]
+        );
+    }
+
+    #[test]
+    fn prepare_accepts_base_guidance_and_rejects_negative_without_cfg() {
+        let bundle =
+            std::env::temp_dir().join(format!("zimage-cfg-prepare-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&bundle);
+        for role in ["transformer", "text_encoder", "vae"] {
+            let directory = bundle.join(role);
+            std::fs::create_dir_all(&directory).unwrap();
+            write_shard(&directory.join("model.safetensors"));
+        }
+        let base = serde_json::from_value::<ImageGenerationRequest>(serde_json::json!({
+            "model": "z-image",
+            "prompt": "a dog",
+            "size": "16x16",
+            "steps": 28,
+            "guidance": 4,
+            "seed": 1
+        }))
+        .unwrap();
+        MlxSession::prepare(&bundle, &base, Vec::new(), None).unwrap();
+
+        let bad = serde_json::from_value::<ImageGenerationRequest>(serde_json::json!({
+            "model": "z-image",
+            "prompt": "a dog",
+            "negative_prompt": "blurry",
+            "size": "16x16",
+            "steps": 9,
+            "guidance": 0,
+            "seed": 1
+        }))
+        .unwrap();
+        let err = match MlxSession::prepare(&bundle, &bad, Vec::new(), None) {
+            Ok(_) => panic!("negative prompt at guidance 0 must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            err.to_string().contains("negative prompt requires guidance > 0"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&bundle);
     }
 
     #[test]
@@ -1118,7 +1336,12 @@ mod tests {
 
         let mut session = MlxSession::prepare(&bundle, &request(), Vec::new(), None).unwrap();
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
-        session.encode(&ctx).unwrap();
+        session
+            .encode(
+                &ctx,
+                &ExecutionContext::new("encode", Arc::new(NoopObserver)),
+            )
+            .unwrap();
         let again = super::resident::load_transformer(
             &bundle.join("transformer"),
             super::MlxZImageConfig::published(),
@@ -1168,7 +1391,12 @@ mod tests {
         .unwrap();
         let mut session = MlxSession::prepare(&bundle, &request, Vec::new(), None).unwrap();
         let ctx = GgmlContext::new(BackendKind::Cpu).unwrap();
-        session.encode(&ctx).unwrap();
+        session
+            .encode(
+                &ctx,
+                &ExecutionContext::new("encode", Arc::new(NoopObserver)),
+            )
+            .unwrap();
         session.schedule().unwrap();
         let exec = ExecutionContext::new("mlx-session-real", Arc::new(NoopObserver));
         let latents = session.infer(&exec).unwrap();

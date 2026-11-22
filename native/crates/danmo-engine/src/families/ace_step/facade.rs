@@ -180,6 +180,7 @@ impl FacadeFamily for AceStepFamily {
                     // is ignored; maybe_expand fails loud when the tower is missing.
                     let lm_bundle = super::resolve_lm_bundle_for_create(&run.bundle, None).ok();
                     let mut callback_error = None;
+                    exec.phase("lm")?;
                     let expanded = super::maybe_expand_for_create_with_context(
                         &run.bundle,
                         &super::LmExpandRequest {
@@ -248,12 +249,17 @@ impl FacadeFamily for AceStepFamily {
                             )
                         })?;
                     let bytes = resolver.read_source_audio(run, &source)?;
-                    let (pcm, sample_rate) = super::wav::read_pcm16_interleaved(&bytes)?;
-                    if sample_rate != 48_000 {
-                        return Err(EngineError::bad_request(format!(
-                            "audio edit source sample rate {sample_rate} Hz must be 48000"
-                        )));
-                    }
+                    let decoded = super::wav::read_pcm16_interleaved(&bytes)
+                        .ok()
+                        .filter(|(_, sample_rate)| *sample_rate == 48_000);
+                    let (pcm, _) = match decoded {
+                        Some(decoded) => decoded,
+                        None => {
+                            let normalized =
+                                crate::common::ffmpeg::decode_audio_to_pcm16_wav(&bytes)?;
+                            super::wav::read_pcm16_interleaved(&normalized)?
+                        }
+                    };
                     Some(pcm)
                 };
                 Prepared::Edit {
@@ -310,6 +316,7 @@ impl FacadeSession for AceStepSession {
                 )?;
                 let batch = validate_batch(request.n)?;
                 let mut outputs = Vec::with_capacity(batch);
+                exec.phase("denoise")?;
                 for index in 0..batch {
                     let create =
                         create_request(request, options, expanded.as_ref(), &loras, dcw, index);
@@ -333,7 +340,9 @@ impl FacadeSession for AceStepSession {
                     if let Some(message) = out.quality.log_message() {
                         exec.log("warning", &message)?;
                     }
-                    outputs.push(audio_output(out, &encoding)?);
+                    let mut output = audio_output(out, &encoding)?;
+                    decorate_create_output(&mut output, request, options, index);
+                    outputs.push(output);
                 }
                 Ok(merge_audio_outputs(outputs, &request.metadata))
             }
@@ -356,6 +365,7 @@ impl FacadeSession for AceStepSession {
                 )?;
                 let batch = validate_batch(request.n)?;
                 let mut outputs = Vec::with_capacity(batch);
+                exec.phase("denoise")?;
                 for index in 0..batch {
                     let mut callback_error = None;
                     let out = super::run_cover_edit_with_context(
@@ -406,11 +416,13 @@ impl FacadeSession for AceStepSession {
                     for artifact in &mut output.artifacts {
                         artifact.source_action = "edit".into();
                     }
+                    decorate_edit_output(&mut output, request, options, index);
                     outputs.push(output);
                 }
                 Ok(merge_audio_outputs(outputs, &request.metadata))
             }
             Prepared::Lm { request, options } => {
+                exec.phase("lm")?;
                 let out = super::run_lm_with_context(
                     &self.run.bundle,
                     &LmRequest {
@@ -634,6 +646,214 @@ fn validate_batch(n: u32) -> Result<usize, EngineError> {
     Ok(n as usize)
 }
 
+fn decorate_create_output(
+    output: &mut EngineOutput,
+    request: &AudioCreateRequest,
+    options: &CreateOptions,
+    index: usize,
+) {
+    let seed = request.seed.map(|value| value + index as i64);
+    for artifact in &mut output.artifacts {
+        decorate_audio_artifact(
+            artifact,
+            &request.title,
+            &request.prompt,
+            &request.lyrics,
+            seed,
+            request.guidance,
+            request.steps,
+            &request.adapters,
+            &request.metadata,
+            "create",
+            None,
+            options,
+        );
+    }
+    sync_primary_audio_metadata(output);
+}
+
+fn decorate_edit_output(
+    output: &mut EngineOutput,
+    request: &AudioEditRequest,
+    options: &EditOptions,
+    index: usize,
+) {
+    let seed = request.seed.map(|value| value + index as i64);
+    let relation = if options.task == "cover-nofsq" {
+        "cover"
+    } else {
+        options.task.as_str()
+    };
+    for artifact in &mut output.artifacts {
+        decorate_audio_artifact(
+            artifact,
+            &request.title,
+            &request.prompt,
+            &request.lyrics,
+            seed,
+            request.guidance,
+            request.steps,
+            &request.adapters,
+            &request.metadata,
+            relation,
+            request.source_audio.as_deref(),
+            options,
+        );
+        artifact.metadata["operation"] = json!(options.task);
+        artifact.metadata["track"] = json!(options.track);
+        artifact.metadata["audio_cover_strength"] = json!(options.audio_cover_strength);
+        artifact.metadata["cover_noise_strength"] = json!(options.cover_noise_strength);
+        artifact.metadata["timbre_from_source"] = json!(options.timbre_from_source);
+        if let Some(start) = options.region_start_sec {
+            artifact.metadata["region_start_sec"] = json!(start);
+        }
+        if let Some(end) = options.region_end_sec {
+            artifact.metadata["region_end_sec"] = json!(end);
+        }
+        artifact.metadata["repaint_injection_ratio"] = json!(options.repaint_injection_ratio);
+        artifact.metadata["repaint_crossfade_frames"] = json!(options.repaint_crossfade_frames);
+    }
+    sync_primary_audio_metadata(output);
+}
+
+trait AudioArtifactOptions {
+    fn audio_format(&self) -> &str;
+    fn denoise(&self) -> &str;
+    fn dcw_enabled(&self) -> Option<bool>;
+    fn dcw_mode(&self) -> &str;
+    fn dcw_scaler(&self) -> f32;
+    fn dcw_high_scaler(&self) -> f32;
+}
+
+impl AudioArtifactOptions for CreateOptions {
+    fn audio_format(&self) -> &str {
+        &self.audio_format
+    }
+    fn denoise(&self) -> &str {
+        &self.denoise
+    }
+    fn dcw_enabled(&self) -> Option<bool> {
+        self.dcw_enabled
+    }
+    fn dcw_mode(&self) -> &str {
+        &self.dcw_mode
+    }
+    fn dcw_scaler(&self) -> f32 {
+        self.dcw_scaler
+    }
+    fn dcw_high_scaler(&self) -> f32 {
+        self.dcw_high_scaler
+    }
+}
+
+impl AudioArtifactOptions for EditOptions {
+    fn audio_format(&self) -> &str {
+        &self.audio_format
+    }
+    fn denoise(&self) -> &str {
+        &self.denoise
+    }
+    fn dcw_enabled(&self) -> Option<bool> {
+        self.dcw_enabled
+    }
+    fn dcw_mode(&self) -> &str {
+        &self.dcw_mode
+    }
+    fn dcw_scaler(&self) -> f32 {
+        self.dcw_scaler
+    }
+    fn dcw_high_scaler(&self) -> f32 {
+        self.dcw_high_scaler
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decorate_audio_artifact(
+    artifact: &mut Artifact,
+    title: &str,
+    prompt: &str,
+    lyrics: &str,
+    seed: Option<i64>,
+    guidance: f32,
+    steps: Option<u32>,
+    adapters: &[danmo_contracts::ImageAdapter],
+    request_metadata: &Value,
+    operation: &str,
+    source_audio: Option<&str>,
+    options: &dyn AudioArtifactOptions,
+) {
+    let metadata = &mut artifact.metadata;
+    metadata["title"] = json!(title);
+    metadata["prompt"] = json!(prompt);
+    metadata["lyrics_input"] = json!(lyrics);
+    metadata["operation"] = json!(operation);
+    metadata["relation_type"] = json!(operation);
+    metadata["seed"] = json!(seed);
+    metadata["guidance"] = json!(guidance);
+    metadata["steps"] = json!(steps);
+    metadata["adapters"] = json!(adapters
+        .iter()
+        .map(|adapter| json!({"id": adapter.id, "weight": adapter.weight}))
+        .collect::<Vec<_>>());
+    metadata["audio_format"] = json!(options.audio_format());
+    metadata["denoise"] = json!(options.denoise());
+    metadata["dcw_enabled"] = json!(options.dcw_enabled());
+    metadata["dcw_mode"] = json!(options.dcw_mode());
+    metadata["dcw_scaler"] = json!(options.dcw_scaler());
+    metadata["dcw_high_scaler"] = json!(options.dcw_high_scaler());
+    metadata["request_metadata"] = request_metadata.clone();
+    if let Some(value) = request_metadata.get("canvas_session_id") {
+        metadata["canvas_session_id"] = value.clone();
+    }
+    let parent = request_metadata
+        .get("parent_asset_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            source_audio
+                .and_then(|value| value.strip_prefix("asset:"))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
+    let relation = request_metadata
+        .get("relation_type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(operation)
+        .to_string();
+    if let Some(parent) = parent {
+        artifact.parent_asset_id = Some(parent.clone());
+        metadata["parent_asset_id"] = json!(parent);
+    }
+    artifact.relation_type = Some(relation.clone());
+    metadata["relation_type"] = json!(relation);
+}
+
+fn sync_primary_audio_metadata(output: &mut EngineOutput) {
+    let Some(primary) = output.artifacts.first() else {
+        return;
+    };
+    for key in [
+        "title",
+        "prompt",
+        "lyrics_input",
+        "operation",
+        "relation_type",
+        "seed",
+        "guidance",
+        "steps",
+        "adapters",
+        "audio_format",
+        "denoise",
+    ] {
+        output.metadata[key] = primary.metadata[key].clone();
+    }
+}
+
 fn merge_audio_outputs(outputs: Vec<EngineOutput>, request_metadata: &Value) -> EngineOutput {
     let mut merged = EngineOutput::default();
     let mut metadata = Value::Null;
@@ -755,6 +975,32 @@ mod tests {
         assert_eq!(merged.metadata["items"][0]["quality_score"], 72.0);
         assert_eq!(merged.metadata["items"][1]["quality_score"], 33.0);
         assert_eq!(merged.metadata["request_metadata"]["source"], "test");
+    }
+
+    #[test]
+    fn artifact_metadata_preserves_product_fields_and_edit_lineage() {
+        let mut artifact = Artifact::wav(vec![0, 1], 48_000, 250, json!({}));
+        decorate_audio_artifact(
+            &mut artifact,
+            "Remix",
+            "jazz",
+            "hello",
+            Some(42),
+            7.0,
+            Some(30),
+            &[],
+            &json!({"canvas_session_id": "cvs_1"}),
+            "repaint",
+            Some("asset:ast_source"),
+            &EditOptions::default(),
+        );
+        assert_eq!(artifact.metadata["title"], "Remix");
+        assert_eq!(artifact.metadata["prompt"], "jazz");
+        assert_eq!(artifact.metadata["seed"], 42);
+        assert_eq!(artifact.metadata["operation"], "repaint");
+        assert_eq!(artifact.metadata["canvas_session_id"], "cvs_1");
+        assert_eq!(artifact.parent_asset_id.as_deref(), Some("ast_source"));
+        assert_eq!(artifact.relation_type.as_deref(), Some("repaint"));
     }
 
     #[test]

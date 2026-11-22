@@ -15,7 +15,7 @@
           :label="$t('action.image.rewrite')"
           @click="$emit('action', 'quick-reference')"
         >
-          <DqIcon :size="14"><Picture /></DqIcon>
+          <DqIcon :size="14"><Pencil /></DqIcon>
         </DqIconButton>
       </ComposerIconTip>
       <ComposerIconTip :content="$t('action.image.retouch')">
@@ -87,14 +87,18 @@
     </template>
 
     <template v-else-if="pageMedia === 'audio' && isAudio">
-      <ComposerIconTip :content="$t('action.audio.cover')">
+      <ComposerIconTip
+        v-for="action in audioEditActions"
+        :key="action.command"
+        :content="$t(action.labelKey)"
+      >
         <DqIconButton
           type="text"
           size="sm"
-          :label="$t('action.audio.cover')"
-          @click="$emit('action', 'quick-cover')"
+          :label="$t(action.labelKey)"
+          @click="$emit('action', action.command)"
         >
-          <DqIcon :size="14"><Headset /></DqIcon>
+          <DqIcon :size="14"><component :is="action.icon" /></DqIcon>
         </DqIconButton>
       </ComposerIconTip>
     </template>
@@ -218,10 +222,11 @@ import { lineageRelationLabel } from '@/utils/lineageRelationLabel';
 import {
   Brush,
   Close,
+  Download,
   Grid,
   Headset,
   Menu,
-  Picture,
+  Pencil,
   Plus,
   VideoCamera,
   ZoomIn,
@@ -250,6 +255,14 @@ defineEmits<{
 }>();
 
 const { t: $t } = useI18n();
+
+const audioEditActions = [
+  { command: 'audio-cover', labelKey: 'action.audio.cover', icon: Headset },
+  { command: 'audio-repaint', labelKey: 'action.audio.repaint', icon: Brush },
+  { command: 'audio-lego', labelKey: 'action.audio.lego', icon: Plus },
+  { command: 'audio-extract', labelKey: 'action.audio.extract', icon: Download },
+  { command: 'audio-complete', labelKey: 'action.audio.complete', icon: Grid },
+];
 
 const pageMedia = computed(() => props.media || 'image');
 

@@ -106,7 +106,9 @@ fn families_do_not_import_each_other() {
 /// through the `danmo-mlx` wrapper, never through raw C handles.
 #[test]
 fn engine_code_does_not_touch_mlx_sys() {
-    for directory in ["families", "common", "pipeline", "session", "runtime", "weights"] {
+    for directory in [
+        "families", "common", "pipeline", "session", "runtime", "weights",
+    ] {
         for path in rust_files(&source_root().join(directory)) {
             let source = production_source(&path);
             for forbidden in ["danmo_mlx_sys", "danmo-mlx-sys"] {

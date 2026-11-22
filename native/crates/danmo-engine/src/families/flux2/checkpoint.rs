@@ -350,7 +350,7 @@ mod tests {
     #[test]
     fn installed_klein_4b_q4_index_matches_when_present() {
         let path = Path::new(
-            "/Users/nil.luo/Workspace/studio-workspace/models/Image/flux2-klein-4b-mlx-q4/transformer/model.safetensors.index.json",
+            "/Users/nil.luo/Workspace/studio-workspace/models/Image/flux2-klein-4b-fp16/transformer/model.safetensors.index.json",
         );
         let Some(text) = std::fs::read_to_string(&path).ok() else {
             return;

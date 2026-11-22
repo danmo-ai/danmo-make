@@ -1,7 +1,7 @@
 import { reactive } from 'vue';
 import { defineStore } from 'pinia';
 import { api } from '@/utils/api';
-import type { QueueState } from '@/types';
+import type { QueueState, TaskTrace, TraceStepProgress } from '@/types';
 import {
   buildInferenceResultLogMessage,
   formatGenLogMessage,
@@ -9,6 +9,7 @@ import {
   isDuplicateDenoiseStepLog,
   progressPhaseLabel,
 } from '@/utils/genTaskLog';
+import { formatStepProgressTitle } from '@/utils/traceProgress';
 import { $tt } from '@/utils/i18n';
 
 export interface LiveTaskProgress {
@@ -17,6 +18,7 @@ export interface LiveTaskProgress {
   total?: number;
   eta_seconds?: number;
   progressMessage?: string;
+  phase?: string;
 }
 
 export interface TaskLogEntry {
@@ -27,6 +29,7 @@ export interface TaskLogEntry {
 
 export interface TaskPipelineGraphState {
   graph_id?: string;
+  source?: 'otel' | 'heuristic';
   nodes: Array<{
     id: string;
     label?: string;
@@ -35,6 +38,9 @@ export interface TaskPipelineGraphState {
   }>;
   active_node?: string | null;
   progress?: number;
+  step_progress?: TraceStepProgress | null;
+  trace_id?: string;
+  duration_ms?: number | null;
 }
 
 interface TaskLogPhaseState {
@@ -51,6 +57,8 @@ export const useTasksStore = defineStore('tasks', () => {
   const liveTaskProgress = reactive<Record<string, LiveTaskProgress>>({});
   const taskLogs = reactive<Record<string, TaskLogEntry[]>>({});
   const taskPipelineGraphs = reactive<Record<string, TaskPipelineGraphState>>({});
+  const taskTraces = reactive<Record<string, TaskTrace>>({});
+  const taskTraceErrors = reactive<Record<string, string>>({});
   const taskLogPhaseState = new Map<string, TaskLogPhaseState>();
 
   let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -67,7 +75,37 @@ export const useTasksStore = defineStore('tasks', () => {
     if (Object.prototype.hasOwnProperty.call(patch, 'progressMessage')) {
       next.progressMessage = patch.progressMessage;
     }
+    if (Object.prototype.hasOwnProperty.call(patch, 'phase')) {
+      next.phase = patch.phase;
+    }
+    // Skip no-op writes so SSE chatter does not thrash Vue reactivity.
+    if (
+      prev.progress === next.progress &&
+      prev.step === next.step &&
+      prev.total === next.total &&
+      prev.eta_seconds === next.eta_seconds &&
+      prev.progressMessage === next.progressMessage &&
+      prev.phase === next.phase
+    ) {
+      return;
+    }
     liveTaskProgress[taskId] = next;
+  }
+
+  function applyStepProgressTip(
+    taskId: string,
+    tip: TraceStepProgress | null | undefined,
+    progress?: number | null,
+  ) {
+    if (!taskId || !tip) return;
+    const title = formatStepProgressTitle(tip);
+    patchLiveTaskProgress(taskId, {
+      phase: tip.phase,
+      step: tip.step,
+      total: tip.total,
+      progress: typeof progress === 'number' ? progress : undefined,
+      progressMessage: title ?? tip.phase,
+    });
   }
 
   function clearLiveTaskProgress(taskId: string) {
@@ -160,6 +198,41 @@ export const useTasksStore = defineStore('tasks', () => {
     }
   }
 
+  /** Spans + graph for one task. Failures are recorded, never swallowed into
+   * an empty trace that looks like "nothing ran". */
+  async function loadTaskTrace(taskId: string): Promise<void> {
+    if (!taskId) return;
+    delete taskTraceErrors[taskId];
+    try {
+      const trace = await api.tasks.fetchTrace(taskId);
+      taskTraces[taskId] = trace;
+      const graph = (await api.tasks.fetchGraph(taskId)) as unknown as TaskPipelineGraphState;
+      patchTaskPipelineGraph(taskId, graph);
+      const tip = graph.step_progress ?? trace.step_progress ?? null;
+      applyStepProgressTip(taskId, tip, graph.progress ?? trace.progress);
+    } catch (e: unknown) {
+      taskTraceErrors[taskId] = traceErrorMessage(e);
+    }
+  }
+
+  function clearTaskTrace(taskId: string) {
+    if (taskId) {
+      delete taskTraces[taskId];
+      delete taskTraceErrors[taskId];
+      clearTaskPipelineGraph(taskId);
+    }
+  }
+
+  function traceErrorMessage(e: unknown): string {
+    if (typeof e === 'object' && e !== null && 'response' in e) {
+      const err = e as { response?: { data?: { detail?: string } } };
+      const detail = err.response?.data?.detail;
+      if (detail) return detail;
+    }
+    if (e instanceof Error) return e.message;
+    return String(e);
+  }
+
   const logStreams = new Map<string, EventSource>();
   /** Task ids whose SSE is owned by a create page (avoid duplicate empty store streams). */
   const pageOwnedStreams = new Set<string>();
@@ -227,7 +300,15 @@ export const useTasksStore = defineStore('tasks', () => {
       if (data.step != null) patch.step = data.step;
       if (data.total != null) patch.total = data.total;
       if (data.eta_seconds != null) patch.eta_seconds = data.eta_seconds;
-      if (Object.prototype.hasOwnProperty.call(data, 'message')) {
+      if (data.phase != null) patch.phase = String(data.phase);
+      if (data.step != null && data.total != null) {
+        const tip = {
+          phase: String(data.phase || data.message || ''),
+          step: Number(data.step),
+          total: Number(data.total),
+        };
+        patch.progressMessage = formatStepProgressTitle(tip) ?? String(data.message || tip.phase);
+      } else if (Object.prototype.hasOwnProperty.call(data, 'message')) {
         patch.progressMessage = data.message;
       } else if (data.phase) {
         patch.progressMessage = String(data.phase);
@@ -319,8 +400,11 @@ export const useTasksStore = defineStore('tasks', () => {
     liveTaskProgress,
     taskLogs,
     taskPipelineGraphs,
+    taskTraces,
+    taskTraceErrors,
     patchLiveTaskProgress,
     clearLiveTaskProgress,
+    applyStepProgressTip,
     appendTaskLog,
     ingestTaskLog,
     ingestTaskProgressLog,
@@ -329,6 +413,8 @@ export const useTasksStore = defineStore('tasks', () => {
     ingestTaskPipelineTrace,
     loadTaskPipelineGraph,
     clearTaskPipelineGraph,
+    loadTaskTrace,
+    clearTaskTrace,
     openTaskLogStream,
     closeTaskLogStream,
     registerPageOwnedStream,

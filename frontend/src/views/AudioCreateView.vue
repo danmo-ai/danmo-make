@@ -103,13 +103,13 @@
         v-model:title="params.title"
         v-model:work-mode="audioWorkTab"
         v-model:model="selectedModelVersion"
-        v-model:duration="params.duration"
+        v-model:duration="composerDuration"
         v-model:batch-count="params.n"
         :work-mode-options="composerWorkModeOptions"
         :composer-busy="composerBusy"
         :submitting="queueSubmitting"
         :generating="generating"
-        :can-generate="audioWorkTab === 'create' ? canGenerateCreate : canGenerateCover"
+        :can-generate="audioWorkTab === 'create' ? canGenerateCreate : canGenerateEdit"
         :generate-label="generateLabel"
         :model-options="audioModelSelectOptions"
         :duration-options="durationOptions"
@@ -122,9 +122,11 @@
         :show-codec-controls="false"
         :show-cover-fidelity="audioWorkTab === 'cover'"
         :reference-media="coverReferenceMedia"
+        :source-duration="coverSourceDuration"
         :current-model-config="advancedParamModelConfig"
         :compatible-loras="compatibleLoras"
         @generate="onAudioComposerGenerate"
+        @open-lm="openLmAssistant"
         @pick-reference="onPickCoverSource"
         @remove-reference="clearCoverSource"
         @model-change="onModelChange"
@@ -143,6 +145,17 @@
         @lyrics-apply-dismiss="lyricsApply.clear()"
       />
   </StudioComposerHost>
+
+  <AudioLmPanel
+    v-model:open="lmPanelOpen"
+    :initial="params"
+    :result="lmResult"
+    :submitting="lmSubmitting"
+    :progress="lmProgress"
+    :error="lmError"
+    @run="runLmAssistant"
+    @apply="applyLmResult"
+  />
 
   <!-- Audio preview dialog -->
   <GalleryPreviewDialog
@@ -195,15 +208,26 @@ import { usePromptApplyOffer } from '@/composables/usePromptApplyOffer';
 
 import { useModelRegistryFilters } from '@/composables/useModelRegistryFilters';
 import { applyModelVersionFilters } from '@/utils/modelPickerFilters';
+import { compareModelPickerRows } from '@/utils/modelPickerSort';
 import { modelSelectOption } from '@/utils/modelSelectOption';
 import { warnIfRiskyMemory } from '@/composables/memoryHint';
 import type { SystemInfo, Task, GalleryItem } from '@/types';
 import { assetDisplayLabel, previewDisplayCaption } from '@/utils/assetDisplay';
 import { seedForSubmit } from '@/utils/seed';
+import {
+  buildAudioEditPayload,
+  buildAudioGenerationPayload,
+  isAudioWorkMode,
+  parseAudioTracks,
+  supportsAudioAction,
+  validateAudioEditInput,
+  type AudioWorkMode,
+} from '@/utils/audioTasks';
 import { Refresh, Search } from '@danqing/dq-shell';
 import StudioLayout from '@/components/studio/StudioLayout.vue';
 import StudioCanvasStripList from '@/components/studio/StudioCanvasStripList.vue';
 import AudioComposer from '@/components/studio/AudioComposer.vue';
+import AudioLmPanel, { type AudioLmResult } from '@/components/audio/AudioLmPanel.vue';
 import StudioComposerHost from '@/components/studio/StudioComposerHost.vue';
 import InfiniteCanvas from '@/components/studio/InfiniteCanvas.vue';
 import StudioLineagePanel from '@/components/studio/StudioLineagePanel.vue';
@@ -242,19 +266,6 @@ function isAudioModel(config: any) {
   return config && config.media === 'audio';
 }
 
-/** Registry v2: `actions` is `{ create: {}, ... }`, not a string array. */
-function supportsAction(actions: unknown, action: string): boolean {
-  if (actions == null) return false;
-  if (Array.isArray(actions)) {
-    return actions.includes(action);
-  }
-  if (typeof actions === 'object') {
-    const rec = actions as Record<string, unknown>;
-    return Object.prototype.hasOwnProperty.call(rec, action) && rec[action] != null;
-  }
-  return false;
-}
-
 const TSU = {
   tagType: (s: string) => {
     if (s === 'running') return 'primary';
@@ -266,9 +277,12 @@ const TSU = {
 };
 
 // ---- Work mode (create vs cover are exclusive drawers — no in-drawer tab switch) ----
-const audioWorkTab = ref('create');
-/** Hide create/cover segment; each entry point opens a single-purpose drawer. */
-const composerWorkModeOptions = computed(() => [] as Array<{ label: string; value: string }>);
+const audioWorkTab = ref<AudioWorkMode>('create');
+const composerWorkModeOptions = computed(() => {
+  if (audioWorkTab.value === 'create') return [] as Array<{ label: string; value: string }>;
+  return ['cover', 'repaint', 'lego', 'extract', 'complete']
+    .map((value) => ({ value, label: $tt(`action.audio.${value}`) }));
+});
 
 // ---- State ----
 const generating = ref(false);
@@ -286,7 +300,7 @@ const params = reactive({
   title: '',
   prompt: '',
   negative_prompt: '',
-  duration: 30,
+  duration: 30 as number | null,
   instrumental: false,
   lyrics: '',
   vocal_language: '',
@@ -303,17 +317,28 @@ const params = reactive({
   lm_expansion: 'auto',
   lora: '',
   lora_scale: 0.8,
-});
-
-const coverParams = reactive({
   source_fidelity: 1.0,
-  duration: null as number | null,
+  cover_variant: 'cover',
+  cover_noise_strength: 0,
+  timbre_from_source: false,
+  region_start_sec: null as number | null,
+  region_end_sec: null as number | null,
+  repaint_injection_ratio: 1.0,
+  repaint_crossfade_frames: 8,
+  tracks: [] as string[],
+  dcw_enabled: 'auto',
+  dcw_mode: 'double',
+  dcw_scaler: 0.05,
+  dcw_high_scaler: 0.02,
+  audio_code_indices: null as number[] | null,
 });
 
 const coverSourceSrc = ref('');
 const coverSourceFile = ref<File | null>(null);
 const coverSourceAssetPath = ref('');
 const coverSourceName = ref('');
+const coverSourceDuration = ref(0);
+let coverSourceProbe = 0;
 
 const currentTask = reactive({ id: '', progress: 0, step: null as number | null, total: null as number | null, status: '' });
 const previewAudioSrc = ref('');
@@ -389,6 +414,20 @@ const hasCustomParams = computed(() => {
     || params.seed !== null || params.n !== 1 || params.duration !== durationDef
     || params.audio_format !== formatDef || params.denoise !== denoiseDef
     || params.lm_expansion !== lmDef
+    || params.cover_variant !== 'cover'
+    || params.source_fidelity !== 1
+    || params.cover_noise_strength !== 0
+    || params.timbre_from_source
+    || params.region_start_sec != null
+    || params.region_end_sec != null
+    || params.repaint_injection_ratio !== 1
+    || params.repaint_crossfade_frames !== 8
+    || params.tracks.length > 0
+    || params.dcw_enabled !== (p.dcw_enabled?.default ?? 'auto')
+    || params.dcw_mode !== (p.dcw_mode?.default ?? 'double')
+    || params.dcw_scaler !== (p.dcw_scaler?.default ?? 0.05)
+    || params.dcw_high_scaler !== (p.dcw_high_scaler?.default ?? 0.02)
+    || !!params.audio_code_indices?.length
     || !!params.lora;
 });
 
@@ -485,9 +524,7 @@ const allAudioVersions = computed(() => {
   const rows: Array<Record<string, unknown>> = [];
   for (const [modelKey, config] of Object.entries(modelRegistry.value)) {
     if (!isAudioModel(config)) continue;
-    const act = audioWorkTab.value === 'cover' ? 'cover' : 'create';
-    if (act === 'cover' && !supportsAction(config.actions, 'cover')) continue;
-    if (act === 'create' && !supportsAction(config.actions, 'create')) continue;
+    if (!supportsAudioAction(config, audioWorkTab.value)) continue;
     const versions = config.versions || {};
     const ds = modelsDetailedStatus.value[modelKey] || {};
     const versionStatuses = ds.versions || {};
@@ -503,7 +540,7 @@ const allAudioVersions = computed(() => {
         size: (versionConfig as Record<string, unknown>).size || '',
         status: ready ? 'ready' : (vst.status || 'not_downloaded'),
         ready,
-        recommended: config.recommended === true && (versionConfig as Record<string, unknown>).default === true,
+        recommended: config.recommended === true,
         commercialUseAllowed: config.commercial_use_allowed === true,
       });
     }
@@ -522,18 +559,7 @@ const filteredModelPickerVersions = computed(() => {
     installedOnly: true,
     commercialOnly: modelFilterCommercialOnly.value,
   });
-  rows.sort((a, b) => {
-    const ar = a.recommended ? 1 : 0;
-    const br = b.recommended ? 1 : 0;
-    if (ar !== br) return br - ar;
-    const an = String(a.name || '');
-    const bn = String(b.name || '');
-    try {
-      return an.localeCompare(bn, 'zh');
-    } catch {
-      return an < bn ? -1 : an > bn ? 1 : 0;
-    }
-  });
+  rows.sort(compareModelPickerRows);
   return rows;
 });
 
@@ -542,7 +568,7 @@ const lyricsRequiredForModel = computed(() =>
 );
 
 const lyricsMissing = computed(() =>
-  lyricsRequiredForModel.value && !String(params.lyrics || '').trim(),
+  audioWorkTab.value === 'create' && lyricsRequiredForModel.value && !String(params.lyrics || '').trim(),
 );
 
 const canGenerateCreate = computed(() => {
@@ -553,38 +579,26 @@ const canGenerateCreate = computed(() => {
   return true;
 });
 
-const canGenerateCover = computed(() => {
-  if (!params.model) return false;
-  if (!modelReady.value) return false;
-  if (!supportsCoverAction.value) return false;
-  if (!hasCoverSource()) return false;
-  if (lyricsMissing.value) return false;
-  return true;
+const canGenerateEdit = computed(() => {
+  if (!params.model || !modelReady.value || !supportsEditAction.value) return false;
+  if (lyricsMissing.value || !hasCoverSource()) return false;
+  const mode = audioWorkTab.value;
+  if (mode === 'create') return true;
+  return !validateAudioEditInput(mode, {
+    ...params,
+    sourceAssetId: coverSourceAssetPath.value || (coverSourceFile.value ? 'pending-upload' : ''),
+    sourceDuration: coverSourceDuration.value,
+  });
 });
 
-const supportsCoverAction = computed(() => {
-  return supportsAction(currentModelConfig.value?.actions, 'cover');
+const supportsEditAction = computed(() => {
+  return audioWorkTab.value !== 'create' && supportsAudioAction(currentModelConfig.value, audioWorkTab.value);
 });
 
 // ---- Composer adapters ----
 
 function applyAudioComposerParams(val: Record<string, unknown>) {
-  params.steps = val.steps as number;
-  params.guidance = val.guidance as number;
-  params.seed = val.seed as number | null;
-  params.negative_prompt = val.negative_prompt as string;
-  params.lyrics = val.lyrics as string;
-  params.instrumental = val.instrumental as boolean;
-  params.bpm = val.bpm as number | null;
-  params.key_scale = val.key_scale as string;
-  params.time_signature = val.time_signature as string;
-  params.vocal_language = val.vocal_language as string;
-  params.vocal_type = val.vocal_type as string;
-  params.denoise = String(val.denoise || 'off');
-  params.lm_expansion = String(val.lm_expansion || 'auto');
-  params.lora = String(val.lora || '');
-  params.lora_scale = Number(val.lora_scale) || 0.8;
-  coverParams.source_fidelity = (val.source_fidelity as number) ?? 1.0;
+  Object.assign(params, val);
 }
 
 const audioModelSelectOptions = computed(() =>
@@ -592,7 +606,7 @@ const audioModelSelectOptions = computed(() =>
 );
 
 const coverReferenceMedia = computed(() => {
-  if (audioWorkTab.value !== 'cover') return null;
+  if (audioWorkTab.value === 'create') return null;
   if (!coverSourceSrc.value) return null;
   return {
     type: 'audio',
@@ -606,14 +620,14 @@ function onAudioComposerGenerate() {
     if (audioWorkTab.value === 'create') {
       void queueAudioCreateToServer();
     } else {
-      void queueAudioCoverToServer();
+      void queueAudioEditToServer();
     }
     return;
   }
   if (audioWorkTab.value === 'create') {
     startGeneration();
   } else {
-    startCoverGeneration();
+    startEditGeneration();
   }
 }
 
@@ -681,15 +695,33 @@ function applyDefaults(modelConfig: any) {
   params.vocal_type = '';
   params.lora = '';
   params.lora_scale = 0.8;
-  if (p.supports_instrumental === false) {
-    params.instrumental = false;
-  }
+  if (p.supports_instrumental === false) params.instrumental = false;
+  params.audio_format = audioFormats.value.includes(params.audio_format) ? params.audio_format : audioFormats.value[0] || 'wav';
+  params.source_fidelity = 1.0;
+  params.cover_variant = 'cover';
+  params.cover_noise_strength = 0;
+  params.timbre_from_source = false;
+  params.region_start_sec = null;
+  params.region_end_sec = null;
+  params.repaint_injection_ratio = p.repaint_injection_ratio?.default ?? 1.0;
+  params.repaint_crossfade_frames = p.repaint_crossfade_frames?.default ?? 8;
+  params.tracks = [];
+  params.dcw_enabled = p.dcw_enabled?.default ?? 'auto';
+  params.dcw_mode = p.dcw_mode?.default ?? 'double';
+  params.dcw_scaler = p.dcw_scaler?.default ?? 0.05;
+  params.dcw_high_scaler = p.dcw_high_scaler?.default ?? 0.02;
+  params.audio_code_indices = null;
+  if (audioWorkTab.value !== 'create') params.duration = null;
 }
 
 function getAudioModeStorageKey(mode: string): StorageKey {
   const map: Record<string, StorageKey> = {
     create: DQ_STORAGE.AUDIO_MODEL_CREATE,
     cover: DQ_STORAGE.AUDIO_MODEL_COVER,
+    repaint: DQ_STORAGE.AUDIO_MODEL_REPAINT,
+    lego: DQ_STORAGE.AUDIO_MODEL_LEGO,
+    extract: DQ_STORAGE.AUDIO_MODEL_EXTRACT,
+    complete: DQ_STORAGE.AUDIO_MODEL_COMPLETE,
   };
   return map[mode] || DQ_STORAGE.AUDIO_MODEL_CREATE;
 }
@@ -728,6 +760,94 @@ const briefApply = usePromptApplyOffer();
 const lyricsApply = usePromptApplyOffer();
 const promptApplyPreview = computed(() => briefApply.pending.value?.result ?? null);
 const lyricsApplyPreview = computed(() => lyricsApply.pending.value?.result ?? null);
+
+const lmPanelOpen = ref(false);
+const lmSubmitting = ref(false);
+const lmProgress = ref(0);
+const lmError = ref('');
+const lmResult = ref<AudioLmResult | null>(null);
+
+function openLmAssistant() {
+  lmError.value = '';
+  lmPanelOpen.value = true;
+}
+
+async function runLmAssistant(payload: Record<string, unknown>) {
+  if (!params.model) {
+    toast.warning($tt('studio.pleaseSelectModel'));
+    return;
+  }
+  if (lmSubmitting.value) return;
+  lmSubmitting.value = true;
+  lmProgress.value = 0;
+  lmError.value = '';
+  lmResult.value = null;
+  try {
+    const response = await api.audios.createLm({
+      ...payload,
+      model: params.model,
+      seed: seedForSubmit(payload.seed),
+    });
+    const tid = taskIdFromSubmitResponse(response);
+    if (!tid) throw new Error($tt('studio.missingTaskId'));
+    tasksStore.registerPageOwnedStream(tid);
+    api.gen.streamMediaTask(tid, {
+      onLog: (log: unknown) => tasksStore.ingestTaskLog(tid, log),
+      onTrace: (trace: unknown) => tasksStore.ingestTaskPipelineTrace(tid, trace),
+      onProgress: (raw: unknown) => {
+        const row = raw as Record<string, unknown>;
+        const step = Number(row.step || 0);
+        const total = Number(row.total || 0);
+        lmProgress.value = total > 0 ? Math.round(step / total * 100) : Number(row.progress || 0);
+      },
+      onDone: (raw: unknown) => {
+        const row = raw as Record<string, unknown>;
+        tasksStore.unregisterPageOwnedStream(tid);
+        lmSubmitting.value = false;
+        if (row.status !== 'completed') {
+          lmError.value = String(row.error || row.error_message || $tt('audio.editFailed'));
+          return;
+        }
+        const result = (row.result || {}) as Record<string, unknown>;
+        lmResult.value = {
+          caption: String(result.caption || ''),
+          lyrics: String(result.lyrics || ''),
+          bpm: result.bpm == null ? null : Number(result.bpm),
+          duration: result.duration == null ? null : Number(result.duration),
+          keyscale: String(result.keyscale || ''),
+          timesignature: String(result.timesignature || ''),
+          language: String(result.language || ''),
+          audio_code_indices: Array.isArray(result.audio_code_indices)
+            ? result.audio_code_indices.map(Number).filter(Number.isFinite)
+            : [],
+        };
+      },
+      onError: () => {
+        tasksStore.unregisterPageOwnedStream(tid);
+        lmSubmitting.value = false;
+        lmError.value = $tt('studio.connectionLost');
+      },
+    });
+  } catch (error: unknown) {
+    lmSubmitting.value = false;
+    lmError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+function applyLmResult(result: AudioLmResult, generate: boolean) {
+  audioWorkTab.value = 'create';
+  params.prompt = result.caption;
+  params.lyrics = result.lyrics;
+  params.instrumental = !result.lyrics.trim();
+  params.bpm = result.bpm;
+  params.duration = result.duration ?? Number(currentModelConfig.value?.parameters?.duration?.default ?? 30);
+  params.key_scale = result.keyscale;
+  params.time_signature = result.timesignature;
+  params.vocal_language = result.language;
+  params.audio_code_indices = result.audio_code_indices.length ? [...result.audio_code_indices] : null;
+  params.lm_expansion = params.audio_code_indices ? 'off' : 'auto';
+  if (generate) nextTick(() => onAudioComposerGenerate());
+}
 
 async function onGenerateLyrics() {
   const prompt = String(params.prompt || '').trim();
@@ -841,6 +961,30 @@ function hasCoverSource(): boolean {
   );
 }
 
+function probeCoverSourceDuration() {
+  const src = coverSourceSrc.value;
+  const ticket = ++coverSourceProbe;
+  coverSourceDuration.value = 0;
+  if (!src) return;
+  const audio = new Audio();
+  audio.preload = 'metadata';
+  audio.onloadedmetadata = () => {
+    if (ticket === coverSourceProbe && Number.isFinite(audio.duration)) {
+      coverSourceDuration.value = audio.duration;
+    }
+    audio.src = '';
+  };
+  audio.onerror = () => { audio.src = ''; };
+  audio.src = src;
+}
+
+const composerDuration = computed({
+  get: () => audioWorkTab.value === 'create' ? Number(params.duration || 30) : Number(params.duration || 0),
+  set: (value: number | null) => {
+    params.duration = audioWorkTab.value === 'create' ? Number(value || 30) : Number(value || 0) || null;
+  },
+});
+
 function onCoverFilePicked(file: File) {
   if (coverSourceSrc.value && coverSourceSrc.value.startsWith('blob:')) {
     URL.revokeObjectURL(coverSourceSrc.value);
@@ -849,6 +993,7 @@ function onCoverFilePicked(file: File) {
   coverSourceFile.value = file;
   coverSourceName.value = file.name;
   coverSourceSrc.value = URL.createObjectURL(file);
+  probeCoverSourceDuration();
 }
 
 function clearCoverSource() {
@@ -859,6 +1004,8 @@ function clearCoverSource() {
   coverSourceAssetPath.value = '';
   coverSourceName.value = '';
   coverSourceSrc.value = '';
+  coverSourceDuration.value = 0;
+  coverSourceProbe += 1;
 }
 
 function onCanvasUseAsCoverSource(payload: { path: string; previewUrl: string; quiet?: boolean }) {
@@ -872,6 +1019,8 @@ function onCanvasUseAsCoverSource(payload: { path: string; previewUrl: string; q
   coverSourceSrc.value = payload.previewUrl || '';
   const item = galleryItems.value.find((g) => g.path === payload.path);
   coverSourceName.value = item?.title || item?.name || $tt('audio.coverSource');
+  coverSourceDuration.value = Number(item?.duration_seconds || 0);
+  if (!coverSourceDuration.value) probeCoverSourceDuration();
   audioCanvas.clearOverlay('cover_source');
   if (!payload.quiet) toast.success($tt('canvas.coverSourceBound'));
 }
@@ -1032,12 +1181,12 @@ async function queueAudioCreateToServer() {
   }
 }
 
-async function queueAudioCoverToServer() {
+async function queueAudioEditToServer() {
   if (queueSubmitting.value) return;
 
   queueSubmitting.value = true;
   try {
-    await startCoverGeneration({ queueOnly: true });
+    await startEditGeneration({ queueOnly: true });
     toast.success($tt('assistant.taskQueued'));
     tasksStore.pollQueueOnce();
   } catch (e: unknown) {
@@ -1047,12 +1196,12 @@ async function queueAudioCoverToServer() {
   }
 }
 
-function audioSubmitErrorMessage(e: unknown, kind: 'create' | 'cover'): string {
+function audioSubmitErrorMessage(e: unknown, kind: 'create' | 'edit'): string {
   const err = e as { response?: { data?: { detail?: string } }; message?: string };
   if (err?.response?.data?.detail) return String(err.response.data.detail);
   if (err?.message) return String(err.message);
-  return kind === 'cover'
-    ? $tt('studio.error', { msg: $tt('audio.coverFailed') })
+  return kind === 'edit'
+    ? $tt('studio.error', { msg: $tt('audio.editFailed') })
     : $tt('studio.genFailed', { msg: '' });
 }
 
@@ -1060,13 +1209,13 @@ type AudioGenerationOptions = {
   queueOnly?: boolean;
 };
 
-async function startCoverGeneration(options: AudioGenerationOptions = {}) {
+async function startEditGeneration(options: AudioGenerationOptions = {}) {
   const queueOnly = options.queueOnly === true;
   if (!queueOnly && generating.value) return;
   if (!params.model) { toast.warning($tt('studio.pleaseSelectModel')); return; }
   if (!modelReady.value) { toast.warning($tt('studio.modelNotReadyShort')); return; }
-  if (!supportsCoverAction.value) {
-    toast.warning($tt('audio.coverNotSupported'));
+  if (!supportsEditAction.value) {
+    toast.warning($tt('audio.modeNotSupported'));
     return;
   }
   if (!hasCoverSource()) {
@@ -1115,26 +1264,27 @@ async function startCoverGeneration(options: AudioGenerationOptions = {}) {
     if (params.lora) {
       adapters.push({ id: String(params.lora), weight: Number(params.lora_scale) || 0.8 });
     }
-    const body = {
-      model: params.model,
-      operation: 'cover',
-      task: 'cover',
-      source_asset_id,
-      adapters,
-      prompt: String(params.prompt || '').trim(),
-      source_fidelity: coverParams.source_fidelity ?? 1.0,
+    const mode = audioWorkTab.value;
+    if (mode === 'create') return;
+    const validation = validateAudioEditInput(mode, {
+      ...params,
+      sourceAssetId: source_asset_id,
+      sourceDuration: coverSourceDuration.value,
+    });
+    if (validation) {
+      const msg = $tt(`audio.invalid.${validation}`);
+      if (queueOnly) throw new Error(msg);
+      toast.warning(msg);
+      generating.value = false;
+      return;
+    }
+    const body = buildAudioEditPayload(mode, source_asset_id, {
+      ...params,
       seed: seedForSubmit(params.seed),
-      n: params.n ?? 1,
-      audio_format: params.audio_format || 'wav',
-      duration: coverParams.duration ?? null,
-      lyrics: String(params.lyrics || '').trim(),
-      vocal_language: String(params.vocal_language || '').trim(),
-      vocal_type: String(params.vocal_type || '').trim(),
-      bpm: params.bpm ?? null,
-      key_scale: String(params.key_scale || '').trim(),
-      time_signature: String(params.time_signature || '').trim(),
+      vocal_language: resolveVocalLanguageForSubmit(params.lyrics, params.vocal_language),
+      adapters,
       metadata: buildCanvasMeta(),
-    };
+    });
 
     const resp = await api.audios.createEdit(body);
     const tid = taskIdFromSubmitResponse(resp);
@@ -1150,7 +1300,7 @@ async function startCoverGeneration(options: AudioGenerationOptions = {}) {
     attachTaskStream(tid);
   } catch (e: unknown) {
     if (queueOnly) throw e;
-    toast.error(audioSubmitErrorMessage(e, 'cover'));
+    toast.error(audioSubmitErrorMessage(e, 'edit'));
     generating.value = false;
   }
 }
@@ -1201,32 +1351,14 @@ async function startGeneration(options: AudioGenerationOptions = {}) {
     if (params.lora) {
       adapters.push({ id: String(params.lora), weight: Number(params.lora_scale) || 0.8 });
     }
-    const body = {
-      model: params.model,
-      title: String(params.title || '').trim(),
-      prompt: params.prompt.trim(),
-      negative_prompt: params.negative_prompt || '',
-      duration: params.duration ?? null,
-      instrumental: !!params.instrumental,
-      lyrics: params.lyrics?.trim() || '',
-      vocal_language: resolveVocalLanguageForSubmit(
-        String(params.lyrics || '').trim(),
-        String(params.vocal_language || '').trim(),
-      ),
-      vocal_type: params.vocal_type?.trim() || '',
-      bpm: params.bpm ?? null,
-      key_scale: params.key_scale || '',
-      time_signature: params.time_signature || '',
-      steps: params.steps ?? null,
-      guidance: params.guidance ?? null,
+    const body = buildAudioGenerationPayload({
+      ...params,
       seed: seedForSubmit(params.seed),
-      n: params.n ?? 1,
-      audio_format: params.audio_format || 'wav',
-      denoise: params.denoise || 'off',
-      lm_expansion: params.lm_expansion || 'auto',
+      vocal_language: resolveVocalLanguageForSubmit(params.lyrics, params.vocal_language),
+      lm_expansion: params.audio_code_indices?.length ? 'off' : params.lm_expansion || 'auto',
       adapters,
       metadata: buildCanvasMeta(),
-    };
+    });
 
     const resp = await api.audios.createGeneration(body);
     const tid = taskIdFromSubmitResponse(resp);
@@ -1400,6 +1532,17 @@ watch(() => params.prompt, () => {
 
 // Refresh model picker when tab changes
 watch(audioWorkTab, (newMode, oldMode) => {
+  if (newMode !== oldMode) {
+    params.duration = newMode === 'create'
+      ? Number(currentModelConfig.value?.parameters?.duration?.default ?? 30)
+      : null;
+    params.tracks = [];
+    params.audio_code_indices = null;
+    if (newMode === 'repaint' || newMode === 'lego') {
+      params.region_start_sec = 0;
+      params.region_end_sec = coverSourceDuration.value || null;
+    }
+  }
   // 保存旧模式模型
   if (oldMode && selectedModelVersion.value) {
     setItem(getAudioModeStorageKey(oldMode), selectedModelVersion.value);
@@ -1541,16 +1684,48 @@ function onCanvasOverlayCleared(kind: import('@/types').CanvasOverlayKind) {
 }
 
 function fillComposerFromGalleryItem(item: GalleryItem) {
-  if (item.prompt) params.prompt = item.prompt;
-  if (item.title) params.title = item.title;
+  if (item.model) {
+    selectedModelVersion.value = item.model.replace(':', '|');
+    onModelChange(selectedModelVersion.value);
+  }
+  const meta = item.metadata || {};
+  params.prompt = item.prompt || String(meta.prompt || '');
+  params.title = item.title || String(meta.title || '');
+  params.lyrics = String(meta.lyrics_input || meta.lyrics_effective || '');
+  params.instrumental = String(meta.lyrics_effective || '').trim().toLowerCase() === '[inst]'
+    || String(meta.lyrics_effective || '').trim().toLowerCase() === '[instrumental]';
+  params.seed = meta.seed == null ? null : Number(meta.seed);
+  params.duration = item.duration_seconds ?? (meta.duration as number | null) ?? null;
+  params.steps = meta.steps == null ? params.steps : Number(meta.steps);
+  params.guidance = meta.guidance == null ? params.guidance : Number(meta.guidance);
+  params.bpm = meta.bpm == null ? null : Number(meta.bpm);
+  params.key_scale = String(meta.keyscale || meta.key_scale || '');
+  params.time_signature = String(meta.timesignature || meta.time_signature || '');
+  params.vocal_language = String(meta.language || meta.vocal_language || '');
+  params.vocal_type = String(meta.vocal_type || '');
+  params.audio_format = String(meta.audio_format || meta.format || 'wav');
+  params.denoise = String(meta.denoise || 'off');
+  params.dcw_enabled = meta.dcw_enabled == null ? 'auto' : meta.dcw_enabled ? 'on' : 'off';
+  params.dcw_mode = String(meta.dcw_mode || 'double');
+  params.dcw_scaler = Number(meta.dcw_scaler ?? 0.05);
+  params.dcw_high_scaler = Number(meta.dcw_high_scaler ?? 0.02);
+  params.source_fidelity = Number(meta.audio_cover_strength ?? meta.source_fidelity ?? 1);
+  params.cover_noise_strength = Number(meta.cover_noise_strength ?? 0);
+  params.timbre_from_source = meta.timbre_from_source === true;
+  params.cover_variant = String(meta.operation || '') === 'cover-nofsq' ? 'cover-nofsq' : 'cover';
+  params.region_start_sec = meta.region_start_sec == null ? null : Number(meta.region_start_sec);
+  params.region_end_sec = meta.region_end_sec == null ? null : Number(meta.region_end_sec);
+  params.repaint_injection_ratio = Number(meta.repaint_injection_ratio ?? 1);
+  params.repaint_crossfade_frames = Number(meta.repaint_crossfade_frames ?? 8);
+  params.tracks = parseAudioTracks(meta.track);
+  const adapters = Array.isArray(meta.adapters) ? meta.adapters : [];
+  const first = adapters[0] as Record<string, unknown> | undefined;
+  params.lora = String(first?.id || '');
+  params.lora_scale = Number(first?.weight ?? 0.8);
   persistComposerSnapshot();
 }
 
-const composerDrawerTitle = computed(() =>
-  audioWorkTab.value === 'cover'
-    ? $tt('action.audio.cover')
-    : $tt('action.audio.create'),
-);
+const composerDrawerTitle = computed(() => $tt(`action.audio.${audioWorkTab.value}`));
 
 function openGenerationComposer() {
   if (audioWorkTab.value === 'cover') {
@@ -1559,12 +1734,14 @@ function openGenerationComposer() {
   openComposerDrawer();
 }
 
-function onCanvasOpenComposer(payload?: { intent?: 'generate' | 'edit' | 'cover' }) {
-  if (canvasSelectedItem.value) {
-    fillComposerFromGalleryItem(canvasSelectedItem.value);
+function onCanvasOpenComposer(payload?: { intent?: 'generate' | 'edit' | AudioWorkMode }) {
+  if (canvasSelectedItem.value) fillComposerFromGalleryItem(canvasSelectedItem.value);
+  if (payload?.intent && isAudioWorkMode(payload.intent) && payload.intent !== 'create') {
+    audioWorkTab.value = payload.intent;
+    openComposerDrawer();
+    return;
   }
-  // Toolbar「重新演绎」— cover-only drawer (no create tab).
-  if (payload?.intent === 'cover' || (audioWorkTab.value === 'cover' && payload?.intent !== 'generate')) {
+  if (payload?.intent === 'edit') {
     audioWorkTab.value = 'cover';
     openComposerDrawer();
     return;
@@ -1599,6 +1776,7 @@ function persistComposerSnapshot() {
     lm_expansion: params.lm_expansion || 'auto',
     mode: audioWorkTab.value,
     cover_source_path: coverSourceAssetPath.value || undefined,
+    audio_params: JSON.stringify(params),
   });
 }
 
@@ -1612,8 +1790,13 @@ function onCanvasComposerRestore(snapshot: {
   lm_expansion?: string;
   mode?: string;
   cover_source_path?: string;
+  audio_params?: string;
 }) {
   if (!snapshot || typeof snapshot !== 'object') return;
+  if (snapshot.model) {
+    selectedModelVersion.value = snapshot.model.replace(':', '|');
+    onModelChange(selectedModelVersion.value);
+  }
   if (snapshot.prompt != null) params.prompt = snapshot.prompt;
   if (snapshot.title != null) params.title = snapshot.title;
   if (snapshot.negative_prompt != null) params.negative_prompt = snapshot.negative_prompt;
@@ -1630,6 +1813,14 @@ function onCanvasComposerRestore(snapshot: {
   if (snapshot.mode === 'create' || snapshot.mode === 'cover') {
     audioWorkTab.value = snapshot.mode;
   }
+  if (snapshot.audio_params) {
+    try {
+      const restored = JSON.parse(snapshot.audio_params);
+      if (restored && typeof restored === 'object') Object.assign(params, restored);
+    } catch {
+      // Invalid legacy snapshots keep the scalar fields restored above.
+    }
+  }
   if (snapshot.cover_source_path) {
     const item = galleryItems.value.find((g) => g.path === snapshot.cover_source_path);
     coverSourceAssetPath.value = snapshot.cover_source_path;
@@ -1637,6 +1828,8 @@ function onCanvasComposerRestore(snapshot: {
       ? previewUrlForGalleryItem(item)
       : `/api/assets/${snapshot.cover_source_path.slice('asset:'.length)}/file`;
     coverSourceName.value = item?.title || item?.name || $tt('audio.coverSource');
+    coverSourceDuration.value = Number(item?.duration_seconds || 0);
+    if (!coverSourceDuration.value) probeCoverSourceDuration();
     coverSourceFile.value = null;
   }
   if (viewMode.value === 'canvas') {
@@ -1655,11 +1848,13 @@ function buildCanvasMeta(extra: Record<string, unknown> = {}): Record<string, un
   const meta: Record<string, unknown> = { ...extra };
   const sid = audioCanvas.sessionId.value;
   if (sid) meta.canvas_session_id = sid;
-  const parentPath =
-    canvasSelectedItem.value?.path || audioCanvas.activeAssetPath.value || '';
+  // Pure create has no source track — never inherit canvas selection as parent.
+  const mode = audioWorkTab.value;
+  if (mode === 'create') return meta;
+  const parentPath = coverSourceAssetPath.value || '';
   if (parentPath.startsWith('asset:')) {
     meta.parent_asset_id = parentPath.slice('asset:'.length);
-    meta.relation_type = audioWorkTab.value === 'cover' ? 'cover' : 'create';
+    meta.relation_type = mode;
   }
   return meta;
 }
@@ -1869,13 +2064,13 @@ const durationOptions = computed(() => {
     opts.push({ label: `${ddef}s`, value: ddef });
   }
   opts.sort((a, b) => a.value - b.value);
+  if (audioWorkTab.value !== 'create') {
+    opts.unshift({ label: $tt('audio.durationFollowSource'), value: 0 });
+  }
   return opts;
 });
 
-const generateLabel = computed(() => {
-  if (audioWorkTab.value === 'cover') return $tt('audio.coverGenerate');
-  return $tt('audio.generate');
-});
+const generateLabel = computed(() => $tt(`audio.generateMode.${audioWorkTab.value}`));
 
 async function loadPresets() {
   try {

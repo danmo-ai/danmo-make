@@ -99,6 +99,11 @@ impl MlxWeights {
         self.tensors.contains_key(name)
     }
 
+    pub fn retain(mut self, mut keep: impl FnMut(&str) -> bool) -> Self {
+        self.tensors.retain(|name, _| keep(name));
+        self
+    }
+
     /// Replace/insert one linear entry (test construction of mixed
     /// dense/packed weight sets).
     #[cfg(test)]
@@ -618,11 +623,7 @@ pub fn probe_affine_quantization(path: &Path) -> Result<Option<AffineQuantizatio
     let io = Stream::cpu()?;
     let tensors = SafeTensors::load(path, &io)?;
     let names = tensors.names()?;
-    let Some(scales_name) = names
-        .iter()
-        .find(|name| name.ends_with(".scales"))
-        .cloned()
-    else {
+    let Some(scales_name) = names.iter().find(|name| name.ends_with(".scales")).cloned() else {
         return Ok(None);
     };
     let base = scales_name.trim_end_matches(".scales").to_string();
@@ -672,8 +673,25 @@ pub fn read_component(
     path: &Path,
     stream: &Stream,
 ) -> Result<(BTreeMap<String, Array>, Option<String>)> {
+    let (weights, meta) = read_component_meta(path, stream, &["config"])?;
+    Ok((weights, meta.get("config").cloned()))
+}
+
+/// Like [`read_component`], but also returns the named metadata keys that are
+/// present. Families that need non-`config` headers (e.g. `gemma_config`) use
+/// this instead of opening `SafeTensors` themselves.
+pub fn read_component_meta(
+    path: &Path,
+    stream: &Stream,
+    keys: &[&str],
+) -> Result<(BTreeMap<String, Array>, BTreeMap<String, String>)> {
     let tensors = SafeTensors::load(path, stream)?;
-    let config = tensors.metadata("config")?;
+    let mut meta = BTreeMap::new();
+    for key in keys {
+        if let Some(value) = tensors.metadata(key)? {
+            meta.insert((*key).to_string(), value);
+        }
+    }
     let mut weights = BTreeMap::new();
     for name in tensors.names()? {
         let tensor = tensors.get(&name)?.ok_or_else(|| {
@@ -684,7 +702,7 @@ pub fn read_component(
         })?;
         weights.insert(name, tensor);
     }
-    Ok((weights, config))
+    Ok((weights, meta))
 }
 
 /// Affine-pack one dense matrix for a converted bundle. The returned triple
@@ -700,8 +718,8 @@ pub fn pack_affine(
 
 #[cfg(test)]
 mod tests {
-    use super::{WeightDtype, load_directory};
-    use danmo_mlx::{AffineQuantization, Array, Dtype, LinearWeight, Stream, save_safetensors};
+    use super::{load_directory, WeightDtype};
+    use danmo_mlx::{save_safetensors, AffineQuantization, Array, Dtype, LinearWeight, Stream};
     use std::path::PathBuf;
 
     struct Scratch(PathBuf);
@@ -873,22 +891,18 @@ mod tests {
     fn registry_and_metadata_conflicts_fail_loud() {
         let scratch = Scratch::new();
         write_bundle(&scratch.0, 4, Some("4"));
-        assert!(
-            load_directory(
-                &scratch.0,
-                WeightDtype::Native,
-                Some(AffineQuantization::new(8, 32).unwrap())
-            )
-            .is_err()
-        );
-        assert!(
-            load_directory(
-                &scratch.0,
-                WeightDtype::Native,
-                Some(AffineQuantization::new(4, 128).unwrap())
-            )
-            .is_err()
-        );
+        assert!(load_directory(
+            &scratch.0,
+            WeightDtype::Native,
+            Some(AffineQuantization::new(8, 32).unwrap())
+        )
+        .is_err());
+        assert!(load_directory(
+            &scratch.0,
+            WeightDtype::Native,
+            Some(AffineQuantization::new(4, 128).unwrap())
+        )
+        .is_err());
     }
 
     #[test]

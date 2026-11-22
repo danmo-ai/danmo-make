@@ -98,6 +98,17 @@ impl FacadeFamily for EsrganUpscaleFamily {
                         .and_then(|height| width.checked_mul(height))
                 })
                 .ok_or_else(|| EngineError::bad_request("esrgan output dimensions overflow u32"))?;
+            exec.annotate(&[
+                ("danmo.generation.source_width", source_w.to_string()),
+                ("danmo.generation.source_height", source_h.to_string()),
+                ("danmo.generation.width", (source_w * scale).to_string()),
+                ("danmo.generation.height", (source_h * scale).to_string()),
+                ("danmo.generation.scale", scale.to_string()),
+                ("danmo.generation.tile_size", tile_size.to_string()),
+                ("danmo.upscale.network_scale", NET_SCALE.to_string()),
+                ("danmo.upscale.pre_pad", PRE_PAD.to_string()),
+                ("danmo.upscale.tile_pad", TILE_PAD.to_string()),
+            ])?;
             exec.log(
                 "info",
                 &format!(
@@ -160,7 +171,22 @@ fn infer_mlx_on_stream(
     stream: &danmo_mlx::Stream,
 ) -> Result<EngineOutput, EngineError> {
     exec.check_cancelled()?;
+    exec.phase("load")?;
+    let weight_file = "model.safetensors";
+    let weight_path = run.bundle.join(weight_file);
+    let weight_bytes = std::fs::metadata(&weight_path)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    exec.annotate(&[
+        ("danmo.weight.files", weight_file.into()),
+        ("danmo.weight.bytes", weight_bytes.to_string()),
+        ("danmo.weight.dtype", "native".into()),
+    ])?;
     let model = mlx::RrdbNet::load(&run.bundle)?;
+    exec.log(
+        "info",
+        &format!("esrgan RRDBNet weights loaded file={weight_file} bytes={weight_bytes}"),
+    )?;
     let (source_w, source_h) = (prepared.source.0 as usize, prepared.source.1 as usize);
     let expected = source_w
         .checked_mul(source_h)
@@ -172,6 +198,7 @@ fn infer_mlx_on_stream(
             prepared.rgb.len()
         )));
     }
+    exec.phase("preprocess")?;
     let normalized: Vec<f32> = prepared
         .rgb
         .iter()
@@ -184,6 +211,12 @@ fn infer_mlx_on_stream(
     } else {
         padded_w.div_ceil(prepared.tile_size) * padded_h.div_ceil(prepared.tile_size)
     };
+    exec.annotate(&[("danmo.upscale.tiles", tiles.to_string())])?;
+    exec.log(
+        "info",
+        &format!("esrgan_upscale tiles={tiles} padded={padded_w}x{padded_h}"),
+    )?;
+    exec.phase("upscale")?;
     let upscaled = upscale_tiles(
         &model,
         &padded,
@@ -193,6 +226,7 @@ fn infer_mlx_on_stream(
         exec,
         stream,
     )?;
+    exec.phase("postprocess")?;
     let native_w = source_w * NET_SCALE;
     let native_h = source_h * NET_SCALE;
     let native = crop_nhwc(&upscaled, padded_w * NET_SCALE, 0, 0, native_w, native_h)?;
@@ -213,6 +247,10 @@ fn infer_mlx_on_stream(
             out_h as u32,
         )?
     };
+    exec.log(
+        "info",
+        &format!("esrgan_upscale finished out={out_w}x{out_h}"),
+    )?;
     let metadata = json!({
         "model": prepared.request.model,
         "source_asset_id": prepared.request.source_asset_id,

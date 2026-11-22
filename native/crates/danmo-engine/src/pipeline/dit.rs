@@ -42,7 +42,7 @@ pub fn run(
         exec.phase("load")?;
         let mut session = family.load(run, &one, loras, resolver)?;
         exec.phase("encode")?;
-        session.encode(ctx)?;
+        session.encode(ctx, exec)?;
         exec.phase("schedule")?;
         session.schedule()?;
         exec.phase("infer")?;
@@ -61,6 +61,11 @@ pub fn run(
             "batch_count": count,
         });
         apply_request_run_meta(&mut metadata, &one);
+        if let Some(values) = decoded.metadata.as_object() {
+            for (key, value) in values {
+                metadata[key] = value.clone();
+            }
+        }
         let mut artifact = Artifact::png(
             decoded.preview_png,
             width as i64,
@@ -92,6 +97,9 @@ fn apply_request_run_meta(metadata: &mut serde_json::Value, request: &ImageGener
     }
     if request.scheduler_shift.is_some() {
         metadata["scheduler_shift"] = json!(request.scheduler_shift);
+    }
+    if let Some(use_pe) = request.use_pe {
+        metadata["use_pe"] = json!(use_pe);
     }
     let negative = request.negative_prompt.trim();
     if !negative.is_empty() {
@@ -191,6 +199,7 @@ mod tests {
             scheduler: None,
             scheduler_shift: None,
             use_empirical_mu: false,
+            use_pe: None,
             adapters: Vec::new(),
             structural_guide: None,
             metadata: json!({}),

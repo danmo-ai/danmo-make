@@ -32,7 +32,7 @@ impl LyricsAlignment {
                 "label": s.label,
                 "start_sec": (s.start_sec * 100.0).round() / 100.0,
                 "end_sec": (s.end_sec * 100.0).round() / 100.0,
-                "text": truncate(&s.text, 200),
+                "text": s.text,
             })).collect::<Vec<_>>(),
         })
     }
@@ -53,7 +53,7 @@ pub fn normalize_lyrics_body(text: &str) -> String {
     if let Some(stripped) = t.strip_suffix("<|endoftext|>") {
         t = stripped.trim_end().to_string();
     }
-    t.trim().to_string()
+    strip_lrc_timing(&t).trim().to_string()
 }
 
 /// True when lyrics request no vocals (main `is_instrumental_lyrics`).
@@ -210,7 +210,11 @@ pub fn prepare_create_lyrics<'a>(
         Cow::Owned(body)
     };
     let instrumental = instrumental || is_instrumental_lyrics(effective.as_ref());
-    let alignment = estimate_lyrics_alignment(effective.as_ref(), duration_sec, instrumental);
+    let alignment = parse_lrc_alignment(lyrics, duration_sec)
+        .filter(|alignment| !alignment.segments.is_empty())
+        .unwrap_or_else(|| {
+            estimate_lyrics_alignment(effective.as_ref(), duration_sec, instrumental)
+        });
     let lyrics_txt = lyrics_txt_sidecar(effective.as_ref());
     let lrc = format_lrc(&alignment);
     Ok((effective, alignment, lyrics_txt, lrc))
@@ -224,12 +228,86 @@ fn section_header(line: &str) -> Option<String> {
     Some(t[1..t.len() - 1].trim().to_string())
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        s.chars().take(max).collect()
+fn lrc_stamp_seconds(tag: &str) -> Option<f32> {
+    let (minutes, seconds) = tag.trim().split_once(':')?;
+    if minutes.is_empty() || !minutes.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
     }
+    let minutes = minutes.parse::<f32>().ok()?;
+    let seconds = seconds.parse::<f32>().ok()?;
+    (seconds >= 0.0 && seconds < 60.0).then_some(minutes * 60.0 + seconds)
+}
+
+fn strip_lrc_timing(text: &str) -> String {
+    let mut output = Vec::new();
+    for raw in text.split('\n') {
+        let line = raw.trim_end_matches('\r');
+        let mut rest = line.trim_start();
+        let mut stamped = false;
+        while let Some(tail) = rest.strip_prefix('[') {
+            let Some(end) = tail.find(']') else {
+                break;
+            };
+            if lrc_stamp_seconds(&tail[..end]).is_none() {
+                break;
+            }
+            stamped = true;
+            rest = tail[end + 1..].trim_start();
+        }
+        if stamped {
+            if !rest.trim().is_empty() {
+                output.push(rest.trim().to_string());
+            }
+        } else if !(line.trim().starts_with('[')
+            && line.trim().ends_with(']')
+            && line.contains(':'))
+        {
+            output.push(line.to_string());
+        }
+    }
+    output.join("\n")
+}
+
+fn parse_lrc_alignment(text: &str, duration_sec: f32) -> Option<LyricsAlignment> {
+    let mut segments = Vec::new();
+    for raw in text.split('\n') {
+        let mut rest = raw.trim();
+        let mut starts = Vec::new();
+        while let Some(tail) = rest.strip_prefix('[') {
+            let end = tail.find(']')?;
+            let Some(start) = lrc_stamp_seconds(&tail[..end]) else {
+                break;
+            };
+            starts.push(start);
+            rest = tail[end + 1..].trim_start();
+        }
+        let body = normalize_lyrics_body(rest);
+        if body.is_empty() {
+            continue;
+        }
+        for start in starts {
+            segments.push(LyricsSegment {
+                label: "body".into(),
+                start_sec: start,
+                end_sec: duration_sec.max(start),
+                text: body.clone(),
+            });
+        }
+    }
+    if segments.is_empty() {
+        return None;
+    }
+    segments.sort_by(|left, right| left.start_sec.total_cmp(&right.start_sec));
+    for index in 0..segments.len() {
+        let next = segments.get(index + 1).map(|segment| segment.start_sec);
+        if let Some(next) = next {
+            segments[index].end_sec = next;
+        }
+    }
+    Some(LyricsAlignment {
+        mode: "lrc_input".into(),
+        segments,
+    })
 }
 
 #[cfg(test)]
@@ -257,6 +335,20 @@ mod tests {
         let lrc = format_lrc(&align).unwrap();
         assert!(lrc.starts_with("[00:00.00]line one\n"));
         assert!(lrc.contains("line three"));
+    }
+
+    #[test]
+    fn lrc_input_becomes_plain_conditioning_and_a_real_timeline() {
+        let raw = "[ti:Demo]\n[00:01.50][00:04.00]hello\n[00:07.25]world\n";
+        assert_eq!(normalize_lyrics_body(raw), "hello\nworld");
+        let (effective, alignment, _, lrc) = prepare_create_lyrics(raw, 10.0).unwrap();
+        assert_eq!(effective, "hello\nworld");
+        assert_eq!(alignment.mode, "lrc_input");
+        assert_eq!(alignment.segments.len(), 3);
+        assert_eq!(alignment.segments[0].start_sec, 1.5);
+        assert_eq!(alignment.segments[1].start_sec, 4.0);
+        assert_eq!(alignment.segments[2].end_sec, 10.0);
+        assert!(lrc.unwrap().starts_with("[00:01.50]hello"));
     }
 
     #[test]

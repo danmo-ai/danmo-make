@@ -34,7 +34,7 @@ use std::path::Path;
 
 use weights::{weight_layout, ZImageConfig};
 
-fn schedule(
+pub(crate) fn schedule(
     config: weights::ZImageConfig,
     steps: u32,
     width: u32,
@@ -374,6 +374,7 @@ mod tests {
             scheduler: None,
             scheduler_shift: None,
             use_empirical_mu: false,
+            use_pe: None,
             adapters: Vec::new(),
             structural_guide: None,
             metadata: serde_json::json!({}),

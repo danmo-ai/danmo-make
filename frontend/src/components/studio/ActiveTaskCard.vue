@@ -97,6 +97,8 @@ const taskPrompt = computed(() => {
 
 async function pollPreview() {
   if (!props.task.id || props.media !== 'image') return;
+  // Skip decode work while the tab/window is hidden (GPU already busy with MLX).
+  if (typeof document !== 'undefined' && document.hidden) return;
   const url = `${api.tasks.previewUrl(props.task.id)}?t=${Date.now()}`;
   try {
     const res = await fetch(url, { method: 'GET', cache: 'no-store' });
@@ -117,7 +119,7 @@ function startPolling() {
   stopPolling();
   if (props.media !== 'image') return;
   pollPreview();
-  previewTimer = setInterval(pollPreview, 1500);
+  previewTimer = setInterval(pollPreview, 2500);
 }
 
 function stopPolling() {

@@ -1,8 +1,10 @@
+mod adapter;
 #[cfg(test)]
 mod architecture;
-mod adapter;
 mod common;
 mod contract;
+#[cfg(feature = "mlx")]
+mod derive;
 mod engine;
 mod error;
 mod families;
@@ -14,6 +16,8 @@ mod session;
 pub mod train;
 mod weights;
 
+#[cfg(feature = "mlx")]
+pub use derive::{derived_layout, find_recipe, run_derive, write_derived_manifest};
 #[cfg(feature = "mlx")]
 pub use families::run_family_lora_training;
 
@@ -29,9 +33,8 @@ pub use contract::{
 pub use engine::Engine;
 pub use error::EngineError;
 pub use families::{
-    all_specs, run_install_hook, spec, write_seedvr2_smoke_bundle,
-    write_wan_smoke_bundle, write_z_image_control_smoke_bundle, write_z_image_edit_smoke_bundle,
-    FamilySpec, Media, Shape,
+    all_specs, run_install_hook, spec, write_seedvr2_smoke_bundle, write_wan_smoke_bundle,
+    write_z_image_control_smoke_bundle, write_z_image_edit_smoke_bundle, FamilySpec, Media, Shape,
 };
 #[cfg(test)]
 pub use pipeline::legacy::{
@@ -46,6 +49,8 @@ pub use weights::{
     is_safetensors_bundle, is_safetensors_image_bundle, is_seedvr2_safetensors_bundle,
     lora_base_name, write_f32_gguf, GgufWeights, WeightError,
 };
+#[cfg(feature = "mlx")]
+pub use weights::{load_recipe, verify_quantized_bundle, QuantRecipe, QuantizeReport};
 
 #[cfg(test)]
 mod tests {
@@ -68,6 +73,7 @@ mod tests {
             scheduler: None,
             scheduler_shift: None,
             use_empirical_mu: false,
+            use_pe: None,
             adapters: Vec::new(),
             structural_guide: None,
             metadata: serde_json::json!({}),
@@ -169,7 +175,7 @@ mod tests {
 
         // Product MLX path names are valid; GGUF assert fails for layout, not
         // because the directory looks "legacy".
-        let mlx = dir.join("flux2-klein-4b-mlx-q4");
+        let mlx = dir.join("flux2-klein-4b-q4-mixed");
         std::fs::create_dir_all(mlx.join("transformer")).unwrap();
         std::fs::create_dir_all(mlx.join("text_encoder")).unwrap();
         std::fs::create_dir_all(mlx.join("vae")).unwrap();
@@ -256,7 +262,7 @@ mod tests {
         assert!(err.to_string().contains("directory is missing"), "{err}");
         assert!(spec("minimax_h3").unwrap().shape == Shape::GenerationFacade);
         assert!(spec("wan").unwrap().shape == Shape::GenerationFacade);
-        assert_eq!(all_specs().len(), 23);
+        assert_eq!(all_specs().len(), 15);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -63,10 +63,7 @@ pub fn discrete_training_weight(schedule: &FlowMatchTrainSchedule, index: usize)
 }
 
 /// Uniform index into the discrete training grid; returns (sigma, weight, index).
-pub fn sample_discrete_sigma(
-    schedule: &FlowMatchTrainSchedule,
-    rng_u: f32,
-) -> (f32, f32, usize) {
+pub fn sample_discrete_sigma(schedule: &FlowMatchTrainSchedule, rng_u: f32) -> (f32, f32, usize) {
     let n = schedule.sigmas.len().max(1);
     let index = ((rng_u.clamp(0.0, 0.9999)) * n as f32) as usize;
     let index = index.min(n - 1);

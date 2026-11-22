@@ -44,8 +44,8 @@ assert(nearPick === '704x1280', `720x1280 source expected closest 704x1280, got 
 
 assert(referenceImageSlotCap({ strength: { type: 'float', default: 0.4 } }) === 1, 'single slot without multi flag');
 assert(extraReferenceSlotCap({ edit_plus_multi_image: true, edit_max_reference_images: 3 }) === 2, 'qwen extra slots');
-assert(referenceImageSlotCap({ reference_images_support: true, max_reference_images: 3 }) === 3, 'hidream slot cap');
-assert(extraReferenceSlotCap({ edit_max_reference_images: 1 }) === 0, 'boogu stays on the primary image');
+assert(referenceImageSlotCap({ reference_images_support: true, max_reference_images: 3 }) === 3, 'explicit slot cap');
+assert(extraReferenceSlotCap({ edit_max_reference_images: 1 }) === 0, 'edit path stays on the primary image');
 
 const klein = {
   scheduler: {

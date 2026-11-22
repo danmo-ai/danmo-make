@@ -257,6 +257,22 @@ impl TaskStore {
         Ok(n)
     }
 
+    /// Delete a finished task and its log lines. Refuses queued/running rows so
+    /// the worker cannot write into a row that no longer exists.
+    pub fn purge_task(&self, id: &str) -> Result<&'static str, StoreError> {
+        let Some(row) = self.get(id)? else {
+            return Ok("missing");
+        };
+        if row.status == "queued" || row.status == "running" {
+            return Ok("active");
+        }
+        self.conn
+            .execute("DELETE FROM task_logs WHERE task_id=?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM tasks WHERE id=?1", params![id])?;
+        Ok("ok")
+    }
+
     pub fn log(&self, task_id: &str, level: &str, message: &str) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT INTO task_logs (task_id, ts, level, message) VALUES (?1, datetime('now'), ?2, ?3)",
@@ -280,6 +296,27 @@ impl TaskStore {
         })?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
+    }
+
+    /// Newest-first window for live SSE (oldest-first `logs` stalls once a task exceeds the page).
+    pub fn recent_logs(&self, task_id: &str, limit: i64) -> Result<Vec<LogRow>, StoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, message, level, ts FROM task_logs
+             WHERE task_id=?1 ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![task_id, limit], |row| {
+            Ok(LogRow {
+                id: row.get(0)?,
+                message: row.get(1)?,
+                level: row.get(2)?,
+                time: row.get(3)?,
+            })
+        })?;
+        let mut out = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)?;
+        out.reverse();
+        Ok(out)
     }
 
     pub fn get(&self, id: &str) -> Result<Option<TaskRow>, StoreError> {
@@ -368,6 +405,14 @@ impl TaskStore {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn update_asset_metadata(&self, id: &str, metadata: &str) -> Result<bool, StoreError> {
+        let updated = self.conn.execute(
+            "UPDATE assets SET metadata=?1 WHERE id=?2",
+            params![metadata, id],
+        )?;
+        Ok(updated > 0)
     }
 
     pub fn get_asset(&self, id: &str) -> Result<Option<AssetRow>, StoreError> {
@@ -652,6 +697,34 @@ mod tests {
         let row = store.get("tsk_run").expect("get").expect("row");
         assert_eq!(row.status, "completed");
         assert!(row.error_message.is_none());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn purge_removes_finished_task_and_logs_only() {
+        let (path, store) = temp_store("purge");
+        store
+            .insert_task("tsk_done", "image.generation", "z-image-turbo", "{}", 100)
+            .expect("insert");
+        store
+            .finish("tsk_done", "completed", 1.0, Some("{}"), None)
+            .expect("finish");
+        store
+            .log("tsk_done", "info", "[metal] phase load")
+            .expect("log");
+        assert_eq!(store.logs("tsk_done", 0, 10).expect("logs").len(), 1);
+
+        assert_eq!(store.purge_task("tsk_done").expect("purge"), "ok");
+        assert!(store.get("tsk_done").expect("get").is_none());
+        assert!(store.logs("tsk_done", 0, 10).expect("logs").is_empty());
+        assert_eq!(store.purge_task("tsk_missing").expect("purge"), "missing");
+
+        // Active tasks must be cancelled first, not deleted under a live worker.
+        store
+            .insert_task("tsk_live", "image.generation", "z-image-turbo", "{}", 100)
+            .expect("insert");
+        assert_eq!(store.purge_task("tsk_live").expect("purge"), "active");
+        assert!(store.get("tsk_live").expect("get").is_some());
         let _ = std::fs::remove_file(path);
     }
 }

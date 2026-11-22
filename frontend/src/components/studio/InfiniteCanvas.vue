@@ -140,6 +140,7 @@
       @select="onShelfSelect"
       @preview="onShelfPreview"
       @promote="onShelfPromote"
+      @focus="onFocusNode"
     />
   </div>
 </template>
@@ -226,7 +227,7 @@ const emit = defineEmits<{
   (e: 'open-preview', item: GalleryItem): void;
   (e: 'composer-restore', snapshot: import('@/types').CanvasComposerSnapshot): void;
   (e: 'overlay-cleared', kind: CanvasOverlayKind): void;
-  (e: 'open-composer', payload?: { intent?: 'generate' | 'edit' | 'cover' }): void;
+  (e: 'open-composer', payload?: { intent?: 'generate' | 'edit' | 'cover' | 'repaint' | 'lego' | 'extract' | 'complete' }): void;
   (e: 'request-close-composer'): void;
 }>();
 
@@ -660,6 +661,18 @@ function onToolbarAction(action: string) {
         emit('open-composer', { intent: 'cover' });
       }
       break;
+    case 'quick-audio-edit':
+    case 'audio-cover':
+    case 'audio-repaint':
+    case 'audio-lego':
+    case 'audio-extract':
+    case 'audio-complete': {
+      const payload = bindPayload(path, item);
+      emit('use-as-cover-source', { ...payload, quiet: true });
+      const intent = action === 'quick-audio-edit' ? 'cover' : action.slice('audio-'.length);
+      emit('open-composer', { intent: intent as 'cover' | 'repaint' | 'lego' | 'extract' | 'complete' });
+      break;
+    }
     case 'use-cover-source': {
       const payload = bindPayload(path, item);
       emit('use-as-cover-source', payload);

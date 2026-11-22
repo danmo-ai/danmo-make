@@ -51,7 +51,7 @@
         :class="['video-composer__prompt', { 'video-composer__prompt--ref-hint': showH3Ref2VA && h3RefHint }]"
         @keydown="onKeydown"
       />
-      <!-- Reference media inside textarea: start/tail/source video + Bernini refs -->
+      <!-- Reference media inside textarea: start/tail/source video + Ref2VA -->
       <div v-if="showRefArea" class="video-composer__ref-area">
         <div v-if="needsReferenceInput" class="video-composer__ref-slot">
           <div v-if="referenceMedia" class="video-composer__ref-pill">
@@ -133,43 +133,6 @@
             </DqIconButton>
           </ComposerIconTip>
         </div>
-        <template v-if="showBerniniReferences">
-          <div
-            v-for="(ref, idx) in extraReferenceMedia"
-            :key="ref.path"
-            class="video-composer__ref-slot"
-          >
-            <div class="video-composer__ref-pill">
-              <ComposerIconTip :content="$t('create.refImgPreview')">
-                <img :src="ref.previewUrl" alt="" class="video-composer__ref-thumb" />
-              </ComposerIconTip>
-              <ComposerIconTip :content="$t('create.composerTip.removeRef')">
-                <DqIconButton
-                  type="text"
-                  size="sm"
-                  :aria-label="$tt('common.delete')"
-                  @click="$emit('remove-extra-reference', idx)"
-                >
-                  <DqIcon :size="10"><Close /></DqIcon>
-                </DqIconButton>
-              </ComposerIconTip>
-            </div>
-          </div>
-          <ComposerIconTip
-            v-if="extraReferenceMedia.length < berniniRefMax"
-            :content="$t('create.refImgPreview')"
-          >
-            <DqIconButton
-              type="text"
-              size="sm"
-              class="video-composer__ref-add"
-              :aria-label="$t('create.refImage')"
-              @click="$emit('pick-extra-reference')"
-            >
-              <DqIcon :size="14"><Picture /></DqIcon>
-            </DqIconButton>
-          </ComposerIconTip>
-        </template>
         <template v-if="showH3Ref2VA">
           <div
             v-for="(ref, idx) in h3MediaRefs"
@@ -598,10 +561,6 @@ import {
   loraOptionLabel,
   type CompatibleLoraRow,
 } from '@/utils/loraAdapterMeta';
-import {
-  supportsBerniniReferenceImages,
-} from '@/utils/videoEditSource';
-
 const props = defineProps<{
   modelValue: string;
   title: string;
@@ -645,9 +604,6 @@ const props = defineProps<{
   enhancing?: boolean;
   reversing?: boolean;
   tailReferenceMedia?: { type: 'image'; previewUrl: string; label: string } | null;
-  extraReferenceMedia?: Array<{ previewUrl: string; path: string; label?: string }>;
-  showBerniniReferences?: boolean;
-  berniniRefMax?: number;
   showH3Ref2VA?: boolean;
   h3MediaRefs?: Array<{ kind: 'image' | 'video' | 'audio'; path: string; previewUrl: string }>;
   h3RefMax?: number;
@@ -676,8 +632,6 @@ const emit = defineEmits<{
   (e: 'remove-reference'): void;
   (e: 'pick-tail-reference'): void;
   (e: 'remove-tail-reference'): void;
-  (e: 'pick-extra-reference'): void;
-  (e: 'remove-extra-reference', index: number): void;
   (e: 'pick-h3-reference', kind: 'image' | 'video' | 'audio'): void;
   (e: 'remove-h3-reference', index: number): void;
   (e: 'model-change', value: string): void;
@@ -773,10 +727,6 @@ const needsReferenceInput = computed(
   () => props.workMode === 'animate' || props.workMode === 'edit',
 );
 
-const showBerniniReferences = computed(
-  () => Boolean(props.showBerniniReferences) && supportsBerniniReferenceImages(paramSchema.value),
-);
-
 const showH3Ref2VA = computed(() => Boolean(props.showH3Ref2VA) && props.workMode === 'ref2va');
 
 const h3MediaRefs = computed(() => props.h3MediaRefs || []);
@@ -792,7 +742,7 @@ function h3RefAllows(kind: 'image' | 'video' | 'audio'): boolean {
 }
 
 const showRefArea = computed(
-  () => needsReferenceInput.value || showBerniniReferences.value || showH3Ref2VA.value,
+  () => needsReferenceInput.value || showH3Ref2VA.value,
 );
 
 function h3RefKindLabel(kind: string): string {
@@ -800,12 +750,6 @@ function h3RefKindLabel(kind: string): string {
   if (kind === 'audio') return $tt('create.h3RefKindAudio');
   return $tt('create.h3RefKindImage');
 }
-
-const extraReferenceMedia = computed(
-  () => props.extraReferenceMedia || [],
-);
-
-const berniniRefMax = computed(() => props.berniniRefMax ?? 5);
 
 const paramSchema = computed(() =>
   normalizeParamsDef(props.currentModelConfig?.parameters as Record<string, unknown> | undefined),

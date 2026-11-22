@@ -107,7 +107,10 @@ impl Umt5Encoder {
                 ),
             ));
         }
-        let bias_table = self.weights.tensor("blocks.0.pos_embedding.embedding.weight")?.shape();
+        let bias_table = self
+            .weights
+            .tensor("blocks.0.pos_embedding.embedding.weight")?
+            .shape();
         if bias_table != [self.config.buckets as i32, self.config.heads as i32] {
             return Err(Error::new(
                 "umT5 topology",
@@ -153,7 +156,10 @@ impl Umt5Encoder {
         if valid < TEXT_LEN {
             let pad = Array::from_f32_slice(&[0.0], &[])?
                 .astype(hidden.dtype(), stream)?
-                .broadcast_to(&[1, (TEXT_LEN - valid) as i32, self.config.dim as i32], stream)?;
+                .broadcast_to(
+                    &[1, (TEXT_LEN - valid) as i32, self.config.dim as i32],
+                    stream,
+                )?;
             hidden = Array::concatenate_axis(&[hidden, pad], 1, stream)?;
         }
         let sequence = TEXT_LEN as i32;
@@ -198,7 +204,13 @@ impl Umt5Encoder {
         weight.apply(input, None, stream)
     }
 
-    fn attention(&self, prefix: &str, input: &Array, valid: usize, stream: &Stream) -> Result<Array> {
+    fn attention(
+        &self,
+        prefix: &str,
+        input: &Array,
+        valid: usize,
+        stream: &Stream,
+    ) -> Result<Array> {
         let dim = self.config.dim as i32;
         let heads = self.config.heads as i32;
         let head_dim = dim / heads;
@@ -278,8 +290,8 @@ fn rel_bucket(q: i64, k: i64, buckets: i64) -> i32 {
         abs as i64
     } else {
         let scale = (MAX_DISTANCE / max_exact as f32).ln();
-        let large = max_exact
-            + ((abs / max_exact as f32).ln() / scale * (half - max_exact) as f32) as i64;
+        let large =
+            max_exact + ((abs / max_exact as f32).ln() / scale * (half - max_exact) as f32) as i64;
         large.min(half - 1)
     };
     bucket as i32
@@ -324,11 +336,10 @@ impl Umt5Tokenizer {
                 .get(0)
                 .and_then(Value::as_str)
                 .ok_or_else(|| Error::new("umT5 tokenizer", "vocab entry is not [piece, score]"))?;
-            let score = entry
-                .get(1)
-                .and_then(Value::as_f64)
-                .ok_or_else(|| Error::new("umT5 tokenizer", "vocab entry is not [piece, score]"))?
-                as f32;
+            let score =
+                entry.get(1).and_then(Value::as_f64).ok_or_else(|| {
+                    Error::new("umT5 tokenizer", "vocab entry is not [piece, score]")
+                })? as f32;
             min_score = min_score.min(score);
             pieces.push((piece.to_string(), score));
         }

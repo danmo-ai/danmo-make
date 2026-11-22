@@ -31,8 +31,10 @@ pub const GGUF_VERSION_KEYS: &[&str] = &["bf16", "q8_0", "q4_k"];
 
 /// Published safetensors / MLX version keys. Resolution still requires the
 /// directory to be a safetensors image bundle; these keys are not GGUF tiers.
+/// Most specific first: `q4-mixed` is the locally built quantization, while
+/// `fp16`/`bf16`/`fp32` are the only downloads.
 pub const SAFETENSORS_VERSION_KEYS: &[&str] = &[
-    "fp16", "mlx-q8", "mlx-q4", "int8", "int4", "mlx-bf16", "bf16",
+    "q4-mixed", "fp16", "bf16", "fp32", "mlx-q8", "mlx-q4", "int8", "int4", "mlx-bf16",
 ];
 
 #[derive(Debug, Clone)]
@@ -687,13 +689,21 @@ mod tests {
             model["versions"]["fp16"]["local_path"],
             "models/Image/z-image-turbo-fp16"
         );
+        assert_eq!(model["versions"]["fp16"]["kind"], "dense");
+        assert_eq!(model["versions"]["q4-mixed"]["kind"], "derived");
+        assert_eq!(model["versions"]["q4-mixed"]["base"], "fp16");
         assert_eq!(
-            model["versions"]["mlx-q4"]["repo_id"],
-            "OsaurusAI/Z-Image-Turbo-mflux-4bit"
+            model["versions"]["q4-mixed"]["recipe"],
+            "z-image-q4-mixed-v1"
         );
         assert_eq!(
-            model["versions"]["mlx-q8"]["repo_id"],
-            "OsaurusAI/Z-Image-Turbo-mflux-8bit"
+            model["versions"]["q4-mixed"]["local_path"],
+            "models/Image/z-image-turbo-fp16-q4-mixed"
+        );
+        assert!(
+            model["versions"].get("mlx-q4").is_none(),
+            "third-party quantized versions are removed: {}",
+            model["versions"]
         );
         assert!(model.get("catalog").is_none());
         let actions = public["_index"]["z-image-turbo"]["actions"]
@@ -701,7 +711,10 @@ mod tests {
             .unwrap();
         assert!(actions.iter().any(|action| action == "generate"));
         assert!(actions.iter().any(|action| action == "edit"));
-        assert!(public["models"].as_object().unwrap().len() > 50);
+        assert!(
+            public["models"].as_object().unwrap().len() >= 40,
+            "registry projection dropped models"
+        );
         assert!(public["categories"]["base_models"].is_object());
     }
 }

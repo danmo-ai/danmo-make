@@ -1,6 +1,5 @@
-//! 5Hz LM format pass. Phase 1 rewrites caption and metadata under the
-//! existing FSM. Planner audio codes stay unwired and the DiT keeps the
-//! silence context when this pass returns no codes.
+//! 5Hz LM inspire / format / generate on MLX. Phase 1 rewrites caption,
+//! metadata and lyrics under the optional FSM; generate adds planner codes.
 
 use std::path::{Path, PathBuf};
 
@@ -11,12 +10,13 @@ use super::super::lm_expand::{LmExpandOutput, LmExpandRequest};
 use super::super::lm_format::{build_lm_format_result, parse_lm_output};
 use super::super::lm_fsm::{MetadataFsmSession, UserMetas, DURATION_MAX, DURATION_MIN};
 use super::super::lm_prompt::{
-    build_format_prompt, build_lm_prompt_uncond_with_cot, build_lm_prompt_with_cot, AcePrompt,
-    AUDIO_CODE_BASE, TOKEN_IM_END, TOKEN_THINK_END,
+    build_lm_prompt_uncond_with_cot, build_lm_prompt_with_cot, build_phase1_prompt, AcePrompt,
+    LmMode, AUDIO_CODE_BASE, TOKEN_IM_END, TOKEN_THINK_END,
 };
 use super::super::lm_sample::{sample_top_k_p, XorShift64};
 use super::super::lyrics::is_instrumental_lyrics;
 use super::super::token_decode::Decoder;
+use super::super::{LmOutput, LmRequest};
 use crate::common::qwen3::mlx::{self, LmCache};
 use crate::common::qwen3::{self, Qwen3Config};
 use crate::weights::{MlxWeights, WeightDtype, WeightError};
@@ -32,9 +32,43 @@ pub(crate) fn expand(
 ) -> Result<LmExpandOutput, WeightError> {
     let mut out = expand_limited(bundle, request, &mut on_token, None)?;
     if out.audio_code_indices.is_empty() {
-        out.audio_code_indices = planner_codes(bundle, request, &out, &mut on_token)?;
+        out.audio_code_indices = planner_codes(
+            bundle,
+            request,
+            &out,
+            PlannerOptions::default(),
+            &mut on_token,
+        )?;
     }
     Ok(out)
+}
+
+#[derive(Clone, Copy)]
+struct Phase1Sampling {
+    max_new_tokens: Option<usize>,
+    temperature: f32,
+    top_p: f32,
+    top_k: i32,
+    use_fsm: bool,
+}
+
+impl Default for Phase1Sampling {
+    fn default() -> Self {
+        Self {
+            max_new_tokens: None,
+            temperature: TEMPERATURE,
+            top_p: TOP_P,
+            top_k: 0,
+            use_fsm: true,
+        }
+    }
+}
+
+struct Phase1Output {
+    expanded: LmExpandOutput,
+    generated_ids: Vec<i32>,
+    text: String,
+    prompt_tokens: usize,
 }
 
 fn expand_limited(
@@ -43,6 +77,20 @@ fn expand_limited(
     on_token: &mut impl FnMut(usize, usize),
     limit_override: Option<usize>,
 ) -> Result<LmExpandOutput, WeightError> {
+    let sampling = Phase1Sampling {
+        max_new_tokens: limit_override,
+        ..Phase1Sampling::default()
+    };
+    phase1(bundle, request, LmMode::Format, sampling, on_token).map(|output| output.expanded)
+}
+
+fn phase1(
+    bundle: &Path,
+    request: &LmExpandRequest<'_>,
+    mode: LmMode,
+    sampling: Phase1Sampling,
+    on_token: &mut impl FnMut(usize, usize),
+) -> Result<Phase1Output, WeightError> {
     let directory = find_lm_dir(bundle, request.lm_bundle)?;
     let config = read_config(&directory)?;
     let tokenizer = std::fs::read_to_string(directory.join("tokenizer.json")).map_err(|error| {
@@ -61,7 +109,8 @@ fn expand_limited(
     } else {
         request.caption.trim().to_string()
     };
-    let metadata_only = !is_instrumental_lyrics(&lyrics);
+    let has_vocals = !is_instrumental_lyrics(&lyrics);
+    let metadata_only = mode.skips_audio_codes() && has_vocals;
     let prompt = AcePrompt {
         caption: caption.clone(),
         lyrics: lyrics.clone(),
@@ -72,17 +121,26 @@ fn expand_limited(
         vocal_language: request.vocal_language.to_string(),
     };
     let mut encode = |text: &str| qwen3::tokenize_plain(&tokenizer, text, config.vocab);
-    let prefix = build_format_prompt(&mut encode, &prompt)?;
+    let prefix = build_phase1_prompt(&mut encode, mode, &prompt)?;
+    let prompt_tokens = prefix.len();
     let decoder = Decoder::from_tokenizer_json(&tokenizer)?;
-    let mut fsm = MetadataFsmSession::open(&tokenizer, config.vocab)?.with_user_metas(UserMetas {
-        bpm: (request.bpm > 0).then_some(request.bpm),
-        caption: None,
-        duration: (request.duration > 0.0).then_some(request.duration.round() as i32),
-        keyscale: nonempty(request.keyscale),
-        language: nonempty(request.vocal_language),
-        timesignature: nonempty(request.timesignature),
-    });
-    let limit = limit_override.unwrap_or_else(|| max_new_tokens(request.duration, metadata_only));
+    let mut fsm = if sampling.use_fsm {
+        Some(
+            MetadataFsmSession::open(&tokenizer, config.vocab)?.with_user_metas(UserMetas {
+                bpm: (request.bpm > 0).then_some(request.bpm),
+                caption: None,
+                duration: (request.duration > 0.0).then_some(request.duration.round() as i32),
+                keyscale: nonempty(request.keyscale),
+                language: nonempty(request.vocal_language),
+                timesignature: nonempty(request.timesignature),
+            }),
+        )
+    } else {
+        None
+    };
+    let limit = sampling
+        .max_new_tokens
+        .unwrap_or_else(|| max_new_tokens(request.duration, metadata_only));
     let seed = request.seed;
     let key = cache_key(&directory)?;
     let (generated, text) = crate::runtime::mlx_executor()
@@ -94,10 +152,13 @@ fn expand_limited(
                 config,
                 &prefix,
                 &decoder,
-                &mut fsm,
+                fsm.as_mut(),
                 limit,
                 metadata_only,
                 seed,
+                sampling.temperature,
+                sampling.top_p,
+                sampling.top_k,
                 stream,
             )?;
             let text = decoder.decode(&generated);
@@ -105,7 +166,7 @@ fn expand_limited(
         })
         .map_err(|error| WeightError::NotBuilt(error.to_string()))?;
     #[cfg(test)]
-    if limit_override.is_some() {
+    if sampling.max_new_tokens.is_some() && mode == LmMode::Format {
         assert!(
             text.starts_with("<think>"),
             "5Hz LM format did not open the think block: {text}"
@@ -122,24 +183,97 @@ fn expand_limited(
         request.keyscale,
         request.timesignature,
         request.vocal_language,
-        metadata_only,
-        metadata_only,
+        has_vocals,
+        mode != LmMode::Inspire && has_vocals,
     );
-    Ok(LmExpandOutput {
-        caption: formatted.caption,
-        lyrics: formatted.lyrics,
-        bpm: formatted.bpm,
-        duration: formatted.duration,
-        keyscale: formatted.keyscale,
-        timesignature: formatted.timesignature,
-        language: formatted.language,
-        audio_code_indices: if !formatted.audio_code_indices.is_empty() {
-            formatted.audio_code_indices
-        } else {
-            request.existing_codes.unwrap_or(&[]).to_vec()
+    Ok(Phase1Output {
+        expanded: LmExpandOutput {
+            caption: formatted.caption,
+            lyrics: formatted.lyrics,
+            bpm: formatted.bpm,
+            duration: formatted.duration,
+            keyscale: formatted.keyscale,
+            timesignature: formatted.timesignature,
+            language: formatted.language,
+            audio_code_indices: if !formatted.audio_code_indices.is_empty() {
+                formatted.audio_code_indices
+            } else {
+                request.existing_codes.unwrap_or(&[]).to_vec()
+            },
+            did_expand: true,
+            pmi: None,
         },
-        did_expand: true,
-        pmi: None,
+        generated_ids: generated,
+        text,
+        prompt_tokens,
+    })
+}
+
+pub(crate) fn run(
+    bundle: &Path,
+    request: &LmRequest<'_>,
+    on_token: &mut impl FnMut(usize, usize),
+) -> Result<LmOutput, WeightError> {
+    let expanded_request = LmExpandRequest {
+        mode: request.mode.name(),
+        caption: request.caption,
+        lyrics: request.lyrics,
+        duration: request.duration,
+        bpm: request.bpm,
+        keyscale: request.keyscale,
+        timesignature: request.timesignature,
+        vocal_language: request.vocal_language,
+        seed: request.seed,
+        lm_bundle: None,
+        existing_codes: None,
+    };
+    let phase = phase1(
+        bundle,
+        &expanded_request,
+        request.mode,
+        Phase1Sampling {
+            max_new_tokens: Some(request.max_new_tokens.max(1)),
+            temperature: request.temperature,
+            top_p: request.top_p,
+            top_k: request.top_k,
+            use_fsm: request.use_fsm,
+        },
+        on_token,
+    )?;
+    let mut expanded = phase.expanded;
+    if request.mode == LmMode::Generate && expanded.audio_code_indices.is_empty() {
+        expanded.audio_code_indices = planner_codes(
+            bundle,
+            &expanded_request,
+            &expanded,
+            PlannerOptions {
+                cfg_scale: request.cfg_scale,
+                temperature: request.temperature,
+                top_p: request.top_p,
+                top_k: request.top_k,
+                negative_prompt: if request.negative_prompt.trim().is_empty() {
+                    "NO USER INPUT"
+                } else {
+                    request.negative_prompt
+                },
+            },
+            on_token,
+        )?;
+    }
+    Ok(LmOutput {
+        mode: request.mode.name().into(),
+        prompt_tokens: phase.prompt_tokens,
+        generated_ids: phase.generated_ids,
+        text: phase.text,
+        caption: expanded.caption,
+        lyrics: expanded.lyrics,
+        bpm: expanded.bpm,
+        duration: expanded.duration,
+        keyscale: expanded.keyscale,
+        timesignature: expanded.timesignature,
+        language: expanded.language,
+        audio_code_indices: expanded.audio_code_indices,
+        pmi: expanded.pmi,
     })
 }
 
@@ -148,11 +282,33 @@ struct CodePass {
     uncond: Option<LmCache>,
 }
 
-/// Phase 2. Dual caches, CFG 2, one code per 0.2 s, stopped at the duration target.
+#[derive(Clone, Copy)]
+struct PlannerOptions<'a> {
+    cfg_scale: f32,
+    temperature: f32,
+    top_p: f32,
+    top_k: i32,
+    negative_prompt: &'a str,
+}
+
+impl Default for PlannerOptions<'static> {
+    fn default() -> Self {
+        Self {
+            cfg_scale: CODES_CFG,
+            temperature: TEMPERATURE,
+            top_p: TOP_P,
+            top_k: 0,
+            negative_prompt: "NO USER INPUT",
+        }
+    }
+}
+
+/// Phase 2. Dual caches, one code per 0.2 s, stopped at the duration target.
 fn planner_codes(
     bundle: &Path,
     request: &LmExpandRequest<'_>,
     formatted: &LmExpandOutput,
+    options: PlannerOptions<'_>,
     on_token: &mut impl FnMut(usize, usize),
 ) -> Result<Vec<i32>, WeightError> {
     let directory = find_lm_dir(bundle, request.lm_bundle)?;
@@ -186,7 +342,8 @@ fn planner_codes(
     let mut encode = |text: &str| qwen3::tokenize_plain(&tokenizer, text, config.vocab);
     let cond_ids = build_lm_prompt_with_cot(&mut encode, &prompt, &cot)?;
     prompt.caption.clear();
-    let uncond_ids = build_lm_prompt_uncond_with_cot(&mut encode, &prompt, "NO USER INPUT")?;
+    let uncond_ids =
+        build_lm_prompt_uncond_with_cot(&mut encode, &prompt, options.negative_prompt)?;
     let weight_key = cache_key(&directory)?;
     let slot = CacheKey {
         id: format!("{}#planner-codes", directory.display()),
@@ -242,9 +399,15 @@ fn planner_codes(
     let mut codes = Vec::with_capacity(target);
     while codes.len() < target {
         on_token(codes.len(), target);
-        let mut combined = cfg_logits(&cond_logits, &uncond_logits, CODES_CFG)?;
+        let mut combined = cfg_logits(&cond_logits, &uncond_logits, options.cfg_scale)?;
         mask_planner_code_step(&mut combined, codes.len(), target)?;
-        let id = sample_top_k_p(&combined, TEMPERATURE, TOP_P, 0, &mut rng)?;
+        let id = sample_top_k_p(
+            &combined,
+            options.temperature,
+            options.top_p,
+            options.top_k,
+            &mut rng,
+        )?;
         if id == TOKEN_IM_END {
             break;
         }
@@ -385,10 +548,13 @@ fn sample(
     config: Qwen3Config,
     prefix: &[i32],
     decoder: &Decoder,
-    fsm: &mut MetadataFsmSession,
+    mut fsm: Option<&mut MetadataFsmSession>,
     limit: usize,
     metadata_only: bool,
     seed: u64,
+    temperature: f32,
+    top_p: f32,
+    top_k: i32,
     stream: &Stream,
 ) -> Result<Vec<i32>, danmo_mlx::Error> {
     let mut cache: Option<LmCache> = None;
@@ -397,13 +563,19 @@ fn sample(
     let mut generated = Vec::new();
     for _ in 0..limit {
         let piece = |id: i32| decoder.piece(id);
-        fsm.mask(&mut logits, &piece)
-            .map_err(|error| danmo_mlx::Error::new("ACE-Step 5Hz LM", error.to_string()))?;
-        let id = sample_top_k_p(&logits, TEMPERATURE, TOP_P, 0, &mut rng)
+        if let Some(session) = fsm.as_deref_mut() {
+            session
+                .mask(&mut logits, &piece)
+                .map_err(|error| danmo_mlx::Error::new("ACE-Step 5Hz LM", error.to_string()))?;
+        }
+        let id = sample_top_k_p(&logits, temperature, top_p, top_k, &mut rng)
             .map_err(|error| danmo_mlx::Error::new("ACE-Step 5Hz LM", error.to_string()))?;
         let text = decoder.piece(id);
-        fsm.observe(id, &text)
-            .map_err(|error| danmo_mlx::Error::new("ACE-Step 5Hz LM", error.to_string()))?;
+        if let Some(session) = fsm.as_deref_mut() {
+            session
+                .observe(id, &text)
+                .map_err(|error| danmo_mlx::Error::new("ACE-Step 5Hz LM", error.to_string()))?;
+        }
         generated.push(id);
         if id == TOKEN_IM_END || (metadata_only && id == TOKEN_THINK_END) {
             break;
@@ -578,6 +750,42 @@ mod tests {
             out.caption
         );
         println!("lm caption={} lyrics={}", out.caption, out.lyrics);
+    }
+
+    #[test]
+    fn direct_inspire_uses_the_mlx_forward() {
+        let Some(bundle) = installed_bundle() else {
+            eprintln!("skip: 5Hz LM safetensors missing");
+            return;
+        };
+        let out = super::run(
+            &bundle,
+            &super::super::super::LmRequest {
+                mode: super::super::super::LmMode::Inspire,
+                caption: "quiet piano",
+                lyrics: "[Instrumental]",
+                duration: 10.0,
+                bpm: 90,
+                keyscale: "C major",
+                timesignature: "4",
+                vocal_language: "en",
+                max_new_tokens: 32,
+                tokenizer_json: None,
+                temperature: 0.85,
+                top_p: 0.9,
+                top_k: 0,
+                seed: 7,
+                use_fsm: true,
+                cfg_scale: 2.0,
+                negative_prompt: "",
+            },
+            &mut |_, _| (),
+        )
+        .expect("direct inspire");
+        assert_eq!(out.mode, "inspire");
+        assert!(out.prompt_tokens > 0 && !out.generated_ids.is_empty());
+        assert!(!out.caption.trim().is_empty());
+        assert!(out.audio_code_indices.is_empty());
     }
 
     #[test]

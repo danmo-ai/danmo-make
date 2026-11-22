@@ -12,9 +12,7 @@ pub mod tasks;
 
 use serde_json::{json, Value};
 
-pub use enhance::{
-    build_enhance_messages, content_from_completion, sanitize_enhanced_prompt,
-};
+pub use enhance::{build_enhance_messages, content_from_completion, sanitize_enhanced_prompt};
 
 /// Human-readable block reason, or `None` when the selected provider can run.
 pub fn block_reason(settings: &Value) -> Option<String> {

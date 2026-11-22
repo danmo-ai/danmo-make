@@ -34,6 +34,7 @@ pub fn engine_request(
                 .map_err(|error| EngineError::bad_request(error.to_string()))?;
             Ok(EngineRequest::AudioCreate(EngineAudioCreateRequest {
                 model: request.model,
+                title: request.title,
                 prompt: request.prompt,
                 instrumental: request.instrumental,
                 vocal_type: request.vocal_type,
@@ -68,6 +69,7 @@ pub fn engine_request(
                 .map_err(|error| EngineError::bad_request(error.to_string()))?;
             Ok(EngineRequest::AudioEdit(EngineAudioEditRequest {
                 model: request.model,
+                title: request.title,
                 prompt: request.prompt,
                 instrumental: request.instrumental,
                 vocal_type: request.vocal_type,
@@ -284,8 +286,11 @@ mod tests {
         });
         let request = engine_request("video.generation", "wan-2.2-ti2v-5b", &params).unwrap();
         assert!(matches!(request, EngineRequest::VideoCreate(_)));
-        let params = json!({"family": "hunyuan", "request": {"model": "hunyuan", "prompt": "x"}});
-        let request = engine_request("video.generation", "hunyuan", &params).unwrap();
+        let params = json!({
+            "family": "minimax_h3",
+            "request": {"model": "minimax-h3-fl2va", "prompt": "x"},
+        });
+        let request = engine_request("video.generation", "minimax-h3-fl2va", &params).unwrap();
         assert!(matches!(
             request,
             EngineRequest::Unsupported {

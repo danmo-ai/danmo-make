@@ -9,8 +9,8 @@
 //! (7B). `last_layer_vid_only` follows the SwiGLU split: both published
 //! checkpoints agree with it. An unknown layout fails, it is never guessed.
 
-use crate::runtime::{GgmlContext, GraphBuilder, RuntimeError, Tensor, flash_attend};
-use crate::weights::{GgufWeights, WeightError, matmul_type, type_block};
+use crate::runtime::{flash_attend, GgmlContext, GraphBuilder, RuntimeError, Tensor};
+use crate::weights::{matmul_type, type_block, GgufWeights, WeightError};
 use std::collections::HashMap;
 
 const GRAPH_MEM: usize = 256 * 1024 * 1024;
@@ -152,7 +152,11 @@ impl DitConfig {
     }
 
     fn side(&self, layer: usize) -> &'static str {
-        if layer < self.mm_layers { "vid" } else { "all" }
+        if layer < self.mm_layers {
+            "vid"
+        } else {
+            "all"
+        }
     }
 }
 
@@ -1279,7 +1283,7 @@ fn weight_err(err: RuntimeError) -> WeightError {
 mod tests {
     use super::*;
     use crate::runtime::BackendKind;
-    use crate::weights::{F32Nd, write_f32_nd};
+    use crate::weights::{write_f32_nd, F32Nd};
     use std::path::PathBuf;
 
     fn fill(

@@ -10,6 +10,7 @@ import type {
   RegistryData,
   SettingsData,
   SystemInfo,
+  TaskTrace,
 } from '@/types';
 import { DQ_STORAGE, getItem } from '@/utils/storage';
 
@@ -140,6 +141,11 @@ export const api = {
       }
       const id = path.slice('asset:'.length);
       return `${API_BASE}/api/assets/${id}/file`;
+    },
+
+    async updateAsset(id: string, body: Record<string, unknown>): Promise<AssetRow> {
+      const response = await client.patch(`/api/assets/${encodeURIComponent(id)}`, body);
+      return response.data;
     },
 
     async deleteImage(path: string): Promise<unknown> {
@@ -314,6 +320,12 @@ export const api = {
     async fetchGraph(taskId: string): Promise<Record<string, unknown>> {
       const response = await client.get(`/api/tasks/${encodeURIComponent(taskId)}/graph`);
       return response.data;
+    },
+
+    /** OTel spans recorded for this task; empty with a `reason` when untraced. */
+    async fetchTrace(taskId: string): Promise<TaskTrace> {
+      const response = await client.get(`/api/tasks/${encodeURIComponent(taskId)}/trace`);
+      return response.data as TaskTrace;
     },
 
     async diagnose(taskId: string, body?: { locale?: string }): Promise<{ summary: string }> {
@@ -634,6 +646,12 @@ export const api = {
 
     async cancelMediaTask(taskId: string): Promise<{ ok?: boolean }> {
       const response = await client.delete(`/api/tasks/${encodeURIComponent(taskId)}`);
+      return response.data;
+    },
+
+    /** Delete a finished task (row, logs, spans); cancel queued/running first. */
+    async purgeMediaTask(taskId: string): Promise<{ ok?: boolean; spans_removed?: number }> {
+      const response = await client.post(`/api/tasks/${encodeURIComponent(taskId)}/purge`);
       return response.data;
     },
 
@@ -1029,6 +1047,11 @@ export const api = {
 
     async createEdit(body: Record<string, unknown> = {}): Promise<unknown> {
       const response = await client.post('/api/audios/edits', body);
+      return response.data;
+    },
+
+    async createLm(body: Record<string, unknown> = {}): Promise<unknown> {
+      const response = await client.post('/api/audios/lm', body);
       return response.data;
     },
   },

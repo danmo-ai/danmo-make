@@ -23,6 +23,8 @@ pub struct Downloads {
     inner: Arc<Mutex<Inner>>,
     agent: Agent,
     workspace: PathBuf,
+    /// Factory checkout root, used to find `default_config/quant_recipes`.
+    repo_root: PathBuf,
     persist: PathBuf,
     loras_path: PathBuf,
     settings_path: PathBuf,
@@ -114,6 +116,27 @@ pub use danmo_resolve::{
     resolve_model_path, version_ready, INSTALL_HOOK_INCOMPLETE,
 };
 
+/// Factory checkout root: the parent of `default_config/`. Recipes ship with
+/// the build, so the installer finds them here, not in the workspace.
+fn repo_root() -> PathBuf {
+    if let Some(explicit) = std::env::var_os("DANQING_REPO_ROOT") {
+        let path = PathBuf::from(explicit);
+        if path.join("default_config/quant_recipes").is_dir() {
+            return path;
+        }
+    }
+    let mut probe = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    for _ in 0..6 {
+        if probe.join("default_config/quant_recipes").is_dir() {
+            return probe;
+        }
+        if !probe.pop() {
+            break;
+        }
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
 impl Downloads {
     pub fn open(workspace: &Path) -> Self {
         let workspace = if workspace.as_os_str().is_empty() {
@@ -139,6 +162,7 @@ impl Downloads {
                 cancels: HashMap::new(),
             })),
             agent,
+            repo_root: repo_root(),
             workspace,
             persist,
             loras_path,
@@ -587,6 +611,130 @@ impl Downloads {
         }
     }
 
+    /// `kind: derived` install: download the dense base, then quantize it
+    /// locally. No quantized package is ever downloaded.
+    fn run_derived(
+        &self,
+        id: &str,
+        spec: &Value,
+        base: &Value,
+        force: bool,
+        cancel: &AtomicBool,
+    ) -> Result<Done, String> {
+        let recipe = spec
+            .get("recipe")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| "derived version has no recipe".to_string())?;
+        let derived_local = spec
+            .get("local_path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| "derived version has no local_path".to_string())?;
+        let base_local = base
+            .get("local_path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| "derived base has no local_path".to_string())?;
+        let base_root = resolve_model_path(&self.workspace, base_local);
+        if !version_ready(&base_root) {
+            self.log_line(
+                id,
+                "downloading the full-precision base for local quantization",
+            );
+            match self.run_model(id, base, force, cancel)? {
+                Done::Finished => {}
+                Done::Cancelled => return Ok(Done::Cancelled),
+            }
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(Done::Cancelled);
+        }
+        self.log_line(
+            id,
+            &format!("quantizing {base_local} -> {derived_local} with recipe {recipe}"),
+        );
+        let root = resolve_model_path(&self.workspace, derived_local);
+        fs::create_dir_all(&root).map_err(|error| format!("create {}: {error}", root.display()))?;
+        fs::write(root.join(INSTALL_HOOK_INCOMPLETE), b"quantization pending")
+            .map_err(|error| format!("mark quantization pending: {error}"))?;
+        // A family that already owns a layout converter keeps using it; the
+        // hook reads the downloaded dense pack and writes the target bundle.
+        let hook = match spec
+            .get("install_hooks")
+            .and_then(|value| value.as_array())
+            .and_then(|rows| rows.first())
+            .and_then(|row| row.as_object())
+        {
+            Some(template) => {
+                let mut body = template.clone();
+                body.insert(
+                    "source".into(),
+                    Value::String(base_root.display().to_string()),
+                );
+                Value::Object(body)
+            }
+            None => json!({
+                "type": "derive_quantize",
+                "base": base_root.display().to_string(),
+                "recipe": recipe,
+                "workspace": self.workspace.display().to_string(),
+                "repo_root": self.repo_root.display().to_string(),
+            }),
+        };
+        let outcome = self.run_install_hooks(id, &root, std::slice::from_ref(&hook), cancel);
+        if cancel.load(Ordering::Relaxed) {
+            let _ = fs::create_dir_all(&root);
+            let _ = fs::write(root.join(INSTALL_HOOK_INCOMPLETE), b"quantization cancelled");
+            return Ok(Done::Cancelled);
+        }
+        if let Err(error) = outcome {
+            // Derive may wipe the precreated stub before converting; restamp
+            // so a failed convert never looks like a ready empty directory.
+            let _ = fs::create_dir_all(&root);
+            let _ = fs::write(root.join(INSTALL_HOOK_INCOMPLETE), b"quantization failed");
+            return Err(error);
+        }
+        // A family converter (LTX split pack) writes its own layout, so the
+        // manifest is stamped here rather than inside the generic rewriter.
+        if spec.get("install_hooks").is_some() {
+            if let Err(error) = danmo_engine::write_derived_manifest(
+                &self.workspace,
+                &self.repo_root,
+                base_local,
+                derived_local,
+                recipe,
+            ) {
+                let _ = fs::create_dir_all(&root);
+                let _ = fs::write(root.join(INSTALL_HOOK_INCOMPLETE), b"quantization failed");
+                return Err(error);
+            }
+        }
+        // Clear the pending marker before readiness — version_ready treats the
+        // marker as incomplete, so checking first always failed even when the
+        // quantized tree was already on disk.
+        match fs::remove_file(root.join(INSTALL_HOOK_INCOMPLETE)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!("clear quantization marker: {error}"));
+            }
+        }
+        if !version_ready(&root) {
+            let _ = fs::create_dir_all(&root);
+            let _ = fs::write(root.join(INSTALL_HOOK_INCOMPLETE), b"quantization incomplete");
+            return Err(format!(
+                "quantization finished but {} is not a ready bundle",
+                root.display()
+            ));
+        }
+        Ok(Done::Finished)
+    }
+
+    fn log_line(&self, id: &str, message: &str) {
+        eprintln!("[download {id}] {message}");
+    }
+
     fn run_model(
         &self,
         id: &str,
@@ -594,6 +742,9 @@ impl Downloads {
         force: bool,
         cancel: &AtomicBool,
     ) -> Result<Done, String> {
+        if let Some(base) = spec.get("base") {
+            return self.run_derived(id, spec, base, force, cancel);
+        }
         let auth = self.auth();
         let workspace = self.workspace.clone();
         let plan = plan_version(spec, &mut |query| self.list_repo(query, &auth), &|path| {
@@ -1252,7 +1403,10 @@ fn partial_path(dest: &Path) -> PathBuf {
 /// Model-library badge is `version.source`, else `catalog.source`.
 /// A version that omits `source` still downloads from that hub.
 pub(crate) fn fill_missing_download_source(spec: &mut Value, catalog_source: Option<&str>) {
-    let Some(source) = catalog_source.map(str::trim).filter(|text| !text.is_empty()) else {
+    let Some(source) = catalog_source
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    else {
         return;
     };
     let Some(obj) = spec.as_object_mut() else {
@@ -1400,7 +1554,6 @@ fn component_dest(root: &Path, role: &str, remote_path: &str) -> Result<PathBuf,
         "" => root.join(remote_path),
         "text_encoder" => root.join("text_encoder").join(file_name),
         "vae" => root.join("vae").join(file_name),
-        "image_encoder" => root.join("image_encoder").join(file_name),
         "tokenizer" => root.join("tokenizer").join(file_name),
         other => {
             return Err(format!(
@@ -2306,7 +2459,6 @@ fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Res
     let mut transformer = Vec::new();
     let mut text_encoder = Vec::new();
     let mut vae = Vec::new();
-    let mut image_encoder = Vec::new();
     for file in files {
         let rel = rel_under(root, &file.dest)?;
         let Some(role) = manifest_role(&rel) else {
@@ -2316,7 +2468,6 @@ fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Res
             "transformer" => &mut transformer,
             "text_encoder" => &mut text_encoder,
             "vae" => &mut vae,
-            "image_encoder" => &mut image_encoder,
             _ => continue,
         };
         if !slot.iter().any(|path| path == &rel) {
@@ -2326,7 +2477,6 @@ fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Res
     transformer.sort();
     text_encoder.sort();
     vae.sort();
-    image_encoder.sort();
     if transformer.is_empty() {
         return Err("bundle manifest has no transformer file".into());
     }
@@ -2344,9 +2494,6 @@ fn bundle_manifest_value(quant: &str, root: &Path, files: &[PlannedFile]) -> Res
     }
     if !vae.is_empty() {
         files_map["vae"] = role_value(vae);
-    }
-    if !image_encoder.is_empty() {
-        files_map["image_encoder"] = role_value(image_encoder);
     }
     Ok(json!({
         "format": "safetensors",
@@ -2388,8 +2535,6 @@ fn manifest_role(rel: &str) -> Option<&'static str> {
         Some("text_encoder")
     } else if rel.starts_with("vae/") {
         Some("vae")
-    } else if rel.starts_with("image_encoder/") {
-        Some("image_encoder")
     } else {
         Some("transformer")
     }
@@ -2579,7 +2724,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let install = root.join("models/Lora/ace-step-lora-chinese-new-year-fp16");
+        let install = root.join("models/Lora/ace-step-lora-guitar-ms-fp16");
         fs::create_dir_all(&install).unwrap();
         fs::write(install.join("adapter_model.safetensors"), b"st").unwrap();
         fs::write(install.join("README.md"), b"notes").unwrap();
@@ -2588,7 +2733,7 @@ mod tests {
                 "versions": {
                     "fp16": {
                         "default": true,
-                        "local_path": "models/Lora/ace-step-lora-chinese-new-year-fp16"
+                        "local_path": "models/Lora/ace-step-lora-guitar-ms-fp16"
                     }
                 }
             }
@@ -2805,6 +2950,40 @@ mod tests {
                 .into_iter()
                 .flatten()
             {
+                // A derived version is not a download: it names a dense base
+                // and a recipe. The installer resolves the base and converts.
+                if spec.get("kind").and_then(Value::as_str) == Some("derived") {
+                    let base = spec
+                        .get("base")
+                        .and_then(Value::as_str)
+                        .unwrap_or_else(|| panic!("{model_id}:{quant} has no base"));
+                    assert!(
+                        model["distribution"]["versions"].get(base).is_some(),
+                        "{model_id}:{quant} names missing base {base}"
+                    );
+                    let recipe = spec
+                        .get("recipe")
+                        .and_then(Value::as_str)
+                        .unwrap_or_else(|| panic!("{model_id}:{quant} has no recipe"));
+                    let recipe_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../../default_config/quant_recipes")
+                        .join(format!("{recipe}.json"));
+                    assert!(
+                        recipe_path.is_file(),
+                        "{model_id}:{quant} recipe {} is missing",
+                        recipe_path.display()
+                    );
+                    let local = spec
+                        .get("local_path")
+                        .and_then(Value::as_str)
+                        .unwrap_or_else(|| panic!("{model_id}:{quant} has no local_path"));
+                    assert!(
+                        local.starts_with("models/"),
+                        "{model_id}:{quant} local_path {local} is not workspace-relative"
+                    );
+                    checked += 1;
+                    continue;
+                }
                 let plan = plan_version(spec, &mut |_| Ok(synthetic_listing(spec)), &|path| {
                     resolve_model_path(&workspace, path)
                 })
@@ -3105,7 +3284,10 @@ mod tests {
             &mut |query| {
                 assert_eq!(query.source, "modelscope");
                 assert_eq!(query.repo_id, "Qwen/Qwen-Image-Edit-2511");
-                Ok(vec![entry("transformer/diffusion_pytorch_model.safetensors", 8)])
+                Ok(vec![entry(
+                    "transformer/diffusion_pytorch_model.safetensors",
+                    8,
+                )])
             },
             &|path| resolve_model_path(&workspace, path),
         )

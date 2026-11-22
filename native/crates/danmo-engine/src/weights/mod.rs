@@ -8,11 +8,14 @@ mod gguf;
 mod lora;
 #[cfg(feature = "mlx")]
 mod mlx;
+#[cfg(feature = "mlx")]
+mod quantize;
+#[cfg(all(test, feature = "mlx"))]
+pub(crate) use quantize::fixture;
 
 pub use bundle::{
-    assert_gguf_bundle, assert_hunyuan_bundle, is_ace_step_safetensors_bundle,
-    is_controlnet_safetensors_dir, is_safetensors_bundle, is_safetensors_image_bundle,
-    is_seedvr2_safetensors_bundle, HunyuanBundle,
+    assert_gguf_bundle, is_ace_step_safetensors_bundle, is_controlnet_safetensors_dir,
+    is_safetensors_bundle, is_safetensors_image_bundle, is_seedvr2_safetensors_bundle,
 };
 pub use cache::{resident_bytes, revision};
 pub(crate) use gguf::f16_to_f32;
@@ -28,7 +31,12 @@ pub use lora::{
 #[cfg(feature = "mlx")]
 pub use mlx::{
     load_directory as load_mlx_directory, load_file as load_mlx_file, pack_affine,
-    probe_affine_quantization, read_component, MlxWeights, WeightDtype,
+    probe_affine_quantization, read_component, read_component_meta, MlxWeights, WeightDtype,
+};
+#[cfg(feature = "mlx")]
+pub use quantize::{
+    load_recipe, manifest_value, quantize_bundle, recipe_paths, source_digest,
+    verify_quantized_bundle, QuantRecipe, QuantizeReport, MANIFEST_FORMAT, MANIFEST_VERSION,
 };
 
 use thiserror::Error;

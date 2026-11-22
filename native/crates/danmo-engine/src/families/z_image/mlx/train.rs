@@ -169,6 +169,115 @@ impl HostRng {
     }
 }
 
+/// Trainer state written next to every checkpoint. A restarted process
+/// resumes at the checkpoint's step instead of re-running from zero.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+struct TrainerState {
+    step: u32,
+    iterations: u32,
+    preset: String,
+}
+
+/// `checkpoint-500.safetensors` → `checkpoint-500.state.json`.
+fn trainer_state_path(checkpoint: &Path) -> PathBuf {
+    let stem = checkpoint
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "trainer".into());
+    checkpoint.with_file_name(format!("{stem}.state.json"))
+}
+
+fn write_trainer_state(checkpoint: &Path, state: &TrainerState) -> Result<()> {
+    let text = serde_json::to_string_pretty(state)
+        .map_err(|e| Error::new("Z-Image trainer state", e.to_string()))?;
+    std::fs::write(trainer_state_path(checkpoint), text)
+        .map_err(|e| Error::new("Z-Image trainer state", e.to_string()))
+}
+
+/// Missing state file = pre-resume checkpoint (warm start); corrupt file is
+/// a hard error — never guess the step count.
+fn read_trainer_state(checkpoint: &Path) -> Result<Option<TrainerState>> {
+    let path = trainer_state_path(checkpoint);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| Error::new("Z-Image trainer state", e.to_string()))?;
+    let state: TrainerState = serde_json::from_str(&text)
+        .map_err(|e| Error::new("Z-Image trainer state", format!("{}: {e}", path.display())))?;
+    Ok(Some(state))
+}
+
+/// Validate a checkpoint's trainer state against this run; returns the step
+/// to resume from. Fail loud on mismatch — silently re-running or skipping
+/// steps would corrupt the recipe.
+fn resolve_start_step(
+    state: Option<TrainerState>,
+    iterations: u32,
+    preset_id: &str,
+) -> Result<u32> {
+    let Some(state) = state else {
+        return Ok(0);
+    };
+    if state.preset != preset_id {
+        return Err(Error::new(
+            "Z-Image train resume",
+            format!(
+                "checkpoint was saved by preset {:?} but this run uses {preset_id:?}",
+                state.preset
+            ),
+        ));
+    }
+    if state.iterations != iterations {
+        return Err(Error::new(
+            "Z-Image train resume",
+            format!(
+                "checkpoint is step {}/{} but this run targets {iterations} iterations; \
+                 match the recipe or start a fresh run",
+                state.step, state.iterations
+            ),
+        ));
+    }
+    if state.step >= iterations {
+        return Err(Error::new(
+            "Z-Image train resume",
+            format!(
+                "checkpoint already completed {}/{} steps; nothing left to train",
+                state.step, state.iterations
+            ),
+        ));
+    }
+    Ok(state.step)
+}
+
+/// Per-epoch dataset order derived from (seed, epoch): a restarted process
+/// reproduces the same sequence without replaying prior steps.
+fn epoch_order(seed: u64, epoch: u32, len: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..len).collect();
+    let mut rng = HostRng(seed ^ 0xE0C4_A11C_5AA5_E55u64.wrapping_add(epoch as u64));
+    for i in (1..len).rev() {
+        let j = (rng.next() % (i as u64 + 1)) as usize;
+        order.swap(i, j);
+    }
+    order
+}
+
+/// Per-step RNG (caption dropout + sigma): independent of process boundaries.
+fn step_rng(seed: u64, step: u32) -> HostRng {
+    HostRng(
+        seed ^ 0xD1B5_4A32_D192_ED03u64
+            .wrapping_add((step as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)),
+    )
+}
+
+/// Per-step noise key (eps): same step ⇒ same noise after a restart.
+fn step_noise_key(seed: u64, step: u32) -> Result<RandomKey> {
+    RandomKey::new(
+        seed.wrapping_add(1)
+            .wrapping_add((step as u64).wrapping_mul(0x85EB_CA6B)),
+    )
+}
+
 fn prepare_variant(
     dit: &MlxWeights,
     config: MlxZImageConfig,
@@ -254,6 +363,12 @@ fn prepare_samples(
 struct VariantClosures {
     grid: TokenGrid,
     blocks: Vec<Closure>,
+    /// Number of trained A/B factor pairs (global LoRA params × 2).
+    n_train: usize,
+    /// `value_and_grad` built **once** per token-grid variant: batch tensors
+    /// (x0, timestep, unified, eps, train_weight) are closure inputs, not
+    /// captures, so the traced 30-block graph is reused every step.
+    vag: ValueAndGrad,
 }
 
 /// One transformer block wrapped in `mx.checkpoint`. Inputs:
@@ -354,6 +469,7 @@ fn variant_closures(
     config: MlxZImageConfig,
     slot_params: &[[Option<usize>; 7]],
     param_scales: &[f32],
+    n_train: usize,
     stream: &Stream,
 ) -> Result<Rc<VariantClosures>> {
     let key = variant.grid.cap_len;
@@ -374,9 +490,55 @@ fn variant_closures(
             stream,
         )?);
     }
+    let weights = dit.clone();
+    let grid = variant.grid;
+    let blocks_rc = Rc::new(blocks);
+    let slots = Rc::new(slot_params.to_vec());
+    let n = n_train;
+    // Closure inputs (order):
+    //   ins[0..n_train]      trained A/B factors (argnums 0..n_train)
+    //   ins[n_train + 0]     x0 latent (Float32)
+    //   ins[n_train + 1]     timestep embedding
+    //   ins[n_train + 2]     unified tokens (pre-block)
+    //   ins[n_train + 3]     eps noise (Float32)
+    //   ins[n_train + 4]     train_weight scalar
+    let closure = Closure::new(stream.clone(), move |ins, call_stream| {
+        let x0 = &ins[n];
+        let timestep = &ins[n + 1];
+        let mut x = ins[n + 2].clone();
+        let eps = &ins[n + 3];
+        let weight = &ins[n + 4];
+        for (layer, block) in blocks_rc.iter().enumerate() {
+            let mut inputs = vec![x.clone(), timestep.clone()];
+            for slot in slots[layer] {
+                if let Some(global) = slot {
+                    inputs.push(ins[global * 2].clone());
+                    inputs.push(ins[global * 2 + 1].clone());
+                }
+            }
+            x = block.apply(&inputs)?;
+        }
+        let velocity = model::final_velocity(
+            &weights,
+            config,
+            grid,
+            &x,
+            timestep,
+            call_stream,
+            &mut |_, _| {},
+        )?;
+        let loss = flow_match_mse(&velocity, x0, eps, call_stream)?;
+        Array::multiply(&loss, weight, call_stream)
+    })
+    .map_err(|e| Error::new("Z-Image train closure", e.to_string()))?;
+    let argnums: Vec<i32> = (0..n_train as i32).collect();
+    let vag = ValueAndGrad::new(closure, &argnums)
+        .map_err(|e| Error::new("Z-Image train value_and_grad", e.to_string()))?;
     let built = Rc::new(VariantClosures {
         grid: variant.grid,
-        blocks,
+        blocks: Vec::new(),
+        n_train,
+        vag,
     });
     cache.insert(key, built.clone());
     Ok(built)
@@ -455,6 +617,108 @@ fn resume_params(path: &Path, params: &mut [LoraTrainParam], stream: &Stream) ->
     Ok(())
 }
 
+fn append_loss_history_line(path: &Path, point: &serde_json::Value) -> Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| Error::new("Z-Image train loss history", e.to_string()))?;
+    writeln!(file, "{point}")
+        .map_err(|e| Error::new("Z-Image train loss history", e.to_string()))?;
+    Ok(())
+}
+
+/// Short create with the current adapter → `progress/step-{N}.png`.
+/// Companion DistillPatch is not stacked here (verify UI uses the full recipe).
+fn write_progress_preview(
+    cache: &mut ModelCache,
+    job: &TrainJob,
+    adapter: &Path,
+    step: u32,
+    stream: &Stream,
+) -> std::result::Result<String, EngineError> {
+    use crate::contract::{ExecutionContext, NoopObserver};
+    use crate::weights::LoraFile;
+    use std::sync::Arc;
+
+    let ids = job
+        .caption_ids
+        .first()
+        .cloned()
+        .ok_or_else(|| EngineError::message("progress preview needs at least one caption"))?;
+    let steps = job.preset.inference.steps.max(1);
+    let seed = job.request.seed.unwrap_or(42).max(0) as u64;
+    let width = job.width;
+    let height = job.height;
+    let published = MlxZImageConfig::published();
+    let cfg = super::super::weights::ZImageConfig {
+        dim: published.dim,
+        heads: published.heads,
+        head_dim: published.head_dim(),
+        axes: published.axes,
+        layers: published.layers,
+        refiners: published.refiners,
+        in_channels: published.in_channels,
+        cap_dim: published.cap_dim,
+        ffn: published.ffn_hidden(),
+        mid: published.timestep_mid,
+        freq: published.frequency_dim,
+        adaln: published.adaln_dim,
+        rope_theta: published.rope_theta,
+        t_scale: published.t_scale,
+        vae_scale: published.vae_scale,
+        patch: published.patch,
+        requires_sigma_shift: true,
+    };
+    let sigmas = super::super::schedule(
+        cfg,
+        steps,
+        width,
+        height,
+        Some(job.preset.inference.scheduler.as_str()),
+        None,
+        false,
+    )
+    .map_err(|e| EngineError::message(e.to_string()))?;
+    let loras = vec![LoraFile {
+        id: format!("train-progress-{step}"),
+        path: adapter.to_path_buf(),
+        weight: job.preset.inference.lora_weight,
+    }];
+    let exec = ExecutionContext::new(format!("train-progress-{step}"), Arc::new(NoopObserver));
+    let latents = session::denoise(
+        cache,
+        &job.text_key,
+        &job.dit_key,
+        &job.vae_key,
+        None,
+        None,
+        None,
+        None,
+        None,
+        &ids,
+        None,
+        0.0,
+        width,
+        height,
+        seed,
+        None,
+        &sigmas,
+        &loras,
+        &exec,
+        stream,
+    )
+    .map_err(mlx)?;
+    let pixels = session::decode_pixels(cache, &job.vae_key, &latents, width, height, stream)
+        .map_err(mlx)?;
+    let png = crate::common::png::encode_rgb(width, height, &pixels);
+    let name = format!("step-{step:05}.png");
+    let out = job.work_dir.join("progress").join(&name);
+    std::fs::write(&out, &png).map_err(|e| EngineError::message(e.to_string()))?;
+    Ok(out.display().to_string())
+}
+
 /// Run the whole training loop on the executor thread.
 pub fn train_on_executor(
     job: TrainJob,
@@ -462,6 +726,7 @@ pub fn train_on_executor(
     cache: &mut ModelCache,
     progress: TrainProgress,
 ) -> std::result::Result<LoraTrainingResult, EngineError> {
+    let _ = danmo_mlx::reset_peak_memory();
     let config = MlxZImageConfig::published();
     let dit = cache
         .get::<MlxWeights>(&job.dit_key)
@@ -504,16 +769,27 @@ pub fn train_on_executor(
             .map_err(mlx)?,
         );
     }
+    let iterations = job.preset.iterations;
+    let mut start_step = 0u32;
     if let Some(path) = &job.resume_adapter {
         resume_params(path, &mut params, stream).map_err(mlx)?;
-        progress(TrainEvent::Phase(format!(
-            "resumed LoRA factors from {}",
-            path.display()
-        )));
+        let state = read_trainer_state(path).map_err(mlx)?;
+        start_step = resolve_start_step(state.clone(), iterations, &job.preset.id).map_err(mlx)?;
+        match state {
+            Some(state) => progress(TrainEvent::Phase(format!(
+                "resumed LoRA factors from {} (continuing at step {}/{})",
+                path.display(),
+                state.step,
+                state.iterations
+            ))),
+            None => progress(TrainEvent::Phase(format!(
+                "resumed LoRA factors from {} (no trainer state; warm start from step 0)",
+                path.display()
+            ))),
+        }
     }
     let param_scales: Vec<f32> = params.iter().map(|p| p.scale).collect();
 
-    let iterations = job.preset.iterations;
     let shift = if job.preset.id == "turbo-sft" {
         3.0
     } else {
@@ -527,19 +803,29 @@ pub fn train_on_executor(
     };
     let mut states: Vec<AdamWState> = Vec::with_capacity(params.len() * 2);
     for p in &params {
-        states.push(AdamWState::zeros_like(&p.a, stream).map_err(mlx)?);
-        states.push(AdamWState::zeros_like(&p.b, stream).map_err(mlx)?);
+        let mut sa = AdamWState::zeros_like(&p.a, stream).map_err(mlx)?;
+        let mut sb = AdamWState::zeros_like(&p.b, stream).map_err(mlx)?;
+        // m/v moments restart at zero (not serialized); the step counter is
+        // restored so AdamW bias correction continues from the checkpoint.
+        sa.step = start_step as u64;
+        sb.step = start_step as u64;
+        states.push(sa);
+        states.push(sb);
     }
 
-    let mut rng = HostRng(seed ^ 0xD1B54A32D192ED03);
-    let mut noise_key = RandomKey::new(seed.wrapping_add(1)).map_err(mlx)?;
-    let mut order: Vec<usize> = (0..samples.len()).collect();
-    let mut cursor = order.len();
     let mut loss_history: Vec<serde_json::Value> = Vec::new();
     let mut checkpoints: Vec<String> = Vec::new();
     let adapter_dir = job.work_dir.join("adapters");
     std::fs::create_dir_all(&adapter_dir).map_err(|e| EngineError::message(e.to_string()))?;
+    std::fs::create_dir_all(job.work_dir.join("progress"))
+        .map_err(|e| EngineError::message(e.to_string()))?;
+    let loss_path = job.work_dir.join("loss_history.jsonl");
+    // Fresh run truncates; resume into a new task dir starts empty.
+    if start_step == 0 {
+        let _ = std::fs::remove_file(&loss_path);
+    }
     let mut closure_cache: HashMap<i64, Rc<VariantClosures>> = HashMap::new();
+    let mut order_cache: (u32, Vec<usize>) = (u32::MAX, Vec::new());
 
     progress(TrainEvent::Phase(format!(
         "training: {} iterations, rank {}, {} target modules, {} images",
@@ -549,17 +835,16 @@ pub fn train_on_executor(
         samples.len()
     )));
 
-    for step in 0..iterations {
-        if cursor >= order.len() {
-            // Fisher–Yates with the host RNG; reshuffles each epoch.
-            for i in (1..order.len()).rev() {
-                let j = (rng.next() % (i as u64 + 1)) as usize;
-                order.swap(i, j);
-            }
-            cursor = 0;
+    let n_samples = samples.len() as u32;
+    for step in start_step..iterations {
+        // Everything below is a pure function of (seed, step): dataset pick,
+        // dropout, sigma and noise reproduce exactly after a restart.
+        let epoch = step / n_samples;
+        if order_cache.0 != epoch {
+            order_cache = (epoch, epoch_order(seed, epoch, samples.len()));
         }
-        let sample = &samples[order[cursor]];
-        cursor += 1;
+        let sample = &samples[order_cache.1[(step % n_samples) as usize]];
+        let mut rng = step_rng(seed, step);
         let variant = if rng.unit() < job.preset.caption_dropout {
             &sample.dropped
         } else {
@@ -579,17 +864,16 @@ pub fn train_on_executor(
             config,
             &layer_slots,
             &param_scales,
+            params.len() * 2,
             stream,
         )
         .map_err(mlx)?;
-        let (key_eps, key_rest) = noise_key.split(stream).map_err(mlx)?;
-        noise_key = key_rest;
-        let eps = key_eps
+        let noise_key = step_noise_key(seed, step).map_err(mlx)?;
+        let eps = noise_key
             .normal(&sample.latent.shape(), Dtype::Float32, stream)
             .map_err(mlx)?;
         let x_t = sample_noisy_latent(&sample.latent, sigma, &eps, stream).map_err(mlx)?;
         let timestep = model::embed_timestep(&dit, config, sigma, stream).map_err(mlx)?;
-        timestep.eval().map_err(mlx)?;
         let (unified, _) = model::unified_before(
             &dit,
             config,
@@ -603,48 +887,25 @@ pub fn train_on_executor(
             &mut |_, _| {},
         )
         .map_err(mlx)?;
-        unified.eval().map_err(mlx)?;
+        // No premature eval: unified/timestep/eps/x0 are closure inputs; the
+        // traced graph consumes them lazily and one sync at the loss read
+        // is enough.
 
-        let x0 = sample.latent.clone();
-        let grid = shared.grid;
-        let weights = dit.clone();
-        let shared = shared.clone();
-        let slots = layer_slots.clone();
-        let n_train = params.len() * 2;
-        let closure = Closure::new(stream.clone(), move |ins, call_stream| {
-            let mut x = unified.clone();
-            for (layer, block) in shared.blocks.iter().enumerate() {
-                let mut inputs = vec![x.clone(), timestep.clone()];
-                for slot in slots[layer] {
-                    if let Some(global) = slot {
-                        inputs.push(ins[global * 2].clone());
-                        inputs.push(ins[global * 2 + 1].clone());
-                    }
-                }
-                x = block.apply(&inputs)?;
-            }
-            let velocity = model::final_velocity(
-                &weights,
-                config,
-                grid,
-                &x,
-                &timestep,
-                call_stream,
-                &mut |_, _| {},
-            )?;
-            let loss = flow_match_mse(&velocity, &x0, &eps, call_stream)?;
-            let weight = Array::scalar_f32(train_weight)?;
-            Array::multiply(&loss, &weight, call_stream)
-        })
-        .map_err(mlx)?;
-        let argnums: Vec<i32> = (0..n_train as i32).collect();
-        let vag = ValueAndGrad::new(closure, &argnums).map_err(mlx)?;
+        let weight_arr = Array::scalar_f32(train_weight).map_err(mlx)?;
+        let n_train = shared.n_train;
         let mut flat: Vec<Array> = Vec::with_capacity(n_train);
         for p in &params {
             flat.push(p.a.clone());
             flat.push(p.b.clone());
         }
-        let (values, grads) = vag.apply(&flat).map_err(mlx)?;
+        let mut inputs: Vec<Array> = Vec::with_capacity(n_train + 5);
+        inputs.extend(flat.iter().cloned());
+        inputs.push(sample.latent.clone());
+        inputs.push(timestep);
+        inputs.push(unified);
+        inputs.push(eps);
+        inputs.push(weight_arr);
+        let (values, grads) = shared.vag.apply(&inputs).map_err(mlx)?;
         if values.len() != 1 || grads.len() != n_train {
             return Err(EngineError::message(format!(
                 "value_and_grad returned {} values / {} grads (expected 1 / {n_train})",
@@ -664,7 +925,9 @@ pub fn train_on_executor(
             p.a = flat[i * 2].clone();
             p.b = flat[i * 2 + 1].clone();
         }
-        loss_history.push(json!({ "step": step + 1, "loss": loss, "sigma": sigma }));
+        let point = json!({ "step": step + 1, "loss": loss, "sigma": sigma });
+        loss_history.push(point.clone());
+        append_loss_history_line(&loss_path, &point).map_err(mlx)?;
         progress(TrainEvent::Step {
             step: step + 1,
             total: iterations,
@@ -672,17 +935,71 @@ pub fn train_on_executor(
         });
 
         let done = step + 1;
-        if done % job.preset.checkpoint_every.max(1) == 0 && done < iterations {
+        let checkpoint_hit = done % job.preset.checkpoint_every.max(1) == 0 && done < iterations;
+        let progress_hit = done % job.preset.progress_every.max(1) == 0;
+        let mut preview_adapter: Option<PathBuf> = None;
+        if checkpoint_hit {
             let path = adapter_dir.join(format!("checkpoint-{done}.safetensors"));
             export_lora_adapters(&path, &params, stream)?;
+            write_trainer_state(
+                &path,
+                &TrainerState {
+                    step: done,
+                    iterations,
+                    preset: job.preset.id.clone(),
+                },
+            )
+            .map_err(mlx)?;
             checkpoints.push(path.display().to_string());
             progress(TrainEvent::Checkpoint(path.display().to_string()));
+            preview_adapter = Some(path);
+        }
+        if progress_hit {
+            let adapter = match preview_adapter {
+                Some(path) => path,
+                None => {
+                    let path = adapter_dir.join(format!("progress-{done}.safetensors"));
+                    export_lora_adapters(&path, &params, stream)?;
+                    path
+                }
+            };
+            match write_progress_preview(cache, &job, &adapter, done, stream) {
+                Ok(png) => progress(TrainEvent::Phase(format!(
+                    "progress preview written to {png}"
+                ))),
+                Err(error) => progress(TrainEvent::Phase(format!(
+                    "progress preview failed (non-fatal): {error}"
+                ))),
+            }
         }
     }
 
     let final_path = adapter_dir.join("final_adapters.safetensors");
     export_lora_adapters(&final_path, &params, stream)?;
+    write_trainer_state(
+        &final_path,
+        &TrainerState {
+            step: iterations,
+            iterations,
+            preset: job.preset.id.clone(),
+        },
+    )
+    .map_err(mlx)?;
     checkpoints.push(final_path.display().to_string());
+    match write_progress_preview(cache, &job, &final_path, iterations, stream) {
+        Ok(png) => progress(TrainEvent::Phase(format!(
+            "progress preview written to {png}"
+        ))),
+        Err(error) => progress(TrainEvent::Phase(format!(
+            "progress preview failed (non-fatal): {error}"
+        ))),
+    }
+    let peak_gib = danmo_mlx::peak_memory()
+        .map(|bytes| bytes as f64 / (1u64 << 30) as f64)
+        .unwrap_or(f64::NAN);
+    progress(TrainEvent::Phase(format!(
+        "peak MLX memory {peak_gib:.1} GiB"
+    )));
 
     let mid = job
         .request
@@ -734,6 +1051,78 @@ mod tests {
     use crate::weights::MlxWeights;
     use danmo_mlx::{adamw_update_all, DeviceType};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn trainer_state_roundtrip_and_resume_validation() {
+        let dir = std::env::temp_dir().join(format!("trainer-state-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ck = dir.join("checkpoint-500.safetensors");
+        std::fs::write(&ck, b"stub").unwrap();
+
+        // Pre-resume checkpoint (no state file) → warm start at step 0.
+        assert_eq!(
+            resolve_start_step(read_trainer_state(&ck).unwrap(), 2500, "turbo-sft").unwrap(),
+            0
+        );
+
+        let state = TrainerState {
+            step: 500,
+            iterations: 2500,
+            preset: "turbo-sft".into(),
+        };
+        write_trainer_state(&ck, &state).unwrap();
+        assert_eq!(
+            trainer_state_path(&ck).file_name().unwrap(),
+            "checkpoint-500.state.json"
+        );
+        assert_eq!(read_trainer_state(&ck).unwrap(), Some(state.clone()));
+        assert_eq!(
+            resolve_start_step(read_trainer_state(&ck).unwrap(), 2500, "turbo-sft").unwrap(),
+            500
+        );
+
+        // Fail loud: iteration count changed, preset changed, run complete,
+        // corrupt state file.
+        assert!(resolve_start_step(read_trainer_state(&ck).unwrap(), 1000, "turbo-sft").is_err());
+        assert!(resolve_start_step(read_trainer_state(&ck).unwrap(), 2500, "base-face").is_err());
+        write_trainer_state(
+            &ck,
+            &TrainerState {
+                step: 2500,
+                ..state
+            },
+        )
+        .unwrap();
+        assert!(resolve_start_step(read_trainer_state(&ck).unwrap(), 2500, "turbo-sft").is_err());
+        std::fs::write(trainer_state_path(&ck), b"{not json").unwrap();
+        assert!(read_trainer_state(&ck).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn step_deterministic_sampling_reproduces_after_restart() {
+        // Same (seed, step) ⇒ same draws; same (seed, epoch) ⇒ same order.
+        assert_eq!(epoch_order(42, 0, 9), epoch_order(42, 0, 9));
+        assert_ne!(epoch_order(42, 0, 9), epoch_order(42, 1, 9));
+        let mut sorted = epoch_order(42, 0, 9);
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..9).collect::<Vec<_>>(), "order is a permutation");
+
+        assert_eq!(step_rng(7, 123).unit(), step_rng(7, 123).unit());
+        assert_eq!(step_rng(7, 123).normal(), step_rng(7, 123).normal());
+        assert_ne!(step_rng(7, 123).unit(), step_rng(7, 124).unit());
+
+        let k1 = step_noise_key(7, 55).unwrap();
+        let k2 = step_noise_key(7, 55).unwrap();
+        let stream = Stream::cpu().unwrap();
+        let n1 = k1.normal(&[4], Dtype::Float32, &stream).unwrap();
+        let n2 = k2.normal(&[4], Dtype::Float32, &stream).unwrap();
+        assert_eq!(
+            n1.to_vec_f32(&stream).unwrap(),
+            n2.to_vec_f32(&stream).unwrap()
+        );
+    }
 
     fn tiny_config() -> MlxZImageConfig {
         let mut config = MlxZImageConfig::published();

@@ -29,6 +29,12 @@ pub(crate) struct AppState {
     pub(crate) workspace: PathBuf,
     pub(crate) outputs: PathBuf,
     pub(crate) downloads: Downloads,
+    /// Inference trace store. `None` only when the store could not be opened;
+    /// the reason is kept in `telemetry_error` so `/api/system/health` can say
+    /// why the trace page is empty instead of pretending there is no traffic.
+    pub(crate) telemetry: Option<danmo_otel::Telemetry>,
+    pub(crate) telemetry_error: Option<String>,
+    pub(crate) otel_db: PathBuf,
 }
 
 pub fn try_router(db: &std::path::Path, registry: &std::path::Path) -> Result<Router, String> {
@@ -50,6 +56,26 @@ pub fn try_router(db: &std::path::Path, registry: &std::path::Path) -> Result<Ro
         .unwrap_or_else(|_| workspace.join("outputs"));
     let scheduler = Scheduler::open(db, true).map_err(|error| error.to_string())?;
     let downloads = Downloads::open(&workspace);
+    let otel_db = otel_db_path(&workspace);
+    let (telemetry, telemetry_error) = match danmo_otel::Telemetry::init(&otel_db, "danqing-api") {
+        Ok(telemetry) => {
+            tracing::info!("inference traces -> {}", otel_db.display());
+            // Local-only store: drop spans past the retention window on start so
+            // the file does not grow without bound. A failure is logged, not
+            // ignored, but it must not stop the API from serving tasks.
+            let cutoff = retain_cutoff_nanos(TRACE_RETENTION_DAYS);
+            match danmo_otel::purge_older_than(&otel_db, cutoff) {
+                Ok(0) => {}
+                Ok(removed) => tracing::info!("dropped {removed} expired trace span(s)"),
+                Err(error) => tracing::error!("trace retention sweep failed: {error}"),
+            }
+            (Some(telemetry), None)
+        }
+        Err(error) => {
+            tracing::error!("inference traces unavailable: {error}");
+            (None, Some(error.to_string()))
+        }
+    };
     let state = AppState {
         scheduler,
         backend,
@@ -58,6 +84,9 @@ pub fn try_router(db: &std::path::Path, registry: &std::path::Path) -> Result<Ro
         workspace,
         outputs,
         downloads,
+        telemetry,
+        telemetry_error,
+        otel_db,
     };
     spawn_worker(state.clone());
     Ok(Router::new()
@@ -79,6 +108,25 @@ pub fn try_router(db: &std::path::Path, registry: &std::path::Path) -> Result<Ro
         .merge(product::routes())
         .fallback(product::spa)
         .with_state(state))
+}
+
+/// Trace store location. Kept out of `studio.db` so span writes never contend
+/// with the queue worker's task/log transactions.
+pub fn otel_db_path(workspace: &FsPath) -> PathBuf {
+    workspace.join("db").join("otel.db")
+}
+
+/// How long a task's spans stay queryable. The store is local-only, so this is
+/// the only bound on its size besides task purge.
+const TRACE_RETENTION_DAYS: u64 = 14;
+
+fn retain_cutoff_nanos(days: u64) -> i64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_nanos() as i64)
+        .unwrap_or(0);
+    let window = (days as i64).saturating_mul(24 * 60 * 60 * 1_000_000_000);
+    now.saturating_sub(window)
 }
 
 fn workspace_of(db: &FsPath) -> PathBuf {
@@ -629,17 +677,72 @@ fn persist_preview(
     Ok(vec![id])
 }
 
+/// Pull `step/total` out of task log lines.
+///
+/// Accepts generation observer lines (`[mlx] denoise 3/30`), plain
+/// `step 3/30`, and training lines that trail loss text
+/// (`step 25/2500 loss 0.12 (avg 0.11)`).
 fn parse_step_message(message: &str) -> (u32, u32) {
-    let Some(rest) = message.strip_prefix("step ") else {
-        return (0, 0);
+    let bytes = message.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] != b'/' {
+            continue;
+        }
+        let step_tok = &message[start..i];
+        i += 1;
+        let total_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == total_start {
+            continue;
+        }
+        let total_tok = &message[total_start..i];
+        let step = step_tok.parse().unwrap_or(0);
+        let total = total_tok.parse().unwrap_or(0);
+        if step > 0 || total > 0 {
+            return (step, total);
+        }
+    }
+    (0, 0)
+}
+
+/// SSE `message` for the progress event: keep generation phase labels
+/// (`denoise`) when present; otherwise pass the log line through so
+/// training/setup status is visible.
+fn progress_sse_message(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return "running".into();
+    }
+    let body = if let Some(rest) = trimmed.strip_prefix('[') {
+        rest.split_once(']')
+            .map(|(_, after)| after.trim())
+            .unwrap_or(trimmed)
+    } else {
+        trimmed
     };
-    let Some((step, total)) = rest.split_once('/') else {
-        return (0, 0);
+    let mut parts = body.split_whitespace();
+    let Some(first) = parts.next() else {
+        return trimmed.to_string();
     };
-    (
-        step.trim().parse().unwrap_or(0),
-        total.trim().parse().unwrap_or(0),
-    )
+    if first.eq_ignore_ascii_case("step") {
+        return trimmed.to_string();
+    }
+    let second = parts.next().unwrap_or("");
+    if second.contains('/') && second.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        return first.to_string();
+    }
+    trimmed.to_string()
 }
 
 #[cfg(any())]
@@ -678,6 +781,11 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
         "backend_selection": state.backend_selection.reason,
         "backend_probe": state.backend_selection.probe.as_ref().map(|probe| probe.summary()),
         "mlx_capability": mlx_capability_summary(),
+        "traces": {
+            "enabled": state.telemetry.is_some(),
+            "db": state.otel_db.display().to_string(),
+            "error": state.telemetry_error,
+        },
     }))
 }
 
@@ -722,6 +830,12 @@ async fn stream_task(
     let (tx, rx) = tokio::sync::mpsc::channel(16);
     tokio::spawn(async move {
         let mut last_log_id = 0i64;
+        let mut last_message = String::from("running");
+        let mut primed = false;
+        // Emit-on-change: unconditional 30ms progress/status floods the WebView
+        // main thread during MLX denoise and freezes menus.
+        let mut last_progress_sig: Option<(i32, String, Option<String>, u32, u32)> = None;
+        let mut last_status_sig: Option<(String, i32)> = None;
         loop {
             let row = state.scheduler.get(&id).ok().flatten();
             let Some(row) = row else {
@@ -730,10 +844,21 @@ async fn stream_task(
                     .await;
                 break;
             };
-            let logs = state.scheduler.logs(&id, 0, 50).unwrap_or_default();
-            if let Some(log) = logs.last() {
-                if log.id != last_log_id {
+            // Newest page — oldest-first offset 0 freezes once a task exceeds the page size.
+            let logs = state.scheduler.recent_logs(&id, 64).unwrap_or_default();
+            if !primed {
+                if let Some(log) = logs.last() {
                     last_log_id = log.id;
+                    last_message = log.message.clone();
+                }
+                primed = true;
+            } else {
+                for log in &logs {
+                    if log.id <= last_log_id {
+                        continue;
+                    }
+                    last_log_id = log.id;
+                    last_message = log.message.clone();
                     let payload = json!({
                         "id": log.id,
                         "message": log.message,
@@ -745,31 +870,58 @@ async fn stream_task(
                         .await;
                 }
             }
-            let message = logs
-                .last()
-                .map(|log| log.message.clone())
-                .unwrap_or_else(|| "denoise".into());
-            let (step, total) = parse_step_message(&message);
-            let progress = json!({
-                "progress": row.progress,
-                "message": "denoise",
-                "step": step,
-                "total": total,
-            });
-            let _ = tx
-                .send(Ok(Event::default()
-                    .event("progress")
-                    .data(progress.to_string())))
-                .await;
-            let status = json!({
-                "status": row.status,
-                "progress": row.progress,
-            });
-            let _ = tx
-                .send(Ok(Event::default()
-                    .event("status")
-                    .data(status.to_string())))
-                .await;
+            if let Some(log) = logs.last() {
+                last_message = log.message.clone();
+            }
+            // Generation writes step tips without task_logs; training still
+            // parses N/M from the last log line when no tip is present.
+            let tip = state.scheduler.progress_tip(&id);
+            let (step, total, message) = if let Some(tip) = tip.as_ref() {
+                (
+                    tip.step,
+                    tip.total,
+                    if tip.phase.is_empty() {
+                        "running".to_string()
+                    } else {
+                        tip.phase.clone()
+                    },
+                )
+            } else {
+                let (step, total) = parse_step_message(&last_message);
+                (step, total, progress_sse_message(&last_message))
+            };
+            let phase = tip.as_ref().map(|tip| tip.phase.clone());
+            // Quantize f64 progress for signature equality (avoid float chatter).
+            let progress_q = (row.progress * 10_000.0).round() as i32;
+            let progress_sig = (progress_q, message.clone(), phase.clone(), step, total);
+            if last_progress_sig.as_ref() != Some(&progress_sig) {
+                last_progress_sig = Some(progress_sig);
+                let progress = json!({
+                    "progress": row.progress,
+                    "message": message,
+                    "phase": phase,
+                    "step": step,
+                    "total": total,
+                });
+                let _ = tx
+                    .send(Ok(Event::default()
+                        .event("progress")
+                        .data(progress.to_string())))
+                    .await;
+            }
+            let status_sig = (row.status.clone(), progress_q);
+            if last_status_sig.as_ref() != Some(&status_sig) {
+                last_status_sig = Some(status_sig);
+                let status = json!({
+                    "status": row.status,
+                    "progress": row.progress,
+                });
+                let _ = tx
+                    .send(Ok(Event::default()
+                        .event("status")
+                        .data(status.to_string())))
+                    .await;
+            }
             if row.status == "completed" || row.status == "failed" || row.status == "cancelled" {
                 let payload = row
                     .result
@@ -787,7 +939,7 @@ async fn stream_task(
                     .await;
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(30)).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
     });
     Sse::new(ReceiverStream::new(rx))
@@ -803,6 +955,27 @@ mod tests {
     use std::io::{Read, Write};
     use tower::ServiceExt;
 
+    #[test]
+    fn parse_step_message_reads_training_loss_lines() {
+        assert_eq!(
+            parse_step_message("step 25/2500 loss 0.1234 (avg 0.1100)"),
+            (25, 2500)
+        );
+        assert_eq!(parse_step_message("step 1/2500"), (1, 2500));
+        assert_eq!(parse_step_message("[mlx] denoise 3/30"), (3, 30));
+        assert_eq!(parse_step_message("Rust MLX LoRA training started"), (0, 0));
+    }
+
+    #[test]
+    fn progress_sse_message_keeps_gen_phase_and_train_lines() {
+        assert_eq!(progress_sse_message("[mlx] denoise 3/30"), "denoise");
+        assert_eq!(
+            progress_sse_message("step 25/2500 loss 0.12 (avg 0.11)"),
+            "step 25/2500 loss 0.12 (avg 0.11)"
+        );
+        assert_eq!(progress_sse_message("caching latents"), "caching latents");
+    }
+
     fn router(db: &std::path::Path, registry: &std::path::Path) -> Router {
         try_router(db, registry).expect("test router")
     }
@@ -812,7 +985,9 @@ mod tests {
             .join("../../../default_config/models_registry.json")
     }
 
-    /// Weight key in, registry install directory out.
+    /// GGUF tier key in, registry install directory out. Only the smoke-bundle
+    /// tests use this: their fixture writes a GGUF DiT, so they inject the tier
+    /// into a registry copy. Product downloads are dense safetensors.
     fn published_weight(model: &str, weight: &str) -> (String, String) {
         let catalog = Catalog::open(&factory_registry()).expect("factory registry");
         let id = format!("{model}:{weight}");
@@ -820,6 +995,43 @@ mod tests {
             .gguf_local_path(&id)
             .unwrap_or_else(|err| panic!("{id}: {err}"));
         (id, path)
+    }
+
+    /// Version key in, registry `local_path` out. Reads the registry directly:
+    /// the only download is the dense version, and `q4-mixed` derives from it.
+    fn published_path(model: &str, weight: &str) -> (String, String) {
+        let text = std::fs::read_to_string(factory_registry()).expect("factory registry");
+        let root: Value = serde_json::from_str(&text).expect("registry json");
+        let id = format!("{model}:{weight}");
+        let path = root
+            .pointer(&format!(
+                "/models/{model}/distribution/versions/{weight}/local_path"
+            ))
+            .and_then(|value| value.as_str())
+            .unwrap_or_else(|| panic!("{id}: version has no local_path"))
+            .to_string();
+        (id, path)
+    }
+
+    /// Registry copy that adds a GGUF tier pointing at a smoke bundle.
+    fn registry_with_gguf_tier(
+        dir: &std::path::Path,
+        model: &str,
+        tier: &str,
+        local_path: &str,
+    ) -> PathBuf {
+        let mut registry: Value =
+            serde_json::from_str(&std::fs::read_to_string(factory_registry()).unwrap()).unwrap();
+        registry["models"][model]["distribution"]["versions"] = json!({
+            tier: {
+                "name": { "zh": "Smoke", "en": "Smoke" },
+                "size": "1GB",
+                "local_path": local_path
+            }
+        });
+        let path = dir.join("registry.json");
+        std::fs::write(&path, serde_json::to_string(&registry).unwrap()).unwrap();
+        path
     }
 
     fn vue_generate_body(model: &str, prompt: &str) -> Value {
@@ -967,7 +1179,9 @@ mod tests {
         )
         .await;
         assert_eq!(response.0, StatusCode::OK, "{}", response.1);
-        assert!(response.1["id"].as_str().is_some_and(|id| id.starts_with("ast_")));
+        assert!(response.1["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("ast_")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1034,7 +1248,7 @@ mod tests {
             &app,
             "/api/images/edits",
             &json!({
-                "model": "fibo",
+                "model": "fibo-edit-rmbg",
                 "operation": "rewrite",
                 "source_asset_id": source_id,
                 "prompt": "make it blue",
@@ -1188,10 +1402,13 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let (model, local_path) = published_weight("seedvr2-3b", "q4_k");
+        // Smoke fixtures write a GGUF DiT; point a test registry copy at it.
+        let local_path = "models/Upscaler/seedvr2-7b-fp16".to_string();
+        let registry_path = registry_with_gguf_tier(&dir, "seedvr2-7b", "q4_k", &local_path);
         let bundle = dir.join(&local_path);
         danmo_engine::write_seedvr2_smoke_bundle(&bundle).unwrap();
-        let app = router(&dir.join("studio.db"), &factory_registry());
+        let model = "seedvr2-7b:q4_k".to_string();
+        let app = router(&dir.join("studio.db"), &registry_path);
         let rgb = vec![128u8; 32 * 32 * 3];
         let png = danmo_engine::png::encode_rgb(32, 32, &rgb);
         let upload = post_json(
@@ -1275,8 +1492,8 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let model = "seedvr2-video-3b:fp16".to_string();
-        let local_path = "models/Upscaler/seedvr2-3b-fp16".to_string();
+        let model = "seedvr2-video-7b:fp16".to_string();
+        let local_path = "models/Upscaler/seedvr2-7b-fp16".to_string();
         let bundle = dir.join(&local_path);
         danmo_engine::write_seedvr2_smoke_bundle(&bundle).unwrap();
         std::fs::remove_file(bundle.join("dit_smoke.gguf")).unwrap();
@@ -1408,7 +1625,7 @@ mod tests {
             &app,
             "/api/videos/upscales",
             &json!({
-                "model": "hunyuan-video-1.5-1080p-sr",
+                "model": "minimax-h3-fl2va",
                 "source_asset_id": source_id,
                 "scale": 2
             }),
@@ -1440,9 +1657,11 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let (model, local_path) = published_weight("wan-2.2-ti2v-5b", "q4_k");
+        let local_path = "models/Video/wan-2.2-ti2v-5b-fp16".to_string();
+        let registry_path = registry_with_gguf_tier(&dir, "wan-2.2-ti2v-5b", "q4_k", &local_path);
+        let model = "wan-2.2-ti2v-5b:q4_k".to_string();
         danmo_engine::write_wan_smoke_bundle(&dir.join(&local_path)).unwrap();
-        let app = router(&dir.join("studio.db"), &factory_registry());
+        let app = router(&dir.join("studio.db"), &registry_path);
         let create = post_json(
             &app,
             "/api/videos/generations",
@@ -1501,77 +1720,6 @@ mod tests {
         assert_eq!(stream["height"], 32, "{probe_json}");
         assert_eq!(stream["avg_frame_rate"], "4/1", "{probe_json}");
         assert_eq!(stream["nb_frames"], "5", "{probe_json}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[tokio::test]
-    async fn hunyuan_video_edit_fails_loud_until_the_graphs_land() {
-        let dir = std::env::temp_dir().join(format!(
-            "danmo-api-hunyuan-i2v-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let app = router(&dir.join("studio.db"), &factory_registry());
-        let (model, local_path) = published_weight("hunyuan-video-1.5-i2v-720p", "q4_k");
-        let missing_source = post_json(
-            &app,
-            "/api/videos/edits",
-            &json!({
-                "model": model,
-                "prompt": "a cat",
-            }),
-        )
-        .await;
-        assert_eq!(
-            missing_source.0,
-            StatusCode::BAD_REQUEST,
-            "{}",
-            missing_source.1
-        );
-        let detail = missing_source.1["detail"]
-            .as_str()
-            .or_else(|| missing_source.1["raw"].as_str())
-            .unwrap_or("");
-        assert!(detail.contains("source_asset_id"), "{}", missing_source.1);
-        // The family is wired, so a well-formed request queues; with no
-        // installed bundle the task fails loud naming the registry path.
-        let create = post_json(
-            &app,
-            "/api/videos/edits",
-            &json!({
-                "model": model,
-                "source_asset_id": "ast_src",
-                "prompt": "a cat",
-                "num_frames": 81,
-                "priority": "normal"
-            }),
-        )
-        .await;
-        assert_eq!(create.0, StatusCode::ACCEPTED, "{}", create.1);
-        let id = create.1["id"].as_str().unwrap();
-        let task = wait_terminal_for(&app, id, 300, 100).await;
-        assert_eq!(task["status"], "failed", "task {task}");
-        let err = task["error"].as_str().unwrap_or("");
-        assert!(
-            err.contains(&local_path),
-            "hunyuan i2v did not use the registry path for {model}: {err}"
-        );
-        // A non-hunyuan family fails loud before queueing.
-        let unbuilt = post_json(
-            &app,
-            "/api/videos/edits",
-            &json!({
-                "model": "wan-2.2-ti2v-5b",
-                "source_asset_id": "ast_src",
-                "prompt": "a cat",
-            }),
-        )
-        .await;
-        assert_eq!(unbuilt.0, StatusCode::NOT_IMPLEMENTED, "{}", unbuilt.1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1948,7 +2096,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let app = router(&dir.join("studio.db"), &factory_registry());
-        let (model, _) = published_weight("z-image", "q4_k");
+        let (model, _) = published_path("z-image", "fp16");
         let mut body = vue_generate_body(&model, "a cat");
         body["teacache_mode"] = json!("auto");
         body["lemica_mode"] = json!("none");
@@ -1963,7 +2111,7 @@ mod tests {
             "{}",
             missing.1
         );
-        body["model"] = json!("fibo");
+        body["model"] = json!("fibo-edit-rmbg");
         let refused = post_json(&app, "/api/images/generations", &body).await;
         assert_eq!(refused.0, StatusCode::NOT_IMPLEMENTED);
         assert!(
@@ -2036,7 +2184,7 @@ mod tests {
             &app,
             "/api/images/edits",
             &json!({
-                "model": "fibo",
+                "model": "fibo-edit-rmbg",
                 "operation": "rewrite",
                 "source_asset_id": "asset-missing",
                 "prompt": "a cat",
@@ -2126,7 +2274,7 @@ mod tests {
         });
         let heavy = post_json(&app, "/api/images/generations", &body).await;
         assert_eq!(heavy.0, StatusCode::BAD_REQUEST);
-        body["model"] = json!("fibo");
+        body["model"] = json!("fibo-edit-rmbg");
         body["structural_guide"] = json!({
             "asset_id": "asset-control",
             "model_id": controlnet
@@ -2289,10 +2437,8 @@ mod tests {
         assert_eq!(turbo["name"]["zh"], "Z-Image-Turbo");
         assert_eq!(turbo["parameters"]["steps"]["default"], 9);
         assert_eq!(turbo["parameters"]["supports_guidance"], false);
-        assert_eq!(
-            turbo["versions"]["mlx-q4"]["repo_id"],
-            "OsaurusAI/Z-Image-Turbo-mflux-4bit"
-        );
+        assert_eq!(turbo["versions"]["q4-mixed"]["base"], "fp16");
+        assert_eq!(turbo["versions"]["q4-mixed"]["default"], true);
         assert!(turbo.get("catalog").is_none());
         assert_eq!(
             listed["_index"]["z-image-turbo"]["actions"],
@@ -2313,8 +2459,8 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let (model, local_path) = published_weight("flux2-klein-4b", "q4_k");
-        let weight = model.split(':').nth(1).unwrap();
+        let (model, local_path) = published_path("flux2-klein-4b", "fp16");
+        let derived_path = published_path("flux2-klein-4b", "q4-mixed").1;
         let app = router(&dir.join("studio.db"), &factory_registry());
         assert!(!dir.join(&local_path).exists());
         let missing = app
@@ -2339,7 +2485,11 @@ mod tests {
             err.contains(&local_path),
             "generation did not use the registry path for {model}: {err}"
         );
-        assert_eq!(failed["model_id"], model);
+        assert_eq!(
+            failed["model_id"],
+            model.split(':').next().unwrap(),
+            "task should record the bare model id: {failed}"
+        );
 
         let registry_body = app
             .clone()
@@ -2361,43 +2511,35 @@ mod tests {
         let model = &listed["models"]["flux2-klein-4b"];
         assert_eq!(model["media"], "image");
         assert_eq!(model["recommended"], true);
-        assert_eq!(
-            model["parameters"]["resolution_presets"]["default"],
-            "512x512"
-        );
-        let options = model["parameters"]["resolution_presets"]["options"]
-            .as_array()
-            .unwrap();
-        assert!(options.iter().any(|v| v == "64x64"));
-        assert!(options.iter().any(|v| v == "1024x1024"));
-        let q4 = &model["versions"][weight];
-        assert_eq!(q4["default"], true);
-        assert_eq!(q4["local_path"], local_path);
-        let patterns = q4["allow_patterns"].as_array().expect("allow_patterns");
         assert!(
-            patterns
-                .iter()
-                .any(|name| name.as_str().unwrap_or("").ends_with(".gguf")),
-            "{patterns:?}"
+            model["parameters"]["resolution_presets"]["default"].is_string(),
+            "{}",
+            model["parameters"]
         );
-        assert!(q4.get("graph_pack").is_none());
-        assert!(model["versions"]["bf16"].get("graph_pack").is_none());
+        let q4 = &model["versions"]["q4-mixed"];
+        assert_eq!(q4["default"], true);
+        assert_eq!(q4["local_path"], derived_path);
+        assert_eq!(q4["kind"], "derived");
+        assert_eq!(q4["base"], "fp16");
+        assert_eq!(q4["recipe"], "flux2-q4-mixed-v1");
+        let dense = &model["versions"]["fp16"];
+        assert_eq!(dense["kind"], "dense");
+        assert_eq!(dense["default"], false);
+        assert_eq!(dense["local_path"], local_path);
+        assert_eq!(dense["repo_id"], "black-forest-labs/FLUX.2-klein-4B");
         let klein9 = &listed["models"]["flux2-klein-9b"]["versions"];
-        assert_eq!(klein9["bf16"]["size"], "34.7GB");
-        assert_eq!(klein9["q8_0"]["size"], "26.5GB");
-        assert_eq!(klein9["q4_k"]["size"], "22.5GB");
         assert_eq!(
-            klein9["q4_k"]["components"][0]["repo_id"],
+            klein9["fp16"]["repo_id"],
             "black-forest-labs/FLUX.2-klein-9B"
         );
+        assert_eq!(klein9["q4-mixed"]["kind"], "derived");
+        assert_eq!(klein9["q4-mixed"]["base"], "fp16");
         let turbo = &listed["models"]["z-image-turbo"]["versions"];
-        assert_eq!(turbo["bf16"]["size"], "20.5GB");
-        assert_eq!(turbo["q8_0"]["size"], "15.5GB");
-        assert_eq!(turbo["q4_k"]["size"], "13.2GB");
-        assert_eq!(
-            turbo["q4_k"]["components"][0]["repo_id"],
-            "Tongyi-MAI/Z-Image-Turbo"
-        );
+        assert_eq!(turbo["fp16"]["repo_id"], "Tongyi-MAI/Z-Image-Turbo");
+        assert_eq!(turbo["q4-mixed"]["kind"], "derived");
+        assert_eq!(turbo["q4-mixed"]["recipe"], "z-image-q4-mixed-v1");
+        assert!(turbo.get("mlx-q4").is_none(), "{turbo:?}");
+        assert!(turbo.get("mlx-q8").is_none(), "{turbo:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3111,18 +3253,6 @@ fn validate_structural_guide(
     };
     match effective_type {
         "canny" | "depth" | "pose" | "hed" | "mlsd" | "scribble" | "gray" | "auto" => {}
-        "redux" => {
-            return Err(fail(
-                StatusCode::BAD_REQUEST,
-                "redux structural_guide is FLUX-only; use a control image",
-            ));
-        }
-        "fill" => {
-            return Err(fail(
-                StatusCode::BAD_REQUEST,
-                "fill structural_guide is standalone_edit; use image edits",
-            ));
-        }
         other => {
             return Err(fail(
                 StatusCode::BAD_REQUEST,

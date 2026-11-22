@@ -31,7 +31,8 @@ impl LlmProvider for OpenAiCompatibleProvider {
     fn block_reason(&self) -> Option<String> {
         if self.base_url.trim().is_empty() || !key_usable(&self.api_key) {
             return Some(
-                "Cloud LLM inference is not configured (base URL and API key required).".to_string(),
+                "Cloud LLM inference is not configured (base URL and API key required)."
+                    .to_string(),
             );
         }
         None

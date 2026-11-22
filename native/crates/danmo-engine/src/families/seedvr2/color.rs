@@ -98,16 +98,36 @@ pub fn correct_mlx(
     .clip(0.0, 1.0, stream)?;
     let content_lab = rgb_to_lab_mlx(&content01, stream)?;
     let style_lab = rgb_to_lab_mlx(&style01, stream)?;
-    let matched_a = hist_match_mlx(channel(&content_lab, 1, stream)?, channel(&style_lab, 1, stream)?, stream)?;
-    let matched_b = hist_match_mlx(channel(&content_lab, 2, stream)?, channel(&style_lab, 2, stream)?, stream)?;
-    let matched_l = hist_match_mlx(channel(&content_lab, 0, stream)?, channel(&style_lab, 0, stream)?, stream)?;
+    let matched_a = hist_match_mlx(
+        channel(&content_lab, 1, stream)?,
+        channel(&style_lab, 1, stream)?,
+        stream,
+    )?;
+    let matched_b = hist_match_mlx(
+        channel(&content_lab, 2, stream)?,
+        channel(&style_lab, 2, stream)?,
+        stream,
+    )?;
+    let matched_l = hist_match_mlx(
+        channel(&content_lab, 0, stream)?,
+        channel(&style_lab, 0, stream)?,
+        stream,
+    )?;
     let luminance = Array::add(
-        &Array::multiply(&channel(&content_lab, 0, stream)?, &scalar_mlx(LUMINANCE_WEIGHT)?, stream)?,
+        &Array::multiply(
+            &channel(&content_lab, 0, stream)?,
+            &scalar_mlx(LUMINANCE_WEIGHT)?,
+            stream,
+        )?,
         &Array::multiply(&matched_l, &scalar_mlx(1.0 - LUMINANCE_WEIGHT)?, stream)?,
         stream,
     )?;
     let rgb = lab_to_rgb_mlx(&luminance, &matched_a, &matched_b, stream)?.clip(0.0, 1.0, stream)?;
-    let output = Array::subtract(&Array::multiply(&rgb, &scalar_mlx(2.0)?, stream)?, &scalar_mlx(1.0)?, stream)?;
+    let output = Array::subtract(
+        &Array::multiply(&rgb, &scalar_mlx(2.0)?, stream)?,
+        &scalar_mlx(1.0)?,
+        stream,
+    )?;
     // NHWC → CHW planar for the host consumer.
     output
         .transpose_axes(&[0, 3, 1, 2], stream)?
@@ -116,7 +136,8 @@ pub fn correct_mlx(
 
 #[cfg(feature = "mlx")]
 fn planar_to_nhwc(planes: &[f32], w: usize, h: usize, stream: &Stream) -> MlxResult<Array> {
-    Array::from_f32_slice(planes, &[1, 3, h as i32, w as i32])?.transpose_axes(&[0, 2, 3, 1], stream)
+    Array::from_f32_slice(planes, &[1, 3, h as i32, w as i32])?
+        .transpose_axes(&[0, 2, 3, 1], stream)
 }
 
 #[cfg(feature = "mlx")]
@@ -142,7 +163,9 @@ fn blur_mlx(input: &Array, radius: usize, stream: &Stream) -> MlxResult<Array> {
     // Edge-pad by `radius`, then a dilated 3x3 (dilation=radius, pad=0) keeps
     // spatial size identical. A non-dilated 3x3 on the same pad grows by
     // 2*(radius-1) and breaks wavelet subtract (e.g. 5120x3072 → 5122x3074).
-    let radius = radius.max(1).min((shape[1].min(shape[2]) as usize / 8).max(1)) as i32;
+    let radius = radius
+        .max(1)
+        .min((shape[1].min(shape[2]) as usize / 8).max(1)) as i32;
     let padded = input.pad(
         &[1, 2],
         &[radius, radius],
@@ -228,7 +251,11 @@ fn srgb_to_linear_mlx(input: &Array, stream: &Stream) -> MlxResult<Array> {
 fn linear_to_srgb_mlx(input: &Array, stream: &Stream) -> MlxResult<Array> {
     let positive = Array::maximum(input, &Array::scalar_f32(0.0)?, stream)?;
     let power = Array::subtract(
-        &Array::multiply(&Array::power(&positive, &scalar_mlx(1.0 / 2.4)?, stream)?, &scalar_mlx(1.055)?, stream)?,
+        &Array::multiply(
+            &Array::power(&positive, &scalar_mlx(1.0 / 2.4)?, stream)?,
+            &scalar_mlx(1.055)?,
+            stream,
+        )?,
         &scalar_mlx(0.055)?,
         stream,
     )?;
@@ -250,7 +277,11 @@ fn rgb_to_lab_mlx(rgb: &Array, stream: &Stream) -> MlxResult<Array> {
     let kappa = (29.0f32 / 3.0).powi(3);
     let cubic = Array::power(&xyz, &scalar_mlx(1.0 / 3.0)?, stream)?;
     let linear = Array::divide(
-        &Array::add(&Array::multiply(&xyz, &scalar_mlx(kappa)?, stream)?, &scalar_mlx(16.0)?, stream)?,
+        &Array::add(
+            &Array::multiply(&xyz, &scalar_mlx(kappa)?, stream)?,
+            &scalar_mlx(16.0)?,
+            stream,
+        )?,
         &scalar_mlx(116.0)?,
         stream,
     )?;
@@ -259,16 +290,32 @@ fn rgb_to_lab_mlx(rgb: &Array, stream: &Stream) -> MlxResult<Array> {
     let fx = channel(&f, 0, stream)?;
     let fy = channel(&f, 1, stream)?;
     let fz = channel(&f, 2, stream)?;
-    let l = Array::subtract(&Array::multiply(&fy, &scalar_mlx(116.0)?, stream)?, &scalar_mlx(16.0)?, stream)?;
-    let a = Array::multiply(&Array::subtract(&fx, &fy, stream)?, &scalar_mlx(500.0)?, stream)?;
-    let b = Array::multiply(&Array::subtract(&fy, &fz, stream)?, &scalar_mlx(200.0)?, stream)?;
+    let l = Array::subtract(
+        &Array::multiply(&fy, &scalar_mlx(116.0)?, stream)?,
+        &scalar_mlx(16.0)?,
+        stream,
+    )?;
+    let a = Array::multiply(
+        &Array::subtract(&fx, &fy, stream)?,
+        &scalar_mlx(500.0)?,
+        stream,
+    )?;
+    let b = Array::multiply(
+        &Array::subtract(&fy, &fz, stream)?,
+        &scalar_mlx(200.0)?,
+        stream,
+    )?;
     // channel() keeps a trailing size-1 axis; concat on the last axis → NHWC.
     Array::concatenate_axis(&[l, a, b], 3, stream)
 }
 
 #[cfg(feature = "mlx")]
 fn lab_to_rgb_mlx(l: &Array, a: &Array, b: &Array, stream: &Stream) -> MlxResult<Array> {
-    let fy = Array::divide(&Array::add(l, &scalar_mlx(16.0)?, stream)?, &scalar_mlx(116.0)?, stream)?;
+    let fy = Array::divide(
+        &Array::add(l, &scalar_mlx(16.0)?, stream)?,
+        &scalar_mlx(116.0)?,
+        stream,
+    )?;
     let fx = Array::add(&Array::divide(a, &scalar_mlx(500.0)?, stream)?, &fy, stream)?;
     let fz = Array::subtract(&fy, &Array::divide(b, &scalar_mlx(200.0)?, stream)?, stream)?;
     let eps = 6.0f32 / 29.0;
@@ -276,7 +323,11 @@ fn lab_to_rgb_mlx(l: &Array, a: &Array, b: &Array, stream: &Stream) -> MlxResult
     let inverse = |value: &Array| -> MlxResult<Array> {
         let cubic = Array::power(value, &scalar_mlx(3.0)?, stream)?;
         let linear = Array::divide(
-            &Array::subtract(&Array::multiply(value, &scalar_mlx(116.0)?, stream)?, &scalar_mlx(16.0)?, stream)?,
+            &Array::subtract(
+                &Array::multiply(value, &scalar_mlx(116.0)?, stream)?,
+                &scalar_mlx(16.0)?,
+                stream,
+            )?,
             &scalar_mlx(kappa)?,
             stream,
         )?;
@@ -711,10 +762,7 @@ mod tests {
                         max_abs = max_abs.max((a - b).abs());
                     }
                     eprintln!("blur radius={radius} max_abs={max_abs:.6}");
-                    assert!(
-                        max_abs < 1e-4,
-                        "blur radius {radius} max_abs {max_abs}"
-                    );
+                    assert!(max_abs < 1e-4, "blur radius {radius} max_abs {max_abs}");
                 }
                 Ok(())
             })

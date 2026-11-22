@@ -152,10 +152,38 @@ impl FacadeFamily for SeedVr2VideoUpscaleFamily {
         let (pos_emb, txt_len, txt_in_dim) = load_pos_emb(&run.bundle)?;
         let pad_w = (16 - true_w as i64 % 16) % 16;
         let pad_h = (16 - true_h as i64 % 16) % 16;
+        let chunk_count = n_frames.div_ceil(chunk_frames);
+        exec.annotate(&[
+            ("danmo.generation.source_width", source_w.to_string()),
+            ("danmo.generation.source_height", source_h.to_string()),
+            ("danmo.generation.width", true_w.to_string()),
+            ("danmo.generation.height", true_h.to_string()),
+            ("danmo.generation.scale", scale.to_string()),
+            ("danmo.generation.denoise", denoise.to_string()),
+            ("danmo.generation.frames", n_frames.to_string()),
+            ("danmo.generation.fps", format!("{fps:.3}")),
+            ("danmo.generation.temporal_window", chunk_frames.to_string()),
+            ("danmo.generation.max_frames", max_frames.to_string()),
+            ("danmo.upscale.chunk_count", chunk_count.to_string()),
+            (
+                "danmo.upscale.vae_stream_cache",
+                vae_stream_cache.to_string(),
+            ),
+            (
+                "danmo.upscale.padded_width",
+                (true_w as i64 + pad_w).to_string(),
+            ),
+            (
+                "danmo.upscale.padded_height",
+                (true_h as i64 + pad_h).to_string(),
+            ),
+            ("danmo.upscale.steps", "1".into()),
+            ("danmo.upscale.timestep", "1000".into()),
+        ])?;
         exec.log(
             "info",
             &format!(
-                "seedvr2_video_upscale backend=mlx source={source_w}x{source_h} frames={n_frames} fps={fps:.3} out={true_w}x{true_h} chunk={chunk_frames} scale={scale} denoise={denoise}"
+                "seedvr2_video_upscale backend=mlx source={source_w}x{source_h} frames={n_frames} fps={fps:.3} out={true_w}x{true_h} chunk={chunk_frames} chunks={chunk_count} scale={scale} denoise={denoise}"
             ),
         )?;
         Ok(Box::new(SeedVr2VideoUpscaleSession {
@@ -197,12 +225,9 @@ impl FacadeSession for SeedVr2VideoUpscaleSession {
             let exec = exec.clone();
             return crate::runtime::mlx_executor()
                 .map_err(mlx_error)?
-                .execute(
-                    "seedvr2 video upscale",
-                    move |_, stream, cache, _events| {
-                        Ok(infer_mlx_on_stream(&run, &prepared, &exec, stream, cache))
-                    },
-                )
+                .execute("seedvr2 video upscale", move |_, stream, cache, _events| {
+                    Ok(infer_mlx_on_stream(&run, &prepared, &exec, stream, cache))
+                })
                 .map_err(mlx_error)?;
         }
         #[cfg(not(feature = "mlx"))]
@@ -228,6 +253,8 @@ fn infer_mlx_on_stream(
     std::fs::create_dir_all(&frames_out)
         .map_err(|err| EngineError::Resolve(format!("create frames_out: {err}")))?;
     exec.check_cancelled()?;
+    exec.phase("load")?;
+    super::session::annotate_weight_files(exec, &run.bundle)?;
     let resident = super::mlx::Models::resident(
         cache,
         &run.bundle,
@@ -237,6 +264,11 @@ fn infer_mlx_on_stream(
         stream,
     )
     .map_err(mlx_error)?;
+    exec.annotate(&[
+        ("danmo.upscale.resident_hit", resident.hit.to_string()),
+        ("danmo.upscale.resident_bytes", resident.bytes.to_string()),
+        ("danmo.weight.bytes", resident.bytes.to_string()),
+    ])?;
     exec.log(
         "info",
         &format!(
@@ -260,11 +292,14 @@ fn infer_mlx_on_stream(
     let chunk = prepared.chunk_frames as usize;
     let mut out_idx = 0usize;
     let mut start = 0usize;
+    let mut chunk_index = 0u32;
+    exec.phase("restore")?;
     while start < n_frames {
         exec.check_cancelled()?;
         let end = (start + chunk).min(n_frames);
         let logical = end - start;
         let infer_len = logical.max(5);
+        chunk_index += 1;
         let t0 = std::time::Instant::now();
         let mut style_planes: Vec<Vec<f32>> = Vec::with_capacity(infer_len);
         for f in 0..infer_len {
@@ -301,10 +336,28 @@ fn infer_mlx_on_stream(
             }
         }
         let seed = (seed_base + start as i64 * 1009) & 0x7FFF_FFFF;
+        let on_stage = |stage: &str| -> danmo_mlx::Result<()> {
+            exec.log(
+                "info",
+                &format!(
+                    "seedvr2_video_upscale chunk={chunk_index} frames={start}..{end} stage={stage}"
+                ),
+            )
+            .map_err(|error| danmo_mlx::Error::new("seedvr2 stage", error.to_string()))?;
+            Ok(())
+        };
         let decoded = if prepared.vae_stream_cache {
-            models.restore_chunk_streaming(&stacked, pw, ph, infer_len as i64, seed, stream)
+            models.restore_chunk_streaming(
+                &stacked,
+                pw,
+                ph,
+                infer_len as i64,
+                seed,
+                stream,
+                on_stage,
+            )
         } else {
-            models.restore_chunk(&stacked, pw, ph, infer_len as i64, seed, stream)
+            models.restore_chunk(&stacked, pw, ph, infer_len as i64, seed, stream, on_stage)
         }
         .map_err(mlx_error)?;
         drop(stacked);
@@ -324,8 +377,8 @@ fn infer_mlx_on_stream(
             }
             let decoded_c = crop_planar(&decoded_f, pw as usize, ph as usize, tw, th);
             let style_c = crop_planar(&style_planes[f], pw as usize, ph as usize, tw, th);
-            let corrected = color::correct_mlx(&decoded_c, &style_c, tw, th, stream)
-                .map_err(mlx_error)?;
+            let corrected =
+                color::correct_mlx(&decoded_c, &style_c, tw, th, stream).map_err(mlx_error)?;
             let mut rgb = vec![0u8; tw * th * 3];
             for y in 0..th {
                 for x in 0..tw {
@@ -343,21 +396,29 @@ fn infer_mlx_on_stream(
         exec.log(
             "info",
             &format!(
-                "seedvr2_video_upscale chunk start={start} end={end} frames={logical} elapsed_s={:.2}",
+                "seedvr2_video_upscale chunk={chunk_index} start={start} end={end} frames={logical} elapsed_s={:.2}",
                 t0.elapsed().as_secs_f64()
             ),
         )?;
-        exec.progress("denoise", end as u32, n_frames as u32)?;
+        exec.progress("restore", end as u32, n_frames as u32)?;
         start = end;
     }
     exec.check_cancelled()?;
     models.reset_stream(false);
+    exec.phase("mux")?;
     let out_path = prepared.work.join("upscale.mp4");
     ffmpeg::mux_png_sequence_to_mp4(
         &frames_out.join("up_%06d.png"),
         Some(&prepared.source_path),
         &out_path,
         prepared.fps,
+    )?;
+    exec.log(
+        "info",
+        &format!(
+            "seedvr2_video_upscale muxed frames={out_idx} out={}x{} fps={:.3}",
+            prepared.true_w, prepared.true_h, prepared.fps
+        ),
     )?;
     let bytes = std::fs::read(&out_path)
         .map_err(|err| EngineError::Resolve(format!("read muxed mp4: {err}")))?;

@@ -109,12 +109,16 @@ fn rotate_half(x: &Array, stream: &Stream) -> Result<Array> {
     let mut stop = pair_shape.clone();
     stop[rank - 1] = 1;
     let ones = vec![1; rank];
-    let x1 = pairs.slice(&zeros, &stop, &ones, stream)?.squeeze_axis(-1, stream)?;
+    let x1 = pairs
+        .slice(&zeros, &stop, &ones, stream)?
+        .squeeze_axis(-1, stream)?;
     let mut start2 = zeros.clone();
     start2[rank - 1] = 1;
     let mut stop2 = pair_shape.clone();
     stop2[rank - 1] = 2;
-    let x2 = pairs.slice(&start2, &stop2, &ones, stream)?.squeeze_axis(-1, stream)?;
+    let x2 = pairs
+        .slice(&start2, &stop2, &ones, stream)?
+        .squeeze_axis(-1, stream)?;
     let stacked = Array::stack(&[x2.negative(stream)?, x1], -1, stream)?;
     stacked.reshape(&shape, stream)
 }

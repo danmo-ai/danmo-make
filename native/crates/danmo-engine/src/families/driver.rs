@@ -8,10 +8,11 @@ use danmo_contracts::ImageGenerationRequest;
 pub struct DitDecode {
     pub preview_png: Vec<u8>,
     pub graph_computes: u32,
+    pub metadata: serde_json::Value,
 }
 
 pub trait DitImageSession {
-    fn encode(&mut self, ctx: &GgmlContext) -> Result<(), EngineError>;
+    fn encode(&mut self, ctx: &GgmlContext, exec: &ExecutionContext) -> Result<(), EngineError>;
     fn schedule(&mut self) -> Result<(), EngineError>;
     fn infer(&mut self, exec: &ExecutionContext) -> Result<Vec<f32>, EngineError>;
     fn decode(

@@ -23,7 +23,7 @@
         <span>
           <DqButton size="sm" class="model-ver-btn model-ver-btn--download" disabled>
             <DqIcon class="model-ver-btn__icon"><download /></DqIcon>
-            <span class="model-ver-btn__label">{{ $t('download.downloadVersion') }}</span>
+            <span class="model-ver-btn__label">{{ actionLabel }}</span>
           </DqButton>
         </span>
       </DqTooltip>
@@ -35,22 +35,35 @@
         @click="$emit('download')"
       >
         <DqIcon class="model-ver-btn__icon"><download /></DqIcon>
-        <span class="model-ver-btn__label">{{ $t('download.downloadVersion') }}</span>
+        <span class="model-ver-btn__label">{{ actionLabel }}</span>
       </DqButton>
     </template>
   </DqStack>
 </template>
 
 <script setup lang="ts">
-defineProps<{
+import { computed } from 'vue';
+import { useI18n } from 'vue-i18n';
+
+const props = defineProps<{
   vstatus: string;
   canDownload: boolean;
   dependencyHint: string;
   loading: boolean;
+  derived?: boolean;
 }>();
 
 defineEmits<{
   download: [];
   delete: [];
 }>();
+
+const { t } = useI18n();
+
+// A derived version is built on this machine from the full-precision base, so
+// the action says "quantize" rather than "download".
+const actionLabel = computed(() => {
+  if (!props.derived) return t('download.downloadVersion');
+  return props.loading ? t('download.converting') : t('download.convert');
+});
 </script>

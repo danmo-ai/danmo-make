@@ -13,8 +13,8 @@ mod session;
 mod tokenizer;
 
 pub(crate) use session::{encoder_layout, is_rms, tower_present, Loaded, Qwen3Config};
-#[cfg(feature = "mlx")]
-pub(crate) use tokenizer::{tokenize, tokenize_chat_empty};
 pub(crate) use tokenizer::{encode_plain, load_tokenizer};
 #[allow(unused_imports)]
 pub(crate) use tokenizer::{parse_tokenizer_json, tokenize_plain, tokenize_plain_parsed};
+#[cfg(feature = "mlx")]
+pub(crate) use tokenizer::{tokenize, tokenize_chat_empty};

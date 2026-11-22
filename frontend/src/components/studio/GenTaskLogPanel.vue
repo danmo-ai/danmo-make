@@ -9,18 +9,9 @@
   >
     <header class="gen-task-log-panel__header">
       <div class="gen-task-log-panel__lead">
-        <span v-if="!inDialog" class="gen-task-log-panel__title">{{ $t('studio.logs') }}</span>
-        <span v-if="logs.length > 0" class="gen-task-log-panel__count">{{ logs.length }}</span>
+        <span v-if="!inDialog" class="gen-task-log-panel__title">{{ $t('studio.pipelineTab') }}</span>
       </div>
       <div class="gen-task-log-panel__actions">
-        <DqButton
-          type="text"
-          size="sm"
-          class="gen-task-log-panel__toggle"
-          @click="showTechnical = !showTechnical"
-        >
-          {{ showTechnical ? $t('studio.logsDetailOff') : $t('studio.logsDetailOn') }}
-        </DqButton>
         <DqButton
           v-if="canDiagnose"
           type="text"
@@ -31,15 +22,6 @@
         >
           {{ diagnosing ? $t('studio.pipelineDiagnosing') : $t('studio.pipelineDiagnose') }}
         </DqButton>
-        <DqIconButton
-          type="text"
-          size="sm"
-          :label="$t('studio.clearLogs')"
-          :disabled="logs.length === 0"
-          @click="clearLogs"
-        >
-          <DqIcon><Delete /></DqIcon>
-        </DqIconButton>
       </div>
     </header>
 
@@ -50,7 +32,7 @@
     />
 
     <section
-      v-if="hasPipeline || !activeProgress"
+      v-if="hasPipeline"
       class="gen-task-log-panel__pipeline"
       :aria-label="$t('studio.pipelineTab')"
     >
@@ -62,14 +44,20 @@
     </section>
 
     <div
-      v-if="activeProgress"
+      v-else-if="!activeProgressTitle"
+      class="gen-task-log-panel__empty"
+    >
+      <p class="gen-task-log-panel__empty-title">{{ $t('studio.pipelineGraphEmpty') }}</p>
+    </div>
+
+    <div
+      v-if="activeProgressTitle"
       class="gen-task-log-panel__progress"
       role="status"
     >
       <div class="gen-task-log-panel__progress-head">
         <span class="dq-status-dot dq-status-dot--running" aria-hidden="true" />
-        <span class="gen-task-log-panel__progress-text">{{ activeProgress.title }}</span>
-        <time class="gen-task-log-panel__progress-time">{{ activeProgress.time }}</time>
+        <span class="gen-task-log-panel__progress-text">{{ activeProgressTitle }}</span>
       </div>
       <div
         v-if="progressPercent != null"
@@ -88,69 +76,62 @@
 
     <p v-if="diagnosis" class="gen-task-log-panel__diagnosis">{{ diagnosis }}</p>
 
+    <!-- Training and other non-OTel paths may still append task_logs. -->
     <div
       v-if="showLogBody"
       ref="logContainerRef"
       class="gen-task-log-panel__body"
     >
-      <div v-if="displayItems.length === 0 && !activeProgress" class="gen-task-log-panel__empty">
-        <p class="gen-task-log-panel__empty-title">{{ $t('studio.logsEmpty') }}</p>
-        <p class="gen-task-log-panel__empty-hint">{{ $t('studio.logsEmptyHint') }}</p>
-      </div>
-
-      <template v-else-if="displayItems.length > 0">
-        <p class="gen-task-log-panel__section-label">{{ $t('studio.logRecords') }}</p>
-        <ol class="gen-task-log-panel__timeline">
-          <li
-            v-for="(item, rowIndex) in displayItems"
-            :key="item.index"
-            class="gen-task-log-panel__entry"
-            :class="`gen-task-log-panel__entry--${item.kind}`"
-          >
-            <div class="gen-task-log-panel__rail" aria-hidden="true">
-              <span class="gen-task-log-panel__dot" />
-              <span
-                v-if="rowIndex < displayItems.length - 1"
-                class="gen-task-log-panel__stem"
-              />
-            </div>
-            <div class="gen-task-log-panel__content">
-              <div class="gen-task-log-panel__row-head">
-                <span class="gen-task-log-panel__label">{{ item.title }}</span>
-                <time
-                  v-if="showEntryTime(item)"
-                  class="gen-task-log-panel__time"
-                >
-                  {{ item.time }}
-                </time>
-              </div>
-              <div v-if="item.chips?.length" class="gen-task-log-panel__chips">
-                <span
-                  v-for="chip in item.chips"
-                  :key="chip.key"
-                  class="gen-task-log-panel__chip"
-                >
-                  <span class="gen-task-log-panel__chip-label">{{ chip.label }}</span>
-                  <span class="gen-task-log-panel__chip-value">{{ chip.value }}</span>
-                </span>
-              </div>
-              <p
-                v-if="item.detail"
-                class="gen-task-log-panel__detail"
+      <p class="gen-task-log-panel__section-label">{{ $t('studio.logRecords') }}</p>
+      <ol class="gen-task-log-panel__timeline">
+        <li
+          v-for="(item, rowIndex) in displayItems"
+          :key="item.index"
+          class="gen-task-log-panel__entry"
+          :class="`gen-task-log-panel__entry--${item.kind}`"
+        >
+          <div class="gen-task-log-panel__rail" aria-hidden="true">
+            <span class="gen-task-log-panel__dot" />
+            <span
+              v-if="rowIndex < displayItems.length - 1"
+              class="gen-task-log-panel__stem"
+            />
+          </div>
+          <div class="gen-task-log-panel__content">
+            <div class="gen-task-log-panel__row-head">
+              <span class="gen-task-log-panel__label">{{ item.title }}</span>
+              <time
+                v-if="showEntryTime(item)"
+                class="gen-task-log-panel__time"
               >
-                {{ item.detail }}
-              </p>
+                {{ item.time }}
+              </time>
             </div>
-          </li>
-        </ol>
-      </template>
+            <div v-if="item.chips?.length" class="gen-task-log-panel__chips">
+              <span
+                v-for="chip in item.chips"
+                :key="chip.key"
+                class="gen-task-log-panel__chip"
+              >
+                <span class="gen-task-log-panel__chip-label">{{ chip.label }}</span>
+                <span class="gen-task-log-panel__chip-value">{{ chip.value }}</span>
+              </span>
+            </div>
+            <p
+              v-if="item.detail"
+              class="gen-task-log-panel__detail"
+            >
+              {{ item.detail }}
+            </p>
+          </div>
+        </li>
+      </ol>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue';
-import { Delete } from '@danqing/dq-shell';
 import TaskIdBadge from './TaskIdBadge.vue';
 import TaskPipelineGraph from './TaskPipelineGraph.vue';
 import { useTasksStore } from '@/stores/tasks';
@@ -158,10 +139,14 @@ import { api } from '@/utils/api';
 import {
   buildLogDisplayItems,
   filterLogTimelineItems,
-  latestProgressItem,
-  resolveDisplayProgressPercent,
   type LogDisplayItem,
 } from '@/utils/genTaskLog';
+import {
+  formatStepProgressTitle,
+  stepProgressFromSpans,
+  stepProgressPercent,
+} from '@/utils/traceProgress';
+import type { TraceStepProgress } from '@/types';
 
 const props = defineProps<{
   taskId?: string | null;
@@ -173,7 +158,6 @@ const props = defineProps<{
 
 const tasksStore = useTasksStore();
 const logContainerRef = ref<HTMLElement | null>(null);
-const showTechnical = ref(false);
 const diagnosing = ref(false);
 const diagnosis = ref<string | null>(null);
 
@@ -194,9 +178,41 @@ const liveProgress = computed(() => {
   return tasksStore.liveTaskProgress[id] ?? null;
 });
 
+const stepTip = computed<TraceStepProgress | null>(() => {
+  const live = liveProgress.value;
+  if (live?.step != null && live?.total != null && Number(live.total) > 0) {
+    return {
+      phase: String(live.phase || live.progressMessage || ''),
+      step: Number(live.step),
+      total: Number(live.total),
+    };
+  }
+  const id = props.taskId;
+  const fromGraph = pipelineGraph.value?.step_progress ?? null;
+  if (fromGraph) return fromGraph;
+  if (!id) return null;
+  return stepProgressFromSpans(tasksStore.taskTraces[id]?.spans) ?? null;
+});
+
+const activeProgressTitle = computed(() => {
+  const fromTip = formatStepProgressTitle(stepTip.value);
+  if (fromTip) return fromTip;
+  return liveProgress.value?.progressMessage ?? null;
+});
+
+const progressPercent = computed(() => {
+  const fromTip = stepProgressPercent(stepTip.value);
+  if (fromTip != null) return fromTip;
+  const live = liveProgress.value?.progress;
+  if (typeof live === 'number') return Math.min(100, Math.max(0, live * 100));
+  const graph = pipelineGraph.value?.progress;
+  if (typeof graph === 'number') return Math.min(100, Math.max(0, graph * 100));
+  return null;
+});
+
 async function loadPipelineGraph() {
   if (props.taskId) {
-    await tasksStore.loadTaskPipelineGraph(props.taskId);
+    await tasksStore.loadTaskTrace(props.taskId);
   }
 }
 
@@ -221,42 +237,19 @@ const logs = computed(() => {
   return tasksStore.taskLogs[id] || [];
 });
 
-const rawDisplayItems = computed(() =>
-  buildLogDisplayItems(logs.value, showTechnical.value),
-);
-
-const activeProgress = computed(() => latestProgressItem(rawDisplayItems.value));
-
-const progressPercent = computed(() =>
-  resolveDisplayProgressPercent(
-    pipelineGraph.value?.progress,
-    liveProgress.value,
-    activeProgress.value?.title,
-  ),
-);
-
 const displayItems = computed(() =>
   filterLogTimelineItems(
-    rawDisplayItems.value,
-    showTechnical.value,
-    activeProgress.value?.index ?? null,
-    { hidePipelineMilestones: hasPipeline.value && !showTechnical.value },
+    buildLogDisplayItems(logs.value, false),
+    false,
+    null,
+    { hidePipelineMilestones: true },
   ),
 );
 
-const showLogBody = computed(
-  () => displayItems.value.length > 0 || (logs.value.length === 0 && !activeProgress.value),
-);
+const showLogBody = computed(() => displayItems.value.length > 0);
 
 function showEntryTime(item: LogDisplayItem): boolean {
-  if (showTechnical.value) return true;
   return item.kind === 'milestone' || item.kind === 'error' || item.kind === 'warning';
-}
-
-function clearLogs() {
-  if (props.taskId) {
-    tasksStore.clearTaskLogs(props.taskId);
-  }
 }
 
 watch(

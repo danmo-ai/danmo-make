@@ -62,6 +62,27 @@ pub fn manifest_ready(root: &Path, manifest: &Path) -> bool {
     let Ok(body) = serde_json::from_str::<Value>(&text) else {
         return false;
     };
+    if has_partial(root) {
+        return false;
+    }
+    // Locally derived q4-mixed stamps recipe metadata without a dense-style
+    // `files` listing. Treat weight shards on disk as ready; a `files` object
+    // still wins when present so both layouts stay consistent.
+    if body.get("format").and_then(|value| value.as_str()) == Some("danmo-mlx-quantized") {
+        let listing = body.get("files").or_else(|| {
+            body.get("components")
+                .filter(|components| components.is_object())
+        });
+        let mut weights = Vec::new();
+        collect_manifest_weights(listing, &mut weights);
+        if !weights.is_empty() {
+            return listing_files_present(root, listing, &weights);
+        }
+        let mut weight = false;
+        let mut partial = false;
+        walk_bundle_weights(root, &mut weight, &mut partial);
+        return weight && !partial;
+    }
     let listing = body.get("files").or_else(|| {
         body.get("components")
             .filter(|components| components.is_object())
@@ -71,9 +92,10 @@ pub fn manifest_ready(root: &Path, manifest: &Path) -> bool {
     if weights.is_empty() {
         return false;
     }
-    if has_partial(root) {
-        return false;
-    }
+    listing_files_present(root, listing, &weights)
+}
+
+fn listing_files_present(root: &Path, listing: Option<&Value>, weights: &[String]) -> bool {
     listing
         .and_then(|files| files.get("transformer"))
         .is_some_and(|transformer| {
@@ -294,10 +316,10 @@ pub fn resolve_bundle(workspace: &Path, registry: &Path, model: &str) -> Result<
             let path = catalog.gguf_local_path(model).map_err(|e| e.to_string())?;
             return Ok(resolve_model_path(workspace, &path));
         }
-        return safetensors_bundle(workspace, catalog.root(), bare, version);
+        return safetensors_bundle(workspace, registry, catalog.root(), bare, version);
     }
     if let Some(version) = installed_safetensors_version(workspace, catalog.root(), bare) {
-        return safetensors_bundle(workspace, catalog.root(), bare, &version);
+        return safetensors_bundle(workspace, registry, catalog.root(), bare, &version);
     }
     if let Some(version) = installed_gguf_version(workspace, catalog.root(), bare) {
         let path = catalog
@@ -312,6 +334,7 @@ pub fn resolve_bundle(workspace: &Path, registry: &Path, model: &str) -> Result<
 
 fn safetensors_bundle(
     workspace: &Path,
+    registry: &Path,
     root: &Value,
     model: &str,
     version: &str,
@@ -319,12 +342,63 @@ fn safetensors_bundle(
     let path = version_local_path(root, model, version)?;
     let resolved = resolve_model_path(workspace, &path);
     if danmo_engine::is_safetensors_bundle(&resolved) {
+        verify_derived_bundle(workspace, registry, root, model, version, &resolved)?;
         return Ok(resolved);
     }
     Err(format!(
         "{model}:{version} is not an installed safetensors bundle at {}",
         resolved.display()
     ))
+}
+
+/// A `kind: derived` bundle must still match the recipe it was converted
+/// with. The check is cheap (manifest + recipe file reads) and runs on every
+/// resolution, so an edited recipe or a foreign bundle fails the task loudly
+/// instead of quietly running stale weights.
+#[cfg(feature = "mlx")]
+fn verify_derived_bundle(
+    workspace: &Path,
+    registry: &Path,
+    root: &Value,
+    model: &str,
+    version: &str,
+    bundle: &Path,
+) -> Result<(), String> {
+    if !bundle.join("bundle.manifest.json").is_file() {
+        return Ok(());
+    }
+    let spec = root
+        .pointer(&format!("/models/{model}/distribution/versions/{version}"))
+        .cloned()
+        .ok_or_else(|| format!("{model}:{version} is not published"))?;
+    if spec.get("kind").and_then(|value| value.as_str()) != Some("derived") {
+        return Ok(());
+    }
+    let recipe = spec
+        .get("recipe")
+        .and_then(|value| value.as_str())
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| format!("{model}:{version} is derived but names no recipe"))?;
+    let repo_root = registry
+        .parent()
+        .and_then(|default_config| default_config.parent())
+        .unwrap_or_else(|| Path::new("."));
+    let (recipe, hash) = danmo_engine::load_recipe(workspace, repo_root, recipe)
+        .map_err(|error| error.to_string())?;
+    danmo_engine::verify_quantized_bundle(bundle, Some((&recipe, hash.as_str())))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(feature = "mlx"))]
+fn verify_derived_bundle(
+    _workspace: &Path,
+    _registry: &Path,
+    _root: &Value,
+    _model: &str,
+    _version: &str,
+    _bundle: &Path,
+) -> Result<(), String> {
+    Ok(())
 }
 
 fn version_local_path(root: &Value, model: &str, version: &str) -> Result<String, String> {
@@ -388,4 +462,197 @@ pub fn installed_gguf_version(workspace: &Path, root: &Value, model_id: &str) ->
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-resolve-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A safetensors image bundle: transformer/, text_encoder/, vae/.
+    fn write_bundle(root: &Path) {
+        for role in ["transformer", "text_encoder", "vae"] {
+            let dir = root.join(role);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("model.safetensors"), b"stub").unwrap();
+        }
+    }
+
+    fn registry(dir: &Path) -> PathBuf {
+        let body = serde_json::json!({
+            "schema_version": 3,
+            "models": {
+                "z-image-turbo": {
+                    "catalog": { "media": "image" },
+                    "runtime": { "family": "z_image", "backends": ["mlx"] },
+                    "distribution": {
+                        "versions": {
+                            "fp16": {
+                                "kind": "dense",
+                                "source_type": "full",
+                                "local_path": "models/Image/z-image-turbo-fp16"
+                            },
+                            "q4-mixed": {
+                                "kind": "derived",
+                                "source_type": "derived",
+                                "base": "fp16",
+                                "recipe": "z-image-q4-mixed-v1",
+                                "local_path": "models/Image/z-image-turbo-fp16-q4-mixed",
+                                "default": true
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let path = dir.join("registry.json");
+        std::fs::write(&path, serde_json::to_string(&body).unwrap()).unwrap();
+        path
+    }
+
+    #[test]
+    fn bare_id_prefers_the_installed_derived_bundle() {
+        let dir = scratch("derived");
+        let registry = registry(&dir);
+        let derived = dir.join("models/Image/z-image-turbo-fp16-q4-mixed");
+        write_bundle(&derived);
+        let resolved = resolve_bundle(&dir, &registry, "z-image-turbo").unwrap();
+        assert_eq!(resolved, derived);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bare_id_falls_back_to_the_installed_dense_bundle() {
+        let dir = scratch("dense-only");
+        let registry = registry(&dir);
+        let dense = dir.join("models/Image/z-image-turbo-fp16");
+        write_bundle(&dense);
+        let resolved = resolve_bundle(&dir, &registry, "z-image-turbo").unwrap();
+        assert_eq!(resolved, dense);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explicit_derived_version_resolves_its_own_directory() {
+        let dir = scratch("explicit");
+        let registry = registry(&dir);
+        let derived = dir.join("models/Image/z-image-turbo-fp16-q4-mixed");
+        write_bundle(&derived);
+        let resolved = resolve_bundle(&dir, &registry, "z-image-turbo:q4-mixed").unwrap();
+        assert_eq!(resolved, derived);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn recipe_file(root: &Path, id: &str) {
+        let dir = root.join("config/quant_recipes");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{id}.json")),
+            serde_json::json!({
+                "id": id,
+                "version": 1,
+                "family": "z_image",
+                "components": ["transformer"],
+                "keep_dense": ["*norm*"],
+                "min_elements": 1024,
+                "quantize": { "bits": 4, "group_size": 64 }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    fn manifest(root: &Path, recipe_id: &str, hash: &str) {
+        let body = serde_json::json!({
+            "format": "danmo-mlx-quantized",
+            "format_version": 1,
+            "recipe": { "id": recipe_id, "version": 1, "hash": hash },
+            "quantization": { "bits": 4, "group_size": 64, "scheme": "mlx_affine" }
+        });
+        std::fs::write(
+            root.join("bundle.manifest.json"),
+            serde_json::to_string_pretty(&body).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[cfg(feature = "mlx")]
+    #[test]
+    fn derived_bundle_must_match_its_recipe() {
+        let dir = scratch("verify-ok");
+        let registry = registry(&dir);
+        recipe_file(&dir, "z-image-q4-mixed-v1");
+        let derived = dir.join("models/Image/z-image-turbo-fp16-q4-mixed");
+        write_bundle(&derived);
+        let (recipe, hash) =
+            danmo_engine::load_recipe(&dir, Path::new("."), "z-image-q4-mixed-v1").unwrap();
+        manifest(&derived, &recipe.id, &hash);
+        let resolved = resolve_bundle(&dir, &registry, "z-image-turbo:q4-mixed").unwrap();
+        assert_eq!(resolved, derived);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "mlx")]
+    #[test]
+    fn derived_bundle_rejects_an_edited_recipe() {
+        let dir = scratch("verify-stale");
+        let registry = registry(&dir);
+        recipe_file(&dir, "z-image-q4-mixed-v1");
+        let derived = dir.join("models/Image/z-image-turbo-fp16-q4-mixed");
+        write_bundle(&derived);
+        manifest(&derived, "z-image-q4-mixed-v1", "stale-hash");
+        let error = resolve_bundle(&dir, &registry, "z-image-turbo:q4-mixed").unwrap_err();
+        assert!(error.contains("re-convert"), "{error}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "mlx")]
+    #[test]
+    fn derived_bundle_rejects_a_foreign_recipe() {
+        let dir = scratch("verify-foreign");
+        let registry = registry(&dir);
+        recipe_file(&dir, "z-image-q4-mixed-v1");
+        let derived = dir.join("models/Image/z-image-turbo-fp16-q4-mixed");
+        write_bundle(&derived);
+        manifest(&derived, "flux2-q4-mixed-v1", "any");
+        let error = resolve_bundle(&dir, &registry, "z-image-turbo:q4-mixed").unwrap_err();
+        assert!(error.contains("flux2-q4-mixed-v1"), "{error}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_bundle_fails_loud() {
+        let dir = scratch("missing");
+        let registry = registry(&dir);
+        let error = resolve_bundle(&dir, &registry, "z-image-turbo").unwrap_err();
+        assert!(error.contains("no installed weight bundle"), "{error}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quantized_manifest_without_files_listing_is_ready() {
+        let dir = scratch("quant-ready");
+        let derived = dir.join("q4");
+        write_bundle(&derived);
+        manifest(&derived, "z-image-q4-mixed-v1", "hash");
+        assert!(version_ready(&derived), "recipe-only quantized manifest must be ready");
+        std::fs::write(derived.join(INSTALL_HOOK_INCOMPLETE), b"pending").unwrap();
+        assert!(
+            !version_ready(&derived),
+            "incomplete marker must still block readiness"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -11,8 +11,8 @@ use std::process::Command;
 /// in-process; everything else (JPEG, WebP, compressed PNG) goes through the
 /// ffmpeg CLI. Shared by the HTTP asset reader and the CLI.
 pub fn decode_file_rgb(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
-    let bytes = std::fs::read(path)
-        .map_err(|error| format!("source image {}: {error}", path.display()))?;
+    let bytes =
+        std::fs::read(path).map_err(|error| format!("source image {}: {error}", path.display()))?;
     if let Some((rgb, width, height)) = super::png::decode_rgb(&bytes) {
         return Ok((rgb, width, height));
     }

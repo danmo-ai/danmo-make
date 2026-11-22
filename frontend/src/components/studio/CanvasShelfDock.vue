@@ -102,18 +102,29 @@
                   draggable="false"
                 />
               </button>
-              <div
-                v-if="!isOnBoard(item.path)"
-                class="canvas-shelf-dock__actions"
-              >
-                <ComposerIconTip :content="$t('canvas.dockToBoard')" placement="left">
+              <div class="canvas-shelf-dock__actions">
+                <ComposerIconTip
+                  :content="
+                    isOnBoard(item.path)
+                      ? $t('canvas.dockFocusBoard')
+                      : $t('canvas.dockToBoard')
+                  "
+                  placement="left"
+                >
                   <button
                     type="button"
                     class="canvas-shelf-dock__action"
-                    :aria-label="$t('canvas.dockToBoard')"
-                    @click.stop="$emit('promote', item.path)"
+                    :aria-label="
+                      isOnBoard(item.path)
+                        ? $t('canvas.dockFocusBoard')
+                        : $t('canvas.dockToBoard')
+                    "
+                    @click.stop="onTileBoardAction(item)"
                   >
-                    <DqIcon :size="14"><Upload /></DqIcon>
+                    <DqIcon :size="14">
+                      <Aim v-if="isOnBoard(item.path)" />
+                      <Upload v-else />
+                    </DqIcon>
                   </button>
                 </ComposerIconTip>
               </div>
@@ -128,7 +139,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { Headset, Upload, VideoPlay } from '@danqing/dq-shell';
+import { Aim, Headset, Upload, VideoPlay } from '@danqing/dq-shell';
 import type { GalleryItem } from '@/types';
 import {
   galleryThumbnailUrl,
@@ -156,11 +167,20 @@ const emit = defineEmits<{
   (e: 'select', item: GalleryItem): void;
   (e: 'preview', item: GalleryItem): void;
   (e: 'promote', path: string): void;
+  (e: 'focus', path: string): void;
 }>();
 
 function onTileClick(item: GalleryItem) {
   emit('select', item);
   emit('preview', item);
+}
+
+function onTileBoardAction(item: GalleryItem) {
+  if (isOnBoard(item.path)) {
+    emit('focus', item.path);
+    return;
+  }
+  emit('promote', item.path);
 }
 
 const { t: $t } = useI18n();

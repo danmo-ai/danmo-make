@@ -149,10 +149,7 @@ impl VaeConfig {
                 .map(|item| item.as_bool().unwrap_or(false))
                 .collect())
         };
-        let z_dim = value
-            .get("z_dim")
-            .and_then(Value::as_u64)
-            .unwrap_or(16) as usize;
+        let z_dim = value.get("z_dim").and_then(Value::as_u64).unwrap_or(16) as usize;
         let mean = floats("latents_mean")?;
         let std = floats("latents_std")?;
         if mean.len() != z_dim || std.len() != z_dim {
@@ -162,10 +159,7 @@ impl VaeConfig {
         }
         Ok(Self {
             z_dim,
-            base_dim: value
-                .get("base_dim")
-                .and_then(Value::as_u64)
-                .unwrap_or(96) as usize,
+            base_dim: value.get("base_dim").and_then(Value::as_u64).unwrap_or(96) as usize,
             dim_mult: usize_list("dim_mult")?,
             num_res_blocks: value
                 .get("num_res_blocks")
@@ -179,8 +173,8 @@ impl VaeConfig {
 }
 
 fn read_json(path: &Path) -> Result<Value, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
     serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))
 }
 

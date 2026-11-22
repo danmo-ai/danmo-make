@@ -6,13 +6,32 @@
         <DqTag v-if="task" :type="statusTagType">{{ statusLabel }}</DqTag>
         <TaskIdBadge :task-id="taskId" />
       </div>
+      <div class="lora-run-detail__head-actions">
+        <DqButton
+          v-if="canResumeTraining"
+          size="sm"
+          type="primary"
+          @click="resumeTraining"
+        >
+          {{ $t('loraTrain.resumeFromRun') }}
+        </DqButton>
+        <DqButton
+          v-if="task && isTerminal"
+          size="sm"
+          type="danger"
+          :loading="purging"
+          @click="purgeRun"
+        >
+          {{ $t('loraTrain.deleteRun') }}
+        </DqButton>
+      </div>
     </div>
 
     <div v-if="task && !isTerminal" class="lora-run-detail__status">
       <DqProgress :percentage="Math.round((task.progress || 0) * 100)" />
-      <p v-if="progressMessage" class="lora-run-detail__progress-msg">{{ progressMessage }}</p>
-      <p v-if="task.step != null && task.total != null" class="lora-run-detail__step-hint">
-        {{ task.step }} / {{ task.total }}
+      <p v-if="displayProgressMessage" class="lora-run-detail__progress-msg">{{ displayProgressMessage }}</p>
+      <p v-if="displayTotal > 0" class="lora-run-detail__step-hint">
+        {{ displayStep }} / {{ displayTotal }}
         <span v-if="task.eta_seconds != null">
           · {{ $t('loraTrain.etaSeconds', { s: Math.max(0, Math.round(task.eta_seconds)) }) }}
         </span>
@@ -36,7 +55,7 @@
       </li>
     </ul>
 
-    <div v-if="artifacts?.loss_history?.length" class="lora-run-detail__section">
+    <div v-if="displayLossHistory.length" class="lora-run-detail__section">
       <h4 class="lora-run-detail__section-title">{{ $t('loraTrain.lossCurve') }}</h4>
       <p v-if="lossSummary" class="lora-run-detail__section-hint">{{ lossSummary }}</p>
       <div class="lora-run-loss-bars">
@@ -87,7 +106,7 @@
     </div>
 
     <div
-      v-if="task?.status === 'completed'"
+      v-if="checkpointOptions.length"
       class="lora-run-detail__section"
     >
       <h4 class="lora-run-detail__section-title">{{ $t('loraTrain.checkpoints') }}</h4>
@@ -125,7 +144,7 @@
       </p>
     </div>
 
-    <div v-if="task?.status === 'completed'" class="lora-run-detail__verification">
+    <div v-if="checkpointOptions.length" class="lora-run-detail__verification">
       <h4 class="lora-run-detail__section-title">{{ $t('loraTrain.verifyTitle') }}</h4>
       <p class="lora-run-detail__verify-hint">{{ $t('loraTrain.verifyHint') }}</p>
       <DqAlert v-if="!verifyLoraId()" type="warning" :closable="false" :title="$t('loraTrain.verifyNeedsRegistration')">
@@ -169,7 +188,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useRouter } from 'vue-router';
 import { api } from '@/utils/api';
-import { toast } from '@/utils/feedback';
+import { confirm, toast } from '@/utils/feedback';
 import { openGlobalTaskQueue } from '@/utils/appEvents';
 import { openModelsUserLoras } from '@/utils/loraTrainHandoff';
 import TaskIdBadge from '@/components/studio/TaskIdBadge.vue';
@@ -190,6 +209,7 @@ function formatExtraAdapters(adapters: unknown): string {
 const props = defineProps<{ taskId: string }>();
 const emit = defineEmits<{
   (e: 'verify', payload: Record<string, unknown>): void;
+  (e: 'deleted', taskId: string): void;
 }>();
 
 const { t } = useI18n();
@@ -207,6 +227,10 @@ const registeredCheckpoint = ref('');
 const verification = ref<Record<string, any>>({ seed: '42', steps: 8, guidance: 0, lora_scale: 0.8, width: 1024, height: 1024, model: 'z-image-turbo', scheduler: 'linear' });
 const visionAvailable = ref(false);
 const trainingVlmLoading = ref(false);
+const purging = ref(false);
+/** Live points parsed from task logs (works without API restart). */
+const liveLossHistory = ref<Array<{ step: number; loss: number; val_loss?: number }>>([]);
+const liveCheckpoints = ref<string[]>([]);
 let taskStream: EventSource | null = null;
 let lastArtifactRefresh = 0;
 
@@ -243,18 +267,38 @@ const runDisplayName = computed(() => {
 });
 
 const checkpointOptions = computed(() => {
-  const fromArtifacts = Array.isArray(artifacts.value?.checkpoints)
-    ? artifacts.value.checkpoints.map((c: string) => checkpointBasename(c))
-    : [];
-  if (fromArtifacts.length) return [...new Set(fromArtifacts)];
-  const fromResult = Array.isArray(task.value?.result?.checkpoints)
-    ? task.value.result.checkpoints.map((c: string) => checkpointBasename(c))
-    : [];
-  if (fromResult.length) return [...new Set(fromResult)];
-  if (task.value?.result?.adapter_path) {
-    return [checkpointBasename(String(task.value.result.adapter_path))];
+  const names: string[] = [];
+  const push = (raw: string) => {
+    const name = checkpointBasename(raw);
+    if (name && !names.includes(name)) names.push(name);
+  };
+  for (const c of liveCheckpoints.value) push(c);
+  if (Array.isArray(artifacts.value?.checkpoints)) {
+    for (const c of artifacts.value.checkpoints) push(String(c));
   }
-  return [];
+  if (Array.isArray(task.value?.result?.checkpoints)) {
+    for (const c of task.value.result.checkpoints) push(String(c));
+  }
+  if (task.value?.result?.adapter_path) {
+    push(String(task.value.result.adapter_path));
+  }
+  // Highest step last so default/select order matches resume preference.
+  names.sort((a, b) => checkpointSortKey(a) - checkpointSortKey(b));
+  return names;
+});
+
+function checkpointSortKey(name: string): number {
+  if (/final/i.test(name)) return Number.MAX_SAFE_INTEGER;
+  const m = name.match(/checkpoint-(\d+)/i);
+  return m ? Number(m[1]) : 0;
+}
+
+const displayLossHistory = computed(() => {
+  const fromArtifacts = Array.isArray(artifacts.value?.loss_history)
+    ? artifacts.value.loss_history
+    : [];
+  if (fromArtifacts.length) return fromArtifacts;
+  return liveLossHistory.value;
 });
 
 const runSummaryRows = computed(() => {
@@ -308,7 +352,7 @@ const runSummaryRows = computed(() => {
 });
 
 const lossBars = computed(() => {
-  const hist = artifacts.value?.loss_history;
+  const hist = displayLossHistory.value;
   if (!Array.isArray(hist) || !hist.length) return [];
   const maxLoss = Math.max(...hist.map((p: { loss?: number }) => Number(p.loss) || 0), 1e-6);
   return hist.map((pt: { step: number; loss: number; val_loss?: number }) => ({
@@ -320,7 +364,7 @@ const lossBars = computed(() => {
 });
 
 const lossSummary = computed(() => {
-  const hist = artifacts.value?.loss_history;
+  const hist = displayLossHistory.value;
   if (!Array.isArray(hist) || hist.length < 2) return '';
   const first = Number(hist[0]?.loss);
   const last = Number(hist[hist.length - 1]?.loss);
@@ -338,6 +382,40 @@ const canResumeTraining = computed(() => {
   return checkpointOptions.value.length > 0;
 });
 
+/** Preset iterations (or SSE total) — training does not always emit step/total cleanly. */
+const displayTotal = computed(() => {
+  const fromSse = Number(task.value?.total);
+  if (Number.isFinite(fromSse) && fromSse > 0) return Math.round(fromSse);
+  const fromPreset = Number(task.value?.params?.preset?.iterations);
+  if (Number.isFinite(fromPreset) && fromPreset > 0) return Math.round(fromPreset);
+  return 0;
+});
+
+const displayStep = computed(() => {
+  const total = displayTotal.value;
+  const fromSse = Number(task.value?.step);
+  if (Number.isFinite(fromSse) && fromSse > 0 && Number(task.value?.total) > 0) {
+    return Math.min(Math.round(fromSse), total || Math.round(fromSse));
+  }
+  if (total > 0) {
+    const p = Number(task.value?.progress) || 0;
+    return Math.min(total, Math.max(0, Math.round(p * total)));
+  }
+  return Number.isFinite(fromSse) && fromSse > 0 ? Math.round(fromSse) : 0;
+});
+
+/** Drop the generation-pipeline placeholder "denoise" for training runs. */
+const displayProgressMessage = computed(() => {
+  const raw = String(progressMessage.value || '').trim();
+  if (!raw) return '';
+  if (/^denoise$/i.test(raw)) {
+    const stepLine =
+      displayTotal.value > 0 ? `step ${displayStep.value}/${displayTotal.value}` : '';
+    return stepLine;
+  }
+  return raw;
+});
+
 function checkpointBasename(path: string): string {
   const s = String(path || '');
   const parts = s.split(/[/\\]/);
@@ -352,11 +430,29 @@ function lossBarTitle(pt: { step: number; loss: number; val_loss?: number }): st
   return base;
 }
 
+function preferredResumeCheckpoint(names: string[]): string {
+  const selected = selectedCheckpoint.value.trim();
+  if (selected && names.includes(selected)) return selected;
+  const finals = names.filter((c) => c.includes('final'));
+  if (finals.length) return finals[finals.length - 1];
+  // Prefer the highest checkpoint-N when resuming a crashed run.
+  const numbered = names
+    .map((name) => {
+      const m = name.match(/^checkpoint-(\d+)\.safetensors$/i);
+      return m ? { name, step: Number(m[1]) } : null;
+    })
+    .filter((x): x is { name: string; step: number } => !!x && Number.isFinite(x.step));
+  if (numbered.length) {
+    numbered.sort((a, b) => a.step - b.step);
+    return numbered[numbered.length - 1].name;
+  }
+  return names[names.length - 1];
+}
+
 function resumeTraining() {
-  const checkpoints = artifacts.value?.checkpoints as string[] | undefined;
-  if (!checkpoints?.length) return;
-  const finals = checkpoints.filter((c) => c.includes('final'));
-  const ck = selectedCheckpoint.value || finals[finals.length - 1] || checkpoints[checkpoints.length - 1];
+  const checkpoints = checkpointOptions.value;
+  if (!checkpoints.length) return;
+  const ck = preferredResumeCheckpoint(checkpoints);
   router.push({
     name: 'lora_train',
     query: {
@@ -382,15 +478,114 @@ function mergeProgressDetail(row: Record<string, unknown> | null): Record<string
 function applyProgressPayload(data: Record<string, unknown>) {
   const patch: Record<string, unknown> = {};
   if (typeof data.progress === 'number') patch.progress = data.progress;
-  if (data.step != null) patch.step = data.step;
-  if (data.total != null) patch.total = data.total;
+  const step = data.step != null ? Number(data.step) : NaN;
+  const total = data.total != null ? Number(data.total) : NaN;
+  // Ignore broken SSE pairs like 1/0 from older parsers; derive from progress instead.
+  if (Number.isFinite(step) && Number.isFinite(total) && total > 0 && step >= 0) {
+    patch.step = step;
+    patch.total = total;
+  }
   if (data.eta_seconds != null) patch.eta_seconds = data.eta_seconds;
   if (Object.keys(patch).length) {
     patchTask({ status: 'running', ...patch });
   }
   const msg = data.message ?? data.phase;
-  if (msg != null && String(msg).trim()) {
+  if (msg != null && String(msg).trim() && !/^denoise$/i.test(String(msg).trim())) {
     progressMessage.value = String(msg);
+  }
+}
+
+function ingestTrainLogLine(raw: unknown, { setMessage = true } = {}) {
+  const msg = String(raw ?? '').trim();
+  if (!msg) return;
+  if (setMessage) progressMessage.value = msg;
+
+  const lossMatch = msg.match(/^step\s+(\d+)\s*\/\s*(\d+)\s+loss\s+([0-9.]+)/i);
+  if (lossMatch) {
+    const step = Number(lossMatch[1]);
+    const total = Number(lossMatch[2]);
+    const loss = Number(lossMatch[3]);
+    if (total > 0 && step >= 0) patchTask({ status: 'running', step, total });
+    if (Number.isFinite(loss) && step > 0) {
+      const next = liveLossHistory.value.filter((p) => p.step !== step);
+      next.push({ step, loss });
+      next.sort((a, b) => a.step - b.step);
+      liveLossHistory.value = next;
+    }
+    return;
+  }
+
+  const ckMatch = msg.match(
+    /checkpoint written to .+?[/\\]((?:checkpoint-\d+|final_adapters)\.safetensors)/i,
+  );
+  if (ckMatch) {
+    const name = ckMatch[1];
+    if (!liveCheckpoints.value.includes(name)) {
+      liveCheckpoints.value = [...liveCheckpoints.value, name];
+    }
+    if (!selectedCheckpoint.value) selectedCheckpoint.value = name;
+    return;
+  }
+
+  const stepMatch = msg.match(/(\d+)\s*\/\s*(\d+)/);
+  if (stepMatch) {
+    const step = Number(stepMatch[1]);
+    const total = Number(stepMatch[2]);
+    if (total > 0 && step >= 0) patchTask({ status: 'running', step, total });
+  }
+}
+
+function applyTrainLogMessage(raw: unknown) {
+  ingestTrainLogLine(raw, { setMessage: true });
+}
+
+async function purgeRun() {
+  if (!task.value || !isTerminal.value || purging.value) return;
+  try {
+    await confirm(t('loraTrain.deleteRunConfirm', { id: props.taskId }), t('loraTrain.deleteRun'), {
+      type: 'warning',
+      confirmButtonText: t('loraTrain.deleteRun'),
+      cancelButtonText: t('common.cancel'),
+    });
+  } catch {
+    return;
+  }
+  purging.value = true;
+  try {
+    await api.gen.purgeMediaTask(props.taskId);
+    closeStream();
+    toast.success(t('loraTrain.deleteRunDone'));
+    emit('deleted', props.taskId);
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { detail?: { message?: string } | string } }; message?: string };
+    const detail = err?.response?.data?.detail;
+    const msg =
+      detail && typeof detail === 'object' && detail.message
+        ? detail.message
+        : typeof detail === 'string'
+          ? detail
+          : err?.message || String(e);
+    toast.error(msg);
+  } finally {
+    purging.value = false;
+  }
+}
+
+async function seedLiveArtifactsFromLogs() {
+  try {
+    const data = (await api.gen.getMediaTaskLogs(props.taskId, {
+      offset: 0,
+      limit: 2000,
+    })) as {
+      items?: Array<{ message?: string }>;
+      logs?: Array<{ message?: string }>;
+    };
+    const rows = data.items || data.logs || (Array.isArray(data) ? data : []);
+    for (const row of rows as Array<{ message?: string }>) {
+      ingestTrainLogLine(row?.message, { setMessage: false });
+    }
+  } catch {
+    /* best-effort for mid-run UI without new API binary */
   }
 }
 
@@ -444,11 +639,12 @@ async function refreshArtifacts(force = false) {
       visionAvailable.value = Boolean((next as any).vision_available);
     }
     if ((next as any)?.checkpoints?.length) {
-      const names = (next as any).checkpoints.map((c: string) => checkpointBasename(c));
+      const names = (next as any).checkpoints
+        .map((c: string) => checkpointBasename(c))
+        .sort((a: string, b: string) => checkpointSortKey(a) - checkpointSortKey(b));
       artifacts.value = { ...(next as any), checkpoints: names };
       if (!selectedCheckpoint.value) {
-        const finals = names.filter((c: string) => c.includes('final'));
-        selectedCheckpoint.value = finals[finals.length - 1] || names.at(-1);
+        selectedCheckpoint.value = preferredResumeCheckpoint(names);
       }
     }
     syncVerification();
@@ -493,12 +689,22 @@ async function refreshTask() {
   const row = (await api.gen.getMediaTask(props.taskId)) as Record<string, unknown>;
   task.value = mergeProgressDetail(row);
   const detail = row?.progress_detail as Record<string, unknown> | undefined;
-  if (detail?.message != null) {
-    progressMessage.value = String(detail.message);
-  } else if (detail?.phase != null) {
-    progressMessage.value = String(detail.phase);
+  const detailMsg = detail?.message ?? detail?.phase;
+  if (detailMsg != null && String(detailMsg).trim() && !/^denoise$/i.test(String(detailMsg).trim())) {
+    progressMessage.value = String(detailMsg);
+  }
+  // Seed step/total from preset when SSE has not supplied a valid pair yet.
+  const total = Number(task.value?.total);
+  const presetIters = Number(task.value?.params?.preset?.iterations);
+  if (!(total > 0) && presetIters > 0) {
+    const p = Number(task.value?.progress) || 0;
+    patchTask({
+      step: Math.min(presetIters, Math.round(p * presetIters)),
+      total: presetIters,
+    });
   }
   hydrateArtifactsFromTaskResult();
+  await seedLiveArtifactsFromLogs();
   await refreshArtifacts(true);
   syncVerification();
 }
@@ -517,6 +723,9 @@ function closeStream() {
 function startStream() {
   closeStream();
   taskStream = api.gen.streamMediaTask(props.taskId, {
+    onLog: (data: any) => {
+      applyTrainLogMessage(data?.message);
+    },
     onProgress: (data: any) => {
       applyProgressPayload(data);
       void refreshArtifacts(false);
@@ -704,6 +913,8 @@ onUnmounted(() => {
 .lora-run-detail__head {
   display: flex;
   align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .lora-run-detail__head-main {
@@ -712,6 +923,14 @@ onUnmounted(() => {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  flex: 1;
+}
+
+.lora-run-detail__head-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
 }
 
 .lora-run-detail__title {

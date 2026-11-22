@@ -25,8 +25,9 @@ fn run() -> Result<(), String> {
     let host = danmo_cli::Host::new(&args)?;
     let model = args.require("model")?;
     let lyrics = match args.get("lyrics-file") {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|error| format!("lyrics file {path}: {error}"))?,
+        Some(path) => {
+            std::fs::read_to_string(path).map_err(|error| format!("lyrics file {path}: {error}"))?
+        }
         None => args.get("lyrics").unwrap_or("").to_string(),
     };
     let mut request = serde_json::Map::new();
@@ -37,10 +38,7 @@ fn run() -> Result<(), String> {
     );
     request.insert("prompt".into(), json!(args.require("prompt")?));
     request.insert("lyrics".into(), json!(lyrics));
-    request.insert(
-        "source_audio".into(),
-        json!(args.require("source-audio")?),
-    );
+    request.insert("source_audio".into(), json!(args.require("source-audio")?));
     if args.has("instrumental") {
         request.insert("instrumental".into(), json!(true));
     }
@@ -63,7 +61,8 @@ fn run() -> Result<(), String> {
     danmo_cli::run_task(&host, "audio.edit", &model, json!(request))
 }
 
-const USAGE: &str = "danmo-audio-edit --model ID[:version] --source-audio PATH --prompt TEXT --output FILE
+const USAGE: &str =
+    "danmo-audio-edit --model ID[:version] --source-audio PATH --prompt TEXT --output FILE
   [--task cover|cover-nofsq|repaint|lego|extract|complete]
   [--lyrics TEXT | --lyrics-file PATH] [--instrumental]
   [--duration SEC] [--seed N] [--steps N] [--guidance F] [--source-fidelity F]

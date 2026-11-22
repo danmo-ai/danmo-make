@@ -100,9 +100,8 @@ pub fn run_lora_train_steps(
         inputs.push(base_weight.clone());
         inputs.push(weight_arr);
         for p in params.iter() {
-            inputs.push(
-                Array::scalar_f32(p.scale).map_err(|e| EngineError::message(e.to_string()))?,
-            );
+            inputs
+                .push(Array::scalar_f32(p.scale).map_err(|e| EngineError::message(e.to_string()))?);
         }
 
         let n_modules = params.len();
@@ -133,8 +132,8 @@ pub fn run_lora_train_steps(
         })
         .map_err(|e| EngineError::message(e.to_string()))?;
 
-        let vag =
-            ValueAndGrad::new(closure, &argnums).map_err(|e| EngineError::message(e.to_string()))?;
+        let vag = ValueAndGrad::new(closure, &argnums)
+            .map_err(|e| EngineError::message(e.to_string()))?;
         let (values, grads) = vag
             .apply(&inputs)
             .map_err(|e| EngineError::message(e.to_string()))?;
@@ -145,8 +144,7 @@ pub fn run_lora_train_steps(
                 grads.len()
             )));
         }
-        Array::eval_all(&[&values[0]])
-            .map_err(|e| EngineError::message(e.to_string()))?;
+        Array::eval_all(&[&values[0]]).map_err(|e| EngineError::message(e.to_string()))?;
         let loss_v = values[0]
             .to_vec_f32(stream)
             .map_err(|e| EngineError::message(e.to_string()))?[0];

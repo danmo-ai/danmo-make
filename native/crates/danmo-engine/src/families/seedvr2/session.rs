@@ -11,9 +11,9 @@ use crate::error::EngineError;
 use crate::families::{FacadeFamily, FacadeSession};
 use crate::ports::ResolvePort;
 use crate::runtime::GgmlContext;
-use crate::weights::{WeightError, f16_to_f32};
+use crate::weights::{f16_to_f32, WeightError};
 use danmo_contracts::ImageUpscaleRequest;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::path::Path;
 
 const POS_EMB_BYTES: &[u8] = include_bytes!("data/pos_emb.safetensors");
@@ -82,6 +82,26 @@ impl FacadeFamily for SeedVr2UpscaleFamily {
         let pad_w = (16 - true_w as i64 % 16) % 16;
         let pad_h = (16 - true_h as i64 % 16) % 16;
         let style = pad_planar(&resized, true_w as usize, true_h as usize, pad_w, pad_h);
+        exec.annotate(&[
+            ("danmo.generation.source_width", source_w.to_string()),
+            ("danmo.generation.source_height", source_h.to_string()),
+            ("danmo.generation.width", true_w.to_string()),
+            ("danmo.generation.height", true_h.to_string()),
+            ("danmo.generation.scale", scale.to_string()),
+            ("danmo.generation.denoise", denoise.to_string()),
+            (
+                "danmo.upscale.padded_width",
+                (true_w as i64 + pad_w).to_string(),
+            ),
+            (
+                "danmo.upscale.padded_height",
+                (true_h as i64 + pad_h).to_string(),
+            ),
+            ("danmo.upscale.pad_w", pad_w.to_string()),
+            ("danmo.upscale.pad_h", pad_h.to_string()),
+            ("danmo.upscale.steps", "1".into()),
+            ("danmo.upscale.timestep", "1000".into()),
+        ])?;
         exec.log(
             "info",
             &format!(
@@ -146,6 +166,9 @@ fn infer_mlx_on_stream(
     stream: &danmo_mlx::Stream,
     cache: &mut danmo_mlx::ModelCache,
 ) -> Result<EngineOutput, EngineError> {
+    exec.check_cancelled()?;
+    exec.phase("load")?;
+    annotate_weight_files(exec, &run.bundle)?;
     let resident = super::mlx::Models::resident(
         cache,
         &run.bundle,
@@ -155,6 +178,11 @@ fn infer_mlx_on_stream(
         stream,
     )
     .map_err(mlx_error)?;
+    exec.annotate(&[
+        ("danmo.upscale.resident_hit", resident.hit.to_string()),
+        ("danmo.upscale.resident_bytes", resident.bytes.to_string()),
+        ("danmo.weight.bytes", resident.bytes.to_string()),
+    ])?;
     exec.log(
         "info",
         &format!(
@@ -171,11 +199,12 @@ fn infer_mlx_on_stream(
         prepared.true_h as i64 + prepared.pad_h,
     );
     let seed = prepared.request.seed.unwrap_or(0);
-    exec.progress("encode", 1, 1)?;
     let decoded = models
-        .restore_chunk(&prepared.style, pw, ph, 1, seed, stream)
+        .restore_chunk(&prepared.style, pw, ph, 1, seed, stream, |stage| {
+            stage_hook(exec, stage)
+        })
         .map_err(mlx_error)?;
-    exec.progress("decode", 1, 1)?;
+    exec.phase("color")?;
     let (tw, th) = (prepared.true_w as usize, prepared.true_h as usize);
     let decoded = crop_planar(&decoded, pw as usize, ph as usize, tw, th);
     let style = crop_planar(&prepared.style, pw as usize, ph as usize, tw, th);
@@ -189,6 +218,7 @@ fn infer_mlx_on_stream(
             }
         }
     }
+    exec.log("info", &format!("seedvr2_upscale finished out={tw}x{th}"))?;
     let png = crate::common::png::encode_rgb(prepared.true_w, prepared.true_h, &rgb);
     let metadata = json!({
         "source_asset_id": prepared.request.source_asset_id,
@@ -228,6 +258,62 @@ fn infer_mlx_on_stream(
 #[cfg(feature = "mlx")]
 fn mlx_error(error: impl std::fmt::Display) -> EngineError {
     EngineError::message(error.to_string())
+}
+
+#[cfg(feature = "mlx")]
+fn stage_hook(exec: &ExecutionContext, stage: &str) -> danmo_mlx::Result<()> {
+    exec.phase(stage)
+        .map_err(|error| danmo_mlx::Error::new("seedvr2 stage", error.to_string()))?;
+    exec.progress(stage, 1, 1)
+        .map_err(|error| danmo_mlx::Error::new("seedvr2 stage", error.to_string()))?;
+    exec.log("info", &format!("seedvr2_upscale stage={stage}"))
+        .map_err(|error| danmo_mlx::Error::new("seedvr2 stage", error.to_string()))?;
+    Ok(())
+}
+
+/// Record which DiT / VAE / pos_emb files the bundle will bind.
+pub(crate) fn annotate_weight_files(
+    exec: &ExecutionContext,
+    bundle: &Path,
+) -> Result<(), EngineError> {
+    let dit = if bundle.join("seedvr2_ema_7b_fp16.safetensors").is_file() {
+        "seedvr2_ema_7b_fp16.safetensors"
+    } else {
+        "missing"
+    };
+    let vae = "ema_vae_fp16.safetensors";
+    let pos_emb = if bundle.join("pos_emb.safetensors").is_file() {
+        "pos_emb.safetensors"
+    } else if bundle.join("data").join("pos_emb.safetensors").is_file() {
+        "data/pos_emb.safetensors"
+    } else {
+        "embedded"
+    };
+    let files = [dit, vae, pos_emb].join(",");
+    let mut bytes = 0u64;
+    for name in [dit, vae] {
+        if let Ok(meta) = std::fs::metadata(bundle.join(name)) {
+            bytes = bytes.saturating_add(meta.len());
+        }
+    }
+    if pos_emb != "embedded" {
+        if let Ok(meta) = std::fs::metadata(bundle.join(pos_emb)) {
+            bytes = bytes.saturating_add(meta.len());
+        }
+    }
+    exec.annotate(&[
+        ("danmo.weight.files", files),
+        ("danmo.weight.dit", dit.into()),
+        ("danmo.weight.vae", vae.into()),
+        ("danmo.weight.pos_emb", pos_emb.into()),
+        ("danmo.weight.bytes", bytes.to_string()),
+        ("danmo.weight.dtype", "fp16".into()),
+    ])?;
+    exec.log(
+        "info",
+        &format!("seedvr2 weights dit={dit} vae={vae} pos_emb={pos_emb} bytes={bytes}"),
+    )?;
+    Ok(())
 }
 
 /// `int(w * scale)` floored to even, matching the reference preprocess.
@@ -455,7 +541,7 @@ fn read_single_safetensor(bytes: &[u8], want: &str) -> Result<(Vec<f32>, Vec<u64
 /// Write a deterministic smoke bundle: tiny GGUF DiT, tiny safetensors VAE,
 /// a matching tiny `pos_emb.safetensors`, and the manifest.
 pub fn write_smoke_bundle(dir: &Path) -> Result<(), WeightError> {
-    use crate::weights::{F32Nd, SafeTensor, write_f32_nd, write_safetensors};
+    use crate::weights::{write_f32_nd, write_safetensors, F32Nd, SafeTensor};
     std::fs::create_dir_all(dir).map_err(|err| WeightError::Bundle {
         path: dir.display().to_string(),
         detail: format!("{err}"),
@@ -520,7 +606,7 @@ pub fn write_smoke_bundle(dir: &Path) -> Result<(), WeightError> {
             }
         })
         .collect();
-    write_safetensors(&dir.join("seedvr2_ema_3b_fp16.safetensors"), &safetensors)?;
+    write_safetensors(&dir.join("seedvr2_ema_7b_fp16.safetensors"), &safetensors)?;
     vae::write_smoke_vae(dir)?;
     // Tiny pos_emb matching the smoke txt dims `[txt_len, txt_in_dim]`.
     let pos: Vec<f32> = (0..(config.txt_len * config.txt_in_dim) as usize)
@@ -614,7 +700,7 @@ mod tests {
 
     fn request() -> ImageUpscaleRequest {
         ImageUpscaleRequest {
-            model: "seedvr2-3b".into(),
+            model: "seedvr2-7b".into(),
             source_asset_id: "ast_src".into(),
             scale: Some(2),
             tile_size: None,
@@ -627,7 +713,7 @@ mod tests {
 
     fn run(dir: PathBuf) -> ResolvedRun {
         ResolvedRun {
-            model: "seedvr2-3b".into(),
+            model: "seedvr2-7b".into(),
             version: Some("bf16".into()),
             family: "seedvr2".into(),
             action: Action::ImageUpscale,

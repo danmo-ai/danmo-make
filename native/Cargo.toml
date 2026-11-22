@@ -11,7 +11,7 @@ members = [
     "crates/danmo-schedule",
     "crates/danmo-engine",
     "crates/danmo-server",
-    "crates/danmo-cli",
+    "crates/danmo-cli", "crates/danmo-otel",
 ]
 
 [workspace.package]

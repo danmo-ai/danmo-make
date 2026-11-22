@@ -81,6 +81,12 @@ pub trait RunObserver: Send + Sync {
     fn log(&self, level: &str, message: &str) -> Result<(), EngineError>;
     fn phase(&self, phase: &str) -> Result<(), EngineError>;
 
+    /// Attach structured key/value tags to the open Trace (root + later phases).
+    /// Default is a no-op so unit tests and lightweight hosts stay unchanged.
+    fn annotate(&self, _attributes: &[(&str, String)]) -> Result<(), EngineError> {
+        Ok(())
+    }
+
     /// Denoise steps between living-canvas previews. `None` writes nothing.
     fn preview_interval_steps(&self) -> Option<u32> {
         None
@@ -141,6 +147,10 @@ impl ExecutionContext {
     pub fn log(&self, level: &str, message: &str) -> Result<(), EngineError> {
         self.observer.log(level, message)
     }
+
+    pub fn annotate(&self, attributes: &[(&str, String)]) -> Result<(), EngineError> {
+        self.observer.annotate(attributes)
+    }
 }
 
 pub struct NoopObserver;
@@ -162,6 +172,7 @@ impl RunObserver for NoopObserver {
 #[derive(Debug, Clone)]
 pub struct AudioCreateRequest {
     pub model: String,
+    pub title: String,
     pub prompt: String,
     pub instrumental: bool,
     pub vocal_type: String,
@@ -180,6 +191,7 @@ pub struct AudioCreateRequest {
 #[derive(Debug, Clone)]
 pub struct AudioEditRequest {
     pub model: String,
+    pub title: String,
     pub prompt: String,
     pub instrumental: bool,
     pub vocal_type: String,
@@ -256,6 +268,332 @@ impl EngineRequest {
             Self::Unsupported { action, .. } => *action,
         }
     }
+
+    /// Family-neutral Trace tags derived from the typed request (seed, size,
+    /// hung LoRAs, scheduler, …). Prompt text is truncated for span tags.
+    pub fn trace_attributes(&self) -> Vec<(&'static str, String)> {
+        let mut out = Vec::new();
+        match self {
+            Self::ImageCreate(request) => {
+                push_prompt(&mut out, &request.prompt);
+                push_optional_text(
+                    &mut out,
+                    "danmo.generation.negative_prompt",
+                    &request.negative_prompt,
+                );
+                push_size(&mut out, &request.size);
+                push_opt_u32(&mut out, "danmo.generation.steps", request.steps);
+                push_opt_f32(&mut out, "danmo.generation.guidance", request.guidance);
+                push_opt_i64(&mut out, "gen_ai.request.seed", request.seed);
+                push_optional_text(
+                    &mut out,
+                    "danmo.generation.scheduler",
+                    request.scheduler.as_deref().unwrap_or(""),
+                );
+                push_opt_f32(
+                    &mut out,
+                    "danmo.generation.scheduler_shift",
+                    request.scheduler_shift,
+                );
+                out.push(("danmo.generation.n", request.n.to_string()));
+                push_adapters(&mut out, &request.adapters);
+                push_structural_guide(&mut out, request.structural_guide.as_ref());
+            }
+            Self::ImageEdit(request) => {
+                push_prompt(&mut out, &request.prompt);
+                push_optional_text(
+                    &mut out,
+                    "danmo.generation.negative_prompt",
+                    &request.negative_prompt,
+                );
+                if let Some(size) = request.size.as_deref() {
+                    push_size(&mut out, size);
+                }
+                push_opt_u32(&mut out, "danmo.generation.steps", request.steps);
+                push_opt_f32(&mut out, "danmo.generation.guidance", request.guidance);
+                push_opt_i64(&mut out, "gen_ai.request.seed", request.seed);
+                push_optional_text(
+                    &mut out,
+                    "danmo.generation.scheduler",
+                    request.scheduler.as_deref().unwrap_or(""),
+                );
+                push_opt_f32(
+                    &mut out,
+                    "danmo.generation.source_fidelity",
+                    request.source_fidelity,
+                );
+                out.push(("danmo.generation.n", request.n.to_string()));
+                push_adapters(&mut out, &request.adapters);
+            }
+            Self::VideoCreate(request) => {
+                push_prompt(&mut out, &request.prompt);
+                push_optional_text(
+                    &mut out,
+                    "danmo.generation.negative_prompt",
+                    &request.negative_prompt,
+                );
+                push_opt_u32(&mut out, "danmo.generation.steps", request.steps);
+                push_opt_f32(&mut out, "danmo.generation.guidance", request.guidance);
+                push_opt_i64(&mut out, "gen_ai.request.seed", request.seed);
+                push_opt_f32(&mut out, "danmo.generation.shift", request.shift);
+                if let Some(frames) = request.num_frames {
+                    out.push(("danmo.generation.frames", frames.to_string()));
+                }
+                if let Some(fps) = request.fps {
+                    out.push(("danmo.generation.fps", fps.to_string()));
+                }
+                if let Some(size) = request.size.as_deref() {
+                    push_size(&mut out, size);
+                }
+                if !request.media_references.is_empty() {
+                    out.push((
+                        "danmo.generation.media_references",
+                        request.media_references.len().to_string(),
+                    ));
+                }
+                push_adapters(&mut out, &request.adapters);
+            }
+            Self::VideoEdit(request) => {
+                push_prompt(&mut out, &request.prompt);
+                push_optional_text(
+                    &mut out,
+                    "danmo.generation.negative_prompt",
+                    &request.negative_prompt,
+                );
+                push_opt_u32(&mut out, "danmo.generation.steps", request.steps);
+                push_opt_f32(&mut out, "danmo.generation.guidance", request.guidance);
+                push_opt_i64(&mut out, "gen_ai.request.seed", request.seed);
+                push_opt_f32(&mut out, "danmo.generation.shift", request.shift);
+                if let Some(frames) = request.num_frames {
+                    out.push(("danmo.generation.frames", frames.to_string()));
+                }
+                if let Some(fps) = request.fps {
+                    out.push(("danmo.generation.fps", fps.to_string()));
+                }
+                if let Some(size) = request.size.as_deref() {
+                    push_size(&mut out, size);
+                }
+                push_optional_text(
+                    &mut out,
+                    "danmo.generation.source_asset_id",
+                    &request.source_asset_id,
+                );
+            }
+            Self::AudioCreate(request) => {
+                push_prompt(&mut out, &request.prompt);
+                push_opt_u32(&mut out, "danmo.generation.steps", request.steps);
+                out.push(("danmo.generation.guidance", request.guidance.to_string()));
+                push_opt_i64(&mut out, "gen_ai.request.seed", request.seed);
+                out.push((
+                    "danmo.generation.duration_sec",
+                    request.duration_sec.to_string(),
+                ));
+                out.push(("danmo.generation.n", request.n.to_string()));
+                push_optional_text(
+                    &mut out,
+                    "danmo.generation.vocal_language",
+                    &request.vocal_language,
+                );
+                out.push((
+                    "danmo.generation.instrumental",
+                    request.instrumental.to_string(),
+                ));
+                push_adapters(&mut out, &request.adapters);
+            }
+            Self::AudioEdit(request) => {
+                push_prompt(&mut out, &request.prompt);
+                push_opt_u32(&mut out, "danmo.generation.steps", request.steps);
+                out.push(("danmo.generation.guidance", request.guidance.to_string()));
+                push_opt_i64(&mut out, "gen_ai.request.seed", request.seed);
+                if let Some(duration) = request.duration_sec {
+                    out.push(("danmo.generation.duration_sec", duration.to_string()));
+                }
+                out.push(("danmo.generation.n", request.n.to_string()));
+                push_adapters(&mut out, &request.adapters);
+            }
+            Self::ImageUpscale(request) => {
+                push_optional_text(
+                    &mut out,
+                    "danmo.generation.source_asset_id",
+                    &request.source_asset_id,
+                );
+                push_opt_u32(&mut out, "danmo.generation.scale", request.scale);
+                push_opt_u32(&mut out, "danmo.generation.tile_size", request.tile_size);
+                push_opt_f32(&mut out, "danmo.generation.denoise", request.denoise);
+                push_opt_i64(&mut out, "gen_ai.request.seed", request.seed);
+            }
+            Self::VideoUpscale(request) => {
+                push_optional_text(
+                    &mut out,
+                    "danmo.generation.source_asset_id",
+                    &request.source_asset_id,
+                );
+                push_opt_u32(&mut out, "danmo.generation.scale", request.scale);
+                push_opt_f32(&mut out, "danmo.generation.denoise", request.denoise);
+                push_opt_u32(
+                    &mut out,
+                    "danmo.generation.temporal_window",
+                    request.temporal_window,
+                );
+                push_opt_u32(&mut out, "danmo.generation.max_frames", request.max_frames);
+                push_opt_i64(&mut out, "gen_ai.request.seed", request.seed);
+            }
+            Self::VideoAvatar(request) => {
+                push_prompt(&mut out, &request.prompt);
+                push_optional_text(
+                    &mut out,
+                    "danmo.generation.reference_asset_id",
+                    &request.reference_asset_id,
+                );
+                push_opt_u32(&mut out, "danmo.generation.steps", request.steps);
+                push_opt_i64(&mut out, "gen_ai.request.seed", request.seed);
+                if let Some(frames) = request.num_frames {
+                    out.push(("danmo.generation.frames", frames.to_string()));
+                }
+                if let Some(size) = request.size.as_deref() {
+                    push_size(&mut out, size);
+                }
+            }
+            Self::AudioLm(request) => {
+                push_prompt(&mut out, &request.prompt);
+                push_optional_text(&mut out, "danmo.generation.mode", &request.mode);
+            }
+            Self::Unsupported { .. } => {}
+        }
+        out
+    }
+}
+
+fn push_size(out: &mut Vec<(&'static str, String)>, size: &str) {
+    let trimmed = size.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    out.push(("danmo.generation.size", trimmed.to_string()));
+    if let Some((width, height)) = trimmed.split_once(['x', '×', '*']) {
+        if let (Ok(w), Ok(h)) = (width.trim().parse::<i64>(), height.trim().parse::<i64>()) {
+            out.push(("danmo.generation.width", w.to_string()));
+            out.push(("danmo.generation.height", h.to_string()));
+        }
+    }
+}
+
+fn push_opt_u32(out: &mut Vec<(&'static str, String)>, key: &'static str, value: Option<u32>) {
+    if let Some(value) = value {
+        out.push((key, value.to_string()));
+    }
+}
+
+fn push_opt_f32(out: &mut Vec<(&'static str, String)>, key: &'static str, value: Option<f32>) {
+    if let Some(value) = value {
+        out.push((key, value.to_string()));
+    }
+}
+
+fn push_opt_i64(out: &mut Vec<(&'static str, String)>, key: &'static str, value: Option<i64>) {
+    if let Some(value) = value {
+        out.push((key, value.to_string()));
+    }
+}
+
+const TRACE_TEXT_LIMIT: usize = 240;
+
+fn push_prompt(out: &mut Vec<(&'static str, String)>, prompt: &str) {
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    out.push((
+        "danmo.generation.prompt_chars",
+        trimmed.chars().count().to_string(),
+    ));
+    out.push(("gen_ai.prompt", truncate_chars(trimmed, TRACE_TEXT_LIMIT)));
+}
+
+fn push_optional_text(out: &mut Vec<(&'static str, String)>, key: &'static str, value: &str) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    out.push((key, truncate_chars(trimmed, TRACE_TEXT_LIMIT)));
+}
+
+fn push_adapters(
+    out: &mut Vec<(&'static str, String)>,
+    adapters: &[danmo_contracts::ImageAdapter],
+) {
+    out.push(("danmo.lora.count", adapters.len().to_string()));
+    if adapters.is_empty() {
+        return;
+    }
+    let ids = adapters
+        .iter()
+        .map(|adapter| adapter.id.trim())
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>()
+        .join(",");
+    let weights = adapters
+        .iter()
+        .map(|adapter| format_adapter_weight(adapter.weight))
+        .collect::<Vec<_>>()
+        .join(",");
+    let stacked = adapters
+        .iter()
+        .filter(|adapter| !adapter.id.trim().is_empty())
+        .map(|adapter| {
+            format!(
+                "{}@{}",
+                adapter.id.trim(),
+                format_adapter_weight(adapter.weight)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(";");
+    if !ids.is_empty() {
+        out.push(("danmo.lora.ids", ids));
+    }
+    if !weights.is_empty() {
+        out.push(("danmo.lora.weights", weights));
+    }
+    if !stacked.is_empty() {
+        out.push(("danmo.lora", stacked));
+    }
+}
+
+fn push_structural_guide(
+    out: &mut Vec<(&'static str, String)>,
+    guide: Option<&danmo_contracts::StructuralGuide>,
+) {
+    let Some(guide) = guide else {
+        return;
+    };
+    out.push(("danmo.structural_guide", "true".into()));
+    push_optional_text(out, "danmo.structural_guide.model_id", &guide.model_id);
+    push_optional_text(out, "danmo.structural_guide.type", &guide.guide_type);
+    out.push(("danmo.structural_guide.weight", guide.weight.to_string()));
+    if !guide.asset_id.trim().is_empty() {
+        out.push((
+            "danmo.structural_guide.asset_id",
+            guide.asset_id.trim().to_string(),
+        ));
+    }
+}
+
+fn format_adapter_weight(weight: f32) -> String {
+    if (weight - weight.round()).abs() < 1e-4 {
+        format!("{}", weight.round() as i32)
+    } else {
+        format!("{weight:.3}")
+    }
+}
+
+fn truncate_chars(text: &str, limit: usize) -> String {
+    let count = text.chars().count();
+    if count <= limit {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(limit).collect();
+    format!("{truncated}…(+{})", count - limit)
 }
 
 #[derive(Debug, Clone)]

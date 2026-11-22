@@ -81,6 +81,8 @@ pub struct ImageGenerationRequest {
     #[serde(default)]
     pub use_empirical_mu: bool,
     #[serde(default)]
+    pub use_pe: Option<bool>,
+    #[serde(default)]
     pub adapters: Vec<ImageAdapter>,
     #[serde(default)]
     pub structural_guide: Option<StructuralGuide>,
@@ -270,17 +272,16 @@ pub struct VideoEditRequest {
     pub prompt: String,
     #[serde(default)]
     pub negative_prompt: String,
-    /// "WxH"; None is the family default (hunyuan i2v: 720x1280).
+    /// "WxH"; None uses the family default.
     pub size: Option<String>,
     pub steps: Option<u32>,
     pub guidance: Option<f32>,
-    /// Flow-match sigma shift; None is the family default (hunyuan: 7).
+    /// Flow-match sigma shift; None uses the family default.
     pub shift: Option<f32>,
     pub seed: Option<i64>,
-    /// None is the family default (hunyuan: 81). Hunyuan requires
-    /// (num_frames - 1) % 4 == 0.
+    /// None uses the family default frame count.
     pub num_frames: Option<u32>,
-    /// None is the family default (hunyuan: 24).
+    /// None uses the family default fps.
     pub fps: Option<u32>,
     #[serde(default)]
     pub metadata: Value,
@@ -327,6 +328,8 @@ pub struct VideoAvatarRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioGenerationRequest {
     pub model: String,
+    #[serde(default)]
+    pub title: String,
     pub prompt: String,
     #[serde(default)]
     pub instrumental: bool,
@@ -401,6 +404,8 @@ fn default_denoise() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioEditRequest {
     pub model: String,
+    #[serde(default)]
+    pub title: String,
     pub prompt: String,
     #[serde(default)]
     pub instrumental: bool,
@@ -736,7 +741,10 @@ pub fn z_image_lora_module_keys() -> Vec<String> {
 }
 
 /// Built-in presets for Z-Image / Turbo (DiffSynth Scheme 4 default).
-pub fn resolve_lora_train_preset(preset: &str, base_model: &str) -> Result<LoraTrainPreset, String> {
+pub fn resolve_lora_train_preset(
+    preset: &str,
+    base_model: &str,
+) -> Result<LoraTrainPreset, String> {
     let mid = base_model.split(':').next().unwrap_or(base_model).trim();
     let key = preset.trim().to_ascii_lowercase();
     let modules = z_image_lora_module_keys();
@@ -896,6 +904,13 @@ mod tests {
         assert!(req.key_scale.is_empty());
         assert!(req.time_signature.is_empty());
         assert!(req.bpm.is_none());
+        assert!(req.title.is_empty());
+        let edit: AudioEditRequest = serde_json::from_value(serde_json::json!({
+            "model": "ace-step-xl-sft",
+            "prompt": "jazz"
+        }))
+        .unwrap();
+        assert!(edit.title.is_empty());
     }
 
     #[test]

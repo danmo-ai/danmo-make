@@ -369,11 +369,6 @@ pub fn cover(
     request: &CoverRequest<'_>,
     mut on_step: impl FnMut(u32, u32),
 ) -> Result<CreateOutput, WeightError> {
-    if request.timbre_from_source {
-        return Err(WeightError::NotBuilt(
-            "ACE-Step source timbre sampling is not wired. Leave timbre_from_source off.".into(),
-        ));
-    }
     let loras = request.loras.to_vec();
     if !request.guidance.is_finite() || request.guidance < 1.0 {
         return Err(WeightError::NotBuilt(format!(
@@ -512,6 +507,9 @@ pub fn cover(
         .map(|prompts| qwen3::tokenize_plain(&tokenizer, &prompts.text, qwen.vocab))
         .transpose()?;
     let seed = request.seed.unwrap_or_else(draw_seed);
+    let timbre = request
+        .timbre_from_source
+        .then(|| sample_timbre_reference_latents(&fitted, seed));
     let steps = request
         .steps
         .unwrap_or(if config.is_turbo { 8 } else { 30 });
@@ -528,6 +526,7 @@ pub fn cover(
             let text_ids = text_ids.clone();
             let lyric_ids = lyric_ids.clone();
             let non_cover_ids = non_cover_ids.clone();
+            let timbre = timbre.clone();
             let dit_key = dit_key.clone();
             let text_key = text_key.clone();
             let loras = loras.clone();
@@ -537,7 +536,7 @@ pub fn cover(
                 let load_secs = started.elapsed().as_secs_f64();
                 let text_hidden = encode_text(&text, qwen, &text_ids, stream)?;
                 let lyric_hidden = embed_tokens(&text, &lyric_ids, qwen.hidden as i32, stream)?;
-                let timbre_hidden = timbre_frames(&silence, None, stream)?;
+                let timbre_hidden = timbre_frames(&silence, timbre.as_deref(), stream)?;
                 let encoder = model::encode_condition(
                     &dit,
                     &config,
@@ -970,6 +969,18 @@ fn code_context(
 
 fn silence_reference(silence: &[f32], frames: usize) -> Vec<f32> {
     silence[..frames * SILENCE_CHANNELS].to_vec()
+}
+
+fn sample_timbre_reference_latents(source: &[f32], seed: i64) -> Vec<f32> {
+    const MAX_FRAMES: usize = 750;
+    let frames = source.len() / SILENCE_CHANNELS;
+    let count = frames.min(MAX_FRAMES);
+    let start = if frames > count {
+        seed.unsigned_abs() as usize % (frames - count + 1)
+    } else {
+        0
+    };
+    source[start * SILENCE_CHANNELS..(start + count) * SILENCE_CHANNELS].to_vec()
 }
 
 fn null_encoder(
@@ -1505,9 +1516,25 @@ fn draw_seed() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_key, code_context, fsq_cover_acoustic, locate, resident, silence_tensor};
+    use super::{
+        cache_key, code_context, fsq_cover_acoustic, locate, resident,
+        sample_timbre_reference_latents, silence_tensor, SILENCE_CHANNELS,
+    };
     use crate::families::ace_step::mlx::model::{self, AceConfig};
     use std::path::PathBuf;
+
+    #[test]
+    fn timbre_reference_is_seeded_bounded_and_uses_short_sources() {
+        let source = (0..(1000 * SILENCE_CHANNELS))
+            .map(|index| index as f32)
+            .collect::<Vec<_>>();
+        let first = sample_timbre_reference_latents(&source, 7);
+        assert_eq!(first.len(), 750 * SILENCE_CHANNELS);
+        assert_eq!(first, sample_timbre_reference_latents(&source, 7));
+        assert_ne!(first, sample_timbre_reference_latents(&source, 8));
+        let short = vec![1.0; 10 * SILENCE_CHANNELS];
+        assert_eq!(sample_timbre_reference_latents(&short, 7), short);
+    }
 
     #[test]
     fn code_context_keeps_hints_and_pads_with_silence() {

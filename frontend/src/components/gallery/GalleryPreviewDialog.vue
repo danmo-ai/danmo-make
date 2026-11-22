@@ -188,6 +188,7 @@
           v-else-if="media === 'audio'"
           :item="currentItem"
           :src="getAudioUrl(currentItem)"
+          :compare-src="audioCompareUrl"
           variant="lightbox"
           :duration-label="audioDurationLabel"
           :show-meta="false"
@@ -397,6 +398,18 @@ const dialogWidth = computed(() => {
     return Array.isArray(segs) && segs.length ? 'min(960px, 94vw)' : '640px';
   }
   return 'min(94vw, 1120px)';
+});
+
+const audioCompareUrl = computed(() => {
+  const item = currentItem.value;
+  // Only cover/edit lineages have a real source track. `create` used to
+  // incorrectly stamp canvas selection as parent_asset_id.
+  const relation = String(item?.metadata?.relation_type || '').trim();
+  if (!relation || relation === 'create') return '';
+  const parentId = String(item?.metadata?.parent_asset_id || '').trim();
+  if (!parentId) return '';
+  const parent = props.items.find((candidate) => candidate.path === `asset:${parentId}`);
+  return parent ? getAudioUrl(parent) : '';
 });
 
 const audioDurationLabel = computed(() => {

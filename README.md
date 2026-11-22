@@ -2,7 +2,7 @@
 
 Language: **English** | [中文](README_zh.md)
 
-Local **image / video / audio** studio — **Rust + MLX** engine, **Vue 3** UI, **one-click** model registry. Not a node editor: open the app, pick a card, create. Production weights are **safetensors** (`fp16`, `bf16`, `fp32`, `int8`, `int4`, `mlx-q4`, `mlx-q8`) at checkpoint dtype. Missing capabilities **fail loud**.
+Local **image / video / audio** studio — **Rust + MLX** engine, **Vue 3** UI, **one-click** model registry. Not a node editor: open the app, pick a card, create. Production weights are **safetensors** at checkpoint dtype. The registry publishes one dense download per base model (`fp16` / `bf16` / `fp32`) plus a `q4-mixed` tier built on this machine by the shared quantizer. Missing capabilities **fail loud**.
 
 ![Danmo Make — image composer, gallery, infinite canvas, video, models, audio](docs/media/readme/danmo-make-studio-carousel.gif)
 
@@ -234,7 +234,7 @@ Structural guide (ControlNet union) is wired for Z-Image; a guide on a family wi
 | Text-to-video | `create` | `POST /api/videos/generations` |
 | Image-to-video | `animate` | `POST /api/videos/edits` |
 
-LTX 2.5 runs real two-stage audio-video tasks; Wan / Hunyuan / MiniMax / LongCat are still migrating — unbuilt actions fail loud.
+LTX 2.5 runs real two-stage audio-video tasks; Wan / MiniMax / LongCat Avatar are still migrating — unbuilt actions fail loud.
 
 ### Audio
 
@@ -305,7 +305,7 @@ make pack-mlx-sidecar      # release danqing-api sidecar (mlx-metal / mlx-cuda)
 
 **App settings** — under the control plane / workspace (`~/.danmo-make/…` or `{workspace}/config/.app_config.json`): language, theme, default model, memory limit, queue policy, integration API keys.
 
-**Registry** — `default_config/models_registry.json` (`schema_version: 3`). MLX version keys are `fp16`, `bf16`, `fp32`, `int8`, `int4`, `mlx-q4`, `mlx-q8`; a registry label is not evidence of tensor dtype (production loads checkpoint dtype).
+**Registry** — `default_config/models_registry.json` (`schema_version: 3`). A version is `kind: dense` (`fp16` / `bf16` / `fp32`, the only download) or `kind: derived` (`q4-mixed`, built locally from the dense base by `default_config/quant_recipes/<id>.json`). No pre-quantized package is downloaded, and a registry label is not evidence of tensor dtype (production loads checkpoint dtype).
 
 **Useful env**:
 

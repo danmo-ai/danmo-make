@@ -92,7 +92,7 @@ impl MlxSession {
 }
 
 impl DitImageSession for MlxSession {
-    fn encode(&mut self, _ctx: &GgmlContext) -> Result<(), EngineError> {
+    fn encode(&mut self, _ctx: &GgmlContext, _exec: &ExecutionContext) -> Result<(), EngineError> {
         resident::load_transformer(&self.bundle.join("transformer")).map_err(from_mlx)?;
         resident::load_text_encoder(&self.bundle.join("text_encoder")).map_err(from_mlx)?;
         resident::load_vae(&self.bundle.join("vae")).map_err(from_mlx)?;
@@ -167,6 +167,7 @@ impl DitImageSession for MlxSession {
         Ok(DitDecode {
             preview_png: crate::common::png::encode_rgb(width, height, &pixels),
             graph_computes: steps,
+            metadata: serde_json::json!({}),
         })
     }
 }
@@ -309,6 +310,8 @@ fn step_latent(
         None => None,
     };
     let steps = sigmas.len() - 1;
+    exec.log("info", &format!("flux2 denoise starting ({steps} steps)"))
+        .map_err(|error| Error::new("Flux2 Klein", error.to_string()))?;
     for (index, pair) in sigmas.windows(2).enumerate() {
         exec.check_cancelled()
             .map_err(|error| Error::new("Flux2 Klein", error.to_string()))?;

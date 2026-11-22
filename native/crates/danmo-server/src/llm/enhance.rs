@@ -43,11 +43,7 @@ fn user_locale_hint(text: &str) -> &'static str {
 }
 
 /// Build OpenAI-style messages for an enhance-prompt call.
-pub fn build_enhance_messages(
-    prompt: &str,
-    target_action: &str,
-    style_positive: &str,
-) -> Value {
+pub fn build_enhance_messages(prompt: &str, target_action: &str, style_positive: &str) -> Value {
     let action = target_action.to_lowercase();
     let mut user_content = prompt.to_string();
     if matches!(action.as_str(), "image_create" | "create" | "image") {

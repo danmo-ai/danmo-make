@@ -11,9 +11,17 @@
 - ggml Rust 基线：`67495d3353d64f1ffd605e3586d0eea74837aebe`。
 - 行为基线 `main`：`ab4456cb1a712b9e8a56a0629862170c967bef52`，本地路径 `/Users/nil.luo/Workspace/coding/danmo-make`。
 - Registry 已从该 `main` 恢复：92 个 model card，22 个 runtime family。52 个 card 有 action，展开成矩阵里 216 个 model/version/action。40 个无 action 的组件 card 还没进矩阵。
-- 量化源已定稿为魔塔 `OsaurusAI/Z-Image-Turbo-mflux-4bit` 与 `-8bit`。不要改回小型 HF 镜像。
+- 量化策略已定稿：**只下载完整权重**（`kind: dense`），量化是本地构建产物（`kind: derived` / `q4-mixed`，按 `default_config/quant_recipes/` 的 recipe 生成）。第三方预量化包（`mlx-q4` / `mlx-q8` / `*-dmd`）已从 registry 移除，不要再加回。
 - `main` 是行为基线，不是不可改的数学。和上游冲突时记下差异、补回归，再决定兼容还是修正。换基线 commit 必须写下 registry diff、contract diff 和受影响的条目。
 - 有意偏差：生产权重保持 checkpoint 原 dtype。`main` 把 BF16/FP16 切进 F32 参数是错误设计，不迁。官方本身就是 F32 的 tensor 保持 F32。
+
+## 本地量化（`kind: derived`）
+
+- 产品只发布完整权重。`q4-mixed` 由 `danmo-quantize` / 安装器按 recipe 在本机生成，格式与层策略由仓库唯一控制。
+- Recipe 在 `default_config/quant_recipes/<id>.json`：`components`、`keep_dense` glob（embedding / norm / modulation / final projection 保 FP16）、`min_elements`、单个 `{bits, group_size}`。一个 recipe 只用一个量化档，loader 拒绝混档。
+- 转换跑在 CPU stream（构建期），输出仍是产品 loader 直接读的 safetensors 布局（packed `weight` + `scales` + `biases` + `quantization_level`）。
+- `bundle.manifest.json` 带 `format: danmo-mlx-quantized`、`recipe.id/hash`、dense 源布局摘要。recipe 变更或 dense 源重发 → 加载显式报错并提示重转。
+- 仍待：每个 family 至少一个模型的 dense → `q4-mixed` 转换 + 推理 E2E 证据；`q4-mixed` 的 `metal_performance` 门槛依旧不点亮。
 
 ## 更新规则
 
@@ -35,11 +43,11 @@
 | P1 控制面 | pending | 真实 DB fixture、实时 SSE、鉴权、EngineRouter、核心路由 E2E、registry 启动校验（server adapter 家族分支已消除） |
 | P2 MLX runtime | pending | pipeline/session 去掉 ggml 类型、attention 分派、字节预算、TeaCache 原语、panic/OOM/cancel；DANQING_MLX_DEVICE 或删文档；mlx-cuda smoke（ltx25 已全部上 executor） |
 | P3 common | pending | 第二个使用方出现后再抽的 tokenizer、VAE、媒体和 scheduler fixture（guard 扩覆盖、ltx 孤儿删除已完成） |
-| P4 图像核心 | in_progress | **Flux2 已收口**：16/16 `e2e`+画质 `metal_parity`+`route`；fp16 create 热门 4/4；fp16 rewrite / `mlx-q`* 热门 `not_applicable`（路径不对称 / AGENTS 量化政策）。下一刀 Qwen-Image 或 Flux1 |
-| P5 图像长尾 | in_progress | Flux1 各结构变体，以及 fibo、ernie、cogview4、hidream、step1x、boogu、longcat；esrgan 已落地 Metal，待性能/CUDA 验收 |
+| P4 图像核心 | in_progress | **Flux2 已收口**：16/16 `e2e`+画质 `metal_parity`+`route`；fp16 create 热门 4/4；fp16 rewrite / `mlx-q`* 热门 `not_applicable`（路径不对称 / AGENTS 量化政策）。下一刀 Qwen-Image / ERNIE / FLUX 3 |
+| P5 图像长尾 | in_progress | 注册表已删 Flux1 / cogview / hidream / boogu / step1x / fibo 生成卡；剩余：ernie、`fibo-edit-rmbg`、longcat、esrgan 性能/CUDA；旗舰接 FLUX 3 |
 | P6 音频 | in_progress | ACE 与 `main` 的成歌 parity、DiffRhythm。FSQ 翻唱编码已接到 `task=cover` |
 | P7 超分 | in_progress | SeedVR2 视频 7B MLX 已打通并有数值/E2E 证据；仍待性能门、长任务、3B/图像和 CUDA |
-| P8 视频 | in_progress | LTX25 数值与配置基础切片已进树；仍待 Wan、LTX25 模型/两阶段会话、Hunyuan、MiniMax H3、LongCat Avatar |
+| P8 视频 | in_progress | LTX25 已收口主路径；注册表已删 bernini / longcat-video / SeedVR2 3B；仍待 Wan、MiniMax H3、LongCat Avatar |
 | P9 外围、assistant、训练 | in_progress | 安装与画廊、本地 assistant。**训练骨架已进树**（假 latent probe）；缺 VAE/TE cache、可微 DiT+LoRA、真图 E2E |
 | P10 退役 | in_progress | 产品 Python 树 / thin uvicorn / parity 脚本已删。仍待：默认切满 Rust MLX、ggml 计算栈退役、干净环境安装测试 |
 
@@ -60,7 +68,7 @@ P6 已落地、不要重做的部分：ACE XL 的 MLX 生成与 cover / cover-no
 
 - `python_baseline_status` 的取值不在受控枚举里。
 - 227 条 `architecture_variant` 仍是 `unclassified`。
-- 38 个组件 card（LoRA、ControlNet、Redux、depth-pro、VEDA 等）没有条目。
+- 组件 card（LoRA、ControlNet Union 等）矩阵条目仍需按需补齐；Flux1 Redux/depth-pro/Fill 卡已从注册表删除。
 - 峰值显存字段还没建。Z-Image 已点亮的行要和仍 pending 的行拆开，不能整卡标通过。
 - `out/parity-zimage-*` 在 gitignore 的 `/out/` 下。摘要写进矩阵，或把 fixture 放到能提交的路径。
 
@@ -107,7 +115,7 @@ P6 已落地、不要重做的部分：ACE XL 的 MLX 生成与 cover / cover-no
 - VaeSpec、2D/3D tiling 和 stream cache（拓扑相同仅配置不同才进 `common/vae`；因果 / 3D 产品 VAE 留在 family）。
 - PNG/JPEG/WebP、WAV/FLAC/MP3/OPUS/AAC、ffmpeg。
 - DiffRhythm 中文 G2P 走 ONNX Runtime C API，去掉 bundle 里的 Python。
-- **架构差距（2026-11-19 评估，当日落地）**：~~guard 扩展~~ **已做**——`architecture.rs` 覆盖 `weights/`、跨家族 import、`danmo-mlx-sys` 直连（7/7 绿）；`families/ltx/` ~~孤儿树已删~~；`lib.rs` ~~根部家族训练导出收敛~~为中立 `run_family_lora_training`。`weights/bundle.rs` 的 gguf 布局 helper（`assert_hunyuan_bundle` 等）按发布格式命名保留，随 P10 ggml 退役一起清。
+- **架构差距（2026-11-19 评估，当日落地）**：~~guard 扩展~~ **已做**——`architecture.rs` 覆盖 `weights/`、跨家族 import、`danmo-mlx-sys` 直连（7/7 绿）；`families/ltx/` ~~孤儿树已删~~；`lib.rs` ~~根部家族训练导出收敛~~为中立 `run_family_lora_training`。`weights/bundle.rs` 的 gguf 布局 helper（`assert_gguf_bundle` 等仍供残留 GGUF 族使用，随 P10 ggml 退役一起清。
 
 ### P4
 
@@ -133,7 +141,7 @@ P6 已落地、不要重做的部分：ACE XL 的 MLX 生成与 cover / cover-no
 
 ### P5
 
-`flux1` 的 Fill、Redux、Depth、Kontext 按 model card 分结构变体。`fibo`、`ernie_image`、`cogview4`、`hidream_o1`、`step1x_edit`、`boogu_image`、`longcat`、`esrgan`。LongCat BSA 要分别证明 Metal 和 CUDA。没有权重的条目保持 unavailable。
+Flux1 / cogview / hidream / boogu / step1x / fibo 生成卡已从注册表删除（保留 `fibo-edit-rmbg`）。P5 剩余：`ernie_image`、`longcat`、`esrgan` 性能与 CUDA；旗舰质量栈转 FLUX 3 / ERNIE。LongCat BSA 要分别证明 Metal 和 CUDA。
 
 - **Real-ESRGAN x4+（2026-11-20，Metal，实现与 E2E 已落地）**：`families/esrgan/` 按本机 `config.json` 严格加载 702 个 MLX OHWI FP16 张量，完成 23 个 RRDB、最近邻 x4、官方右/下 10px 反射填充、10px tile context、2× Lanczos 输出、取消/进度和 PNG lineage。独立 PyTorch FP32 参考前向 `max_abs=0.005783975`、`MSE=8.743e-7`；合成权重 6 项测试通过。真实 API 4×/tile16 任务 `aff95691-…` 输出 128×96（9 tiles），2×/tile0 任务 `c9ebfce6-…` 输出 64×48，均完成且 lineage 正确。热性能、峰值内存、CUDA 和矩阵勾选仍待做，不能据此把 family 标为全部验收完成。
 
@@ -158,7 +166,6 @@ SeedVR2 图像和视频超分。tiling、因果时间缓存、wavelet/LAB、ffmp
   - **q4 T2V 验收与剩余项**：早期浏览器任务 `5950feec-2340-4c31-a599-5eefd6a80e11` 暴露了网格伪影和音频漂移。2026-11-20 已修复 keyframe 绝对位置嵌入、二阶段 ancestral 采样与噪声种子、音频 VAE 布局、WAV 声道交织、上采样/视频 VAE 时间维 padding 及 vocoder 插零滤波。同权重参考对照中 upsampler 平均误差约 `0.0000023`、视频 VAE 为 0、vocoder 约 `0.0245`；原图生视频任务 `98a73c0e-f7ad-4e03-9e61-e6e1a48c8acf` 的同输入 121 帧复验已无网格，音轨 RMS 约 `-38.8dB`。仍不能宣称逐值 bit-parity 完成；性能/峰值内存、真实 70GB checkpoint 转换、CUDA 等保持原有门槛。
   - **满血推进中**：`VideoEncoder`（含 `SpaceToDepthDownsample`）已进 `video_vae`；`conditioning` 模块落地 prepend / target-suffix / MSR 负时间偏移；`VideoGenerationRequest` 增加 `media_references` + `adapters`；vocoder 双布局加载。
   - **本轮**：DiT `forward_tokens_timed`；MSR 接线；MSR LoRA 模型库单独安装（魔搭）。**animate E2E**：`0bbfce6b-…`。**Ref2VA 静帧**：`7744fddc-…`；**Ref2VA 音频**：`caa0ab18-…`。**cancel E2E**：`51fa2be3-…`。**infer 已改走进程级** `mlx_executor`。**q8 满血 E2E（2026-11-19）**：create CLI cold/warm；animate CLI（q8 **23.95s** / q4 **16.12s**）；Ref2VA API `179a44df-…`（2 stills + `ltx25-msr-lora` → `ast_8e34c621…`）。ingest hook 补齐 channel-last（upsampler/audio_vae/`ups.`*）与 vocoder `{vocoder,bwe}` 摊平。证据 `tests/parity/evidence/ltx25-acceptance-2026-11-19.json`。矩阵 q8 create/animate `e2e=passed`（量化 `metal_performance=N/A`）。**收口（2026-11-19）**：4/4 行 `e2e`+`route`+画质 `metal_parity`；量化 `metal_performance=N/A`；vs main create warm **15.41/17.7s=87%**（观测）。证据 `ltx25-vs-main-q4-create-2026-11-19.json` / `ltx25-acceptance-2026-11-19.json`。仍待（非收口门）：峰值内存正式门、resident 缓存/卸载、cuda、逐值 bit-parity。
-- Hunyuan：animate、byT5 字形、1080p SR。Qwen2.5-VL 走 common。SigLIP 等第二个视觉用户出现再抽。
 - MiniMax H3：Qwen3-VL conditioner 不在 family 里复制。大 QMM 和长序列内存两个后端都要测。
 - LongCat Avatar：whisper 前端抽成中立音频特征，数字人条件留在 family。
 
@@ -171,7 +178,10 @@ SeedVR2 图像和视频超分。tiling、因果时间缓存、wavelet/LAB、ffmp
   - **已落地**：`danmo-mlx` `value_and_grad` + AdamW + `mx.checkpoint` 绑定；DiffSynth 对齐的 Flow-Match schedule/`training_weight`；hybrid 数据集 `train.jsonl`+`meta.json`（upload/list/health/import）；Z-Image/Turbo 命名 presets（`turbo-sft` / `turbo-diff` / `base-face`）；共享 train loop（假 latent smoke 保留为单测）；API `datasets` / `requirements` / `trainings` / `artifacts` / `register`（MLX feature 下 `ready:true`）；训练 UI 四步向导 + 完成态摘要/注册；注册校验 companion 已安装；推理不按配方名分支。
   - **满血训练管线（2026-11-21 落地，Metal）**：真 VAE latent cache + Qwen3 TE + caption refiner cache（逐图 + 空 caption dropout 变体）；完整 30 块 DiT 上可微 LoRA（F32 A/B 挂推理 `LinearWeight` residual，`add_loras` dtype 感知；每块 `mx.checkpoint` 闭包，反向重算控显存）；AdamW 全量 210 模块；checkpoint 定时导出 + resume（共享 LoRA loader 回读）；dense bundle 门禁（量化 tier 提交即 400）；`face_crop=on` 显式报错（无人脸检测），`auto` 记日志后中心裁剪；空 caption 走 ChatML scaffold 分词（生成侧空 prompt 门禁不变）。单测：checkpoint 梯度与朴素 `value_and_grad` 等价；toy DiT（1 块）CPU+Metal 训练 loss 下降、14 个因子梯度齐全。
   - **真图短训 E2E（已过，2026-11-21）**：9 图数据集 1024²、20 步（`metadata.iterations` dev override，日志明示）、rank 32 turbo-sft，encode cache 5s、约 9.5s/step；adapter（630 张量）经 `danmo-generate --lora` 中立推理出图，与无 LoRA 基线对比构图明显偏向数据集风格。证据 `tests/parity/evidence/zimage-lora-training-e2e-2026-11-21.json` + 对照 PNG ×2。
-  - **仍缺（训练验收门）**：人脸检测/门禁真链路（`face_crop=on` 当前 fail loud）；loss/梯度按可训练 tensor 的证据文件；checkpoint resume 往返 E2E；2500 步全长跑（1024² 约 6.6h 预估）；CUDA 平台门；矩阵勾选。在此之前不要把训练行标 done。
+  - **断点续训 + 首轮流速优化（2026-11-21 晚，Metal）**：每个 checkpoint 旁落 `checkpoint-N.state.json`（step/iterations/preset）；resume 从 checkpoint 步位继续跑（不再从 0 重跑满），AdamW step 计数恢复（m/v 不持久化、显式注释），采样全程按 `(seed, step)` 确定性派生（epoch shuffle / caption dropout / sigma / eps），重启后 sigma 序列逐位一致；preset/iterations 不匹配、checkpoint 已训满、state 文件损坏均显式报错，无 state 的旧 checkpoint 记日志后 warm start。`ValueAndGrad` 按 token-grid 变体 hoist（batch 张量改闭包输入，不再每步重描 30 块图），去掉提前 eval；实测 ~9.5 → ~7.5 s/step（~21%）。E2E：6 步 run（`metadata.checkpoint_every` dev override）→ checkpoint-3 resume 只跑 step 4–6，step 4 loss 与不间断 run 逐位一致。证据 `tests/parity/evidence/zimage-lora-training-resume-e2e-2026-11-21.json`。
+  - **关 checkpoint / 逐块 compile 已删（2026-11-21）**：两条 dev override 实测无收益后从训练路径移除。关 `mx.checkpoint`：loss 逐位一致但 52s→70s、峰值 78.2 GiB（开着 36.8 GiB）。逐块 `mx.compile`：loss 逐位一致但仅 ~4%。训练固定每块 `mx.checkpoint`、不 compile。证据 `tests/parity/evidence/zimage-lora-training-resume-e2e-2026-11-21.json`。训练结束日志含 `peak MLX memory … GiB`。
+  - **训练中产物（2026-11-22）**：`loss_history.jsonl` 逐步落盘；`progress_every`/`checkpoint` 后用当前 adapter 推 `progress/step-NNNNN.png`（非致命失败）；artifacts API 中途扫 `adapters/` + 读 jsonl；UI 亦可从任务日志解析 loss/checkpoint（不重启也能看当前长跑）。各 ckpt 实测仍走注册后 verify；预览不含 DistillPatch companion。
+  - **仍缺（训练验收门）**：人脸检测/门禁真链路（`face_crop=on` 当前 fail loud）；loss/梯度按可训练 tensor 的证据文件；2500 步全长跑（1024² 约 5.2h 预估，按 7.5s/step）；CUDA 平台门；矩阵勾选。LoRA compute dtype（F32→BF16 + F32 master，需 parity）未做。在此之前不要把训练行标 done。
 
 ### P10
 

@@ -56,6 +56,13 @@
       </div>
     </div>
 
+    <div v-if="paramSchema.use_pe" class="composer-advanced-fields__row">
+      <div class="composer-advanced-fields__field">
+        <label>{{ $t('create.promptEnhance') }}</label>
+        <DqSwitch v-model="params.use_pe" />
+      </div>
+    </div>
+
     <div v-if="schedulerOptions.length" class="composer-advanced-fields__row">
       <div class="composer-advanced-fields__field composer-advanced-fields__field--full">
         <label>{{ schedulerLabel }}</label>
@@ -146,14 +153,8 @@
           </DqSelect>
         </div>
         <p v-if="params.controlnet" class="composer-advanced-fields__hint">{{ controlNetGuideHint }}</p>
-        <p
-          v-if="params.controlnet && showCompanionLoraHint"
-          class="composer-advanced-fields__hint composer-advanced-fields__hint--sub"
-        >
-          {{ $t('studio.controlnetCompanionLoraHint') }}
-        </p>
         <div v-if="params.controlnet" class="composer-advanced-fields__inline">
-          <label>{{ controlNetStrengthLabel }}</label>
+          <label>{{ $t('create.controlNetStrengthLabel') }}</label>
           <DqSlider v-model="params.controlnet_strength" :min="0" :max="2" :step="0.05" class="composer-advanced-fields__slider-grow" />
           <span class="composer-advanced-fields__val">{{ params.controlnet_strength }}</span>
         </div>
@@ -276,6 +277,7 @@ export type ComposerAdvancedParams = {
   seed: string;
   strength: number;
   negative_prompt: string;
+  use_pe?: boolean;
   scheduler?: string;
   lora?: string;
   lora_scale?: number;
@@ -383,24 +385,9 @@ const selectedControlNetRow = computed(() => {
   return props.compatibleControlNets?.find((n) => String(n.key) === key);
 });
 
-const controlNetStrengthLabel = computed(() => {
-  if (controlNetGuideType(selectedControlNetRow.value) === 'redux') {
-    return $t('create.reduxStrengthLabel');
-  }
-  return $t('create.controlNetStrengthLabel');
-});
-
-const showCompanionLoraHint = computed(() => {
-  const guide = controlNetGuideType(selectedControlNetRow.value);
-  return guide === 'canny' || guide === 'depth';
-});
-
 const controlNetGuideHint = computed(() => {
   const guide = controlNetGuideType(selectedControlNetRow.value);
   if (guide === 'auto') return $t('studio.controlnetZImageUnionHint');
-  if (guide === 'fill') return $t('studio.controlnetFillHint');
-  if (guide === 'depth') return $t('studio.controlnetDepthHint');
-  if (guide === 'redux') return $t('studio.controlnetReduxHint');
   return $t('studio.controlnetBundleHint');
 });
 

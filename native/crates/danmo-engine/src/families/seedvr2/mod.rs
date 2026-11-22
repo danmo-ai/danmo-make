@@ -15,5 +15,5 @@ pub mod tiling;
 pub mod vae;
 pub mod video_session;
 
-pub use session::{SeedVr2UpscaleFamily, write_smoke_bundle};
+pub use session::{write_smoke_bundle, SeedVr2UpscaleFamily};
 pub use video_session::SeedVr2VideoUpscaleFamily;

@@ -67,9 +67,9 @@ pub fn prepare(model: String, task: &AssistantTask<'_>) -> Result<PreparedAssist
             vision_used: false,
         }),
         AssistantKind::ImageToPrompt => {
-            let url = task.image_data_url.ok_or_else(|| {
-                "image_to_prompt requires an installed asset image".to_string()
-            })?;
+            let url = task
+                .image_data_url
+                .ok_or_else(|| "image_to_prompt requires an installed asset image".to_string())?;
             Ok(PreparedAssistant {
                 request: ChatRequest {
                     model,
@@ -82,9 +82,9 @@ pub fn prepare(model: String, task: &AssistantTask<'_>) -> Result<PreparedAssist
             })
         }
         AssistantKind::AnalyzeReference => {
-            let url = task.image_data_url.ok_or_else(|| {
-                "analyze_reference requires an installed asset image".to_string()
-            })?;
+            let url = task
+                .image_data_url
+                .ok_or_else(|| "analyze_reference requires an installed asset image".to_string())?;
             let question = task.question.trim();
             if question.is_empty() {
                 return Err("analyze_reference requires a question".into());
@@ -132,7 +132,10 @@ pub fn prepare(model: String, task: &AssistantTask<'_>) -> Result<PreparedAssist
 }
 
 fn lyrics_messages(prompt: &str, style: &str) -> Value {
-    let mut parts = vec!["## Music description".to_string(), prompt.trim().to_string()];
+    let mut parts = vec![
+        "## Music description".to_string(),
+        prompt.trim().to_string(),
+    ];
     let style = style.trim();
     if !style.is_empty() {
         parts.push(String::new());

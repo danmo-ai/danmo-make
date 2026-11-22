@@ -1,0 +1,63 @@
+{
+  "date": "2026-11-21",
+  "backend": "metal,mlx-metal",
+  "dataset": "ds_f5cf344d9e3f9702 (9 images, 1024x1024)",
+  "preset": "turbo-sft (rank 32, 210 target modules)",
+  "dev_overrides": { "iterations": 6, "checkpoint_every": 3 },
+  "run_a": {
+    "task_id": "tsk_8fef9da9-dc13-461d-b437-1329314c6750",
+    "status": "completed",
+    "steps_run": [1, 2, 3, 4, 5, 6],
+    "checkpoint": "adapters/checkpoint-3.safetensors + checkpoint-3.state.json",
+    "trainer_state": { "step": 3, "iterations": 6, "preset": "turbo-sft" },
+    "sigma_steps_4_6": [0.6134752035140991, 0.9042890667915344, 0.9473102688789368],
+    "loss_steps_4_6": [0.6141901016235352, 0.2779509425163269, 0.1319178342819214]
+  },
+  "run_b_resume": {
+    "task_id": "tsk_bd7bf6d6-ae4a-4bf8-9136-f8d37e0436c1",
+    "status": "completed",
+    "resume_task_id": "tsk_8fef9da9-dc13-461d-b437-1329314c6750",
+    "resume_checkpoint": "checkpoint-3.safetensors",
+    "log_line": "resumed LoRA factors from .../checkpoint-3.safetensors (continuing at step 3/6)",
+    "steps_run": [4, 5, 6],
+    "progress_observed": [0.667, 0.833, 1.0],
+    "sigma_steps_4_6": [0.6134752035140991, 0.9042890667915344, 0.9473102688789368],
+    "loss_steps_4_6": [0.6141901016235352, 0.2785302698612213, 0.1325273960828781]
+  },
+  "findings": {
+    "resume_continues_at_checkpoint_step": true,
+    "sigma_sequence_bit_identical_after_restart": true,
+    "first_resumed_step_loss_bit_identical": true,
+    "later_steps_diverge_slightly": "expected: AdamW m/v moments restart at zero (not serialized); step counter is restored so bias correction continues",
+    "missing_state_file_behavior": "warm start from step 0 with an explicit log line (pre-resume checkpoints)",
+    "fail_loud": [
+      "preset mismatch",
+      "iterations mismatch",
+      "checkpoint already at final step",
+      "corrupt state file"
+    ]
+  },
+  "performance": {
+    "seconds_per_step_before_vag_hoist": 9.5,
+    "seconds_per_step_after_vag_hoist": 7.5,
+    "note": "run A: 6 steps in 52s incl. first-step graph build + 280MB checkpoint write; run B: 3 steps in 23s incl. resume load. Steady state ~7.5s/step (~21% faster than the 9.5s/step measured in zimage-lora-training-e2e-2026-11-21.json). Remaining known gaps: no mx.compile on train path, F32 LoRA on BF16 base cast thrash, eager attention/rope kernels."
+  },
+  "train_compile_experiment": {
+    "task_id": "tsk_91d3d5fd-38ba-423c-a596-3c219cfb766e",
+    "override": "metadata.train_compile=true (per-block mx.compile before checkpoint; default off)",
+    "losses_vs_run_a": "bit-identical (all 6 steps, loss + sigma)",
+    "six_step_wall_seconds": 50,
+    "baseline_wall_seconds": 52,
+    "peak_memory_gib_grad_checkpoint_on": 36.8,
+    "verdict": "compile+checkpoint+value_and_grad composes correctly (bit-identical), but ~4% at 1024²: step time is matmul-dominated and per-block compile cannot fuse across block boundaries. A whole-graph train compile (inline all 30 blocks) is a larger refactor and stays unscheduled."
+  },
+  "grad_checkpoint_off_experiment": {
+    "task_id": "tsk_49c1896f-25f7-4106-aef8-79ebc2cda491",
+    "override": "metadata.grad_checkpoint=false (dev-only, default stays on)",
+    "losses_vs_run_a": "bit-identical (all 6 steps, loss + sigma)",
+    "peak_memory_gib": 78.2,
+    "six_step_wall_seconds": 70,
+    "checkpoint_on_wall_seconds": 52,
+    "verdict": "SLOWER despite skipping the recompute forward: 78 GiB of retained activations saturates unified memory on this M5 Max 128GB. Keep mx.checkpoint on (default); the flag remains as a dev escape hatch for small resolutions."
+  }
+}

@@ -34,18 +34,13 @@ impl Models {
         txt_in_dim: i64,
         stream: &Stream,
     ) -> std::result::Result<Self, WeightError> {
-        let transformer = [
-            "seedvr2_ema_7b_fp16.safetensors",
-            "seedvr2_ema_3b_fp16.safetensors",
-        ]
-        .into_iter()
-        .map(|name| bundle.join(name))
-        .find(|path| path.is_file())
-        .ok_or_else(|| WeightError::Bundle {
-            path: bundle.display().to_string(),
-            detail: "missing seedvr2_ema_7b_fp16.safetensors or seedvr2_ema_3b_fp16.safetensors"
-                .into(),
-        })?;
+        let transformer = bundle.join("seedvr2_ema_7b_fp16.safetensors");
+        if !transformer.is_file() {
+            return Err(WeightError::Bundle {
+                path: bundle.display().to_string(),
+                detail: "missing seedvr2_ema_7b_fp16.safetensors".into(),
+            });
+        }
         let vae_path = bundle.join("ema_vae_fp16.safetensors");
         if !vae_path.is_file() {
             return Err(WeightError::Bundle {
@@ -120,7 +115,10 @@ impl Models {
     }
 
     /// Restore one `[C][T][H][W]` host tile and return decoded `[C][F][H][W]`.
-    pub fn restore_chunk(
+    /// `on_stage` is invoked with `"encode"`, `"denoise"`, then `"decode"` before
+    /// each stage so callers can open Trace phases / progress without pulling
+    /// `ExecutionContext` into the MLX layer.
+    pub fn restore_chunk<F>(
         &mut self,
         stacked: &[f32],
         w: i64,
@@ -128,11 +126,15 @@ impl Models {
         frames: i64,
         seed: i64,
         stream: &Stream,
-    ) -> Result<Vec<f32>> {
-        self.restore_chunk_with_cache(stacked, w, h, frames, seed, stream, None)
+        on_stage: F,
+    ) -> Result<Vec<f32>>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
+        self.restore_chunk_with_cache(stacked, w, h, frames, seed, stream, None, on_stage)
     }
 
-    pub fn restore_chunk_streaming(
+    pub fn restore_chunk_streaming<F>(
         &mut self,
         stacked: &[f32],
         w: i64,
@@ -140,7 +142,11 @@ impl Models {
         frames: i64,
         seed: i64,
         stream: &Stream,
-    ) -> Result<Vec<f32>> {
+        on_stage: F,
+    ) -> Result<Vec<f32>>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
         let mut cache = std::mem::take(&mut self.stream_cache);
         let result = self.restore_chunk_with_cache(
             stacked,
@@ -150,12 +156,13 @@ impl Models {
             seed,
             stream,
             Some(&mut cache),
+            on_stage,
         );
         self.stream_cache = cache;
         result
     }
 
-    fn restore_chunk_with_cache(
+    fn restore_chunk_with_cache<F>(
         &mut self,
         stacked: &[f32],
         w: i64,
@@ -164,8 +171,13 @@ impl Models {
         seed: i64,
         stream: &Stream,
         cache: Option<&mut vae::VaeStreamCache>,
-    ) -> Result<Vec<f32>> {
+        mut on_stage: F,
+    ) -> Result<Vec<f32>>
+    where
+        F: FnMut(&str) -> Result<()>,
+    {
         let mut cache = cache;
+        on_stage("encode")?;
         let latent = tiling::encode_with_cache(
             &self.vae,
             stacked,
@@ -182,6 +194,7 @@ impl Models {
             latent_shape[3] as i64,
             latent_shape[2],
         );
+        on_stage("denoise")?;
         let dtype = latent.dtype();
         let noise =
             RandomKey::new((seed & 0x7fff_ffff) as u64)?.normal(&latent_shape, dtype, stream)?;
@@ -202,15 +215,9 @@ impl Models {
         let velocity = self.dit.forward(&input, &txt, 1000.0, stream)?;
         let restored = Array::subtract(&noise, &velocity, stream)?;
         restored.eval()?;
-        let decoded = tiling::decode_with_cache(
-            &self.vae,
-            &restored,
-            lw,
-            lh,
-            t_lat as i64,
-            stream,
-            cache,
-        )?;
+        on_stage("decode")?;
+        let decoded =
+            tiling::decode_with_cache(&self.vae, &restored, lw, lh, t_lat as i64, stream, cache)?;
         decoded.eval()?;
         let decoded = decoded.to_vec_f32(stream)?;
         ensure_finite(&decoded, "SeedVR2 decoded video")?;
@@ -232,10 +239,7 @@ fn cache_key(bundle: &Path) -> Result<CacheKey> {
 fn cache_id(bundle: &Path) -> Result<String> {
     Ok(std::fs::canonicalize(bundle)
         .map_err(|error| {
-            danmo_mlx::Error::new(
-                "SeedVR2 resident",
-                format!("{}: {error}", bundle.display()),
-            )
+            danmo_mlx::Error::new("SeedVR2 resident", format!("{}: {error}", bundle.display()))
         })?
         .display()
         .to_string())
@@ -431,15 +435,9 @@ mod tests {
         let stream = danmo_mlx::Stream::gpu().unwrap();
         let mut cache = danmo_mlx::ModelCache::new(usize::MAX);
         let started = std::time::Instant::now();
-        let resident = super::Models::resident(
-            &mut cache,
-            &bundle,
-            pos_emb,
-            txt_len,
-            txt_in_dim,
-            &stream,
-        )
-        .unwrap();
+        let resident =
+            super::Models::resident(&mut cache, &bundle, pos_emb, txt_len, txt_in_dim, &stream)
+                .unwrap();
         let style: Vec<f32> = (0..3 * frames * size * size)
             .map(|index| (index as f32 * 0.017).sin() * 0.5)
             .collect();
@@ -448,18 +446,18 @@ mod tests {
             .unwrap()
             .unwrap();
         models
-            .restore_chunk(&style, size, size, frames, 42, &stream)
+            .restore_chunk(&style, size, size, frames, 42, &stream, |_| Ok(()))
             .unwrap();
         let cold_seconds = started.elapsed().as_secs_f64();
         models
-            .restore_chunk(&style, size, size, frames, 42, &stream)
+            .restore_chunk(&style, size, size, frames, 42, &stream, |_| Ok(()))
             .unwrap();
         danmo_mlx::reset_peak_memory().unwrap();
         let mut timings = Vec::with_capacity(passes);
         for _ in 0..passes {
             let started = std::time::Instant::now();
             models
-                .restore_chunk(&style, size, size, frames, 42, &stream)
+                .restore_chunk(&style, size, size, frames, 42, &stream, |_| Ok(()))
                 .unwrap();
             timings.push(started.elapsed().as_secs_f64());
         }
@@ -467,7 +465,8 @@ mod tests {
         timings.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let warm_p50 = timings[timings.len() / 2];
         let encode_started = std::time::Instant::now();
-        let latent = super::tiling::encode(&models.vae, &style, size, size, frames, &stream).unwrap();
+        let latent =
+            super::tiling::encode(&models.vae, &style, size, size, frames, &stream).unwrap();
         latent.eval().unwrap();
         let encode_seconds = encode_started.elapsed().as_secs_f64();
         let dit_started = std::time::Instant::now();
@@ -488,7 +487,8 @@ mod tests {
             .unwrap();
         let condition =
             danmo_mlx::Array::concatenate_axis(&[latent.clone(), mask], 1, &stream).unwrap();
-        let input = danmo_mlx::Array::concatenate_axis(&[noise.clone(), condition], 1, &stream).unwrap();
+        let input =
+            danmo_mlx::Array::concatenate_axis(&[noise.clone(), condition], 1, &stream).unwrap();
         let txt = danmo_mlx::Array::from_f32_slice(
             &models.pos_emb,
             &[1, models.txt_len as i32, models.txt_in_dim as i32],
@@ -537,8 +537,14 @@ mod tests {
             let latency_ratio = warm_p50 / main_p50;
             let memory_ratio = peak_memory as f64 / main_peak;
             eprintln!("latency_ratio={latency_ratio:.6} memory_ratio={memory_ratio:.6}");
-            assert!(latency_ratio <= 1.05, "warm latency ratio {latency_ratio} exceeds 105%");
-            assert!(memory_ratio <= 1.05, "peak memory ratio {memory_ratio} exceeds 105%");
+            assert!(
+                latency_ratio <= 1.05,
+                "warm latency ratio {latency_ratio} exceeds 105%"
+            );
+            assert!(
+                memory_ratio <= 1.05,
+                "peak memory ratio {memory_ratio} exceeds 105%"
+            );
         }
     }
 
@@ -567,13 +573,17 @@ mod tests {
         let style = values("style");
         let (pos_emb, txt_len, txt_in_dim) = super::super::session::load_pos_emb(&bundle).unwrap();
         let stream = danmo_mlx::Stream::gpu().unwrap();
-        let mut models = super::Models::load(&bundle, pos_emb, txt_len, txt_in_dim, &stream).unwrap();
+        let mut models =
+            super::Models::load(&bundle, pos_emb, txt_len, txt_in_dim, &stream).unwrap();
         let seed = std::env::var("DANQING_TEST_SEEDVR2_SEED")
             .ok()
             .and_then(|value| value.parse::<i64>().ok())
             .unwrap_or(42);
-        let decoded = models.restore_chunk(&style, 32, 32, 1, seed, &stream).unwrap();
-        let corrected = super::super::color::correct_mlx(&decoded, &style, 32, 32, &stream).unwrap();
+        let decoded = models
+            .restore_chunk(&style, 32, 32, 1, seed, &stream, |_| Ok(()))
+            .unwrap();
+        let corrected =
+            super::super::color::correct_mlx(&decoded, &style, 32, 32, &stream).unwrap();
         let corrected_same_input =
             super::super::color::correct_mlx(&values("decoded"), &style, 32, 32, &stream).unwrap();
         for (name, actual, reference_name) in [
@@ -596,7 +606,10 @@ mod tests {
             let rel_l2 = (mse * actual.len() as f64 / energy.max(1e-20)).sqrt();
             eprintln!("seedvr2 image {name}: mse={mse:.9} max_abs={max_abs:.6} rel_l2={rel_l2:.6}");
             let limit = if name == "corrected" { 0.02 } else { 0.01 };
-            assert!(rel_l2 < limit, "{name} relative L2 {rel_l2} exceeds {limit}");
+            assert!(
+                rel_l2 < limit,
+                "{name} relative L2 {rel_l2} exceeds {limit}"
+            );
         }
     }
 }

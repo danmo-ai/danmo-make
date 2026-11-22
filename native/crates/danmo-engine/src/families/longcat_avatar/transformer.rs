@@ -122,9 +122,7 @@ impl AvatarDit {
                 format!("latents must be [B, C, T, H, W], got {latents:?}"),
             ));
         }
-        let (b, c, t, h, w) = (
-            latents[0], latents[1], latents[2], latents[3], latents[4],
-        );
+        let (b, c, t, h, w) = (latents[0], latents[1], latents[2], latents[3], latents[4]);
         if c != self.config.in_channels as i32 {
             return Err(Error::new(
                 "longcat_avatar DiT",
@@ -142,7 +140,9 @@ impl AvatarDit {
         let hidden = self.config.hidden_size as i32;
 
         let dtype = self.weights.tensor("x_embedder.proj.weight")?.dtype();
-        let tag = |stage: &str, e: Error| Error::new("longcat_avatar DiT forward", format!("{stage}: {e}"));
+        let tag = |stage: &str, e: Error| {
+            Error::new("longcat_avatar DiT forward", format!("{stage}: {e}"))
+        };
         // ---- patchify [B, C, T, H, W] -> [B, N, hidden] ----
         let mut tokens = self
             .patch_embed(&inputs.latents, dtype, stream)
@@ -218,8 +218,7 @@ impl AvatarDit {
             ));
         }
         // Channels-last (O, 1, kH, kW, I) -> (O, kH, kW, I)
-        let w2d = weight
-            .reshape(&[o, kh, kw, i], stream)?;
+        let w2d = weight.reshape(&[o, kh, kw, i], stream)?;
         let x = latents.astype(dtype, stream)?;
         let shape = x.shape();
         let (b, c, t, h, w) = (shape[0], shape[1], shape[2], shape[3], shape[4]);
@@ -243,8 +242,11 @@ impl AvatarDit {
             stream,
         )?;
         let x = x.transpose_axes(&[0, 7, 1, 4, 2, 5, 3, 6], stream)?;
-        x.reshape(&[b, out_c, n_t * pt as i32, n_h * ph as i32, n_w * pw as i32], stream)?
-            .astype(Dtype::Float32, stream)
+        x.reshape(
+            &[b, out_c, n_t * pt as i32, n_h * ph as i32, n_w * pw as i32],
+            stream,
+        )?
+        .astype(Dtype::Float32, stream)
     }
 
     /// Sinusoidal + MLP timestep embedding. Each batch scalar is broadcast
@@ -272,7 +274,11 @@ impl AvatarDit {
         let mut flat = Vec::with_capacity(per_batch.len() * n_t as usize);
         for value in &per_batch {
             for frame in 0..n_t as usize {
-                flat.push(if frame < num_cond_latents { 0.0 } else { *value });
+                flat.push(if frame < num_cond_latents {
+                    0.0
+                } else {
+                    *value
+                });
             }
         }
         let times = flat;
@@ -329,7 +335,12 @@ impl AvatarDit {
         let w = self.config.audio_window;
         let v = self.config.vae_scale;
         let middle = w / 2;
-        let first = audio.slice(&[0, 0, 0, 0, 0], &[shape[0], 1, shape[2], shape[3], shape[4]], &[1, 1, 1, 1, 1], stream)?;
+        let first = audio.slice(
+            &[0, 0, 0, 0, 0],
+            &[shape[0], 1, shape[2], shape[3], shape[4]],
+            &[1, 1, 1, 1, 1],
+            stream,
+        )?;
         let latter = audio.slice(
             &[0, 1, 0, 0, 0],
             &[shape[0], shape[1], shape[2], shape[3], shape[4]],
@@ -354,7 +365,10 @@ impl AvatarDit {
                 ),
             ));
         }
-        if w_ != w as i32 || s_ != self.config.audio_block as i32 || c_ != self.config.audio_channel as i32 {
+        if w_ != w as i32
+            || s_ != self.config.audio_block as i32
+            || c_ != self.config.audio_channel as i32
+        {
             return Err(Error::new(
                 "longcat_avatar DiT audio",
                 format!(
@@ -365,11 +379,21 @@ impl AvatarDit {
         }
         let latter = latter.reshape(&[bz, n_chunks, v as i32, w_, s_, c_], stream)?;
         let l_first = latter
-            .slice(&[0, 0, 0, 0, 0, 0], &[bz, n_chunks, 1, (middle + 1) as i32, s_, c_], &[1, 1, 1, 1, 1, 1], stream)?
+            .slice(
+                &[0, 0, 0, 0, 0, 0],
+                &[bz, n_chunks, 1, (middle + 1) as i32, s_, c_],
+                &[1, 1, 1, 1, 1, 1],
+                stream,
+            )?
             .reshape(&[bz, n_chunks, (middle + 1) as i32, s_, c_], stream)?;
         let l_mid = if v > 2 {
             latter
-                .slice(&[0, 0, 1, middle as i32, 0, 0], &[bz, n_chunks, (v - 1) as i32, (middle + 1) as i32, s_, c_], &[1, 1, 1, 1, 1, 1], stream)?
+                .slice(
+                    &[0, 0, 1, middle as i32, 0, 0],
+                    &[bz, n_chunks, (v - 1) as i32, (middle + 1) as i32, s_, c_],
+                    &[1, 1, 1, 1, 1, 1],
+                    stream,
+                )?
                 .reshape(&[bz, n_chunks, (v - 2) as i32, s_, c_], stream)?
         } else {
             Array::from_f32_slice(&[0.0], &[])?
@@ -377,7 +401,12 @@ impl AvatarDit {
                 .broadcast_to(&[bz, n_chunks, 0, s_, c_], stream)?
         };
         let l_last = latter
-            .slice(&[0, 0, (v - 1) as i32, middle as i32, 0, 0], &[bz, n_chunks, v as i32, w_, s_, c_], &[1, 1, 1, 1, 1, 1], stream)?
+            .slice(
+                &[0, 0, (v - 1) as i32, middle as i32, 0, 0],
+                &[bz, n_chunks, v as i32, w_, s_, c_],
+                &[1, 1, 1, 1, 1, 1],
+                stream,
+            )?
             .reshape(&[bz, n_chunks, (w - middle) as i32, s_, c_], stream)?;
         let window_total = (middle + 1) + (v - 2) + (w - middle);
         if window_total != w + v - 1 {
@@ -411,7 +440,14 @@ impl AvatarDit {
                 ),
             ));
         }
-        ctx.reshape(&[b * n_t, self.config.context_tokens as i32, self.config.output_dim as i32], stream)
+        ctx.reshape(
+            &[
+                b * n_t,
+                self.config.context_tokens as i32,
+                self.config.output_dim as i32,
+            ],
+            stream,
+        )
     }
 
     /// `AudioProjModel`: first frame `proj1`, subsequent frames `proj1_vf`,
@@ -428,7 +464,8 @@ impl AvatarDit {
         let latter_flat = flatten(latter)?;
         // proj1 input = W*S*C = 5*5*1280 = 32000; proj1_vf = (W+v-1)*S*C = 8*5*1280.
         // Fail loud on a drifted audio window instead of a broadcast error downstream.
-        let expect_first = (self.config.audio_window * self.config.audio_block * self.config.audio_channel) as i32;
+        let expect_first =
+            (self.config.audio_window * self.config.audio_block * self.config.audio_channel) as i32;
         let expect_vf = ((self.config.audio_window + self.config.vae_scale - 1)
             * self.config.audio_block
             * self.config.audio_channel) as i32;
@@ -451,27 +488,51 @@ impl AvatarDit {
                 ),
             ));
         }
-        let ae = relu(&self.linear("audio_proj.proj1", &first_flat, stream)?, stream)?;
-        let ae_vf = relu(&self.linear("audio_proj.proj1_vf", &latter_flat, stream)?, stream)?;
+        let ae = relu(
+            &self.linear("audio_proj.proj1", &first_flat, stream)?,
+            stream,
+        )?;
+        let ae_vf = relu(
+            &self.linear("audio_proj.proj1_vf", &latter_flat, stream)?,
+            stream,
+        )?;
         let intermediate = self.config.intermediate_dim as i32;
         let ae = ae.reshape(&[first.shape()[0], first.shape()[1], intermediate], stream)?;
-        let ae_vf = ae_vf.reshape(&[latter.shape()[0], latter.shape()[1], intermediate], stream)?;
+        let ae_vf = ae_vf.reshape(
+            &[latter.shape()[0], latter.shape()[1], intermediate],
+            stream,
+        )?;
         let joined = Array::concatenate_axis(&[ae, ae_vf], 1, stream)?;
         let s = joined.shape();
         let flat = joined.reshape(&[s[0] * s[1], intermediate], stream)?;
         let mid = relu(&self.linear("audio_proj.proj2", &flat, stream)?, stream)?;
-        let ctx = self
-            .linear("audio_proj.proj3", &mid, stream)?
-            .reshape(
-                &[s[0] * s[1], self.config.context_tokens as i32, self.config.output_dim as i32],
-                stream,
-            )?;
+        let ctx = self.linear("audio_proj.proj3", &mid, stream)?.reshape(
+            &[
+                s[0] * s[1],
+                self.config.context_tokens as i32,
+                self.config.output_dim as i32,
+            ],
+            stream,
+        )?;
         // Output LayerNorm (`audio_proj.norm`).
         let normed = ctx.layer_norm(1e-5, stream)?;
-        let scaled = Array::multiply(&normed, self.weights.tensor("audio_proj.norm.weight")?, stream)?;
-        let ctx = Array::add(&scaled, self.weights.tensor("audio_proj.norm.bias")?, stream)?;
+        let scaled = Array::multiply(
+            &normed,
+            self.weights.tensor("audio_proj.norm.weight")?,
+            stream,
+        )?;
+        let ctx = Array::add(
+            &scaled,
+            self.weights.tensor("audio_proj.norm.bias")?,
+            stream,
+        )?;
         ctx.reshape(
-            &[s[0], s[1], self.config.context_tokens as i32, self.config.output_dim as i32],
+            &[
+                s[0],
+                s[1],
+                self.config.context_tokens as i32,
+                self.config.output_dim as i32,
+            ],
             stream,
         )
     }
@@ -505,7 +566,11 @@ impl AvatarDit {
 
         // ---- AdaLN params (F32) ----
         let ada = self
-            .linear(&format!("{prefix}.adaLN_modulation.1"), &temb.silu(stream)?, stream)?
+            .linear(
+                &format!("{prefix}.adaLN_modulation.1"),
+                &temb.silu(stream)?,
+                stream,
+            )?
             .astype(Dtype::Float32, stream)?
             .expand_dims(2, stream)?; // [B, T, 1, 6*C]
         let adas = ada.split_sections(
@@ -525,19 +590,35 @@ impl AvatarDit {
             temb.clone()
         };
         let audio_ada = self
-            .linear(&format!("{prefix}.audio_adaLN_modulation.1"), &audio_t.silu(stream)?, stream)?
+            .linear(
+                &format!("{prefix}.audio_adaLN_modulation.1"),
+                &audio_t.silu(stream)?,
+                stream,
+            )?
             .astype(Dtype::Float32, stream)?
             .expand_dims(2, stream)?;
         let audio_parts = audio_ada.split_sections(&[hidden, 2 * hidden], -1, stream)?;
         let [audio_shift, audio_scale, audio_gate] =
             <[Array; 3]>::try_from(audio_parts).map_err(|_| {
-                Error::new("longcat_avatar DiT", "audio adaLN split did not produce 3 parts")
+                Error::new(
+                    "longcat_avatar DiT",
+                    "audio adaLN split did not produce 3 parts",
+                )
             })?;
 
         // ---- self-attn with 3D RoPE ----
         let modulated = modulate(&shift_msa, &scale_msa, x, [b, t, n / t, hidden], stream)?;
         let attn_out = self
-            .self_attention(&prefix, &modulated, rope, grid, tokens_per_frame, ncl, dtype, stream)
+            .self_attention(
+                &prefix,
+                &modulated,
+                rope,
+                grid,
+                tokens_per_frame,
+                ncl,
+                dtype,
+                stream,
+            )
             .map_err(|e| stage_err(index, "self_attn", e))?;
         let x = gated_residual(x, &attn_out, &gate_msa, [b, t, n / t, hidden], stream)
             .map_err(|e| stage_err(index, "self_attn_residual", e))?;
@@ -608,14 +689,42 @@ impl AvatarDit {
         let qkv = qkv
             .reshape(&[b, n, 3, heads, head_dim], stream)?
             .transpose_axes(&[2, 0, 3, 1, 4], stream)?;
-        let q = qkv.slice(&[0, 0, 0, 0, 0], &[1, b, heads, n, head_dim], &[1, 1, 1, 1, 1], stream)?
+        let q = qkv
+            .slice(
+                &[0, 0, 0, 0, 0],
+                &[1, b, heads, n, head_dim],
+                &[1, 1, 1, 1, 1],
+                stream,
+            )?
             .squeeze_axis(0, stream)?;
-        let k = qkv.slice(&[1, 0, 0, 0, 0], &[2, b, heads, n, head_dim], &[1, 1, 1, 1, 1], stream)?
+        let k = qkv
+            .slice(
+                &[1, 0, 0, 0, 0],
+                &[2, b, heads, n, head_dim],
+                &[1, 1, 1, 1, 1],
+                stream,
+            )?
             .squeeze_axis(0, stream)?;
-        let v = qkv.slice(&[2, 0, 0, 0, 0], &[3, b, heads, n, head_dim], &[1, 1, 1, 1, 1], stream)?
+        let v = qkv
+            .slice(
+                &[2, 0, 0, 0, 0],
+                &[3, b, heads, n, head_dim],
+                &[1, 1, 1, 1, 1],
+                stream,
+            )?
             .squeeze_axis(0, stream)?;
-        let q = rms_norm_head(&q, self.weights.tensor(&format!("{prefix}.attn.q_norm.weight"))?, stream)?;
-        let k = rms_norm_head(&k, self.weights.tensor(&format!("{prefix}.attn.k_norm.weight"))?, stream)?;
+        let q = rms_norm_head(
+            &q,
+            self.weights
+                .tensor(&format!("{prefix}.attn.q_norm.weight"))?,
+            stream,
+        )?;
+        let k = rms_norm_head(
+            &k,
+            self.weights
+                .tensor(&format!("{prefix}.attn.k_norm.weight"))?,
+            stream,
+        )?;
         let (q, k) = rope.apply(&q, &k, stream)?;
         let scale = 1.0 / (head_dim as f32).sqrt();
         let sdpa = |q: &Array, k: &Array, v: &Array| -> Result<Array> {
@@ -623,11 +732,31 @@ impl AvatarDit {
         };
         let out = if ncl > 0 {
             let cond = ncl * tokens_per_frame;
-            let q_c = q.slice(&[0, 0, 0, 0], &[b, heads, cond, head_dim], &[1, 1, 1, 1], stream)?;
-            let k_c = k.slice(&[0, 0, 0, 0], &[b, heads, cond, head_dim], &[1, 1, 1, 1], stream)?;
-            let v_c = v.slice(&[0, 0, 0, 0], &[b, heads, cond, head_dim], &[1, 1, 1, 1], stream)?;
+            let q_c = q.slice(
+                &[0, 0, 0, 0],
+                &[b, heads, cond, head_dim],
+                &[1, 1, 1, 1],
+                stream,
+            )?;
+            let k_c = k.slice(
+                &[0, 0, 0, 0],
+                &[b, heads, cond, head_dim],
+                &[1, 1, 1, 1],
+                stream,
+            )?;
+            let v_c = v.slice(
+                &[0, 0, 0, 0],
+                &[b, heads, cond, head_dim],
+                &[1, 1, 1, 1],
+                stream,
+            )?;
             let x_c = sdpa(&q_c, &k_c, &v_c)?;
-            let q_n = q.slice(&[0, 0, cond, 0], &[b, heads, n, head_dim], &[1, 1, 1, 1], stream)?;
+            let q_n = q.slice(
+                &[0, 0, cond, 0],
+                &[b, heads, n, head_dim],
+                &[1, 1, 1, 1],
+                stream,
+            )?;
             let x_n = sdpa(&q_n, &k, &v)?;
             Array::concatenate_axis(&[x_c, x_n], 2, stream)?
         } else {
@@ -664,7 +793,12 @@ impl AvatarDit {
         let q = self
             .linear(&format!("{prefix}.cross_attn.q_linear"), &x_packed, stream)?
             .reshape(&[1, b * (n - start), heads, head_dim], stream)?;
-        let q = rms_norm_head(&q, self.weights.tensor(&format!("{prefix}.cross_attn.q_norm.weight"))?, stream)?;
+        let q = rms_norm_head(
+            &q,
+            self.weights
+                .tensor(&format!("{prefix}.cross_attn.q_norm.weight"))?,
+            stream,
+        )?;
         // Pack text K/V: take each row's valid tokens and concatenate.
         let mut kv_parts = Vec::with_capacity(text_lengths.len());
         for (row, valid) in text_lengths.iter().enumerate() {
@@ -676,18 +810,41 @@ impl AvatarDit {
             )?;
             kv_parts.push(row_embeds);
         }
-        let packed_text = Array::concatenate_axis(&kv_parts, 2, stream)?
-            .reshape(&[1, text_lengths.iter().sum::<usize>() as i32, hidden], stream)?;
-        let kv = self.linear(&format!("{prefix}.cross_attn.kv_linear"), &packed_text, stream)?;
+        let packed_text = Array::concatenate_axis(&kv_parts, 2, stream)?.reshape(
+            &[1, text_lengths.iter().sum::<usize>() as i32, hidden],
+            stream,
+        )?;
+        let kv = self.linear(
+            &format!("{prefix}.cross_attn.kv_linear"),
+            &packed_text,
+            stream,
+        )?;
         let total_kv = kv.shape()[1];
         let kv = kv
             .reshape(&[1, total_kv, 2, heads, head_dim], stream)?
             .transpose_axes(&[2, 0, 3, 1, 4], stream)?;
-        let k = kv.slice(&[0, 0, 0, 0, 0], &[1, 1, heads, total_kv, head_dim], &[1, 1, 1, 1, 1], stream)?
+        let k = kv
+            .slice(
+                &[0, 0, 0, 0, 0],
+                &[1, 1, heads, total_kv, head_dim],
+                &[1, 1, 1, 1, 1],
+                stream,
+            )?
             .squeeze_axis(0, stream)?;
-        let v = kv.slice(&[1, 0, 0, 0, 0], &[2, 1, heads, total_kv, head_dim], &[1, 1, 1, 1, 1], stream)?
+        let v = kv
+            .slice(
+                &[1, 0, 0, 0, 0],
+                &[2, 1, heads, total_kv, head_dim],
+                &[1, 1, 1, 1, 1],
+                stream,
+            )?
             .squeeze_axis(0, stream)?;
-        let k = rms_norm_head(&k, self.weights.tensor(&format!("{prefix}.cross_attn.k_norm.weight"))?, stream)?;
+        let k = rms_norm_head(
+            &k,
+            self.weights
+                .tensor(&format!("{prefix}.cross_attn.k_norm.weight"))?,
+            stream,
+        )?;
         // Block-diagonal additive mask so each batch row only sees its own text.
         let mut mask = vec![f32::NEG_INFINITY; (b * (n - start) * total_kv) as usize];
         let mut q_offset = 0usize;
@@ -749,28 +906,77 @@ impl AvatarDit {
         // Per-frame queries: [B*T_noise, S, C]
         let x_frames = x_noise.reshape(&[b * n_noise_frames, tokens_per_frame, hidden], stream)?;
         let q = self
-            .linear(&format!("{prefix}.audio_cross_attn.q_linear"), &x_frames, stream)?
-            .reshape(&[b * n_noise_frames, tokens_per_frame, heads, head_dim], stream)?
+            .linear(
+                &format!("{prefix}.audio_cross_attn.q_linear"),
+                &x_frames,
+                stream,
+            )?
+            .reshape(
+                &[b * n_noise_frames, tokens_per_frame, heads, head_dim],
+                stream,
+            )?
             .transpose_axes(&[0, 2, 1, 3], stream)?;
-        let q = rms_norm_head(&q, self.weights.tensor(&format!("{prefix}.audio_cross_attn.q_norm.weight"))?, stream)?;
+        let q = rms_norm_head(
+            &q,
+            self.weights
+                .tensor(&format!("{prefix}.audio_cross_attn.q_norm.weight"))?,
+            stream,
+        )?;
         // Drop the cond frames from the per-frame audio tokens.
         let audio_noise = if ncl > 0 {
-            let per_frame = audio.reshape(&[b, t, self.config.context_tokens as i32, self.config.output_dim as i32], stream)?;
-            let kept = per_frame.slice(&[0, ncl, 0, 0], &per_frame.shape(), &[1, 1, 1, 1], stream)?;
-            kept.reshape(&[b * n_noise_frames, self.config.context_tokens as i32, self.config.output_dim as i32], stream)?
+            let per_frame = audio.reshape(
+                &[
+                    b,
+                    t,
+                    self.config.context_tokens as i32,
+                    self.config.output_dim as i32,
+                ],
+                stream,
+            )?;
+            let kept =
+                per_frame.slice(&[0, ncl, 0, 0], &per_frame.shape(), &[1, 1, 1, 1], stream)?;
+            kept.reshape(
+                &[
+                    b * n_noise_frames,
+                    self.config.context_tokens as i32,
+                    self.config.output_dim as i32,
+                ],
+                stream,
+            )?
         } else {
             audio.clone()
         };
-        let kv = self.linear(&format!("{prefix}.audio_cross_attn.kv_linear"), &audio_noise, stream)?;
+        let kv = self.linear(
+            &format!("{prefix}.audio_cross_attn.kv_linear"),
+            &audio_noise,
+            stream,
+        )?;
         let tokens = kv.shape()[1];
         let kv = kv
             .reshape(&[b * n_noise_frames, tokens, 2, heads, head_dim], stream)?
             .transpose_axes(&[2, 0, 3, 1, 4], stream)?;
-        let k = kv.slice(&[0, 0, 0, 0, 0], &[1, b * n_noise_frames, heads, tokens, head_dim], &[1, 1, 1, 1, 1], stream)?
+        let k = kv
+            .slice(
+                &[0, 0, 0, 0, 0],
+                &[1, b * n_noise_frames, heads, tokens, head_dim],
+                &[1, 1, 1, 1, 1],
+                stream,
+            )?
             .squeeze_axis(0, stream)?;
-        let v = kv.slice(&[1, 0, 0, 0, 0], &[2, b * n_noise_frames, heads, tokens, head_dim], &[1, 1, 1, 1, 1], stream)?
+        let v = kv
+            .slice(
+                &[1, 0, 0, 0, 0],
+                &[2, b * n_noise_frames, heads, tokens, head_dim],
+                &[1, 1, 1, 1, 1],
+                stream,
+            )?
             .squeeze_axis(0, stream)?;
-        let k = rms_norm_head(&k, self.weights.tensor(&format!("{prefix}.audio_cross_attn.k_norm.weight"))?, stream)?;
+        let k = rms_norm_head(
+            &k,
+            self.weights
+                .tensor(&format!("{prefix}.audio_cross_attn.k_norm.weight"))?,
+            stream,
+        )?;
         let scale = 1.0 / (head_dim as f32).sqrt();
         let out = Array::scaled_dot_product_attention(&q, &k, &v, scale, "", None, stream)?
             .transpose_axes(&[0, 2, 1, 3], stream)?
@@ -799,7 +1005,9 @@ impl AvatarDit {
     }
 
     fn ffn(&self, prefix: &str, x: &Array, stream: &Stream) -> Result<Array> {
-        let gate = self.linear(&format!("{prefix}.ffn.w1"), x, stream)?.silu(stream)?;
+        let gate = self
+            .linear(&format!("{prefix}.ffn.w1"), x, stream)?
+            .silu(stream)?;
         let up = self.linear(&format!("{prefix}.ffn.w3"), x, stream)?;
         let mid = Array::multiply(&gate, &up, stream)?;
         self.linear(&format!("{prefix}.ffn.w2"), &mid, stream)
@@ -830,12 +1038,19 @@ impl AvatarDit {
         let n = x.shape()[1];
         let t = grid[0];
         let ada = self
-            .linear("final_layer.adaLN_modulation.1", &temb.silu(stream)?, stream)?
+            .linear(
+                "final_layer.adaLN_modulation.1",
+                &temb.silu(stream)?,
+                stream,
+            )?
             .astype(Dtype::Float32, stream)?
             .expand_dims(2, stream)?;
         let parts = ada.split_sections(&[hidden], -1, stream)?;
         let [shift, scale] = <[Array; 2]>::try_from(parts).map_err(|_| {
-            Error::new("longcat_avatar DiT", "final adaLN split did not produce 2 parts")
+            Error::new(
+                "longcat_avatar DiT",
+                "final adaLN split did not produce 2 parts",
+            )
         })?;
         let modulated = modulate(&shift, &scale, x, [b, t, n / t, hidden], stream)?;
         self.linear("final_layer.linear", &modulated, stream)
@@ -887,11 +1102,17 @@ fn gated_residual(
     let dtype = x.dtype();
     let [b, t, s, c] = frame_shape;
     let gated = Array::multiply(
-        &branch.reshape(&[b, t, s, c], stream)?.astype(Dtype::Float32, stream)?,
+        &branch
+            .reshape(&[b, t, s, c], stream)?
+            .astype(Dtype::Float32, stream)?,
         &gate.astype(Dtype::Float32, stream)?,
         stream,
     )?;
-    let summed = Array::add(&x.astype(Dtype::Float32, stream)?, &gated.reshape(&[b, t * s, c], stream)?, stream)?;
+    let summed = Array::add(
+        &x.astype(Dtype::Float32, stream)?,
+        &gated.reshape(&[b, t * s, c], stream)?,
+        stream,
+    )?;
     summed.astype(dtype, stream)
 }
 
@@ -931,7 +1152,9 @@ fn packed_text_attention(
 /// Per-head RMS norm in F32 with the checkpoint's per-head-dim weight.
 fn rms_norm_head(x: &Array, weight: &Array, stream: &Stream) -> Result<Array> {
     let dtype = x.dtype();
-    let normed = x.astype(Dtype::Float32, stream)?.rms_norm(None, 1e-6, stream)?;
+    let normed = x
+        .astype(Dtype::Float32, stream)?
+        .rms_norm(None, 1e-6, stream)?;
     let scaled = Array::multiply(&normed, &weight.astype(Dtype::Float32, stream)?, stream)?;
     scaled.astype(dtype, stream)
 }

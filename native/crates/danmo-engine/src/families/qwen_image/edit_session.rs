@@ -67,10 +67,9 @@ impl FacadeFamily for QwenImageEditFamily {
             .as_deref()
             .is_some_and(|id| !id.trim().is_empty())
         {
-            return Err(WeightError::NotBuilt(
-                "qwen image edit inpaint mask is not built".into(),
-            )
-            .into());
+            return Err(
+                WeightError::NotBuilt("qwen image edit inpaint mask is not built".into()).into(),
+            );
         }
         let card = edit_card(&request.metadata)?;
         if !card.multi && !request.reference_asset_ids.is_empty() {
@@ -130,9 +129,9 @@ impl FacadeFamily for QwenImageEditFamily {
                     "Qwen-Image negative prompt requires guidance > 1",
                 ));
             }
-            let seed = request.seed.ok_or_else(|| {
-                EngineError::bad_request("Qwen-Image edit requires a seed")
-            })?;
+            let seed = request
+                .seed
+                .ok_or_else(|| EngineError::bad_request("Qwen-Image edit requires a seed"))?;
             if seed < 0 {
                 return Err(EngineError::bad_request(
                     "Qwen-Image seed must be non-negative",
@@ -199,10 +198,9 @@ impl FacadeSession for QwenEditSession {
         #[cfg(not(feature = "mlx"))]
         {
             let _ = exec;
-            return Err(WeightError::NotBuilt(
-                "qwen-image edit no longer has a ggml graph".into(),
-            )
-            .into());
+            return Err(
+                WeightError::NotBuilt("qwen-image edit no longer has a ggml graph".into()).into(),
+            );
         }
         #[cfg(feature = "mlx")]
         {
@@ -289,7 +287,10 @@ fn edit_card(metadata: &Value) -> Result<Card, EngineError> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     if vl {
-        match metadata.get("edit_conditioning_latent_concat").and_then(Value::as_bool) {
+        match metadata
+            .get("edit_conditioning_latent_concat")
+            .and_then(Value::as_bool)
+        {
             Some(true) => {}
             Some(false) => {
                 return Err(WeightError::NotBuilt(
@@ -345,10 +346,9 @@ fn output_size(
     };
     let (width, height) = danmo_contracts::parse_size(size).map_err(EngineError::InvalidRequest)?;
     if width % 16 != 0 || height % 16 != 0 || width < 16 || height < 16 {
-        return Err(WeightError::NotBuilt(format!(
-            "size {width}x{height} is not divisible by 16"
-        ))
-        .into());
+        return Err(
+            WeightError::NotBuilt(format!("size {width}x{height} is not divisible by 16")).into(),
+        );
     }
     Ok((width, height))
 }
@@ -570,7 +570,10 @@ mod tests {
         assert_eq!(init_timestep(20, 0.35).unwrap(), 7);
         assert!(init_timestep(4, 1.0).is_err());
         assert_eq!(output_size(None, 1000, 500).unwrap(), (992, 496));
-        assert_eq!(output_size(Some("1024x768"), 1000, 500).unwrap(), (1024, 768));
+        assert_eq!(
+            output_size(Some("1024x768"), 1000, 500).unwrap(),
+            (1024, 768)
+        );
         assert!(output_size(Some("1000x768"), 1000, 500).is_err());
     }
 

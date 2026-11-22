@@ -89,11 +89,21 @@ impl WanVae {
         for i in 0..chunks {
             cache.index = 0;
             let chunk = if i == 0 {
-                video.slice(&[0, 0, 0, 0, 0], &[1, 3, 1, video.shape()[3], video.shape()[4]], &[1, 1, 1, 1, 1], stream)?
+                video.slice(
+                    &[0, 0, 0, 0, 0],
+                    &[1, 3, 1, video.shape()[3], video.shape()[4]],
+                    &[1, 1, 1, 1, 1],
+                    stream,
+                )?
             } else {
                 let from = 1 + 4 * (i - 1);
                 let to = (1 + 4 * i).min(t);
-                video.slice(&[0, 0, from as i32, 0, 0], &[1, 3, to as i32, video.shape()[3], video.shape()[4]], &[1, 1, 1, 1, 1], stream)?
+                video.slice(
+                    &[0, 0, from as i32, 0, 0],
+                    &[1, 3, to as i32, video.shape()[3], video.shape()[4]],
+                    &[1, 1, 1, 1, 1],
+                    stream,
+                )?
             };
             let encoded = self.encoder_forward(&chunk, &mut cache, stream)?;
             out = Some(match out {
@@ -101,11 +111,18 @@ impl WanVae {
                 Some(prev) => Array::concatenate_axis(&[prev, encoded], 2, stream)?,
             });
         }
-        let out = out.ok_or_else(|| Error::new("longcat_avatar VAE", "encoder produced no frames"))?;
+        let out =
+            out.ok_or_else(|| Error::new("longcat_avatar VAE", "encoder produced no frames"))?;
         let mixed = self.causal_conv3d("quant_conv", &out, None, stream)?;
         let mu = mixed.slice(
             &[0, 0, 0, 0, 0],
-            &[1, self.config.z_dim as i32, mixed.shape()[2], mixed.shape()[3], mixed.shape()[4]],
+            &[
+                1,
+                self.config.z_dim as i32,
+                mixed.shape()[2],
+                mixed.shape()[3],
+                mixed.shape()[4],
+            ],
             &[1, 1, 1, 1, 1],
             stream,
         )?;
@@ -132,7 +149,8 @@ impl WanVae {
                 Some(prev) => Array::concatenate_axis(&[prev, decoded], 2, stream)?,
             });
         }
-        let out = out.ok_or_else(|| Error::new("longcat_avatar VAE", "decoder produced no frames"))?;
+        let out =
+            out.ok_or_else(|| Error::new("longcat_avatar VAE", "decoder produced no frames"))?;
         out.clip(-1.0, 1.0, stream)
     }
 
@@ -200,7 +218,12 @@ impl WanVae {
         let mut stage = 0usize;
         for i in 0..dim_mult.len() {
             for res in 0..self.config.num_res_blocks {
-                x = self.residual_block(&format!("encoder.down_blocks.{stage}"), &x, cache, stream)?;
+                x = self.residual_block(
+                    &format!("encoder.down_blocks.{stage}"),
+                    &x,
+                    cache,
+                    stream,
+                )?;
                 stage += 1;
                 let _ = res;
             }
@@ -210,12 +233,20 @@ impl WanVae {
                 } else {
                     "downsample2d"
                 };
-                x = self.resample(&format!("encoder.down_blocks.{stage}"), &x, mode, Some(cache), stream)?;
+                x = self.resample(
+                    &format!("encoder.down_blocks.{stage}"),
+                    &x,
+                    mode,
+                    Some(cache),
+                    stream,
+                )?;
                 stage += 1;
             }
         }
         x = self.mid_block("encoder.mid_block", &x, cache, stream)?;
-        x = self.rms_norm("encoder.norm_out", &x, false, stream)?.silu(stream)?;
+        x = self
+            .rms_norm("encoder.norm_out", &x, false, stream)?
+            .silu(stream)?;
         self.causal_conv3d("encoder.conv_out", &x, Some(cache), stream)
     }
 
@@ -242,11 +273,19 @@ impl WanVae {
             };
             x = self.up_block(&format!("decoder.up_blocks.{i}"), &x, mode, cache, stream)?;
         }
-        x = self.rms_norm("decoder.norm_out", &x, false, stream)?.silu(stream)?;
+        x = self
+            .rms_norm("decoder.norm_out", &x, false, stream)?
+            .silu(stream)?;
         self.causal_conv3d("decoder.conv_out", &x, Some(cache), stream)
     }
 
-    fn mid_block(&self, prefix: &str, x: &Array, cache: &mut Cache, stream: &Stream) -> Result<Array> {
+    fn mid_block(
+        &self,
+        prefix: &str,
+        x: &Array,
+        cache: &mut Cache,
+        stream: &Stream,
+    ) -> Result<Array> {
         let x = self.residual_block(&format!("{prefix}.resnets.0"), x, cache, stream)?;
         let x = self.attention_block(&format!("{prefix}.attentions.0"), &x, stream)?;
         self.residual_block(&format!("{prefix}.resnets.1"), &x, cache, stream)
@@ -265,7 +304,13 @@ impl WanVae {
             out = self.residual_block(&format!("{prefix}.resnets.{index}"), &out, cache, stream)?;
         }
         if let Some(mode) = upsample_mode {
-            out = self.resample(&format!("{prefix}.upsamplers.0"), &out, mode, Some(cache), stream)?;
+            out = self.resample(
+                &format!("{prefix}.upsamplers.0"),
+                &out,
+                mode,
+                Some(cache),
+                stream,
+            )?;
         }
         Ok(out)
     }
@@ -274,15 +319,25 @@ impl WanVae {
     // blocks
     // ------------------------------------------------------------------
 
-    fn residual_block(&self, prefix: &str, x: &Array, cache: &mut Cache, stream: &Stream) -> Result<Array> {
+    fn residual_block(
+        &self,
+        prefix: &str,
+        x: &Array,
+        cache: &mut Cache,
+        stream: &Stream,
+    ) -> Result<Array> {
         let shortcut = if self.weights.has(&format!("{prefix}.conv_shortcut.weight")) {
             self.causal_conv3d(&format!("{prefix}.conv_shortcut"), x, None, stream)?
         } else {
             x.clone()
         };
-        let h = self.rms_norm(&format!("{prefix}.norm1"), x, false, stream)?.silu(stream)?;
+        let h = self
+            .rms_norm(&format!("{prefix}.norm1"), x, false, stream)?
+            .silu(stream)?;
         let h = self.causal_conv3d(&format!("{prefix}.conv1"), &h, Some(cache), stream)?;
-        let h = self.rms_norm(&format!("{prefix}.norm2"), &h, false, stream)?.silu(stream)?;
+        let h = self
+            .rms_norm(&format!("{prefix}.norm2"), &h, false, stream)?
+            .silu(stream)?;
         let h = self.causal_conv3d(&format!("{prefix}.conv2"), &h, Some(cache), stream)?;
         Array::add(&shortcut, &h, stream)
     }
@@ -295,7 +350,10 @@ impl WanVae {
             .transpose_axes(&[0, 2, 3, 4, 1], stream)?
             .reshape(&[b * t, h, w, c], stream)?;
         let normed = self.rms_norm(&format!("{prefix}.norm"), &frames, true, stream)?;
-        let attn_qkv = self.weights.tensor(&format!("{prefix}.to_qkv.weight"))?.shape();
+        let attn_qkv = self
+            .weights
+            .tensor(&format!("{prefix}.to_qkv.weight"))?
+            .shape();
         if attn_qkv.last().copied() != Some(c) {
             return Err(Error::new(
                 "longcat_avatar VAE",
@@ -344,7 +402,10 @@ impl WanVae {
         match mode {
             "upsample3d" => {
                 let cache = cache.ok_or_else(|| {
-                    Error::new("longcat_avatar VAE", "upsample3d requires the feature cache")
+                    Error::new(
+                        "longcat_avatar VAE",
+                        "upsample3d requires the feature cache",
+                    )
                 })?;
                 let mut x = x.clone();
                 let idx = cache.index;
@@ -354,9 +415,15 @@ impl WanVae {
                     cache.slots[idx] = CacheSlot::Rep;
                     cache.index += 1;
                 } else {
-                    let tail = x.slice(&[0, 0, t - CACHE_T as i32, 0, 0], &shape, &[1, 1, 1, 1, 1], stream)?;
+                    let tail = x.slice(
+                        &[0, 0, t - CACHE_T as i32, 0, 0],
+                        &shape,
+                        &[1, 1, 1, 1, 1],
+                        stream,
+                    )?;
                     let cache_x = if (CACHE_T as i32) > t {
-                        let one = x.slice(&[0, 0, t - 1, 0, 0], &shape, &[1, 1, 1, 1, 1], stream)?;
+                        let one =
+                            x.slice(&[0, 0, t - 1, 0, 0], &shape, &[1, 1, 1, 1, 1], stream)?;
                         let pad = match &cache.slots[idx] {
                             CacheSlot::Rep => one.zeros_like(stream)?,
                             CacheSlot::Frames(prev) => prev.slice(
@@ -375,7 +442,12 @@ impl WanVae {
                     x = if rep {
                         self.causal_conv3d(&format!("{prefix}.time_conv"), &x, None, stream)?
                     } else {
-                        self.causal_conv3d_cached(&format!("{prefix}.time_conv"), &x, cache_x, stream)?
+                        self.causal_conv3d_cached(
+                            &format!("{prefix}.time_conv"),
+                            &x,
+                            cache_x,
+                            stream,
+                        )?
                     };
                     cache.slots[idx] = CacheSlot::Frames(tail);
                     cache.index += 1;
@@ -385,8 +457,18 @@ impl WanVae {
                         .reshape(&[b, 2, c, t2, h, w], stream)?
                         .transpose_axes(&[0, 2, 1, 3, 4, 5], stream)?;
                     // baseline: stack([x0, x1], axis=3) — interleave along time
-                    let x0 = x.slice(&[0, 0, 0, 0, 0, 0], &[b, c, 1, t2, h, w], &[1, 1, 1, 1, 1, 1], stream)?;
-                    let x1 = x.slice(&[0, 0, 1, 0, 0, 0], &[b, c, 2, t2, h, w], &[1, 1, 1, 1, 1, 1], stream)?;
+                    let x0 = x.slice(
+                        &[0, 0, 0, 0, 0, 0],
+                        &[b, c, 1, t2, h, w],
+                        &[1, 1, 1, 1, 1, 1],
+                        stream,
+                    )?;
+                    let x1 = x.slice(
+                        &[0, 0, 1, 0, 0, 0],
+                        &[b, c, 2, t2, h, w],
+                        &[1, 1, 1, 1, 1, 1],
+                        stream,
+                    )?;
                     x = Array::stack(&[x0, x1], 3, stream)?
                         .reshape(&[b, c, t2 * 2, h, w], stream)?;
                 }
@@ -422,7 +504,12 @@ impl WanVae {
                             &[1, 1, 1, 1, 1],
                             stream,
                         )?;
-                        x = self.causal_conv3d_cached(&format!("{prefix}.time_conv"), &x, prev, stream)?;
+                        x = self.causal_conv3d_cached(
+                            &format!("{prefix}.time_conv"),
+                            &x,
+                            prev,
+                            stream,
+                        )?;
                         cache.slots[idx] = CacheSlot::Frames(tail);
                         cache.index += 1;
                     }
@@ -463,7 +550,9 @@ impl WanVae {
             .reshape(&[b * t, h, w, c], stream)?;
         let padded = frames.pad(&[1, 2], &[0, 0], &[1, 1], 0.0, "constant", stream)?;
         // The right/bottom pad above IS the conv's padding; do not pad twice.
-        let weight = self.weights.tensor(&format!("{prefix}.resample.1.weight"))?;
+        let weight = self
+            .weights
+            .tensor(&format!("{prefix}.resample.1.weight"))?;
         let conv = Array::conv2d(&padded, weight, [2, 2], [0, 0], [1, 1], 1, stream)?;
         let (h_out, w_out, c_out) = (conv.shape()[1], conv.shape()[2], conv.shape()[3]);
         Ok(conv
@@ -490,7 +579,10 @@ impl WanVae {
         // norm = sqrt(max(sum(x^2), 1e-12)) — mean×dim keeps the exact sum.
         let sum_sq = Array::multiply(x, x, stream)?
             .mean_axes(&[axis], true, stream)?
-            .pipe(|m, s| Array::multiply(&m, &Array::scalar_f32(dim as f32)?, s), stream)?;
+            .pipe(
+                |m, s| Array::multiply(&m, &Array::scalar_f32(dim as f32)?, s),
+                stream,
+            )?;
         let norm = Array::maximum(&sum_sq, &Array::scalar_f32(1e-12)?, stream)?.sqrt(stream)?;
         let normalized = Array::divide(x, &norm, stream)?;
         let scale = Array::scalar_f32((dim as f32).sqrt())?;
@@ -505,7 +597,13 @@ impl WanVae {
     }
 
     /// Causal conv3d without cache (fresh chunk start).
-    fn causal_conv3d(&self, prefix: &str, x: &Array, cache: Option<&mut Cache>, stream: &Stream) -> Result<Array> {
+    fn causal_conv3d(
+        &self,
+        prefix: &str,
+        x: &Array,
+        cache: Option<&mut Cache>,
+        stream: &Stream,
+    ) -> Result<Array> {
         let cached = match cache {
             Some(cache) => {
                 let idx = cache.index;
@@ -539,9 +637,10 @@ impl WanVae {
                     }
                     _ => self.causal_conv3d_full(prefix, x, None, stream)?,
                 };
-                cache.slots[idx] = CacheSlot::Frames(cache_x.ok_or_else(|| {
-                    Error::new("longcat_avatar VAE", "cache window missing")
-                })?);
+                cache.slots[idx] = CacheSlot::Frames(
+                    cache_x
+                        .ok_or_else(|| Error::new("longcat_avatar VAE", "cache window missing"))?,
+                );
                 cache.index += 1;
                 result
             }
@@ -551,7 +650,13 @@ impl WanVae {
     }
 
     /// Causal conv3d with an explicit cache window prepended along time.
-    fn causal_conv3d_cached(&self, prefix: &str, x: &Array, cache_x: Array, stream: &Stream) -> Result<Array> {
+    fn causal_conv3d_cached(
+        &self,
+        prefix: &str,
+        x: &Array,
+        cache_x: Array,
+        stream: &Stream,
+    ) -> Result<Array> {
         self.causal_conv3d_full(prefix, x, Some(cache_x), stream)
     }
 
@@ -559,7 +664,13 @@ impl WanVae {
     /// channels-last layout `(O, kD, kH, kW, I)`. Fold to
     /// `(O, kH, kW, kD*I)` and run one 2D conv per time step; spatial padding
     /// is 1 for 3x3 kernels (1x1x1 mixers take no padding).
-    fn causal_conv3d_full(&self, prefix: &str, x: &Array, cache_x: Option<Array>, stream: &Stream) -> Result<Array> {
+    fn causal_conv3d_full(
+        &self,
+        prefix: &str,
+        x: &Array,
+        cache_x: Option<Array>,
+        stream: &Stream,
+    ) -> Result<Array> {
         let weight = self.weights.tensor(&format!("{prefix}.weight"))?;
         let wshape = weight.shape();
         let (o, kd, kh, kw, i) = (wshape[0], wshape[1], wshape[2], wshape[3], wshape[4]);
@@ -597,7 +708,14 @@ impl WanVae {
         let x = prepend;
         let spatial_pad = (kh - 1) / 2;
         let x = if spatial_pad > 0 {
-            x.pad(&[3, 4], &[spatial_pad, spatial_pad], &[spatial_pad, spatial_pad], 0.0, "constant", stream)?
+            x.pad(
+                &[3, 4],
+                &[spatial_pad, spatial_pad],
+                &[spatial_pad, spatial_pad],
+                0.0,
+                "constant",
+                stream,
+            )?
         } else {
             x
         };
@@ -619,7 +737,12 @@ impl WanVae {
         let bias = self.weights.tensor(&format!("{prefix}.bias"))?;
         let mut outputs = Vec::with_capacity(t_out as usize);
         for t_i in 0..t_out {
-            let window = x.slice(&[0, t_i, 0, 0, 0], &[b, t_i + kd, h, w, c_in], &[1, 1, 1, 1, 1], stream)?;
+            let window = x.slice(
+                &[0, t_i, 0, 0, 0],
+                &[b, t_i + kd, h, w, c_in],
+                &[1, 1, 1, 1, 1],
+                stream,
+            )?;
             // [B, kD, H, W, I] -> [B, H, W, kD*I]
             let window = window
                 .transpose_axes(&[0, 2, 3, 1, 4], stream)?
@@ -639,7 +762,15 @@ impl WanVae {
         let wshape = weight.shape();
         let (kh, kw) = (wshape[1], wshape[2]);
         let padding = ((kh - 1) / 2, (kw - 1) / 2);
-        let out = Array::conv2d(x, weight, [stride, stride], [padding.0, padding.1], [1, 1], 1, stream)?;
+        let out = Array::conv2d(
+            x,
+            weight,
+            [stride, stride],
+            [padding.0, padding.1],
+            [1, 1],
+            1,
+            stream,
+        )?;
         if self.weights.has(&format!("{prefix}.bias")) {
             let bias = self.weights.tensor(&format!("{prefix}.bias"))?;
             return Array::add(&out, bias, stream);
@@ -657,18 +788,10 @@ fn zeros(shape: &[i32], dtype: danmo_mlx::Dtype, stream: &Stream) -> Result<Arra
 }
 
 trait Pipe: Sized {
-    fn pipe<T>(
-        self,
-        f: impl FnOnce(&Self, &Stream) -> Result<T>,
-        stream: &Stream,
-    ) -> Result<T>;
+    fn pipe<T>(self, f: impl FnOnce(&Self, &Stream) -> Result<T>, stream: &Stream) -> Result<T>;
 }
 impl Pipe for Array {
-    fn pipe<T>(
-        self,
-        f: impl FnOnce(&Self, &Stream) -> Result<T>,
-        stream: &Stream,
-    ) -> Result<T> {
+    fn pipe<T>(self, f: impl FnOnce(&Self, &Stream) -> Result<T>, stream: &Stream) -> Result<T> {
         f(&self, stream)
     }
 }

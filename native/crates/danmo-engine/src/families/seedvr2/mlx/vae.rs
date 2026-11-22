@@ -6,8 +6,8 @@ use std::path::Path;
 
 use danmo_mlx::{Array, Dtype, Result, Stream};
 
-use super::super::vae::{VaeSpec, decode_frames_out, encode_frames_out};
-use crate::weights::{MlxWeights, WeightDtype, WeightError, load_mlx_file};
+use super::super::vae::{decode_frames_out, encode_frames_out, VaeSpec};
+use crate::weights::{load_mlx_file, MlxWeights, WeightDtype, WeightError};
 
 const NORM_EPS: f32 = 1e-6;
 
@@ -389,7 +389,9 @@ fn conv3d(
     padding: [i32; 3],
     stream: &Stream,
 ) -> Result<Array> {
-    conv3d_cached(weights, prefix, input, kernel, stride, padding, stream, None)
+    conv3d_cached(
+        weights, prefix, input, kernel, stride, padding, stream, None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

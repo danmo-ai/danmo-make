@@ -206,7 +206,8 @@ fn infer_mlx_on_stream(
 
     let mlx_err = |error: danmo_mlx::Error| EngineError::Resolve(error.to_string());
     exec.check_cancelled()?;
-    let bundle = super::config::BundleConfig::load(&run.bundle).map_err(EngineError::bad_request)?;
+    let bundle =
+        super::config::BundleConfig::load(&run.bundle).map_err(EngineError::bad_request)?;
 
     // ---- portrait: cover-resize + center crop to the request size ----
     let (rgb, sw, sh) = &prepared.portrait;
@@ -244,7 +245,10 @@ fn infer_mlx_on_stream(
     // ---- voice: PCM16 WAV → 16 kHz mono → Whisper log-mel ----
     let (pcm, sample_rate) = crate::common::wav::read_pcm16_interleaved(&prepared.voice_wav)
         .map_err(EngineError::bad_request)?;
-    let mono: Vec<f32> = pcm.chunks(2).map(|pair| (pair[0] + pair[1]) * 0.5).collect();
+    let mono: Vec<f32> = pcm
+        .chunks(2)
+        .map(|pair| (pair[0] + pair[1]) * 0.5)
+        .collect();
     let mono = if sample_rate == AUDIO_SAMPLE_RATE {
         mono
     } else {
@@ -279,13 +283,22 @@ fn infer_mlx_on_stream(
     .map_err(mlx_err)?;
     exec.log("info", "longcat_avatar umt5 loaded, encoding prompts")?;
     let positive = text_encoder
-        .encode_prompt(if prepared.prompt.trim().is_empty() {
-            " "
-        } else {
-            &prepared.prompt
-        }, stream)
+        .encode_prompt(
+            if prepared.prompt.trim().is_empty() {
+                " "
+            } else {
+                &prepared.prompt
+            },
+            stream,
+        )
         .map_err(|e| EngineError::Resolve(format!("longcat_avatar umt5 positive prompt: {e}")))?;
-    exec.log("info", &format!("longcat_avatar positive embeds {:?}", positive.embeds.shape()))?;
+    exec.log(
+        "info",
+        &format!(
+            "longcat_avatar positive embeds {:?}",
+            positive.embeds.shape()
+        ),
+    )?;
     let negative = text_encoder
         .encode_prompt(&prepared.negative_prompt, stream)
         .map_err(|e| EngineError::Resolve(format!("longcat_avatar umt5 negative prompt: {e}")))?;
@@ -315,12 +328,13 @@ fn infer_mlx_on_stream(
             groups.shape()[1]
         ),
     )?;
-    audio_embs = super::audio::align_audio_frames(&audio_embs, required, stream).map_err(mlx_err)?;
+    audio_embs =
+        super::audio::align_audio_frames(&audio_embs, required, stream).map_err(mlx_err)?;
     let uncond_audio = audio_embs.zeros_like(stream).map_err(mlx_err)?;
 
     // ---- reference latent ----
-    let vae = super::vae::WanVae::open(&run.bundle.join("vae"), &bundle.vae, stream)
-        .map_err(mlx_err)?;
+    let vae =
+        super::vae::WanVae::open(&run.bundle.join("vae"), &bundle.vae, stream).map_err(mlx_err)?;
     let reference = vae.encode_normalized(&image, stream).map_err(mlx_err)?;
 
     // ---- noise + denoise ----
@@ -341,7 +355,8 @@ fn infer_mlx_on_stream(
     let dit = super::transformer::AvatarDit::open(&run.bundle.join("dit"), &bundle.dit)
         .map_err(mlx_err)?;
 
-    let mut sigmas = super::conditioning::dmd_distilled_sigmas(NUM_TRAIN_TIMESTEPS, DEFAULT_STEPS as usize);
+    let mut sigmas =
+        super::conditioning::dmd_distilled_sigmas(NUM_TRAIN_TIMESTEPS, DEFAULT_STEPS as usize);
     super::conditioning::apply_scheduler_shift(&mut sigmas, SCHEDULER_SHIFT);
     if prepared.steps as usize != sigmas.len() {
         return Err(EngineError::bad_request(format!(
@@ -351,9 +366,12 @@ fn infer_mlx_on_stream(
     }
     sigmas.push(0.0);
 
-    let text_embeds_cat =
-        Array::concatenate_axis(&[negative.embeds.clone(), positive.embeds.clone()], 0, stream)
-            .map_err(mlx_err)?;
+    let text_embeds_cat = Array::concatenate_axis(
+        &[negative.embeds.clone(), positive.embeds.clone()],
+        0,
+        stream,
+    )
+    .map_err(mlx_err)?;
     let text_lengths = if bundle.dit.text_tokens_zero_pad {
         vec![super::umt5::TEXT_LEN, super::umt5::TEXT_LEN]
     } else {
@@ -371,7 +389,8 @@ fn infer_mlx_on_stream(
         // 3-pass CFG:
         //   pass 1 batched [neg_text, pos_text] with positive audio
         //   pass 2 negative text with zero audio
-        let t_arr = Array::from_f32_slice(&[timestep_value, timestep_value], &[2]).map_err(mlx_err)?;
+        let t_arr =
+            Array::from_f32_slice(&[timestep_value, timestep_value], &[2]).map_err(mlx_err)?;
         let latents_2 = Array::concatenate_axis(&[latents.clone(), latents.clone()], 0, stream)
             .map_err(mlx_err)?;
         let audio_2 = Array::concatenate_axis(&[audio_embs.clone(), audio_embs.clone()], 0, stream)
@@ -490,7 +509,13 @@ fn infer_mlx_on_stream(
         "reference_asset_id": prepared.source_asset_id,
         "audio_asset_id": prepared.audio_asset_id,
     });
-    let mut artifact = Artifact::mp4(bytes, width as i64, height as i64, duration, metadata.clone());
+    let mut artifact = Artifact::mp4(
+        bytes,
+        width as i64,
+        height as i64,
+        duration,
+        metadata.clone(),
+    );
     artifact.source_action = "avatar".into();
     artifact.parent_asset_id = Some(prepared.source_asset_id.clone());
     artifact.relation_type = Some("avatar".into());

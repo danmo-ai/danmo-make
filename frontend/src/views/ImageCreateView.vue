@@ -101,7 +101,7 @@
   <StudioComposerHost
     v-if="viewMode === 'canvas' || composerDrawerOpen"
     v-model:open="composerDrawerOpen"
-    :drawer-title="$t('studio.composerDrawerTitle')"
+    :drawer-title="composerDrawerTitle"
   >
     <ImageComposer
         v-model="params.prompt"
@@ -121,8 +121,6 @@
         :show-negative-prompt="!!currentModelConfig?.parameters?.negative_prompt_support"
         :reference-image="referenceImage"
         :extra-reference-images="extraReferenceImages"
-        :references-blocked="referencesBlocked"
-        :generate-block-reason="generateBlockReason"
         :control-image="controlImage"
         :mode="imageMode"
         :mode-options="[]"
@@ -284,7 +282,7 @@ import { usePromptApplyOffer } from '@/composables/usePromptApplyOffer';
 import { useTasksStore } from '@/stores/tasks';
 import { useRegistryStore } from '@/stores/registry';
 import type { SystemInfo, GalleryItem, Task } from '@/types';
-import { applyDefaults, buildResolutionSizeOptions, extraReferenceSlotCap, hasDeviation, parseSizeValue, pickResolutionForModel, referenceImageSlotCap, schedulerForModel, strengthDefaultFromRegistry, strengthToSourceFidelity } from '@/utils/registryParamSchema';
+import { applyDefaults, buildResolutionSizeOptions, extraReferenceSlotCap, hasDeviation, hasRegistryParam, parseSizeValue, pickResolutionForModel, referenceImageSlotCap, schedulerForModel, strengthDefaultFromRegistry, strengthToSourceFidelity } from '@/utils/registryParamSchema';
 import { getImageSizeForModel, migrateLegacyImageLastSize, setImageSizeForModel } from '@/utils/imageSizeStorage';
 
 import { warnIfRiskyMemory } from '@/composables/memoryHint';
@@ -302,6 +300,7 @@ import {
 } from '@/utils/loraAdapterMeta';
 import { reconcileVersionPickerSelection } from '@/composables/useModelRegistryFilters';
 import { applyModelVersionFilters } from '@/utils/modelPickerFilters';
+import { compareModelPickerRows } from '@/utils/modelPickerSort';
 import { pickDefaultVersionKey } from '@/utils/defaultModelSettings';
 import { dismissSuccessorHint, isSuccessorHintDismissed } from '@/utils/modelSuccessor';
 import { ACTIVE_COMPOSER_TASK_STATUSES, splitComposerPromptLines } from '@/utils/composerQueue';
@@ -391,6 +390,7 @@ const params = reactive<Record<string, unknown>>({
   title: '',
   prompt: '',
   negative_prompt: '',
+  use_pe: true,
   model: '',
   version: '',
   steps: 4,
@@ -931,6 +931,7 @@ function persistComposerSnapshot() {
     model: String(params.model || ''),
     version: String(params.version || ''),
     negative_prompt: String(params.negative_prompt || ''),
+    use_pe: String(params.use_pe !== false),
     seed: params.seed != null ? String(params.seed) : undefined,
     mode: imageMode.value,
     reference_path: referenceImage.value?.path || undefined,
@@ -1039,6 +1040,7 @@ function onCanvasComposerRestore(snapshot: {
   model?: string;
   version?: string;
   negative_prompt?: string;
+  use_pe?: string;
   seed?: string;
   mode?: string;
   reference_path?: string;
@@ -1062,6 +1064,7 @@ function onCanvasComposerRestore(snapshot: {
   if (snapshot.prompt != null) params.prompt = snapshot.prompt;
   if (snapshot.title != null) params.title = snapshot.title;
   if (snapshot.negative_prompt != null) params.negative_prompt = snapshot.negative_prompt;
+  if (snapshot.use_pe != null) params.use_pe = snapshot.use_pe !== 'false';
   if (snapshot.seed != null) params.seed = snapshot.seed;
   if (snapshot.mode === 'img2img' || snapshot.mode === 'text2img') {
     imageMode.value = snapshot.mode;
@@ -1116,14 +1119,26 @@ function buildCanvasMeta(extra: Record<string, unknown> = {}): Record<string, un
   const meta: Record<string, unknown> = { ...extra };
   const sid = imageCanvas.sessionId.value;
   if (sid) meta.canvas_session_id = sid;
-  const parentPath =
-    (showEditorDrawer.value && editDrawerItem.value?.path) ||
-    canvasSelectedItem.value?.path ||
-    imageCanvas.activeAssetPath.value ||
-    '';
+  const relation = canvasImageRelationType();
+  // Pure text-to-image has no parent — never inherit canvas selection as lineage
+  // (that previously stamped relation_type=create and broke edges + meta labels).
+  if (relation === 'create') {
+    return meta;
+  }
+  let parentPath = '';
+  if (showEditorDrawer.value && editDrawerItem.value?.path) {
+    parentPath = String(editDrawerItem.value.path || '');
+  } else if (relation === 'img2img' && referenceImage.value?.path) {
+    parentPath = String(referenceImage.value.path || '');
+  } else if (relation === 'controlnet' && controlImage.value?.path) {
+    parentPath = String(controlImage.value.path || '');
+  } else {
+    parentPath =
+      canvasSelectedItem.value?.path || imageCanvas.activeAssetPath.value || '';
+  }
   if (parentPath.startsWith('asset:')) {
     meta.parent_asset_id = parentPath.slice('asset:'.length);
-    meta.relation_type = canvasImageRelationType();
+    meta.relation_type = relation;
   }
   return meta;
 }
@@ -1139,6 +1154,11 @@ function shouldAutoAddToCanvas(): boolean {
 const referenceImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
 const extraReferenceImages = ref<Array<{ previewUrl: string; path: string; assetId?: string }>>([]);
 const controlImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
+
+/** Drawer title: instruction-edit when a reference image is bound. */
+const composerDrawerTitle = computed(() =>
+  referenceImage.value ? $tt('action.image.rewrite') : $tt('studio.composerDrawerTitle'),
+);
 const showAssetPicker = ref(false);
 const assetPickerMode = ref<'reference' | 'extra_reference' | 'control'>('reference');
 
@@ -1152,11 +1172,6 @@ function assetIdFromPickPath(path: string): string | undefined {
 }
 
 function onReferencePick({ path, previewUrl }: { path: string; previewUrl: string }) {
-  if (versionDisallowsReferences()) {
-    toast.warning($tt('create.quantizedNoReference'));
-    showAssetPicker.value = false;
-    return;
-  }
   referenceImage.value = { path, previewUrl, assetId: assetIdFromPickPath(path) };
   showAssetPicker.value = false;
   imageMode.value = 'img2img';
@@ -1166,27 +1181,7 @@ function modelReferenceParameters(): Record<string, unknown> | undefined {
   return currentModelConfig.value?.parameters as Record<string, unknown> | undefined;
 }
 
-function versionDisallowsReferences(): boolean {
-  const versions = currentModelConfig.value?.versions as
-    | Record<string, { overrides?: Record<string, unknown> }>
-    | undefined;
-  const block = versions?.[String(params.version || '')];
-  return Boolean(block?.overrides?.hidream_quantized_no_edit);
-}
-
-const referencesBlocked = computed(() => versionDisallowsReferences());
-
-const generateBlockReason = computed(() => {
-  if (!referencesBlocked.value) return '';
-  return $tt('create.quantizedNoReference');
-});
-
 function onExtraReferencePick({ path, previewUrl }: { path: string; previewUrl: string }) {
-  if (versionDisallowsReferences()) {
-    toast.warning($tt('create.quantizedNoReference'));
-    showAssetPicker.value = false;
-    return;
-  }
   if (!path.startsWith('asset:')) {
     toast.warning($tt('canvas.controlImageAssetRequired'));
     return;
@@ -1239,10 +1234,6 @@ function removeControlImage() {
 
 function onCanvasUseAsRef(payload: { path: string; previewUrl: string; quiet?: boolean }) {
   const { path, previewUrl } = payload;
-  if (versionDisallowsReferences()) {
-    toast.warning($tt('create.quantizedNoReference'));
-    return;
-  }
   if (payload.quiet) {
     const item = galleryItems.value.find((g) => g.path === path);
     if (item) fillComposerFromGalleryItem(item);
@@ -1679,7 +1670,9 @@ const allVersions = computed(() => {
         size,
         status: status.status,
         ready: status.ready,
-        recommended: config.recommended && (versionConfig as Record<string, unknown>).default,
+        // Model-level catalog.recommended — not gated on version.default, so an
+        // installed non-default tier of a recommended model still sorts first.
+        recommended: config.recommended === true,
         commercialUseAllowed: config.commercial_use_allowed === true,
         actions,
       });
@@ -1705,18 +1698,7 @@ const filteredModelPickerVersions = computed(() => {
     installedOnly: true,
     commercialOnly: false, // show all; badge indicates commercial status
   });
-  rows.sort((a, b) => {
-    const ar = a.recommended ? 1 : 0;
-    const br = b.recommended ? 1 : 0;
-    if (ar !== br) return br - ar;
-    const an = String(a.name || '');
-    const bn = String(b.name || '');
-    try {
-      return an.localeCompare(bn, 'zh');
-    } catch {
-      return an < bn ? -1 : an > bn ? 1 : 0;
-    }
-  });
+  rows.sort(compareModelPickerRows);
   return rows;
 });
 
@@ -1799,7 +1781,6 @@ function structuralGuideValidation():
 const canGenerate = computed(() => {
   if (selectedModelNotReady.value) return false;
   if (!String(params.prompt || '').trim()) return false;
-  if (referencesBlocked.value && referenceImage.value) return false;
   if (imageMode.value === 'img2img' && !referenceImage.value) return false;
   if (String(params.controlnet || '') && !structuralGuideValidation().ok) return false;
   return true;
@@ -2194,9 +2175,13 @@ function attachStreamFromSubmit(submitRes: unknown) {
       tasksStore.ingestTaskPipelineTrace(tid, traceData);
     },
     onStatus: (statusData: any) => {
-      if (currentTask.value) {
-        currentTask.value = { ...currentTask.value, ...statusData };
-      }
+      const cur = currentTask.value;
+      if (!cur) return;
+      const nextStatus = statusData.status ?? cur.status;
+      const nextProgress =
+        typeof statusData.progress === 'number' ? statusData.progress : cur.progress;
+      if (cur.status === nextStatus && cur.progress === nextProgress) return;
+      currentTask.value = { ...cur, ...statusData };
     },
     onProgress: (progressData: any) => {
       tasksStore.ingestTaskProgressLog(tid, progressData);
@@ -2207,14 +2192,25 @@ function attachStreamFromSubmit(submitRes: unknown) {
         eta_seconds: progressData.eta_seconds,
         progressMessage: progressData.message ?? progressData.phase,
       });
-      if (currentTask.value) {
-        currentTask.value = {
-          ...currentTask.value,
-          progress: progressData.progress ?? currentTask.value.progress,
-          step: progressData.step ?? currentTask.value.step,
-          total: progressData.total ?? currentTask.value.total,
-        };
+      const cur = currentTask.value;
+      if (!cur) return;
+      const nextProgress =
+        progressData.progress != null ? progressData.progress : cur.progress;
+      const nextStep = progressData.step ?? cur.step;
+      const nextTotal = progressData.total ?? cur.total;
+      if (
+        cur.progress === nextProgress &&
+        cur.step === nextStep &&
+        cur.total === nextTotal
+      ) {
+        return;
       }
+      currentTask.value = {
+        ...cur,
+        progress: nextProgress,
+        step: nextStep,
+        total: nextTotal,
+      };
     },
     onResult: (resultData: any) => {
       const ids = assetIdsFromResultPayload(resultData);
@@ -2357,16 +2353,10 @@ function validateGenerationPreconditions(): boolean {
     $tt,
   });
 
-  if (versionDisallowsReferences() && referenceImage.value) {
-    toast.warning($tt('create.quantizedNoReference'));
-    return false;
-  }
-
   const guideValidation = structuralGuideValidation();
   if (!guideValidation.ok) {
     const guideToastKeys = {
       fill_edit_only: 'studio.controlnetFillEditOnly',
-      flux_only: 'studio.controlnetFluxOnly',
       no_img2img: 'studio.controlnetNoImg2img',
       missing_control_image: 'canvas.controlImageRequired',
       controlnet_not_ready: 'studio.controlnetNotReady',
@@ -2430,7 +2420,6 @@ async function prepareGenerationContext(): Promise<GenerationPrepared | null> {
 }
 
 function collectExtraReferenceAssetIds(sourceAssetId: string | null): string[] {
-  if (versionDisallowsReferences()) return [];
   const cap = extraReferenceSlotCap(modelReferenceParameters());
   if (cap <= 0) return [];
   const ids: string[] = [];
@@ -2522,6 +2511,9 @@ async function submitImageGenerationTask(
     metadata: { ...ctx.meta },
     priority: 'normal',
   };
+  if (hasRegistryParam(currentModelConfig.value?.parameters as Record<string, unknown>, 'use_pe')) {
+    genBody.use_pe = params.use_pe !== false;
+  }
   const genEnh = appendZImageEnhancementFields(genBody, enhCommon);
   if (!genEnh.ok) {
     throw new Error($tt('create.inpaintPairRequired'));

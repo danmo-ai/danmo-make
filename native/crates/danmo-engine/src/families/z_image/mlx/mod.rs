@@ -81,6 +81,26 @@ impl MlxZImageConfig {
         }
         Ok(ids)
     }
+
+    /// Empty-user ChatML ids for CFG unconditional / caption dropout.
+    /// Diffusers encodes `negative_prompt=""` through the same template.
+    pub fn empty_token_ids(self, bundle: &Path) -> Result<Vec<i32>, WeightError> {
+        let tokenizer = crate::common::qwen3::load_tokenizer(bundle)?;
+        let ids = crate::common::qwen3::tokenize_chat_empty(&tokenizer, self.vocab, true)?;
+        if ids.len() > self.max_seq_len {
+            return Err(WeightError::NotBuilt(format!(
+                "empty caption tokenized to {} tokens, maximum is {}",
+                ids.len(),
+                self.max_seq_len
+            )));
+        }
+        if ids.is_empty() {
+            return Err(WeightError::NotBuilt(
+                "empty caption produced no tokens".into(),
+            ));
+        }
+        Ok(ids)
+    }
 }
 
 #[cfg(test)]

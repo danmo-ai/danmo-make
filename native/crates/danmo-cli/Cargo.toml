@@ -10,13 +10,19 @@ default = []
 metal = ["danmo-engine/metal"]
 cuda = ["danmo-engine/cuda"]
 vulkan = ["danmo-engine/vulkan"]
-mlx = ["danmo-engine/mlx", "dep:danmo-mlx-sys"]
+mlx = ["danmo-engine/mlx", "danmo-resolve/mlx", "dep:danmo-mlx-sys"]
 mlx-metal = ["mlx", "metal", "danmo-engine/mlx-metal"]
 mlx-cuda = ["mlx", "cuda", "danmo-engine/mlx-cuda"]
+
+[[bin]]
+name = "danmo-quantize"
+path = "src/bin/danmo-quantize.rs"
+required-features = ["mlx"]
 
 [dependencies]
 danmo-engine = { path = "../danmo-engine" }
 danmo-catalog = { path = "../danmo-catalog" }
 danmo-resolve = { path = "../danmo-resolve" }
+danmo-otel = { path = "../danmo-otel" }
 danmo-mlx-sys = { path = "../danmo-mlx-sys", optional = true }
 serde_json = { workspace = true }

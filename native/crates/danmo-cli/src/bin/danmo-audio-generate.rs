@@ -27,8 +27,9 @@ fn run() -> Result<(), String> {
     let host = danmo_cli::Host::new(&args)?;
     let model = args.require("model")?;
     let lyrics = match args.get("lyrics-file") {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|error| format!("lyrics file {path}: {error}"))?,
+        Some(path) => {
+            std::fs::read_to_string(path).map_err(|error| format!("lyrics file {path}: {error}"))?
+        }
         None => args.get("lyrics").unwrap_or("").to_string(),
     };
     let mut request = serde_json::Map::new();

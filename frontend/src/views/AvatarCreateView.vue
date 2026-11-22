@@ -110,6 +110,7 @@ import { useTasksStore } from '@/stores/tasks';
 import { useRegistryStore } from '@/stores/registry';
 import { useModelRegistryFilters } from '@/composables/useModelRegistryFilters';
 import { applyModelVersionFilters } from '@/utils/modelPickerFilters';
+import { compareModelPickerRows } from '@/utils/modelPickerSort';
 import { modelSelectOption } from '@/utils/modelSelectOption';
 import { warnIfRiskyMemory } from '@/composables/memoryHint';
 import { useStudioGallery } from '@/composables/useStudioGallery';
@@ -228,7 +229,7 @@ const allAvatarVersions = computed(() => {
         name: $mvn(modelKey, config as any, versionConfig as any),
         description: $md(config as any),
         ready: status.ready,
-        recommended: (config as any).recommended && (versionConfig as any).default,
+        recommended: (config as any).recommended === true,
         commercialUseAllowed: (config as any).commercial_use_allowed === true,
       });
     }
@@ -243,12 +244,7 @@ const avatarModelPickerVersions = computed(() => {
     installedOnly: true,
     commercialOnly: modelFilterCommercialOnly.value,
   });
-  rows.sort((a, b) => {
-    const ar = a.recommended ? 1 : 0;
-    const br = b.recommended ? 1 : 0;
-    if (ar !== br) return br - ar;
-    return String(a.name || '').localeCompare(String(b.name || ''), 'zh');
-  });
+  rows.sort(compareModelPickerRows);
   return rows;
 });
 

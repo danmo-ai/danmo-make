@@ -31,6 +31,7 @@ impl<'a> Engine<'a> {
         exec.phase("resolve")?;
         let mut run = self.resolver.resolve(request.model(), request.action())?;
         run.backend = self.backend;
+        annotate_run_context(&exec, &run, &request)?;
         let ctx = GgmlContext::new(self.backend)?;
         probe_backend(&ctx, &exec)?;
         let mut output = session::execute(&ctx, &run, &request, self.resolver, &exec)?;
@@ -61,6 +62,25 @@ impl<'a> Engine<'a> {
             output_paths,
         })
     }
+}
+
+fn annotate_run_context(
+    exec: &ExecutionContext,
+    run: &crate::contract::ResolvedRun,
+    request: &EngineRequest,
+) -> Result<(), EngineError> {
+    let mut attrs = vec![
+        ("danmo.family", run.family.clone()),
+        ("danmo.action", run.action.as_str().to_string()),
+        ("danmo.backend", run.backend.name().to_string()),
+        ("danmo.model.id", run.model.clone()),
+        ("danmo.model.bundle", run.bundle.display().to_string()),
+    ];
+    if let Some(version) = run.version.as_ref() {
+        attrs.push(("danmo.model.version", version.clone()));
+    }
+    attrs.extend(request.trace_attributes());
+    exec.annotate(&attrs)
 }
 
 fn probe_backend(ctx: &GgmlContext, exec: &ExecutionContext) -> Result<(), EngineError> {
@@ -172,6 +192,7 @@ mod tests {
             scheduler: None,
             scheduler_shift: None,
             use_empirical_mu: false,
+            use_pe: None,
             adapters: Vec::new(),
             structural_guide: None,
             metadata: serde_json::json!({}),

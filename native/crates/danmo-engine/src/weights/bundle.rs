@@ -1,9 +1,9 @@
 //! Installed bundle layouts.
 //!
 //! Product MLX paths are safetensors (image create tree, SeedVR2 flat files,
-//! ACE-Step, ControlNet). [`assert_gguf_bundle`] / [`assert_hunyuan_bundle`]
-//! remain only for families that still load a GGUF DiT; they never treat a
-//! safetensors install as "legacy" or ask the user to re-download GGUF.
+//! ACE-Step, ControlNet). [`assert_gguf_bundle`] remains only for families that
+//! still load a GGUF DiT; it never treats a safetensors install as "legacy" or
+//! asks the user to re-download GGUF.
 
 use super::WeightError;
 use serde::Deserialize;
@@ -16,14 +16,6 @@ pub struct GgufBundle {
     pub transformer: Vec<PathBuf>,
     pub text_encoder: Vec<PathBuf>,
     pub vae: Vec<PathBuf>,
-}
-
-/// Hunyuan i2v bundle: the base GGUF bundle (GGUF DiT + Qwen2.5-VL text
-/// encoder + video VAE + tokenizer) plus the SigLIP image encoder used for
-/// the vision conditioning tokens.
-pub struct HunyuanBundle {
-    pub base: GgufBundle,
-    pub image_encoder: Vec<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -40,8 +32,6 @@ struct ManifestFiles {
     text_encoder: Option<FileList>,
     #[serde(default)]
     vae: Option<FileList>,
-    #[serde(default)]
-    image_encoder: Option<FileList>,
 }
 
 #[derive(Deserialize)]
@@ -76,9 +66,8 @@ pub fn is_seedvr2_safetensors_bundle(dir: &Path) -> bool {
     if !dir.is_dir() || contains_gguf(dir) {
         return false;
     }
-    let dit = dir.join("seedvr2_ema_7b_fp16.safetensors").is_file()
-        || dir.join("seedvr2_ema_3b_fp16.safetensors").is_file();
-    dit && dir.join("ema_vae_fp16.safetensors").is_file()
+    dir.join("seedvr2_ema_7b_fp16.safetensors").is_file()
+        && dir.join("ema_vae_fp16.safetensors").is_file()
 }
 
 /// ControlNet (or similar) adapter directory: one or more top-level
@@ -154,26 +143,6 @@ pub fn assert_gguf_bundle(dir: &Path) -> Result<GgufBundle, WeightError> {
     })
 }
 
-/// The Hunyuan i2v bundle: everything [`assert_gguf_bundle`] checks plus the
-/// mandatory SigLIP image encoder list.
-pub fn assert_hunyuan_bundle(dir: &Path) -> Result<HunyuanBundle, WeightError> {
-    let base = assert_gguf_bundle(dir)?;
-    let (_, manifest) = read_gguf_manifest(dir)?;
-    let image_encoder =
-        manifest
-            .files
-            .image_encoder
-            .as_ref()
-            .ok_or_else(|| WeightError::Bundle {
-                path: base.root.display().to_string(),
-                detail: "image_encoder file list is missing".into(),
-            })?;
-    Ok(HunyuanBundle {
-        image_encoder: resolve_role(&base.root, "image_encoder", image_encoder.names())?,
-        base,
-    })
-}
-
 fn read_gguf_manifest(dir: &Path) -> Result<(PathBuf, Manifest), WeightError> {
     let root = dir.to_path_buf();
     if !root.is_dir() {
@@ -185,8 +154,9 @@ fn read_gguf_manifest(dir: &Path) -> Result<(PathBuf, Manifest), WeightError> {
     if is_safetensors_bundle(&root) {
         return Err(WeightError::Bundle {
             path: root.display().to_string(),
-            detail: "directory is a safetensors/MLX bundle; this family still expects a GGUF DiT layout"
-                .into(),
+            detail:
+                "directory is a safetensors/MLX bundle; this family still expects a GGUF DiT layout"
+                    .into(),
         });
     }
     let manifest_path = root.join("bundle.manifest.json");
@@ -256,7 +226,6 @@ fn role_file(role: &str, ext: Option<&str>) -> bool {
     match (role, ext) {
         ("transformer", Some("gguf")) => true,
         ("text_encoder" | "vae", Some("gguf" | "safetensors")) => true,
-        ("image_encoder", Some("gguf" | "safetensors")) => true,
         _ => false,
     }
 }

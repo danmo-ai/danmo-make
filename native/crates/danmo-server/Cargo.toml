@@ -14,7 +14,7 @@ default = []
 cuda = ["danmo-engine/cuda"]
 vulkan = ["danmo-engine/vulkan"]
 metal = ["danmo-engine/metal"]
-mlx = ["danmo-engine/mlx", "dep:danmo-mlx"]
+mlx = ["danmo-engine/mlx", "danmo-resolve/mlx", "dep:danmo-mlx"]
 mlx-metal = ["mlx", "metal", "danmo-engine/mlx-metal", "danmo-mlx/metal"]
 mlx-cuda = ["mlx", "cuda", "danmo-engine/mlx-cuda", "danmo-mlx/cuda"]
 
@@ -25,6 +25,7 @@ danmo-catalog = { path = "../danmo-catalog" }
 danmo-resolve = { path = "../danmo-resolve" }
 danmo-schedule = { path = "../danmo-schedule" }
 danmo-store = { path = "../danmo-store" }
+danmo-otel = { path = "../danmo-otel" }
 danmo-mlx = { path = "../danmo-mlx", optional = true }
 axum = { workspace = true }
 serde = { workspace = true }

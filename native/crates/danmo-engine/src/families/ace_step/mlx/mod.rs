@@ -12,7 +12,7 @@ mod diffusion;
 #[cfg(feature = "mlx")]
 mod lm;
 #[cfg(feature = "mlx")]
-pub(crate) use lm::expand as expand_lm;
+pub(crate) use lm::{expand as expand_lm, run as run_lm_mlx};
 #[cfg(feature = "mlx")]
 mod model;
 #[cfg(feature = "mlx")]

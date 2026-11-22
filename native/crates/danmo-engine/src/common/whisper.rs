@@ -85,10 +85,7 @@ impl WhisperEncoder {
     fn assert_topology(&self) -> Result<()> {
         let d = self.config.d_model as i32;
         let mel = self.config.mel_bins as i32;
-        let positions = self
-            .weights
-            .tensor("embed_positions.weight")?
-            .shape();
+        let positions = self.weights.tensor("embed_positions.weight")?.shape();
         if positions != [self.config.max_source_positions as i32, d] {
             return Err(Error::new(
                 "Whisper topology",
@@ -169,16 +166,18 @@ impl WhisperEncoder {
                 ),
             ));
         }
-        x = x.slice(&[0, 0, 0], &[x.shape()[0], t_audio, x.shape()[2]], &[1, 1, 1], stream)?;
-        let positions = self
-            .weights
-            .tensor("embed_positions.weight")?
-            .slice(
-                &[0, 0],
-                &[t_audio, self.config.d_model as i32],
-                &[1, 1],
-                stream,
-            )?;
+        x = x.slice(
+            &[0, 0, 0],
+            &[x.shape()[0], t_audio, x.shape()[2]],
+            &[1, 1, 1],
+            stream,
+        )?;
+        let positions = self.weights.tensor("embed_positions.weight")?.slice(
+            &[0, 0],
+            &[t_audio, self.config.d_model as i32],
+            &[1, 1],
+            stream,
+        )?;
         x = Array::add(&x, &positions, stream)?;
         let mut hidden = vec![x.clone()];
         for layer in 0..self.config.layers {

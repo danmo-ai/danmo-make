@@ -1281,6 +1281,18 @@ body {
  padding: 8px 12px 0;
 }
 
+.model-version-list__derived {
+ border-top: 1px solid var(--dq-border-subtle);
+}
+
+.model-version-list__derived-hint {
+ margin: 0;
+ padding: 8px 12px 0;
+ font-size: 12px;
+ line-height: 1.4;
+ color: var(--dq-label-tertiary);
+}
+
 .model-version-entry {
  border-bottom: 1px solid var(--dq-border-subtle);
 }
@@ -1976,159 +1988,6 @@ html.dark .dq-app-main:has(.models-page) > .models-page {
 
 .dq-top-nav-brand-icon {
  color: var(--dq-accent);
-}
-
-/* 全局任务队列抽屉（App.vue） */
-.dq-task-queue-drawer .dq-drawer-body {
- padding: 16px;
-}
-
-.dq-task-queue-empty {
- padding: 24px 8px;
-}
-
-.dq-task-queue-section {
- margin-bottom: 20px;
-}
-
-.dq-task-queue-heading {
- font-weight: 600;
- margin-bottom: 12px;
-}
-
-.dq-task-queue-heading--dq-accent {
- color: var(--dq-accent);
-}
-
-.dq-task-queue-heading--muted {
- color: var(--dq-label-tertiary);
-}
-
-.queue-dialog-item {
- padding: 12px;
- margin-bottom: 10px;
- border-radius: var(--dq-radius-control);
- border: 1px solid var(--dq-border-subtle);
- background: var(--dq-bg-base);
-}
-
-.queue-dialog-item.running {
- border-color: color-mix(in srgb, var(--dq-accent) 40%, var(--dq-border-subtle));
- background: var(--dq-accent-tint);
-}
-
-.queue-dialog-item.queued {
- background: var(--dq-fill-control);
-}
-
-.dq-task-queue-item-head {
- display: flex;
- justify-content: space-between;
- align-items: flex-start;
- margin-bottom: 8px;
-}
-
-.dq-task-queue-item-main {
- flex: 1;
- overflow: hidden;
- min-width: 0;
-}
-
-.dq-task-queue-kind {
- font-size: var(--dq-font-size-caption);
- color: var(--dq-label-tertiary);
- margin-bottom: 4px;
-}
-
-.dq-task-queue-model {
- font-size: var(--dq-font-size-body);
- color: var(--dq-label-tertiary);
- margin-bottom: 4px;
-}
-
-.dq-queue-prompt-line {
- font-size: var(--dq-font-size-body);
- color: var(--dq-label-primary);
- overflow: hidden;
- text-overflow: ellipsis;
- white-space: nowrap;
-}
-
-.dq-task-queue-cancel-btn {
- margin-left: 8px;
- flex-shrink: 0;
-}
-
-.dq-task-queue-progress-hint {
- font-size: var(--dq-font-size-caption);
- color: var(--dq-label-tertiary);
- margin-top: 4px;
- text-align: right;
-}
-
-.dq-task-queue-progress-hint--tight {
- margin-top: 2px;
-}
-
-.dq-task-queue-queued-layout {
- display: flex;
- justify-content: space-between;
- align-items: flex-start;
- gap: 8px;
-}
-
-.dq-task-queue-queued-left {
- flex: 1;
- display: flex;
- align-items: center;
- gap: 8px;
- overflow: hidden;
- min-width: 0;
-}
-
-.dq-task-queue-idx {
- font-size: var(--dq-font-size-caption);
- color: var(--dq-label-tertiary);
- min-width: 24px;
-}
-
-.dq-task-queue-queued-main {
- flex: 1;
- overflow: hidden;
-}
-
-.dq-task-queue-row-meta {
- font-size: var(--dq-font-size-caption);
- color: var(--dq-label-tertiary);
- margin-bottom: 2px;
-}
-
-.dq-task-queue-row-model {
- font-size: var(--dq-font-size-body);
- color: var(--dq-label-tertiary);
- margin-bottom: 2px;
-}
-
-.dq-task-queue-priority-tag {
- margin-left: 6px;
-}
-
-.dq-task-queue-wait {
- font-size: var(--dq-font-size-caption);
- color: var(--dq-label-tertiary);
- margin-top: 2px;
-}
-
-.dq-task-queue-side-actions {
- display: flex;
- flex-direction: column;
- align-items: stretch;
- gap: 6px;
- flex-shrink: 0;
-}
-
-.dq-task-queue-cancel-end {
- align-self: flex-end;
 }
 
 /* 创作页：图 / 音 / 视频 — 组合 */

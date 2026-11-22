@@ -16,12 +16,7 @@ pub fn sample_noisy_latent(
 }
 
 /// Mean squared error between prediction and velocity target `ε − x0`.
-pub fn flow_match_mse(
-    pred: &Array,
-    x0: &Array,
-    eps: &Array,
-    stream: &Stream,
-) -> MlxResult<Array> {
+pub fn flow_match_mse(pred: &Array, x0: &Array, eps: &Array, stream: &Stream) -> MlxResult<Array> {
     let target = Array::subtract(eps, x0, stream)?;
     let err = Array::subtract(pred, &target, stream)?;
     let sq = err.square(stream)?;

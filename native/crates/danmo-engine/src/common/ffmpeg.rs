@@ -5,6 +5,9 @@
 use crate::error::EngineError;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static AUDIO_DECODE_ID: AtomicU64 = AtomicU64::new(0);
 
 fn exe_stem(name: &str) -> String {
     if cfg!(windows) {
@@ -86,6 +89,46 @@ pub fn require_ffprobe() -> Result<PathBuf, EngineError> {
                 .into(),
         )
     })
+}
+
+/// Decode any ffmpeg-supported audio input to stereo 48 kHz PCM16 WAV bytes.
+pub fn decode_audio_to_pcm16_wav(bytes: &[u8]) -> Result<Vec<u8>, EngineError> {
+    if bytes.is_empty() {
+        return Err(EngineError::Resolve("source audio is empty".into()));
+    }
+    let ffmpeg = require_ffmpeg()?;
+    let id = AUDIO_DECODE_ID.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("danmo-audio-decode-{}-{id}", std::process::id()));
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| EngineError::Resolve(format!("create {}: {error}", dir.display())))?;
+    let input = dir.join("input.audio");
+    let result = std::fs::write(&input, bytes)
+        .map_err(|error| EngineError::Resolve(format!("write {}: {error}", input.display())))
+        .and_then(|()| {
+            let args = [
+                "-nostdin".into(),
+                "-hide_banner".into(),
+                "-loglevel".into(),
+                "error".into(),
+                "-i".into(),
+                input.display().to_string(),
+                "-map".into(),
+                "0:a:0".into(),
+                "-vn".into(),
+                "-ac".into(),
+                "2".into(),
+                "-ar".into(),
+                "48000".into(),
+                "-c:a".into(),
+                "pcm_s16le".into(),
+                "-f".into(),
+                "wav".into(),
+                "pipe:1".into(),
+            ];
+            run(&ffmpeg, &args, "ffmpeg audio decode").map(|output| output.stdout)
+        });
+    let _ = std::fs::remove_dir_all(&dir);
+    result
 }
 
 fn parse_rate(expr: &str) -> f64 {
@@ -553,6 +596,37 @@ mod tests {
             .unwrap();
         let probe: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
         assert_eq!(probe["streams"][0]["nb_frames"], "5");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compressed_audio_decodes_to_stereo_48khz_pcm16() {
+        if Command::new("ffmpeg").arg("-version").output().is_err() {
+            return;
+        }
+        let dir = scratch("decode-audio");
+        let source = dir.join("source.mp3");
+        let status = Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=44100:duration=0.1",
+                "-c:a",
+                "libmp3lame",
+            ])
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "{:?}", status.stderr);
+        let decoded = decode_audio_to_pcm16_wav(&std::fs::read(source).unwrap()).unwrap();
+        let (samples, rate) = crate::common::wav::read_pcm16_interleaved(&decoded).unwrap();
+        assert_eq!(rate, 48_000);
+        assert!(!samples.is_empty() && samples.len() % 2 == 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -99,7 +99,11 @@ CLI sources are absolute or workspace-relative file paths, not asset ids. `--lor
 
 ## Weights
 
-MLX bundles are **safetensors**. Production loading keeps each dense tensor at its checkpoint dtype. Registry version keys include `fp16`, `bf16`, `fp32`, `int8`, `int4`, `mlx-q4`, `mlx-q8`; a label is not a tensor-dtype guarantee. Packed affine weights stay packed inside `LinearWeight`. An install that lists `components` writes `bundle.manifest.json` after the last file lands.
+MLX bundles are **safetensors**. Production loading keeps each dense tensor at its checkpoint dtype. A registry version is either `kind: "dense"` (the only download: `fp16` / `bf16` / `fp32`) or `kind: "derived"` (a dense `base` plus a recipe, converted on this machine). There is no pre-quantized download tier; the registry publishes one `q4-mixed` version per base model and it is a local build product.
+
+`default_config/quant_recipes/<recipe>.json` holds the layer policy: `keep_dense` globs for embeddings, norms, modulations, and final projections, a `min_elements` floor, and one `{bits, group_size}` pair. The converter in `weights/quantize.rs` (driven by `derive.rs`) writes the published MLX affine layout — packed `{base}.weight` plus `{base}.scales` / `{base}.biases` — and stamps `bundle.manifest.json` with the recipe id, a hash of the recipe file, and a layout digest of the dense source. A changed recipe or re-published base fails the load with a re-convert instruction.
+
+Packed affine weights stay packed inside `LinearWeight`; the loader rejects a bundle whose packed layers disagree on bits/group size. An install that lists `components` writes `bundle.manifest.json` after the last file lands.
 
 LoRA files are resolved to adapter paths by the server or CLI and applied by the shared weight layer. A target that is not a parameter fails the task.
 

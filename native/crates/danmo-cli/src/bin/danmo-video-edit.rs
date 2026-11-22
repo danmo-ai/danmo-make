@@ -38,11 +38,20 @@ fn run() -> Result<(), String> {
     danmo_cli::apply_options(
         &mut request,
         &args,
-        &["size", "steps", "guidance", "shift", "seed", "num-frames", "fps"],
+        &[
+            "size",
+            "steps",
+            "guidance",
+            "shift",
+            "seed",
+            "num-frames",
+            "fps",
+        ],
     )?;
     danmo_cli::run_task(&host, "video.edit", &model, json!(request))
 }
 
-const USAGE: &str = "danmo-video-edit --model ID[:version] --source-image PATH --prompt TEXT --output FILE
+const USAGE: &str =
+    "danmo-video-edit --model ID[:version] --source-image PATH --prompt TEXT --output FILE
   [--negative-prompt TEXT] [--size WxH] [--steps N] [--guidance F] [--shift F]
   [--seed N] [--num-frames N] [--fps N] [--workspace DIR] [--registry FILE]";

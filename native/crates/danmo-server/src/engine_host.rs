@@ -7,6 +7,7 @@ use danmo_engine::{
 use danmo_store::AssetRow;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub struct EngineHost<'a> {
     state: &'a AppState,
@@ -182,9 +183,32 @@ impl ArtifactSink for EngineHost<'_> {
 struct TaskObserver {
     scheduler: danmo_schedule::Scheduler,
     task_id: String,
-    backend: danmo_engine::BackendKind,
     preview_dir: PathBuf,
     preview: bool,
+    trace: Option<Arc<danmo_otel::TaskTrace>>,
+    telemetry: Option<danmo_otel::Telemetry>,
+}
+
+impl TaskObserver {
+    /// Open `phase.<name>` on the task root. Closed phases are flushed so the
+    /// graph / trace poll sees them without waiting for the batch timer.
+    fn record_phase(&self, phase: &str) {
+        if phase.is_empty() {
+            return;
+        }
+        let Some(trace) = self.trace.as_ref() else {
+            return;
+        };
+        if trace.current_phase().as_deref() == Some(phase) {
+            return;
+        }
+        trace.phase(phase);
+        if let Some(telemetry) = self.telemetry.as_ref() {
+            if let Err(error) = telemetry.flush() {
+                eprintln!("[otel] {error}");
+            }
+        }
+    }
 }
 
 impl RunObserver for TaskObserver {
@@ -194,28 +218,43 @@ impl RunObserver for TaskObserver {
         } else {
             step as f64 / total as f64
         };
-        let message = if phase.is_empty() {
-            format!("[{}] {step}/{total}", self.backend.name())
-        } else {
-            format!("[{}] {phase} {step}/{total}", self.backend.name())
-        };
+        if let Some(trace) = self.trace.as_ref() {
+            trace.progress(phase, step, total);
+        }
+        // Queue bar + SSE tip only — no task_logs row. Step history lives on
+        // the open phase span and becomes queryable when that phase ends.
         self.scheduler
-            .progress(&self.task_id, progress, &message)
+            .set_progress_tip(&self.task_id, progress, phase, step, total)
             .map_err(|error| EngineError::Observer(error.to_string()))
     }
 
     fn log(&self, level: &str, message: &str) -> Result<(), EngineError> {
+        if let Some(trace) = self.trace.as_ref() {
+            trace.log_event(level, message);
+            return Ok(());
+        }
+        // Tracing disabled: keep a single fail-loud path for freeform engine
+        // lines so they are not silently dropped.
         self.scheduler
-            .log(
-                &self.task_id,
-                level,
-                format!("[{}] {message}", self.backend.name()).as_str(),
-            )
+            .log(&self.task_id, level, message)
             .map_err(|error| EngineError::Observer(error.to_string()))
     }
 
     fn phase(&self, phase: &str) -> Result<(), EngineError> {
-        self.log("info", &format!("phase {phase}"))
+        self.record_phase(phase);
+        Ok(())
+    }
+
+    fn annotate(&self, attributes: &[(&str, String)]) -> Result<(), EngineError> {
+        let Some(trace) = self.trace.as_ref() else {
+            return Ok(());
+        };
+        let attrs = attributes
+            .iter()
+            .map(|(key, value)| danmo_otel::attribute((*key).to_string(), value.clone()))
+            .collect::<Vec<_>>();
+        trace.set_attributes(attrs);
+        Ok(())
     }
 
     fn preview_interval_steps(&self) -> Option<u32> {
@@ -251,25 +290,53 @@ pub fn execute(
     let host = EngineHost::new(state);
     let request = danmo_engine::engine_request(kind, model, params)?;
     let engine = Engine::new(&host, &host, state.backend);
-    let observer = std::sync::Arc::new(TaskObserver {
+    let trace = state.telemetry.as_ref().and_then(|telemetry| {
+        if task_id.is_empty() {
+            return None;
+        }
+        Some(Arc::new(telemetry.start_task(
+            task_id,
+            vec![
+                danmo_otel::attribute("task.id", task_id),
+                danmo_otel::attribute("task.kind", kind),
+                danmo_otel::attribute("gen_ai.request.model", model),
+                danmo_otel::attribute("danmo.backend", state.backend.name()),
+            ],
+        )))
+    });
+    let observer = Arc::new(TaskObserver {
         scheduler: state.scheduler.clone(),
         task_id: task_id.into(),
-        backend: state.backend,
         preview_dir: state.outputs.join("previews"),
         preview: request_preview(params),
+        trace: trace.clone(),
+        telemetry: state.telemetry.clone(),
     });
-    // Record the MLX capability line once per task so a NAX-less build is
-    // visible in the log next to the task that ran on it. The log write goes
-    // through the observer path: a failure is a task failure, not a warning.
+    // Capability line lands on the root span (or task_logs when tracing is off).
     if !task_id.is_empty() {
         if let Some(capability) = crate::app::mlx_capability_summary() {
             observer.log("info", capability)?;
         }
     }
     let exec = ExecutionContext::new(task_id, observer).with_cancellation(cancellation);
-    engine
-        .execute(request, exec)
-        .map(|result| result.task_json())
+    let outcome = engine.execute(request, exec);
+    if let Some(trace) = trace.as_ref() {
+        match &outcome {
+            Ok(_) => {}
+            Err(EngineError::Cancelled) => trace.cancelled(),
+            Err(error) => trace.fail(&error.to_string()),
+        }
+        trace.finish();
+        if let Some(telemetry) = state.telemetry.as_ref() {
+            // Flush so the trace page has the finished spans as soon as the task
+            // reports completion; failures stay visible in stderr rather than
+            // turning a successful generation into an error.
+            if let Err(error) = telemetry.flush() {
+                eprintln!("[otel] {error}");
+            }
+        }
+    }
+    outcome.map(|result| result.task_json())
 }
 
 fn request_preview(params: &Value) -> bool {
@@ -339,8 +406,11 @@ mod tests {
             }
             other => panic!("ltx25 video generation routed to {other:?}"),
         }
-        let params = json!({"family": "hunyuan", "request": {"model": "hunyuan", "prompt": "x"}});
-        let request = engine_request("video.generation", "hunyuan", &params).unwrap();
+        let params = json!({
+            "family": "minimax_h3",
+            "request": {"model": "minimax-h3-fl2va", "prompt": "x"},
+        });
+        let request = engine_request("video.generation", "minimax-h3-fl2va", &params).unwrap();
         assert!(matches!(
             request,
             EngineRequest::Unsupported {
@@ -351,25 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn video_edit_routes_hunyuan_and_ltx25() {
-        let params = json!({
-            "family": "hunyuan",
-            "request": {
-                "model": "hunyuan-video-1.5-i2v-720p",
-                "source_asset_id": "ast_src",
-                "prompt": "a cat",
-                "num_frames": 81,
-            },
-        });
-        let request = engine_request("video.edit", "hunyuan-video-1.5-i2v-720p", &params).unwrap();
-        match request {
-            EngineRequest::VideoEdit(request) => {
-                assert_eq!(request.source_asset_id, "ast_src");
-                assert_eq!(request.num_frames, Some(81));
-                assert_eq!(request.size, None);
-            }
-            other => panic!("hunyuan video edit routed to {other:?}"),
-        }
+    fn video_edit_routes_ltx25() {
         let params = json!({
             "family": "ltx25",
             "request": {

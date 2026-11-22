@@ -34,7 +34,15 @@ fn run() -> Result<(), String> {
     danmo_cli::apply_options(
         &mut request,
         &args,
-        &["size", "steps", "guidance", "shift", "seed", "num-frames", "fps"],
+        &[
+            "size",
+            "steps",
+            "guidance",
+            "shift",
+            "seed",
+            "num-frames",
+            "fps",
+        ],
     )?;
     let loras = danmo_cli::collect_loras(&host, &args)?;
     if !loras.is_empty() {

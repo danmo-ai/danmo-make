@@ -4,7 +4,7 @@
 //! final A/V mux. Numerical sampling stays in `denoise`, model topology stays
 //! in `transformer`/codec modules, and neutral geometry/encoding stays common.
 
-use super::config::{BundleConfig, Quantization};
+use super::config::BundleConfig;
 use crate::contract::{Artifact, EngineOutput, EngineRequest, ExecutionContext, ResolvedRun};
 use crate::error::EngineError;
 use crate::families::{FacadeFamily, FacadeSession};
@@ -68,7 +68,6 @@ struct Ltx25VideoCreateSession {
     run: ResolvedRun,
     prepared: Prepared,
     config: BundleConfig,
-    quantization: Option<Quantization>,
 }
 
 fn prepare_params(request: &VideoGenerationRequest) -> Result<Prepared, EngineError> {
@@ -385,23 +384,6 @@ mod prepare_tests {
     }
 }
 
-fn quantization(version: Option<&str>) -> Result<Option<Quantization>, EngineError> {
-    match version.unwrap_or("mlx-q4") {
-        "mlx-q4" => Ok(Some(Quantization {
-            bits: 4,
-            group_size: 64,
-        })),
-        "mlx-q8" => Ok(Some(Quantization {
-            bits: 8,
-            group_size: 64,
-        })),
-        "bf16" | "mlx-bf16" => Ok(None),
-        other => Err(EngineError::bad_request(format!(
-            "unsupported LTX 2.5 MLX version {other}"
-        ))),
-    }
-}
-
 impl FacadeFamily for Ltx25VideoCreateFamily {
     fn prepare(
         &self,
@@ -535,7 +517,6 @@ impl FacadeFamily for Ltx25VideoCreateFamily {
                 run: run.clone(),
                 prepared,
                 config,
-                quantization: quantization(run.version.as_deref())?,
             }))
         }
     }
@@ -554,13 +535,7 @@ impl FacadeSession for Ltx25VideoCreateSession {
         }
         #[cfg(feature = "mlx")]
         {
-            infer_mlx(
-                &self.run,
-                &self.prepared,
-                &self.config,
-                self.quantization,
-                exec,
-            )
+            infer_mlx(&self.run, &self.prepared, &self.config, exec)
         }
     }
 }
@@ -840,12 +815,21 @@ fn denoise_stage(
                 .map_err(mlx_error)?;
         }
         Array::eval_all(&[&video, &audio]).map_err(mlx_error)?;
-        let step = progress_offset + index as u32 + 1;
-        exec.progress("denoise", step, super::TOTAL_STEPS)?;
+        let stage = if progress_offset == 0 {
+            "stage1"
+        } else {
+            "stage2"
+        };
+        let stage_total = (sigmas.len().saturating_sub(1)) as u32;
+        let stage_step = index as u32 + 1;
+        let global_step = progress_offset + stage_step;
+        // Tip / SSE keep the global 1..=TOTAL_STEPS bar; events also name the
+        // distilled stage so Trace Tags can filter stage1 vs stage2.
+        exec.progress("denoise", global_step, super::TOTAL_STEPS)?;
         exec.log(
             "info",
             &format!(
-                "ltx25 denoise step {step}/{} sigma {sigma:.6} -> {next:.6}",
+                "ltx25 denoise {stage} {stage_step}/{stage_total} (global {global_step}/{}) sigma {sigma:.6} -> {next:.6}",
                 super::TOTAL_STEPS
             ),
         )?;
@@ -1026,7 +1010,6 @@ fn infer_mlx(
     run: &ResolvedRun,
     prepared: &Prepared,
     bundle_config: &BundleConfig,
-    quantization: Option<Quantization>,
     exec: &ExecutionContext,
 ) -> Result<EngineOutput, EngineError> {
     // Keep Arrays on the process MLX executor thread (no private Stream::gpu).
@@ -1041,7 +1024,6 @@ fn infer_mlx(
                 &run,
                 &prepared,
                 &bundle_config,
-                quantization,
                 &exec,
                 stream,
             ))
@@ -1054,7 +1036,6 @@ fn infer_mlx_on_stream(
     run: &ResolvedRun,
     prepared: &Prepared,
     bundle_config: &BundleConfig,
-    quantization: Option<Quantization>,
     exec: &ExecutionContext,
     stream: &danmo_mlx::Stream,
 ) -> Result<EngineOutput, EngineError> {
@@ -1070,10 +1051,12 @@ fn infer_mlx_on_stream(
     exec.check_cancelled()?;
 
     exec.phase("stage1")?;
+    // Packed affine bits/group size come from the bundle; the loader rejects a
+    // mismatch. Registry version keys are not re-mapped here.
     let mut model = super::transformer::Transformer::load(
         &run.bundle,
         &bundle_config.transformer,
-        quantization,
+        bundle_config.quantization,
     )?;
     exec.check_cancelled()?;
     let msr_path = if prepared.reference_images.is_empty() && prepared.reference_audios.is_empty() {
@@ -1709,15 +1692,5 @@ mod tests {
         invalid.num_frames = Some(497);
         invalid.fps = Some(24);
         assert!(prepare_params(&invalid).is_err());
-    }
-
-    #[test]
-    fn version_declares_quantization() {
-        assert_eq!(
-            quantization(Some("mlx-q4")).unwrap().unwrap().group_size,
-            64
-        );
-        assert_eq!(quantization(Some("mlx-q8")).unwrap().unwrap().bits, 8);
-        assert!(quantization(Some("q4-random")).is_err());
     }
 }

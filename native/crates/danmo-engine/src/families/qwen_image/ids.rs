@@ -66,10 +66,7 @@ pub fn position_ids_edit(
 /// Frame ids are the image index (`0` target, `1` the first reference).
 /// Text starts at `max(h/2, w/2)` over every grid. This is
 /// `QwenEmbedRopeMLX` with `scale_rope=True` and `video_fhw` a list.
-pub fn position_ids_frames(
-    grids: &[(i64, i64)],
-    seq_txt: i64,
-) -> Result<RopeIds, RuntimeError> {
+pub fn position_ids_frames(grids: &[(i64, i64)], seq_txt: i64) -> Result<RopeIds, RuntimeError> {
     if grids.is_empty() || seq_txt < 1 {
         return Err(RuntimeError::Message("qwen edit rope grid is empty".into()));
     }
@@ -82,9 +79,8 @@ pub fn position_ids_frames(
         start = start.max(*height / 2).max(*width / 2);
         tokens += height * width;
     }
-    let start = i32::try_from(start).map_err(|_| {
-        RuntimeError::Message("qwen edit rope text start does not fit".into())
-    })?;
+    let start = i32::try_from(start)
+        .map_err(|_| RuntimeError::Message("qwen edit rope text start does not fit".into()))?;
     let text = (0..seq_txt)
         .map(|j| {
             let id = start + j as i32;
@@ -95,9 +91,8 @@ pub fn position_ids_frames(
     for (frame, (height, width)) in grids.iter().enumerate() {
         let rows = spatial_axis(*height);
         let cols = spatial_axis(*width);
-        let frame = i32::try_from(frame).map_err(|_| {
-            RuntimeError::Message("qwen edit rope frame index does not fit".into())
-        })?;
+        let frame = i32::try_from(frame)
+            .map_err(|_| RuntimeError::Message("qwen edit rope frame index does not fit".into()))?;
         for row in 0..*height {
             for col in 0..*width {
                 image.push([frame, rows[row as usize], cols[col as usize]]);

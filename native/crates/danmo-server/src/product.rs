@@ -49,10 +49,12 @@ pub fn routes() -> Router<AppState> {
             get(get_task).patch(patch_task).delete(cancel_task),
         )
         .route("/api/tasks/:id/logs", get(task_logs))
+        .route("/api/tasks/:id/trace", get(task_trace))
         .route("/api/tasks/:id/graph", get(task_graph))
         .route("/api/tasks/:id/preview", get(task_preview))
+        .route("/api/tasks/:id/purge", post(purge_task))
         .route("/api/tasks/:id/diagnose", post(task_diagnose))
-        .route("/api/tasks/:id/diagnostic", get(task_graph))
+        .route("/api/tasks/:id/diagnostic", get(task_diagnostic))
         .route("/api/models", get(list_models))
         .route("/api/models/:id/install", post(install_model))
         .route(
@@ -71,7 +73,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/assets/groups", get(empty_items))
         .route("/api/assets/batch-delete", post(batch_delete_assets))
         .route("/api/assets/reconcile", post(reconcile_assets))
-        .route("/api/assets/:id", axum::routing::delete(delete_asset))
+        .route(
+            "/api/assets/:id",
+            axum::routing::delete(delete_asset).patch(patch_asset),
+        )
         .route("/api/assets/:id/file", get(asset_file))
         .route("/api/assets/:id/thumbnail", get(asset_thumbnail))
         .route("/api/assets/:id/lineage", get(asset_lineage))
@@ -358,6 +363,70 @@ pub async fn cancel_task(
     }
 }
 
+/// Permanently remove a finished task: DB row, logs, spans, and on-disk work
+/// dirs (training adapters/progress/loss, gen work/preview). Cancel queued
+/// or running tasks first so a live worker never writes into a deleted row.
+/// Registered user LoRAs (copied out of the task dir) are left alone.
+pub async fn purge_task(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let outcome = state
+        .scheduler
+        .purge(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    match outcome {
+        "ok" => {
+            let spans = match danmo_otel::purge_task_spans(&state.otel_db, &id) {
+                Ok(removed) => removed,
+                Err(danmo_otel::TraceSpanQueryError::Missing(_)) => 0,
+                Err(error) => {
+                    return Err(fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+                }
+            };
+            let removed_paths = purge_task_workdir(&state, &id);
+            Ok(Json(json!({
+                "ok": true,
+                "task_id": id,
+                "spans_removed": spans,
+                "removed_paths": removed_paths,
+            })))
+        }
+        "missing" => Err(fail(StatusCode::NOT_FOUND, "task not found")),
+        _ => Err(fail(
+            StatusCode::CONFLICT,
+            "cancel the task before deleting it",
+        )),
+    }
+}
+
+/// Drop known on-disk leftovers for a purged task. Missing paths are fine.
+fn purge_task_workdir(state: &AppState, id: &str) -> Vec<String> {
+    let mut removed = Vec::new();
+    let candidates = [
+        state.workspace.join("tasks").join(id),
+        state.outputs.join("work").join(id),
+        state.outputs.join("previews").join(format!("{id}.png")),
+    ];
+    for path in candidates {
+        if !path.exists() {
+            continue;
+        }
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        match result {
+            Ok(()) => removed.push(path.display().to_string()),
+            Err(error) => {
+                tracing::error!("purge {id}: failed to remove {}: {error}", path.display())
+            }
+        }
+    }
+    removed
+}
+
 async fn list_tasks(
     State(state): State<AppState>,
     Query(query): Query<ListQuery>,
@@ -447,54 +516,243 @@ async fn task_graph(
         .get(&id)
         .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
         .ok_or_else(|| fail(StatusCode::NOT_FOUND, "task not found"))?;
-    let phase = match row.status.as_str() {
-        "queued" => "resolve",
-        "running" => "infer",
-        "completed" => "persist",
-        _ => "persist",
+    Ok(Json(task_graph_json(&state, &row)?))
+}
+
+/// One task's inference trace. A task with no spans yet (queued, or a run from
+/// before tracing was enabled) is an empty list with a `reason`, never a
+/// fabricated chain.
+async fn task_trace(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let row = state
+        .scheduler
+        .get(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "task not found"))?;
+    Ok(Json(task_trace_json(&state, &row)?))
+}
+
+async fn task_diagnostic(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let row = state
+        .scheduler
+        .get(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "task not found"))?;
+    let graph = task_graph_json(&state, &row)?;
+    let trace = task_trace_json(&state, &row)?;
+    let failure = match row.status.as_str() {
+        "failed" | "cancelled" => json!({
+            "code": if row.status == "cancelled" { "cancelled" } else { "engine_error" },
+            "message": row.error_message.clone().unwrap_or_default(),
+            "span_name": failing_span(&trace),
+        }),
+        _ => Value::Null,
     };
-    let status_of = |name: &str| {
-        if row.status == "failed" {
-            "failed"
-        } else if row.status == "completed" || phase_rank(phase) > phase_rank(name) {
-            "ok"
-        } else if phase == name {
-            "running"
-        } else {
-            "pending"
-        }
-    };
-    let nodes = [
-        "resolve", "load", "encode", "schedule", "infer", "decode", "persist",
-    ]
-    .into_iter()
-    .map(|name| {
-        json!({
-            "id": name,
-            "label": name,
-            "status": status_of(name),
-        })
-    })
-    .collect::<Vec<_>>();
     Ok(Json(json!({
-        "graph_id": id,
-        "nodes": nodes,
-        "active_node": if row.status == "running" { Some(phase) } else { None },
-        "progress": row.progress,
+        "task_id": row.id,
+        "status": row.status,
+        "kind": row.kind,
+        "model_id": row.model_id,
+        "failure": failure,
+        "graph": graph,
+        "trace": trace,
     })))
 }
 
-fn phase_rank(name: &str) -> i32 {
-    match name {
-        "resolve" => 0,
-        "load" => 1,
-        "encode" => 2,
-        "schedule" => 3,
-        "infer" => 4,
-        "decode" => 5,
-        "persist" => 6,
-        _ => 0,
+fn task_graph_json(state: &AppState, row: &TaskRow) -> Result<Value, ApiError> {
+    let spans = load_spans(state, &row.id)?;
+    Ok(graph_from_spans(
+        row,
+        &spans,
+        state.scheduler.progress_tip(&row.id),
+    ))
+}
+
+fn task_trace_json(state: &AppState, row: &TaskRow) -> Result<Value, ApiError> {
+    let spans = load_spans(state, &row.id)?;
+    let reason = if !spans.is_empty() {
+        Value::Null
+    } else if let Some(error) = state.telemetry_error.as_deref() {
+        json!(error)
+    } else if row.status == "queued" {
+        json!("task has not started; no spans yet")
+    } else {
+        json!("no spans recorded for this task")
+    };
+    let step_progress = step_progress_json(
+        state.scheduler.progress_tip(&row.id),
+        progress_from_spans(&spans),
+    );
+    Ok(json!({
+        "task_id": row.id,
+        "status": row.status,
+        // Same identity as task.id (UUID octets); kept for OTel tooling.
+        "trace_id": spans
+            .first()
+            .map(|span| span.trace_id.clone())
+            .unwrap_or_else(|| danmo_otel::trace_id_hex_for_task(&row.id)),
+        "spans": spans,
+        "reason": reason,
+        "db": state.otel_db.display().to_string(),
+        "step_progress": step_progress,
+        "progress": row.progress,
+    }))
+}
+
+fn load_spans(state: &AppState, task_id: &str) -> Result<Vec<danmo_otel::TraceSpan>, ApiError> {
+    if state.telemetry.is_none() {
+        // Tracing was never initialized in this process; an empty trace is
+        // accurate, and `/api/system/health` carries the reason.
+        return Ok(Vec::new());
     }
+    match danmo_otel::spans_for_task(&state.otel_db, task_id) {
+        Ok(spans) => Ok(spans),
+        Err(danmo_otel::TraceSpanQueryError::Missing(_)) => Ok(Vec::new()),
+        Err(error) => Err(fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())),
+    }
+}
+
+fn failing_span(trace: &Value) -> Value {
+    trace
+        .get("spans")
+        .and_then(Value::as_array)
+        .and_then(|spans| {
+            spans
+                .iter()
+                .filter(|span| span.get("status").and_then(Value::as_str) == Some("error"))
+                .max_by(|left, right| {
+                    let key = |value: &Value| {
+                        value
+                            .get("duration_ms")
+                            .and_then(Value::as_f64)
+                            .unwrap_or(0.0)
+                    };
+                    key(left).total_cmp(&key(right))
+                })
+                .and_then(|span| span.get("name").cloned())
+        })
+        .unwrap_or(Value::Null)
+}
+
+/// Pipeline strip derived only from exported `phase.*` spans. Missing phases
+/// are omitted (no heuristic filler). Live denoise `N/M` comes from the
+/// scheduler tip while the task runs, else the latest `progress` span event.
+fn graph_from_spans(
+    row: &TaskRow,
+    spans: &[danmo_otel::TraceSpan],
+    live_tip: Option<danmo_schedule::ProgressTip>,
+) -> Value {
+    let open_phase = if row.status == "running" {
+        last_phase_name(spans)
+    } else {
+        None
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut nodes = Vec::new();
+    for span in spans
+        .iter()
+        .filter(|span| span.name.starts_with(danmo_otel::PHASE_SPAN_PREFIX))
+    {
+        let name = &span.name[danmo_otel::PHASE_SPAN_PREFIX.len()..];
+        if !seen.insert(name.to_string()) {
+            continue;
+        }
+        let status = if span.status == "error" {
+            "failed"
+        } else if open_phase.as_deref() == Some(name) {
+            "running"
+        } else if span.status == "unset" && row.status == "running" {
+            "running"
+        } else {
+            "ok"
+        };
+        nodes.push(json!({
+            "id": name,
+            "label": name,
+            "status": status,
+            "duration_ms": span.duration_ms,
+        }));
+    }
+    let step_progress = step_progress_json(live_tip, progress_from_spans(spans));
+    json!({
+        "graph_id": row.id,
+        "source": "otel",
+        "nodes": nodes,
+        "active_node": open_phase,
+        "progress": row.progress,
+        "step_progress": step_progress,
+        "trace_id": root_span(spans).map(|span| span.trace_id.clone()),
+        "duration_ms": root_span(spans).map(|span| span.duration_ms),
+    })
+}
+
+fn root_span(spans: &[danmo_otel::TraceSpan]) -> Option<&danmo_otel::TraceSpan> {
+    spans.iter().find(|span| span.name == danmo_otel::ROOT_SPAN)
+}
+
+/// Name (without the `phase.` prefix) of the most recently started phase span.
+fn last_phase_name(spans: &[danmo_otel::TraceSpan]) -> Option<String> {
+    spans
+        .iter()
+        .filter(|span| span.name.starts_with(danmo_otel::PHASE_SPAN_PREFIX))
+        .max_by_key(|span| span.start_unix_nanos)
+        .map(|span| span.name[danmo_otel::PHASE_SPAN_PREFIX.len()..].to_string())
+}
+
+fn progress_from_spans(spans: &[danmo_otel::TraceSpan]) -> Option<danmo_schedule::ProgressTip> {
+    let mut best: Option<(i64, danmo_schedule::ProgressTip)> = None;
+    for span in spans {
+        let Some(events) = span.events.as_array() else {
+            continue;
+        };
+        for event in events {
+            if event.get("name").and_then(Value::as_str) != Some("progress") {
+                continue;
+            }
+            let attrs = event.get("attributes").unwrap_or(&Value::Null);
+            let phase = attrs
+                .get("phase")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let step = attrs
+                .get("progress.step")
+                .and_then(Value::as_i64)
+                .unwrap_or(0) as u32;
+            let total = attrs
+                .get("progress.total")
+                .and_then(Value::as_i64)
+                .unwrap_or(0) as u32;
+            let time = event
+                .get("time_unix_nanos")
+                .and_then(Value::as_i64)
+                .unwrap_or(span.start_unix_nanos);
+            let tip = danmo_schedule::ProgressTip { phase, step, total };
+            if best.as_ref().map(|(t, _)| *t).unwrap_or(i64::MIN) <= time {
+                best = Some((time, tip));
+            }
+        }
+    }
+    best.map(|(_, tip)| tip)
+}
+
+fn step_progress_json(
+    live: Option<danmo_schedule::ProgressTip>,
+    from_spans: Option<danmo_schedule::ProgressTip>,
+) -> Value {
+    let Some(tip) = live.or(from_spans) else {
+        return Value::Null;
+    };
+    json!({
+        "phase": tip.phase,
+        "step": tip.step,
+        "total": tip.total,
+    })
 }
 
 async fn task_preview(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -505,10 +763,12 @@ async fn task_preview(State(state): State<AppState>, Path(id): Path<String>) -> 
     }
 }
 
+/// `POST /api/tasks/:id/diagnose` is the assistant-graph entry point and is
+/// still not built; the real evidence lives in `GET .../diagnostic`.
 async fn task_diagnose(Path(id): Path<String>) -> Json<Value> {
     Json(json!({
         "task_id": id,
-        "summary": "assistant graph is not built",
+        "summary": "assistant graph is not built; use GET /api/tasks/{id}/diagnostic",
     }))
 }
 
@@ -771,37 +1031,59 @@ fn enqueue_install(state: &AppState, model_id: &str, version: &str) -> Result<St
         .pointer(&format!("/models/{model_id}/catalog/source"))
         .and_then(|value| value.as_str())
         .map(str::to_string);
-    let mut spec = catalog
-        .root()
-        .pointer(&format!(
-            "/models/{model_id}/distribution/versions/{version}"
-        ))
-        .cloned()
-        .ok_or_else(|| {
-            fail(
-                StatusCode::BAD_REQUEST,
-                format!("{model_id} has no {version} package"),
-            )
-        })?;
-    crate::download::fill_missing_download_source(&mut spec, catalog_source.as_deref());
-    if spec.get("source_type").and_then(|value| value.as_str()) == Some("derived") {
-        return Err(fail(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "{model_id}:{version} is a removed local-derive quant; install a prequantized download (e.g. mlx-q4 / mlx-q8) from the model library"
-            ),
-        ));
-    }
-    if !version_is_download(&spec) {
-        return Err(fail(
-            StatusCode::BAD_REQUEST,
-            format!("{model_id}:{version} has no published download"),
-        ));
-    }
+    let spec = install_spec(catalog.root(), model_id, version, catalog_source.as_deref())
+        .map_err(|detail| fail(StatusCode::BAD_REQUEST, detail))?;
     state
         .downloads
         .install_model(model_id, version, &spec)
         .map_err(|err| fail(StatusCode::BAD_REQUEST, err))
+}
+
+/// Resolve one installable version. A `kind: derived` version names its dense
+/// base; the base is inlined under `base` so the download worker never needs
+/// the registry again. Only one level of derivation is allowed.
+fn install_spec(
+    root: &Value,
+    model_id: &str,
+    version: &str,
+    catalog_source: Option<&str>,
+) -> Result<Value, String> {
+    let mut spec = root
+        .pointer(&format!(
+            "/models/{model_id}/distribution/versions/{version}"
+        ))
+        .cloned()
+        .ok_or_else(|| format!("{model_id} has no {version} package"))?;
+    crate::download::fill_missing_download_source(&mut spec, catalog_source);
+    let Some(base_key) = spec
+        .get("base")
+        .and_then(|value| value.as_str())
+        .filter(|key| !key.is_empty())
+        .map(str::to_string)
+    else {
+        if !version_is_download(&spec) {
+            return Err(format!("{model_id}:{version} has no published download"));
+        }
+        return Ok(spec);
+    };
+    let mut base = root
+        .pointer(&format!(
+            "/models/{model_id}/distribution/versions/{base_key}"
+        ))
+        .cloned()
+        .ok_or_else(|| format!("{model_id}:{version} derives from missing base {base_key}"))?;
+    crate::download::fill_missing_download_source(&mut spec, catalog_source);
+    crate::download::fill_missing_download_source(&mut base, catalog_source);
+    if base.get("base").is_some() {
+        return Err(format!(
+            "{model_id}:{base_key} is itself derived; only one level is allowed"
+        ));
+    }
+    if !version_is_download(&base) {
+        return Err(format!("{model_id}:{base_key} has no published download"));
+    }
+    spec["base"] = base;
+    Ok(spec)
 }
 
 fn version_is_download(version: &Value) -> bool {
@@ -830,10 +1112,7 @@ fn default_version(root: &Value, model_id: &str) -> Option<String> {
         .as_object()?;
     let mut fallback = None;
     for (key, version) in versions {
-        if version.get("source_type").and_then(|value| value.as_str()) == Some("derived") {
-            continue;
-        }
-        if !version_is_download(version) {
+        if !version_is_download(version) && version.get("base").is_none() {
             continue;
         }
         if version
@@ -1801,6 +2080,62 @@ async fn upload_asset(
     Ok(Json(asset_json(&stored)))
 }
 
+async fn patch_asset(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let row = state
+        .scheduler
+        .get_asset(&id)
+        .map_err(|error| fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "asset not found"))?;
+    let mut metadata: Value = serde_json::from_str(&row.metadata).unwrap_or_else(|_| json!({}));
+    let target = metadata.as_object_mut().ok_or_else(|| {
+        fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "asset metadata is not an object",
+        )
+    })?;
+    for key in [
+        "title",
+        "lyrics_effective",
+        "lyrics_input",
+        "lyrics_segments",
+        "lyrics_alignment",
+        "engine_lyrics_segments",
+        "engine_lyrics_alignment",
+    ] {
+        if let Some(value) = body.get(key) {
+            target.insert(key.into(), value.clone());
+        }
+    }
+    if let Some(lrc) = body.get("lrc").and_then(Value::as_str) {
+        let asset_dir = state.outputs.join("assets");
+        std::fs::create_dir_all(&asset_dir)
+            .map_err(|error| fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        let path = asset_dir.join(format!("{id}.lrc"));
+        let temporary = asset_dir.join(format!("{id}.lrc.tmp-{}", std::process::id()));
+        std::fs::write(&temporary, lrc)
+            .and_then(|()| std::fs::rename(&temporary, &path))
+            .map_err(|error| fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    }
+    let encoded = metadata.to_string();
+    let updated = state
+        .scheduler
+        .update_asset_metadata(&id, &encoded)
+        .map_err(|error| fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    if !updated {
+        return Err(fail(StatusCode::NOT_FOUND, "asset not found"));
+    }
+    let stored = state
+        .scheduler
+        .get_asset(&id)
+        .map_err(|error| fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "asset not found"))?;
+    Ok(Json(asset_json(&stored)))
+}
+
 async fn delete_asset(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -2157,7 +2492,6 @@ async fn list_canvas(
     Ok(Json(json!({ "items": items })))
 }
 
-
 fn is_named_default_canvas_title(title: &str) -> bool {
     let t = title.trim().to_ascii_lowercase();
     // Include legacy media-specific defaults created before titles were unified.
@@ -2220,9 +2554,7 @@ async fn adopt_canvas_orphans(
         .iter()
         .find(|r| is_named_default_canvas_title(&r.title))
         .map(|r| r.id.clone());
-    let default_id = named_default
-        .clone()
-        .unwrap_or_else(|| rows[0].id.clone());
+    let default_id = named_default.clone().unwrap_or_else(|| rows[0].id.clone());
 
     // Parse every session state once.
     let mut states: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
@@ -2312,9 +2644,8 @@ async fn adopt_canvas_orphans(
         };
         let mut present: std::collections::HashSet<String> = std::collections::HashSet::new();
         collect_claimed_asset_ids(target_state, &mut present);
-        let mut path_set: std::collections::HashSet<String> = canvas_shelf_paths(target_state)
-            .into_iter()
-            .collect();
+        let mut path_set: std::collections::HashSet<String> =
+            canvas_shelf_paths(target_state).into_iter().collect();
         if let Some(items) = canvas_items_map(target_state) {
             for key in items.keys() {
                 path_set.insert(key.clone());
@@ -2353,9 +2684,8 @@ async fn adopt_canvas_orphans(
     let default_was_empty = canvas_membership_count(&default_state) == 0;
     let mut present: std::collections::HashSet<String> = std::collections::HashSet::new();
     collect_claimed_asset_ids(&default_state, &mut present);
-    let mut path_set: std::collections::HashSet<String> = canvas_shelf_paths(&default_state)
-        .into_iter()
-        .collect();
+    let mut path_set: std::collections::HashSet<String> =
+        canvas_shelf_paths(&default_state).into_iter().collect();
     if let Some(items) = canvas_items_map(&default_state) {
         for key in items.keys() {
             path_set.insert(key.clone());
@@ -3453,8 +3783,11 @@ async fn submit_training(
     let wid = task_id.clone();
     let wdir = work_dir.clone();
     let workspace = state.workspace.clone();
+    let telemetry = state.telemetry.clone();
     tokio::task::spawn_blocking(move || {
-        run_training_job(&scheduler, &wid, &wdir, &workspace, &family, &req, &bundle);
+        run_training_job(
+            &scheduler, &wid, &wdir, &workspace, &family, &req, &bundle, telemetry,
+        );
     });
 
     Ok((
@@ -3537,7 +3870,7 @@ async fn training_artifacts(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let (_row, result) = training_task_result(&state, &id)?;
+    let (row, result) = training_task_result(&state, &id)?;
     let work_dir = state.workspace.join("tasks").join(&id);
     let mut checkpoints: Vec<String> = result
         .get("checkpoints")
@@ -3549,6 +3882,36 @@ async fn training_artifacts(
     if checkpoints.is_empty() {
         if let Some(path) = result.get("adapter_path").and_then(|v| v.as_str()) {
             checkpoints.push(checkpoint_basename(path));
+        }
+    }
+    // Mid-run: result is empty until finish — also scan adapters/ on disk.
+    let adapters_dir = work_dir.join("adapters");
+    if adapters_dir.is_dir() {
+        let mut on_disk = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&adapters_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let name = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let lower = name.to_ascii_lowercase();
+                if lower.ends_with(".safetensors")
+                    && (lower.starts_with("checkpoint-") || lower.starts_with("final_"))
+                {
+                    on_disk.push(name);
+                }
+            }
+        }
+        on_disk.sort();
+        for name in on_disk {
+            if !checkpoints.iter().any(|c| c == &name) {
+                checkpoints.push(name);
+            }
         }
     }
     let progress_dir = work_dir.join("progress");
@@ -3581,11 +3944,26 @@ async fn training_artifacts(
         names.sort();
         progress_images = names;
     }
+    // Prefer incremental jsonl while running; fall back to finished result.
+    let mut loss_history = read_loss_history_jsonl(&work_dir.join("loss_history.jsonl"));
+    if loss_history.is_empty() {
+        loss_history = result
+            .get("loss_history")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+    }
+    let inference = result.get("inference").cloned().unwrap_or_else(|| {
+        serde_json::from_str::<Value>(&row.params)
+            .ok()
+            .and_then(|p| p.get("preset").and_then(|pr| pr.get("inference").cloned()))
+            .unwrap_or(Value::Null)
+    });
     Ok(Json(json!({
-        "loss_history": result.get("loss_history").cloned().unwrap_or_else(|| json!([])),
+        "loss_history": loss_history,
         "checkpoints": checkpoints,
         "progress_images": progress_images,
-        "inference": result.get("inference").cloned().unwrap_or(Value::Null),
+        "inference": inference,
         "adapter_path": result.get("adapter_path").cloned().unwrap_or(Value::Null),
         "output_name": result.get("output_name").cloned().unwrap_or(Value::Null),
         "user_lora_id": result.get("user_lora_id").cloned().unwrap_or_else(|| json!("")),
@@ -3594,7 +3972,18 @@ async fn training_artifacts(
             .cloned()
             .unwrap_or(Value::Bool(false)),
         "vision_available": false,
+        "status": row.status,
     })))
+}
+
+fn read_loss_history_jsonl(path: &FsPath) -> Vec<Value> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect()
 }
 
 async fn training_artifact_file(
@@ -3860,24 +4249,29 @@ fn ensure_companion_lora_installed(state: &AppState, id: &str) -> Result<(), Api
 /// keeps F32 LoRA factors on the frozen checkpoint; a packed affine base
 /// would silently train against dequantized-rounded constants, so it fails
 /// here instead. `id:version` pins the tier; a bare id prefers bf16/fp16/fp32.
-fn resolve_training_bundle(
-    state: &AppState,
-    base_model: &str,
-) -> Result<PathBuf, ApiError> {
+fn resolve_training_bundle(state: &AppState, base_model: &str) -> Result<PathBuf, ApiError> {
     let (bare, pinned) = match base_model.split_once(':') {
-        Some((bare, version)) if !bare.is_empty() && !version.is_empty() => {
-            (bare, Some(version))
-        }
+        Some((bare, version)) if !bare.is_empty() && !version.is_empty() => (bare, Some(version)),
         _ => (base_model, None),
     };
     let registry: Value = std::fs::read_to_string(&state.registry)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
-        .ok_or_else(|| fail(StatusCode::INTERNAL_SERVER_ERROR, "registry is not readable"))?;
+        .ok_or_else(|| {
+            fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "registry is not readable",
+            )
+        })?;
     let versions = registry
         .pointer(&format!("/models/{bare}/distribution/versions"))
         .and_then(Value::as_object)
-        .ok_or_else(|| fail(StatusCode::BAD_REQUEST, format!("unknown base model {bare:?}")))?;
+        .ok_or_else(|| {
+            fail(
+                StatusCode::BAD_REQUEST,
+                format!("unknown base model {bare:?}"),
+            )
+        })?;
     let quantized = |key: &str| key.starts_with("mlx-q") || key.starts_with("int");
     let installed = |spec: &Value| {
         spec.get("local_path")
@@ -3885,13 +4279,20 @@ fn resolve_training_bundle(
             .is_some_and(|path| !path.is_empty())
     };
     let resolve = |version: &str| -> Result<PathBuf, ApiError> {
-        danmo_resolve::resolve_bundle(&state.workspace, &state.registry, &format!("{bare}:{version}"))
-            .map_err(|e| fail(StatusCode::BAD_REQUEST, e))
+        danmo_resolve::resolve_bundle(
+            &state.workspace,
+            &state.registry,
+            &format!("{bare}:{version}"),
+        )
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e))
     };
     if let Some(version) = pinned {
-        let spec = versions
-            .get(version)
-            .ok_or_else(|| fail(StatusCode::BAD_REQUEST, format!("{base_model:?} is not in the registry")))?;
+        let spec = versions.get(version).ok_or_else(|| {
+            fail(
+                StatusCode::BAD_REQUEST,
+                format!("{base_model:?} is not in the registry"),
+            )
+        })?;
         if !installed(spec) {
             return Err(fail(
                 StatusCode::BAD_REQUEST,
@@ -3909,10 +4310,7 @@ fn resolve_training_bundle(
         return resolve(version);
     }
     for preferred in ["bf16", "fp16", "fp32"] {
-        if versions
-            .get(preferred)
-            .is_some_and(|spec| installed(spec))
-        {
+        if versions.get(preferred).is_some_and(|spec| installed(spec)) {
             return resolve(preferred);
         }
     }
@@ -3938,8 +4336,27 @@ fn run_training_job(
     family: &str,
     request: &danmo_contracts::LoraTrainingRequest,
     bundle: &FsPath,
+    telemetry: Option<danmo_otel::Telemetry>,
 ) {
     let _ = scheduler.log(task_id, "info", "Rust MLX LoRA training started");
+    let trace = telemetry.as_ref().map(|telemetry| {
+        std::sync::Arc::new(telemetry.start_task(
+            task_id,
+            vec![
+                danmo_otel::attribute("task.id", task_id),
+                danmo_otel::attribute("task.kind", "lora.training"),
+                danmo_otel::attribute("gen_ai.request.model", request.base_model.as_str()),
+                danmo_otel::attribute("danmo.family", family),
+                danmo_otel::attribute("danmo.action", "lora.train"),
+                danmo_otel::attribute("danmo.train.preset", request.preset.as_str()),
+                danmo_otel::attribute("danmo.train.dataset_id", request.dataset_id.as_str()),
+            ],
+        ))
+    });
+    if let Some(trace) = trace.as_ref() {
+        trace.phase("prepare");
+        trace.log_event("info", "Rust MLX LoRA training started");
+    }
     #[cfg(feature = "mlx")]
     {
         use danmo_engine::run_family_lora_training;
@@ -3954,33 +4371,63 @@ fn run_training_job(
             let resume_adapter = resolve_resume_adapter(scheduler, workspace, request)?;
             let sched = scheduler.clone();
             let tid = task_id.to_string();
+            let train_trace = trace.clone();
             // Per-step losses are noisy (fresh image/sigma/noise each step);
             // log a 25-step moving average so multi-hour runs stay readable.
             let window = std::cell::RefCell::new(Vec::<f32>::with_capacity(25));
-            let progress: danmo_engine::train::TrainProgress =
-                Box::new(move |event| match event {
-                    TrainEvent::Phase(message) => {
-                        let _ = sched.log(&tid, "info", &message);
+            let progress: danmo_engine::train::TrainProgress = Box::new(move |event| match event {
+                TrainEvent::Phase(message) => {
+                    let _ = sched.log(&tid, "info", &message);
+                    if let Some(trace) = train_trace.as_ref() {
+                        if let Some(phase) = train_phase_from_message(&message) {
+                            if trace.current_phase().as_deref() != Some(phase) {
+                                trace.phase(phase);
+                            }
+                        }
+                        trace.log_event("info", &message);
                     }
-                    TrainEvent::Step { step, total, loss } => {
-                        let _ = sched.set_progress(&tid, step as f64 / total.max(1) as f64);
-                        let mut window = window.borrow_mut();
-                        window.push(loss);
-                        if step == 1 || step == total || step % 25 == 0 {
-                            let avg =
-                                window.iter().sum::<f32>() / window.len().max(1) as f32;
-                            window.clear();
-                            let _ = sched.log(
-                                &tid,
-                                "info",
-                                &format!("step {step}/{total} loss {loss:.4} (avg {avg:.4})"),
-                            );
+                }
+                TrainEvent::Step { step, total, loss } => {
+                    let fraction = step as f64 / total.max(1) as f64;
+                    let _ = sched.set_progress_tip(&tid, fraction, "train", step, total);
+                    if let Some(trace) = train_trace.as_ref() {
+                        if trace.current_phase().as_deref() != Some("train") {
+                            trace.phase("train");
+                        }
+                        trace.progress_with(
+                            "train",
+                            step,
+                            total,
+                            vec![danmo_otel::attribute("train.loss", format!("{loss:.6}"))],
+                        );
+                    }
+                    let mut window = window.borrow_mut();
+                    window.push(loss);
+                    if step == 1 || step == total || step % 25 == 0 {
+                        let avg = window.iter().sum::<f32>() / window.len().max(1) as f32;
+                        window.clear();
+                        let line = format!("step {step}/{total} loss {loss:.4} (avg {avg:.4})");
+                        let _ = sched.log(&tid, "info", &line);
+                        if let Some(trace) = train_trace.as_ref() {
+                            trace.log_event("info", &line);
                         }
                     }
-                    TrainEvent::Checkpoint(path) => {
-                        let _ = sched.log(&tid, "success", &format!("checkpoint written to {path}"));
+                }
+                TrainEvent::Checkpoint(path) => {
+                    let line = format!("checkpoint written to {path}");
+                    let _ = sched.log(&tid, "success", &line);
+                    if let Some(trace) = train_trace.as_ref() {
+                        if trace.current_phase().as_deref() != Some("export") {
+                            trace.phase("export");
+                        }
+                        trace.log_event("info", &line);
+                        trace.add_event(
+                            "checkpoint",
+                            vec![danmo_otel::attribute("checkpoint.path", path)],
+                        );
                     }
-                });
+                }
+            });
             run_family_lora_training(
                 family,
                 request,
@@ -4000,18 +4447,62 @@ fn run_training_job(
                     "success",
                     &format!("adapter written to {}", out.adapter_path),
                 );
+                if let Some(trace) = trace.as_ref() {
+                    if trace.current_phase().as_deref() != Some("export") {
+                        trace.phase("export");
+                    }
+                    trace.log_event("info", &format!("adapter written to {}", out.adapter_path));
+                    trace.finish();
+                }
+                if let Some(telemetry) = telemetry.as_ref() {
+                    if let Err(error) = telemetry.flush() {
+                        eprintln!("[otel] {error}");
+                    }
+                }
                 let _ = scheduler.finish_ok(task_id, &result);
             }
             Err(e) => {
                 let _ = scheduler.log(task_id, "error", &e);
+                if let Some(trace) = trace.as_ref() {
+                    trace.fail(&e);
+                    trace.finish();
+                }
+                if let Some(telemetry) = telemetry.as_ref() {
+                    if let Err(error) = telemetry.flush() {
+                        eprintln!("[otel] {error}");
+                    }
+                }
                 let _ = scheduler.finish_err(task_id, &e);
             }
         }
     }
     #[cfg(not(feature = "mlx"))]
     {
-        let _ = (work_dir, workspace, family, request, bundle);
+        let _ = (
+            work_dir, workspace, family, request, bundle, trace, telemetry,
+        );
         let _ = scheduler.finish_err(task_id, "MLX feature not enabled");
+    }
+}
+
+fn train_phase_from_message(message: &str) -> Option<&'static str> {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("export") || lower.contains("adapter") || lower.contains("checkpoint") {
+        Some("export")
+    } else if lower.contains("encode") || lower.contains("cache") || lower.contains("vae") {
+        Some("encode")
+    } else if lower.contains("load") || lower.contains("bundle") || lower.contains("weight") {
+        Some("load")
+    } else if lower.contains("preprocess")
+        || lower.contains("face")
+        || lower.contains("dataset")
+        || lower.contains("sample")
+    {
+        Some("prepare")
+    } else if lower.contains("train") || lower.contains("optim") || lower.contains("adam") {
+        Some("train")
+    } else {
+        None
     }
 }
 
@@ -4779,5 +5270,232 @@ mod asset_path_tests {
             absolute.to_str().unwrap(),
         );
         assert_eq!(resolved, absolute);
+    }
+}
+
+#[cfg(test)]
+mod task_trace_graph_tests {
+    use super::{graph_from_spans, TaskRow};
+    use serde_json::json;
+
+    fn span_row(name: &str, start: i64, duration_ms: f64, status: &str) -> danmo_otel::TraceSpan {
+        danmo_otel::TraceSpan {
+            span_id: format!("span-{name}"),
+            trace_id: "trace".into(),
+            parent_span_id: Some("0000000000000000".into()),
+            task_id: "tsk_graph".into(),
+            name: name.into(),
+            start_unix_nanos: start,
+            end_unix_nanos: start + (duration_ms * 1_000_000.0) as i64,
+            start_ms: start as f64 / 1_000_000.0,
+            duration_ms,
+            status: status.into(),
+            status_message: None,
+            attributes: json!({ "task.id": "tsk_graph" }),
+            events: json!([]),
+        }
+    }
+
+    fn task_row_with_status(status: &str) -> TaskRow {
+        TaskRow {
+            id: "tsk_graph".into(),
+            kind: "image.generation".into(),
+            model_id: "z-image-turbo".into(),
+            status: status.into(),
+            priority: 100,
+            progress: 0.5,
+            params: "{}".into(),
+            result: None,
+            error_message: None,
+            created_at: "2026-01-01 00:00:00".into(),
+            started_at: None,
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn graph_uses_measured_phase_durations_when_spans_exist() {
+        let spans = vec![
+            span_row("engine.execute", 0, 1000.0, "ok"),
+            span_row("phase.load", 10_000_000, 400.0, "ok"),
+            span_row("phase.infer", 500_000_000, 500.0, "ok"),
+        ];
+        let graph = graph_from_spans(&task_row_with_status("completed"), &spans, None);
+        assert_eq!(graph["source"], "otel");
+        assert_eq!(graph["duration_ms"], 1000.0);
+        let nodes = graph["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2, "{nodes:?}");
+        let load = nodes.iter().find(|node| node["id"] == "load").unwrap();
+        assert_eq!(load["duration_ms"], 400.0);
+        assert_eq!(load["status"], "ok");
+        assert!(nodes.iter().all(|node| node["id"] != "encode"), "{nodes:?}");
+        // No phase opened: nothing is marked running for a finished task.
+        assert!(graph["active_node"].is_null(), "{graph}");
+    }
+
+    #[test]
+    fn graph_marks_the_last_phase_running_while_task_runs() {
+        let spans = vec![
+            span_row("engine.execute", 0, 10.0, "unset"),
+            span_row("phase.load", 10_000_000, 5.0, "ok"),
+            span_row("phase.infer", 20_000_000, 30.0, "unset"),
+        ];
+        let graph = graph_from_spans(&task_row_with_status("running"), &spans, None);
+        assert_eq!(graph["active_node"], "infer", "{graph}");
+        let nodes = graph["nodes"].as_array().unwrap();
+        let infer = nodes.iter().find(|node| node["id"] == "infer").unwrap();
+        assert_eq!(infer["status"], "running");
+    }
+
+    #[test]
+    fn failed_phase_is_reported_as_failed() {
+        let spans = vec![
+            span_row("engine.execute", 0, 10.0, "error"),
+            span_row("phase.decode", 10_000_000, 8.0, "error"),
+        ];
+        let graph = graph_from_spans(&task_row_with_status("failed"), &spans, None);
+        let nodes = graph["nodes"].as_array().unwrap();
+        let decode = nodes.iter().find(|node| node["id"] == "decode").unwrap();
+        assert_eq!(decode["status"], "failed");
+        assert!(graph["active_node"].is_null());
+    }
+
+    #[test]
+    fn empty_spans_yield_empty_otel_graph_without_heuristic() {
+        let graph = graph_from_spans(&task_row_with_status("running"), &[], None);
+        assert_eq!(graph["source"], "otel");
+        assert_eq!(graph["nodes"].as_array().unwrap().len(), 0);
+        assert!(graph["step_progress"].is_null());
+    }
+
+    #[test]
+    fn live_tip_wins_over_span_progress_events() {
+        let mut spans = vec![span_row("engine.execute", 0, 10.0, "unset")];
+        spans[0].events = json!([{
+            "name": "progress",
+            "time_unix_nanos": 5,
+            "attributes": {
+                "phase": "denoise",
+                "progress.step": 2,
+                "progress.total": 6
+            }
+        }]);
+        let tip = danmo_schedule::ProgressTip {
+            phase: "denoise".into(),
+            step: 5,
+            total: 6,
+        };
+        let graph = graph_from_spans(&task_row_with_status("running"), &spans, Some(tip));
+        assert_eq!(graph["step_progress"]["step"], 5);
+        assert_eq!(graph["step_progress"]["total"], 6);
+    }
+}
+
+#[cfg(test)]
+mod derived_install_tests {
+    use super::install_spec;
+    use serde_json::{json, Value};
+
+    fn registry() -> Value {
+        json!({
+            "models": {
+                "z-image-turbo": {
+                    "catalog": { "source": "modelscope" },
+                    "distribution": {
+                        "versions": {
+                            "fp16": {
+                                "kind": "dense",
+                                "repo_id": "Tongyi-MAI/Z-Image-Turbo",
+                                "local_path": "models/Image/z-image-turbo-fp16"
+                            },
+                            "q4-mixed": {
+                                "kind": "derived",
+                                "source_type": "derived",
+                                "base": "fp16",
+                                "recipe": "z-image-q4-mixed-v1",
+                                "local_path": "models/Image/z-image-turbo-fp16-q4-mixed"
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn derived_version_inlines_its_dense_base() {
+        let root = registry();
+        let spec = install_spec(&root, "z-image-turbo", "q4-mixed", Some("modelscope")).unwrap();
+        assert_eq!(spec["kind"], "derived");
+        assert_eq!(spec["recipe"], "z-image-q4-mixed-v1");
+        assert_eq!(spec["base"]["kind"], "dense");
+        assert_eq!(
+            spec["base"]["repo_id"], "Tongyi-MAI/Z-Image-Turbo",
+            "the worker needs the dense download without the registry"
+        );
+        assert_eq!(
+            spec["base"]["local_path"],
+            "models/Image/z-image-turbo-fp16"
+        );
+        // The catalog-level source is filled into both records.
+        assert_eq!(spec["source"], "modelscope");
+        assert_eq!(spec["base"]["source"], "modelscope");
+    }
+
+    #[test]
+    fn dense_version_passes_through_unchanged() {
+        let root = registry();
+        let spec = install_spec(&root, "z-image-turbo", "fp16", Some("modelscope")).unwrap();
+        assert_eq!(spec["kind"], "dense");
+        assert!(spec.get("base").is_none());
+        assert_eq!(spec["source"], "modelscope");
+    }
+
+    #[test]
+    fn missing_base_fails_loud() {
+        let mut root = registry();
+        root["models"]["z-image-turbo"]["distribution"]["versions"]["q4-mixed"]["base"] =
+            json!("nope");
+        let error = install_spec(&root, "z-image-turbo", "q4-mixed", None).unwrap_err();
+        assert!(error.contains("missing base nope"), "{error}");
+    }
+
+    #[test]
+    fn nested_derivation_is_rejected() {
+        let mut root = registry();
+        root["models"]["z-image-turbo"]["distribution"]["versions"]["q4-mixed"]["base"] =
+            json!("q4-mixed");
+        let error = install_spec(&root, "z-image-turbo", "q4-mixed", None).unwrap_err();
+        assert!(error.contains("itself derived"), "{error}");
+    }
+
+    #[test]
+    fn base_without_a_download_fails_loud() {
+        let mut root = registry();
+        root["models"]["z-image-turbo"]["distribution"]["versions"]["fp16"]
+            .as_object_mut()
+            .unwrap()
+            .remove("repo_id");
+        let error = install_spec(&root, "z-image-turbo", "q4-mixed", None).unwrap_err();
+        assert!(error.contains("has no published download"), "{error}");
+    }
+
+    #[test]
+    fn derived_version_needs_no_repo_id_of_its_own() {
+        let root = registry();
+        // The registry's `q4-mixed` has no repo_id: it must not need one.
+        assert!(
+            root["models"]["z-image-turbo"]["distribution"]["versions"]["q4-mixed"]
+                .get("repo_id")
+                .is_none()
+        );
+        assert!(install_spec(&root, "z-image-turbo", "q4-mixed", None).is_ok());
+    }
+
+    #[test]
+    fn unknown_version_fails_loud() {
+        let root = registry();
+        let error = install_spec(&root, "z-image-turbo", "q8", None).unwrap_err();
+        assert!(error.contains("has no q8 package"), "{error}");
     }
 }

@@ -8,8 +8,17 @@
       class="audio-composer__title"
     />
 
+    <DqSelect
+      v-if="workModeOptions.length > 2"
+      v-model="localWorkMode"
+      size="sm"
+      class="studio-composer-setup__mode"
+      :aria-label="$tt('audio.workMode')"
+    >
+      <DqOption v-for="option in workModeOptions" :key="option.value" :label="option.label" :value="option.value" />
+    </DqSelect>
     <DqSegmented
-      v-if="workModeOptions.length > 0"
+      v-else-if="workModeOptions.length > 0"
       :model-value="localWorkMode"
       block
       size="sm"
@@ -58,7 +67,7 @@
             </DqIconButton>
           </ComposerIconTip>
         </div>
-        <ComposerIconTip v-else-if="workMode === 'cover'" :content="$t('create.composerTip.pickCoverSource')">
+        <ComposerIconTip v-else-if="workMode !== 'create'" :content="$t('create.composerTip.pickCoverSource')">
           <DqIconButton
             type="text"
             size="sm"
@@ -221,6 +230,16 @@
     <ComposerToolbar>
       <template #actions>
         <DqButton
+          v-if="supportsLm"
+          type="text"
+          size="sm"
+          :aria-label="$tt('audio.lmAssistant')"
+          @click="$emit('open-lm')"
+        >
+          <DqIcon :size="14"><MagicStick /></DqIcon>
+          <span>5Hz LM</span>
+        </DqButton>
+        <DqButton
           type="primary"
           size="sm"
           class="studio-composer-toolbar__generate"
@@ -239,8 +258,7 @@
       @reset-defaults="$emit('reset-defaults')"
     >
       <div class="audio-composer__advanced-inner">
-              <!-- Steps & Guidance (create mode only — not used for cover) -->
-              <div v-if="workMode !== 'cover' && (stepsDef || guidanceDef)" class="audio-composer__advanced-row">
+              <div v-if="stepsDef || guidanceDef" class="audio-composer__advanced-row">
                 <div v-if="stepsDef" class="audio-composer__field">
                   <label>{{ $tt('create.steps') }}</label>
                   <DqSlider
@@ -264,10 +282,10 @@
               </div>
 
               <div
-                v-if="workMode === 'create' && (showDenoise || showLmExpansion)"
+                v-if="showDenoise || (workMode === 'create' && showLmExpansion)"
                 class="audio-composer__advanced-row"
               >
-                <div v-if="showLmExpansion" class="audio-composer__field">
+                <div v-if="workMode === 'create' && showLmExpansion" class="audio-composer__field">
                   <label>{{ $tt('audio.lmExpansion') }}</label>
                   <DqSelect v-model="localParams.lm_expansion" size="sm">
                     <DqOption value="auto" :label="$tt('audio.lmExpansionAuto')" />
@@ -355,6 +373,127 @@
                 </div>
               </div>
 
+              <div v-if="workMode === 'cover'" class="audio-composer__advanced-row">
+                <div v-if="coverVariants.length" class="audio-composer__field">
+                  <label>{{ $tt('audio.coverVariant') }}</label>
+                  <DqSelect v-model="localParams.cover_variant" size="sm">
+                    <DqOption value="cover" :label="$tt('audio.coverVariantFsq')" />
+                    <DqOption value="cover-nofsq" :label="$tt('audio.coverVariantNoFsq')" />
+                  </DqSelect>
+                </div>
+                <div v-if="supportsCoverNoise" class="audio-composer__field">
+                  <label>{{ $tt('audio.coverNoise') }}</label>
+                  <DqSlider v-model="localParams.cover_noise_strength" :min="0" :max="1" :step="0.05" />
+                  <span class="audio-composer__field-val">{{ localParams.cover_noise_strength }}</span>
+                </div>
+                <div v-if="supportsTimbreFromSource" class="audio-composer__field audio-composer__field--switch">
+                  <label>{{ $tt('audio.timbreFromSource') }}</label>
+                  <DqSwitch v-model="localParams.timbre_from_source" size="sm" />
+                </div>
+              </div>
+
+              <div v-if="trackArity !== 'none'" class="audio-composer__advanced-row">
+                <div class="audio-composer__field audio-composer__field--full">
+                  <label>{{ $tt('audio.tracks') }}</label>
+                  <DqSelect
+                    v-model="localTracks"
+                    size="sm"
+                    :multiple="trackArity === 'multi'"
+                    collapse-tags
+                    :placeholder="$tt('audio.trackRequired')"
+                  >
+                    <DqOption
+                      v-for="track in trackOptions"
+                      :key="track"
+                      :label="$tt(`audio.track.${track}`)"
+                      :value="track"
+                    />
+                  </DqSelect>
+                </div>
+              </div>
+
+              <div v-if="needsRegion && referenceMedia" class="audio-composer__advanced-row">
+                <div class="audio-composer__field audio-composer__field--full">
+                  <AudioWaveform
+                    :src="referenceMedia.previewUrl"
+                    :duration="sourceDuration"
+                    :current-time="referenceCurrentTime"
+                    :region-start="localParams.region_start_sec"
+                    :region-end="localParams.region_end_sec"
+                    selectable
+                    @seek="seekReference"
+                    @update:region="onRegionUpdate"
+                  />
+                  <div class="audio-composer__region-actions">
+                    <DqButton size="sm" @click="playReferenceRegion">
+                      <DqIcon><Play /></DqIcon>{{ $tt('audio.playRegion') }}
+                    </DqButton>
+                    <span>{{ $tt('audio.loopRegion') }}</span>
+                    <DqSwitch v-model="loopReferenceRegion" size="sm" />
+                  </div>
+                </div>
+              </div>
+              <div v-if="needsRegion" class="audio-composer__advanced-row">
+                <div class="audio-composer__field">
+                  <label>{{ $tt('audio.regionStart') }}</label>
+                  <DqInput v-model="regionStartInput" size="sm" inputmode="decimal" />
+                </div>
+                <div class="audio-composer__field">
+                  <label>{{ $tt('audio.regionEnd') }}</label>
+                  <DqInput v-model="regionEndInput" size="sm" inputmode="decimal" />
+                </div>
+              </div>
+              <div v-if="needsRegion" class="audio-composer__advanced-row">
+                <div class="audio-composer__field">
+                  <label>{{ $tt('audio.repaintInjection') }}</label>
+                  <DqSlider v-model="localParams.repaint_injection_ratio" :min="0" :max="1" :step="0.05" />
+                  <span class="audio-composer__field-val">{{ localParams.repaint_injection_ratio }}</span>
+                </div>
+                <div class="audio-composer__field">
+                  <label>{{ $tt('audio.repaintCrossfade') }}</label>
+                  <DqSlider v-model="localParams.repaint_crossfade_frames" :min="0" :max="64" :step="1" />
+                  <span class="audio-composer__field-val">{{ localParams.repaint_crossfade_frames }}</span>
+                </div>
+              </div>
+
+              <div v-if="audioFormats.length" class="audio-composer__advanced-row">
+                <div class="audio-composer__field">
+                  <label>{{ $tt('audio.audioFormat') }}</label>
+                  <DqSelect v-model="localParams.audio_format" size="sm">
+                    <DqOption v-for="format in audioFormats" :key="format" :label="format.toUpperCase()" :value="format" />
+                  </DqSelect>
+                </div>
+              </div>
+
+              <div v-if="hasDcwControls" class="audio-composer__advanced-row">
+                <div class="audio-composer__field">
+                  <label>{{ $tt('audio.dcwEnabled') }}</label>
+                  <DqSelect v-model="localParams.dcw_enabled" size="sm">
+                    <DqOption value="auto" :label="$tt('audio.dcwAuto')" />
+                    <DqOption value="on" :label="$tt('audio.dcwOn')" />
+                    <DqOption value="off" :label="$tt('audio.dcwOff')" />
+                  </DqSelect>
+                </div>
+                <div class="audio-composer__field">
+                  <label>{{ $tt('audio.dcwMode') }}</label>
+                  <DqSelect v-model="localParams.dcw_mode" size="sm">
+                    <DqOption v-for="mode in dcwModes" :key="mode" :label="mode" :value="mode" />
+                  </DqSelect>
+                </div>
+              </div>
+              <div v-if="hasDcwControls" class="audio-composer__advanced-row">
+                <div class="audio-composer__field">
+                  <label>{{ $tt('audio.dcwScaler') }}</label>
+                  <DqSlider v-model="localParams.dcw_scaler" :min="0" :max="1" :step="0.01" />
+                  <span class="audio-composer__field-val">{{ localParams.dcw_scaler }}</span>
+                </div>
+                <div class="audio-composer__field">
+                  <label>{{ $tt('audio.dcwHighScaler') }}</label>
+                  <DqSlider v-model="localParams.dcw_high_scaler" :min="0" :max="1" :step="0.01" />
+                  <span class="audio-composer__field-val">{{ localParams.dcw_high_scaler }}</span>
+                </div>
+              </div>
+
               <!-- LoRA -->
               <div
                 v-if="currentModelConfig?.parameters?.lora_support"
@@ -403,7 +542,7 @@
               </div>
 
               <!-- Music params: BPM, Key, Time Signature -->
-              <div v-if="(workMode === 'create' || supportsCoverMusicParams) && (supportsBpm || supportsKeyScale || supportsTimeSignature)" class="audio-composer__advanced-row">
+              <div v-if="supportsBpm || supportsKeyScale || supportsTimeSignature" class="audio-composer__advanced-row">
                 <div v-if="supportsBpm" class="audio-composer__field">
                   <label>{{ $tt('audio.bpm') }}</label>
                   <DqInput
@@ -434,7 +573,7 @@
               </div>
 
               <!-- Vocal type / language -->
-              <div v-if="(workMode === 'create' || supportsCoverVocals) && (supportsVocalType || supportsVocalLanguage)" class="audio-composer__advanced-row">
+              <div v-if="supportsVocalType || supportsVocalLanguage" class="audio-composer__advanced-row">
                 <div v-if="supportsVocalLanguage" class="audio-composer__field">
                   <label>{{ $tt('audio.vocalLanguage') }}</label>
                   <DqSelect v-model="localParams.vocal_language" size="sm" clearable :placeholder="$tt('audio.vocalLanguageAuto')">
@@ -454,7 +593,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onBeforeUnmount, onMounted } from 'vue';
 import ComposerAdvancedCollapsible from './ComposerAdvancedCollapsible.vue';
 import ComposerToolbar from './ComposerToolbar.vue';
 import ComposerPromptApplyStrip from './ComposerPromptApplyStrip.vue';
@@ -471,18 +610,27 @@ import {
 } from '@danqing/dq-shell';
 import { $tt } from '@/utils/i18n';
 import ModelSelect from '@/components/model/ModelSelect.vue';
+import AudioWaveform from '@/components/audio/AudioWaveform.vue';
+import { claimExclusiveAudioPlayback, registerAudioPlayback } from '@/utils/audioPlayback';
 import type { ModelSelectOption } from '@/utils/modelSelectOption';
 import { useComposerDefaultModel } from '@/composables/useComposerDefaultModel';
 import { isAudioLyricsRequired, audioLyricsRequiredHintKey } from '@/utils/audioLyrics';
 import { useVocalLanguageOptions } from '@/composables/useVocalLanguageOptions';
 import { appendStyleBoost } from '@/utils/styleBoost';
+import {
+  AUDIO_TRACKS,
+  audioModeNeedsRegion,
+  audioModeTrackArity,
+  parseAudioTracks,
+  type AudioWorkMode,
+} from '@/utils/audioTasks';
 
 const props = defineProps<{
   modelValue: string;
   title?: string;
   workMode: string;
   model: string;
-  duration: number;
+  duration: number | null;
   batchCount?: number;
   composerBusy?: boolean;
   submitting?: boolean;
@@ -499,6 +647,7 @@ const props = defineProps<{
   showCodecControls?: boolean;
   showCoverFidelity?: boolean;
   referenceMedia?: { type: string; previewUrl: string; label: string } | null;
+  sourceDuration?: number;
   currentModelConfig?: Record<string, any> | null;
   compatibleLoras?: Array<Record<string, unknown>>;
   lyricsLoading?: boolean;
@@ -515,10 +664,11 @@ const emit = defineEmits<{
   (e: 'update:title', value: string): void;
   (e: 'update:workMode', value: string): void;
   (e: 'update:model', value: string): void;
-  (e: 'update:duration', value: number): void;
+  (e: 'update:duration', value: number | null): void;
   (e: 'update:batchCount', value: number): void;
   (e: 'update:params', value: Record<string, any>): void;
   (e: 'generate'): void;
+  (e: 'open-lm'): void;
   (e: 'pick-reference'): void;
   (e: 'remove-reference'): void;
   (e: 'model-change', value: string): void;
@@ -543,29 +693,91 @@ const primaryActionLabel = computed(() => {
 
 const vocalLanguages = useVocalLanguageOptions();
 
+const supportsLm = computed(() => {
+  const actions = props.currentModelConfig?.actions;
+  return !!actions && typeof actions === 'object' && !Array.isArray(actions) && actions.lm != null;
+});
+
 const advancedOpen = ref(false);
 const lastStylePositive = ref('');
 const seedInput = ref('');
 const bpmInput = ref('');
 const audioPlaying = ref(false);
 const audioEl = ref<HTMLAudioElement | null>(null);
+const referenceCurrentTime = ref(0);
+const loopReferenceRegion = ref(false);
 
-function toggleAudioPlayback() {
-  if (!props.referenceMedia?.previewUrl) return;
+function ensureReferenceAudio(): HTMLAudioElement | null {
+  if (!props.referenceMedia?.previewUrl) return null;
   if (!audioEl.value) {
     audioEl.value = new Audio(props.referenceMedia.previewUrl);
     audioEl.value.addEventListener('ended', () => { audioPlaying.value = false; });
     audioEl.value.addEventListener('pause', () => { audioPlaying.value = false; });
     audioEl.value.addEventListener('play', () => { audioPlaying.value = true; });
+    audioEl.value.addEventListener('timeupdate', () => {
+      if (!audioEl.value) return;
+      referenceCurrentTime.value = audioEl.value.currentTime;
+      const start = Number(props.params.region_start_sec);
+      const end = Number(props.params.region_end_sec);
+      if (end > start && audioEl.value.currentTime >= end) {
+        if (loopReferenceRegion.value) audioEl.value.currentTime = start;
+        else audioEl.value.pause();
+      }
+    });
   }
+  return audioEl.value;
+}
+
+function toggleAudioPlayback() {
+  const audio = ensureReferenceAudio();
+  if (!audio) return;
   if (audioPlaying.value) {
-    audioEl.value.pause();
+    audio.pause();
   } else {
-    audioEl.value.play().catch(() => {
+    claimExclusiveAudioPlayback(pauseReferenceAudio);
+    audio.play().catch(() => {
       audioPlaying.value = false;
     });
   }
 }
+
+function pauseReferenceAudio() {
+  audioEl.value?.pause();
+}
+
+function seekReference(seconds: number) {
+  if (!ensureReferenceAudio()) return;
+  audioEl.value!.currentTime = seconds;
+  referenceCurrentTime.value = seconds;
+}
+
+function onRegionUpdate(region: { start: number; end: number }) {
+  patchParams({ region_start_sec: region.start, region_end_sec: region.end });
+}
+
+function playReferenceRegion() {
+  const start = Number(props.params.region_start_sec);
+  const end = Number(props.params.region_end_sec);
+  if (!(end > start)) return;
+  seekReference(start);
+  if (!audioEl.value) return;
+  claimExclusiveAudioPlayback(pauseReferenceAudio);
+  void audioEl.value.play();
+}
+
+let unregisterPlayback = () => {};
+onMounted(() => {
+  unregisterPlayback = registerAudioPlayback(pauseReferenceAudio);
+});
+onBeforeUnmount(() => {
+  unregisterPlayback();
+  pauseReferenceAudio();
+});
+
+watch(() => props.referenceMedia?.previewUrl, () => {
+  pauseReferenceAudio();
+  audioEl.value = null;
+});
 
 function patchParams(patch: Record<string, unknown>) {
   emit('update:params', { ...props.params, ...patch });
@@ -655,9 +867,8 @@ const coverLyricsHintText = computed(() => {
 });
 
 const promptPlaceholder = computed(() => {
-  if (props.workMode === 'cover') {
-    return $tt('audio.coverPromptPlaceholder');
-  }
+  if (props.workMode === 'cover') return $tt('audio.coverPromptPlaceholder');
+  if (props.workMode !== 'create') return $tt(`audio.modePrompt.${props.workMode}`);
   return $tt('audio.promptPlaceholder');
 });
 
@@ -782,6 +993,41 @@ const supportsVocalLanguage = computed(() => props.currentModelConfig?.parameter
 const supportsCoverLyrics = computed(() => props.currentModelConfig?.parameters?.cover_lyrics_support === true);
 const supportsCoverMusicParams = computed(() => props.currentModelConfig?.parameters?.cover_music_params_support === true);
 const supportsCoverVocals = computed(() => props.currentModelConfig?.parameters?.cover_lyrics_support === true);
+const coverVariants = computed(() => {
+  const values = props.currentModelConfig?.parameters?.cover_variants;
+  return Array.isArray(values) && values.length ? values.map(String) : ['cover', 'cover-nofsq'];
+});
+const supportsCoverNoise = computed(() => paramDefs.value.supports_cover_noise === true);
+const supportsTimbreFromSource = computed(() => paramDefs.value.supports_timbre_from_source === true);
+const needsRegion = computed(() => audioModeNeedsRegion(props.workMode as AudioWorkMode));
+const trackArity = computed(() => audioModeTrackArity(props.workMode as AudioWorkMode));
+const trackOptions = AUDIO_TRACKS;
+const localTracks = computed<any>({
+  get: () => {
+    const values = Array.isArray(props.params.tracks)
+      ? props.params.tracks.map(String)
+      : parseAudioTracks(props.params.track);
+    return trackArity.value === 'multi' ? values : values[0] || '';
+  },
+  set: (value) => patchParams({ tracks: Array.isArray(value) ? value : value ? [value] : [] }),
+});
+const regionStartInput = computed({
+  get: () => props.params.region_start_sec == null ? '' : String(props.params.region_start_sec),
+  set: (value: string) => patchParams({ region_start_sec: value.trim() === '' ? null : Number(value) }),
+});
+const regionEndInput = computed({
+  get: () => props.params.region_end_sec == null ? '' : String(props.params.region_end_sec),
+  set: (value: string) => patchParams({ region_end_sec: value.trim() === '' ? null : Number(value) }),
+});
+const audioFormats = computed(() => {
+  const values = props.currentModelConfig?.parameters?.audio_formats;
+  return Array.isArray(values) ? values.map(String) : [];
+});
+const hasDcwControls = computed(() => paramDefs.value.dcw_mode?.type === 'enum');
+const dcwModes = computed(() => {
+  const values = paramDefs.value.dcw_mode?.options;
+  return Array.isArray(values) ? values.map(String) : ['low', 'high', 'double', 'pix'];
+});
 
 const musicalKeys = [
   'C Major', 'C# Major', 'D Major', 'D# Major', 'E Major', 'F Major', 'F# Major',
@@ -979,6 +1225,14 @@ function onPromptKeydown(e: KeyboardEvent) {
   gap: 6px;
 }
 
+.audio-composer__field--switch {
+  flex: 0 1 auto;
+}
+
+.audio-composer__field--full label {
+  width: auto;
+}
+
 .audio-composer__field label {
   font-size: var(--dq-font-size-caption);
   font-weight: 500;
@@ -1020,6 +1274,14 @@ function onPromptKeydown(e: KeyboardEvent) {
 .audio-composer__field :deep(.dq-input),
 .audio-composer__field :deep(.dq-select) {
   height: 28px;
+}
+
+.audio-composer__region-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--dq-label-secondary);
+  font-size: var(--dq-font-size-caption);
 }
 
 .audio-composer__inline-switch {

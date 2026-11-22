@@ -2,9 +2,9 @@
 
 pub(crate) mod ace_step;
 mod driver;
+mod ernie_image;
 mod esrgan;
 mod flux2;
-mod hunyuan;
 mod longcat_avatar;
 mod ltx25;
 mod qwen_image;
@@ -28,22 +28,29 @@ pub fn run_install_hook(
     hook_type: &str,
     bundle_root: &std::path::Path,
     hook_spec: &serde_json::Value,
-    cancel: Box<dyn Fn() -> bool + Send>,
-    log: Box<dyn Fn(&str) + Send>,
+    cancel: Box<dyn Fn() -> bool + Send + Sync>,
+    log: Box<dyn Fn(&str) + Send + Sync>,
 ) -> Result<(), String> {
-    if hook_type != "ltx25_ingest" {
-        return Err(format!(
-            "unsupported registry install hook type {hook_type}"
-        ));
-    }
-    #[cfg(feature = "mlx")]
-    {
-        return ltx25::bundle::ingest_from_hook(bundle_root, hook_spec, cancel, log);
-    }
-    #[cfg(not(feature = "mlx"))]
-    {
-        let _ = (bundle_root, hook_spec, cancel, log);
-        Err("LTX 2.5 install requires a binary built with MLX support".into())
+    match hook_type {
+        #[cfg(feature = "mlx")]
+        "derive_quantize" => crate::derive::ingest_from_hook(bundle_root, hook_spec, cancel, log),
+        #[cfg(not(feature = "mlx"))]
+        "derive_quantize" => {
+            let _ = (bundle_root, hook_spec, cancel, log);
+            Err("local quantization requires a binary built with MLX support".into())
+        }
+        "ltx25_ingest" => {
+            #[cfg(feature = "mlx")]
+            {
+                return ltx25::bundle::ingest_from_hook(bundle_root, hook_spec, cancel, log);
+            }
+            #[cfg(not(feature = "mlx"))]
+            {
+                let _ = (bundle_root, hook_spec, cancel, log);
+                Err("LTX 2.5 install requires a binary built with MLX support".into())
+            }
+        }
+        other => Err(format!("unsupported registry install hook type {other}")),
     }
 }
 
@@ -72,15 +79,6 @@ const FLOW_MATCH: &[&str] = &["flow_match_euler", "flow_match_euler_discrete"];
 const FLOW_MATCH_LINEAR: &[&str] = &["linear", "flow_match_euler", "flow_match_euler_discrete"];
 
 const FAMILIES: &[FamilySpec] = &[
-    FamilySpec {
-        id: "flux1",
-        media: Media::Image,
-        shape: Shape::DitPipeline,
-        lora_inference: false,
-        structural_guide: false,
-        lora_training: false,
-        schedulers: &[],
-    },
     FamilySpec {
         id: "flux2",
         media: Media::Image,
@@ -124,52 +122,7 @@ const FAMILIES: &[FamilySpec] = &[
         lora_inference: false,
         structural_guide: false,
         lora_training: false,
-        schedulers: &[],
-    },
-    FamilySpec {
-        id: "cogview4",
-        media: Media::Image,
-        shape: Shape::DitPipeline,
-        lora_inference: false,
-        structural_guide: false,
-        lora_training: false,
-        schedulers: &[],
-    },
-    FamilySpec {
-        id: "hidream_o1",
-        media: Media::Image,
-        shape: Shape::DitPipeline,
-        lora_inference: false,
-        structural_guide: false,
-        lora_training: false,
-        schedulers: &[],
-    },
-    FamilySpec {
-        id: "step1x_edit",
-        media: Media::Image,
-        shape: Shape::DitPipeline,
-        lora_inference: false,
-        structural_guide: false,
-        lora_training: false,
-        schedulers: &[],
-    },
-    FamilySpec {
-        id: "boogu_image",
-        media: Media::Image,
-        shape: Shape::DitPipeline,
-        lora_inference: false,
-        structural_guide: false,
-        lora_training: false,
-        schedulers: &[],
-    },
-    FamilySpec {
-        id: "longcat",
-        media: Media::Image,
-        shape: Shape::DitPipeline,
-        lora_inference: false,
-        structural_guide: false,
-        lora_training: false,
-        schedulers: &[],
+        schedulers: FLOW_MATCH,
     },
     FamilySpec {
         id: "seedvr2",
@@ -210,26 +163,8 @@ const FAMILIES: &[FamilySpec] = &[
         schedulers: &[],
     },
     FamilySpec {
-        id: "hunyuan",
-        media: Media::Video,
-        shape: Shape::GenerationFacade,
-        lora_inference: false,
-        structural_guide: false,
-        lora_training: false,
-        schedulers: &[],
-    },
-    FamilySpec {
         id: "minimax_h3",
         media: Media::Video,
-        shape: Shape::GenerationFacade,
-        lora_inference: false,
-        structural_guide: false,
-        lora_training: false,
-        schedulers: &[],
-    },
-    FamilySpec {
-        id: "minimax_h3_image",
-        media: Media::Image,
         shape: Shape::GenerationFacade,
         lora_inference: false,
         structural_guide: false,
@@ -297,6 +232,7 @@ static QWEN_IMAGE_FAMILY: qwen_image::QwenImageFamily = qwen_image::QwenImageFam
 static QWEN_IMAGE_EDIT_FAMILY: qwen_image::QwenImageEditFamily = qwen_image::QwenImageEditFamily;
 static Z_IMAGE_FAMILY: z_image::ZImageFamily = z_image::ZImageFamily;
 static Z_IMAGE_EDIT_FAMILY: z_image::ZImageEditFamily = z_image::ZImageEditFamily;
+static ERNIE_IMAGE_FAMILY: ernie_image::ErnieImageFamily = ernie_image::ErnieImageFamily;
 static SEEDVR2_UPSCALE_FAMILY: seedvr2::SeedVr2UpscaleFamily = seedvr2::SeedVr2UpscaleFamily;
 static ESRGAN_UPSCALE_FAMILY: esrgan::EsrganUpscaleFamily = esrgan::EsrganUpscaleFamily;
 static SEEDVR2_VIDEO_UPSCALE_FAMILY: seedvr2::SeedVr2VideoUpscaleFamily =
@@ -304,7 +240,6 @@ static SEEDVR2_VIDEO_UPSCALE_FAMILY: seedvr2::SeedVr2VideoUpscaleFamily =
 static LTX25_VIDEO_CREATE_FAMILY: ltx25::Ltx25VideoCreateFamily = ltx25::Ltx25VideoCreateFamily;
 static LONGCAT_AVATAR_FAMILY: longcat_avatar::LongcatAvatarFamily =
     longcat_avatar::LongcatAvatarFamily;
-static HUNYUAN_VIDEO_EDIT_FAMILY: hunyuan::HunyuanVideoEditFamily = hunyuan::HunyuanVideoEditFamily;
 static WAN_VIDEO_CREATE_FAMILY: wan::WanVideoCreateFamily = wan::WanVideoCreateFamily;
 static ACE_STEP_FAMILY: ace_step::AceStepFamily = ace_step::AceStepFamily;
 
@@ -351,6 +286,7 @@ pub fn driver(family: &str, action: crate::contract::Action) -> FamilyDriver {
         ("qwen_image", Action::ImageEdit) => FamilyDriver::Facade(&QWEN_IMAGE_EDIT_FAMILY),
         ("z_image", Action::ImageCreate) => FamilyDriver::DitImage(&Z_IMAGE_FAMILY),
         ("z_image", Action::ImageEdit) => FamilyDriver::Facade(&Z_IMAGE_EDIT_FAMILY),
+        ("ernie_image", Action::ImageCreate) => FamilyDriver::DitImage(&ERNIE_IMAGE_FAMILY),
         ("seedvr2", Action::ImageUpscale) => FamilyDriver::Facade(&SEEDVR2_UPSCALE_FAMILY),
         ("esrgan", Action::ImageUpscale) => FamilyDriver::Facade(&ESRGAN_UPSCALE_FAMILY),
         ("seedvr2", Action::VideoUpscale) => FamilyDriver::Facade(&SEEDVR2_VIDEO_UPSCALE_FAMILY),
@@ -359,7 +295,6 @@ pub fn driver(family: &str, action: crate::contract::Action) -> FamilyDriver {
         ("ltx25", Action::VideoCreate | Action::VideoEdit) => {
             FamilyDriver::Facade(&LTX25_VIDEO_CREATE_FAMILY)
         }
-        ("hunyuan", Action::VideoEdit) => FamilyDriver::Facade(&HUNYUAN_VIDEO_EDIT_FAMILY),
         ("ace_step", Action::AudioCreate | Action::AudioEdit | Action::AudioLm) => {
             FamilyDriver::Facade(&ACE_STEP_FAMILY)
         }

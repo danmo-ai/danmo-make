@@ -173,10 +173,19 @@ pub fn run_lm_with_context(
     ctx: &GgmlContext,
     on_token: &mut dyn FnMut(usize, usize),
 ) -> Result<LmOutput, WeightError> {
-    let _ = (bundle, request, ctx, on_token);
-    return Err(WeightError::NotBuilt(
-        "ACE-Step 5Hz LM generate has no MLX forward. Set lm_expansion to off.".into(),
-    ));
+    let _ = ctx;
+    #[cfg(feature = "mlx")]
+    {
+        let mut progress = |step, total| on_token(step, total);
+        return mlx::run_lm_mlx(bundle, request, &mut progress);
+    }
+    #[cfg(not(feature = "mlx"))]
+    {
+        let _ = (bundle, request, on_token);
+        Err(WeightError::NotBuilt(
+            "ACE-Step 5Hz LM requires an MLX build.".into(),
+        ))
+    }
 }
 
 /// Back-compat alias: inspire expand on an LM bundle.

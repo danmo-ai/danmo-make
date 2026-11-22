@@ -353,10 +353,11 @@ fn finish_factor(
             "lora {target} targets {target}, which is not a graph parameter"
         )));
     };
-    let down = down
-        .ok_or_else(|| WeightError::NotBuilt(format!("lora {target} is missing the down factor")))?;
-    let up = up
-        .ok_or_else(|| WeightError::NotBuilt(format!("lora {target} is missing the up factor")))?;
+    let down = down.ok_or_else(|| {
+        WeightError::NotBuilt(format!("lora {target} is missing the down factor"))
+    })?;
+    let up =
+        up.ok_or_else(|| WeightError::NotBuilt(format!("lora {target} is missing the up factor")))?;
     if down.ne1 < 1 || down.ne1 != up.ne0 || down.ne0 != in_dim || up.ne1 != out_dim {
         return Err(WeightError::Shape {
             name: target,
@@ -403,9 +404,9 @@ fn finish_split(
     let down = group.down.ok_or_else(|| {
         WeightError::NotBuilt(format!("lora {module} is missing the down factor"))
     })?;
-    let up = group.up.ok_or_else(|| {
-        WeightError::NotBuilt(format!("lora {module} is missing the up factor"))
-    })?;
+    let up = group
+        .up
+        .ok_or_else(|| WeightError::NotBuilt(format!("lora {module} is missing the up factor")))?;
     if parts < 2 || up.ne1 % parts != 0 {
         return Err(WeightError::NotBuilt(format!(
             "lora {module} fuses {parts} projections but the up matrix out {} is not divisible by {parts}",

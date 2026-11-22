@@ -29,7 +29,7 @@ assert(summary?.total === '25', 'total steps');
 assert(summary?.skip_pct === '28', 'skip pct');
 
 assert(
-  classifyLogEntry('[inference] family=flux1 steps=28 teacache=auto', 'info') === 'milestone',
+  classifyLogEntry('[inference] family=z_image steps=28 teacache=auto', 'info') === 'milestone',
   'inference plan milestone',
 );
 assert(
@@ -41,7 +41,7 @@ const planItems = buildLogDisplayItems(
   [
     {
       time: '12:00:00',
-      message: '[inference] family=flux1 steps=28 teacache=quality preview=stream/auto',
+      message: '[inference] family=z_image steps=28 teacache=quality preview=stream/auto',
       level: 'info',
     },
   ],

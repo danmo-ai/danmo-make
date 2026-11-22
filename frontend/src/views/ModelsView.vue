@@ -223,6 +223,7 @@
                   :uniform-source="uniformDownloadSource(model)"
                   :loading-keys="downloadingModels"
                   :can-download="canDownload(model)"
+                  dependency-hint=""
                   :get-version-status="getVersionStatus"
                   :bundle-components-for="(verKey) => versionBundleComponents(model.id, verKey)"
                   @download="downloadVersion(model, $event)"
@@ -483,19 +484,17 @@ import ZImageMergePanel from '@/components/tools/ZImageMergePanel.vue';
 import WorkspaceLayout from '@/components/workspace/WorkspaceLayout.vue';
 import WorkspaceHeader from '@/components/workspace/WorkspaceHeader.vue';
 import WorkspaceSidebar from '@/components/workspace/WorkspaceSidebar.vue';
-import { uniformDownloadSource } from '@/utils/modelVersionLayout';
+import {
+  isDenseVersion,
+  isDerivedVersion,
+  uniformDownloadSource,
+  type ModelVersion,
+} from '@/utils/modelVersionLayout';
 import { formatDownloadDisplayName } from '@/utils/registryLabel';
 import { useModelRegistryFilters } from '@/composables/useModelRegistryFilters';
 import { modelPassesRegistryFilters } from '@/utils/modelPickerFilters';
 
 /* ───── Types ───── */
-
-interface ModelVersion {
-  name: string | { zh?: string; en?: string };
-  size?: string;
-  source?: string;
-  source_type?: string;
-}
 
 interface ModelConfig {
   media?: string;
@@ -717,7 +716,12 @@ const filteredModels = computed(() => {
     list.push(model);
   }
 
-  return list.sort((a, b) => $mn(a, a.id).localeCompare($mn(b, b.id)));
+  return list.sort((a, b) => {
+    const ar = a.recommended ? 1 : 0;
+    const br = b.recommended ? 1 : 0;
+    if (ar !== br) return br - ar;
+    return $mn(a, a.id).localeCompare($mn(b, b.id), 'zh');
+  });
 });
 
 const totalModelCount = computed(() => Object.keys(modelRegistry.value).length);
@@ -843,7 +847,7 @@ function verifyUserLora(ul: {
   const inference = ul.inference || {};
   const query: Record<string, string> = {
     verify: '1',
-    model: String(inference.model || ul.base_model || 'flux1-dev'),
+    model: String(inference.model || ul.base_model || 'z-image-turbo'),
     lora: String(ul.id || ''),
     width: '1024',
     height: '1024',
@@ -1081,7 +1085,10 @@ async function downloadVersion(
       if (active.status === 'failed') {
         await resumeDownload(active.id);
       } else {
-        connectProgressSSE(active.id, label, uiKey);
+        connectProgressSSE(active.id, label, uiKey, {
+          modelId: model.id,
+          versionKey,
+        });
       }
       return;
     }
@@ -1097,7 +1104,10 @@ async function downloadVersion(
     const label = version
       ? $mvn(model.id, model, version)
       : `${$mn(model, model.id)} ${versionKey}`;
-    connectProgressSSE(data.task_id, label, uiKey);
+    connectProgressSSE(data.task_id, label, uiKey, {
+      modelId: model.id,
+      versionKey,
+    });
   } catch (e: any) {
     console.error('Download failed:', e);
     toast.error($tt('download.downloadFailed', { msg: e.message }));
@@ -1143,7 +1153,8 @@ async function deleteVersion(model: ModelRow, versionKey: string) {
 function connectProgressSSE(
   taskId: string,
   name: string,
-  downloadingKey: string | null = null
+  downloadingKey: string | null = null,
+  meta: { modelId?: string; versionKey?: string } = {},
 ) {
   const dmKey = downloadingKey != null ? downloadingKey : taskId;
   if (sseConnections.value[taskId]) {
@@ -1176,6 +1187,7 @@ function connectProgressSSE(
           delete downloadingModels.value[dmKey];
         }, 2000);
         toast.success($tt('download.downloadComplete', { name }));
+        maybeSuggestQuantize(meta.modelId, meta.versionKey, name);
         refreshStatus();
         void loadDownloadedLoras();
       } else if (data.status === 'failed') {
@@ -1203,6 +1215,23 @@ function connectProgressSSE(
     delete sseConnections.value[taskId];
     delete downloadingModels.value[dmKey];
   };
+}
+
+function maybeSuggestQuantize(
+  modelId: string | undefined,
+  versionKey: string | undefined,
+  label: string,
+) {
+  if (!modelId || !versionKey) return;
+  const model = modelRegistry.value[modelId];
+  const finished = model?.versions?.[versionKey];
+  if (!isDenseVersion(finished)) return;
+  const hasPendingDerived = Object.entries(model?.versions || {}).some(
+    ([key, ver]) =>
+      isDerivedVersion(ver) && getVersionStatus(modelId, key) !== 'ready',
+  );
+  if (!hasPendingDerived) return;
+  toast.info($tt('download.convertAfterDense', { name: label }));
 }
 
 /* ───── Batch / Cancel / Resume ───── */

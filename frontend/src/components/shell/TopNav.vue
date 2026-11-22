@@ -20,17 +20,17 @@
             :key="item.id"
             type="button"
             class="dq-sidebar-nav__item"
-            :class="{ 'is-active': !item.isQueue && activePage === item.id }"
-            :aria-current="!item.isQueue && activePage === item.id ? 'page' : undefined"
+            :class="{ 'is-active': activePage === item.id }"
+            :aria-current="activePage === item.id ? 'page' : undefined"
             :aria-label="collapsed ? item.label : undefined"
-            @click="item.isQueue ? openQueue() : onNavSelect(item.id)"
+            @click="onNavSelect(item.id)"
           >
             <DqIcon class="dq-sidebar-nav__item-icon" :size="18">
               <component :is="item.icon" />
             </DqIcon>
             <span class="dq-sidebar-nav__label">{{ item.label }}</span>
             <span
-              v-if="item.isQueue && queueCount > 0"
+              v-if="item.id === 'task_queue' && queueCount > 0"
               class="dq-sidebar-nav__count"
               :aria-label="$t('nav.queuePending', { count: queueCount })"
             >{{ queueCount > 99 ? '99+' : queueCount }}</span>
@@ -82,7 +82,6 @@ defineProps<{
 
 const emit = defineEmits<{
   (e: 'navigate', page: string): void;
-  (e: 'open-queue'): void;
   (e: 'toggle-collapse'): void;
 }>();
 
@@ -92,7 +91,6 @@ interface NavItem {
   id: string;
   icon: Component | string;
   label: string;
-  isQueue?: boolean;
 }
 
 interface NavGroup {
@@ -119,7 +117,7 @@ const navGroups = computed<NavGroup[]>(() => [
     ariaLabel: t('nav.groupWorkflow'),
     items: [
       { id: 'assistant', icon: 'Bot', label: t('nav.assistant') },
-      { id: 'task_queue', icon: 'ListOrdered', label: t('nav.task_queue'), isQueue: true },
+      { id: 'task_queue', icon: 'ListOrdered', label: t('nav.task_queue') },
     ],
   },
   {
@@ -140,10 +138,6 @@ const navGroups = computed<NavGroup[]>(() => [
 
 function onNavSelect(index: string) {
   emit('navigate', index);
-}
-
-function openQueue() {
-  emit('open-queue');
 }
 </script>
 

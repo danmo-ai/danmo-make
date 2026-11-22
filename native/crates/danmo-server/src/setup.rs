@@ -17,8 +17,11 @@ const MEMORY_BUDGET_RATIO: f64 = 0.70;
 /// Used when the host memory probe fails; reported as `memory_detected: false`.
 const UNKNOWN_MEMORY_GB: f64 = 16.0;
 
-/// Version preference when several fit the memory budget (MLX quantized first).
-const VERSION_PREF: &[&str] = &["mlx-q4", "int4", "mlx-q8", "int8", "fp16", "bf16", "xl-sft"];
+/// Version preference when several fit the memory budget. `q4-mixed` is the
+/// locally built quantization, so it wins the low-memory tier.
+const VERSION_PREF: &[&str] = &[
+    "q4-mixed", "mlx-q4", "int4", "mlx-q8", "int8", "fp16", "bf16",
+];
 
 struct SlotSpec {
     key: &'static str,
@@ -495,7 +498,7 @@ mod tests {
         assert!(image["model_id"].is_string(), "{image}");
         let version = image["version_key"].as_str().unwrap();
         assert!(
-            ["mlx-q4", "mlx-q8", "int4", "int8"].contains(&version),
+            ["q4-mixed", "mlx-q4", "mlx-q8", "int4", "int8"].contains(&version),
             "{version}"
         );
     }

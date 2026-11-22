@@ -1,8 +1,7 @@
 //! ACE-Step 5Hz LM format_sample helpers (main `lm/lm_format.py`).
 //!
-//! Full Qwen3 LM sampling is not built yet. This module parses CoT output,
-//! preserves user vocal lyrics, and extracts `<|audio_code_N|>` indices so
-//! create can condition DiT on codes via FSQ detok.
+//! Parses CoT output, preserves user vocal lyrics, and extracts
+//! `<|audio_code_N|>` indices so create can condition DiT via FSQ detok.
 
 use super::lyrics::{is_instrumental_lyrics, normalize_lyrics_body};
 use crate::weights::WeightError;

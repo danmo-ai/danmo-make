@@ -20,8 +20,8 @@ pub(super) fn schedule(steps: u32, grid_w: i64, grid_h: i64) -> Vec<f32> {
     empirical_mu_sigmas(steps, seq)
 }
 
-/// Optional edge cap. A finished prequantized install may have no manifest;
-/// that is no cap. A present file that is not JSON still fails.
+/// Optional edge cap. A finished dense or derived install may have no
+/// manifest; that is no cap. A present file that is not JSON still fails.
 pub(super) fn manifest_max_edge(bundle: &Path) -> Result<Option<u32>, WeightError> {
     let path = bundle.join("bundle.manifest.json");
     let text = match std::fs::read_to_string(&path) {

@@ -2,7 +2,7 @@
 
 Language: [English](README.md) | **中文**
 
-本地 **图像 / 视频 / 音频** 创作工作室——**Rust + MLX** 引擎、**Vue 3** 界面、注册表一键装模。不是节点编辑器：打开应用、选模型卡片、直接创作。权重为 **safetensors**（`fp16` / `mlx-q4` / `mlx-q8` 等，按 checkpoint dtype 加载）。缺能力 **显式失败**。
+本地 **图像 / 视频 / 音频** 创作工作室——**Rust + MLX** 引擎、**Vue 3** 界面、注册表一键装模。不是节点编辑器：打开应用、选模型卡片、直接创作。权重为 **safetensors**，按 checkpoint dtype 加载。注册表每模型只发布一个完整权重下载（`fp16` / `bf16` / `fp32`），外加本机按 recipe 生成的 `q4-mixed`。缺能力 **显式失败**。
 
 ![Danmo Make — 图像创作、画廊、无限画布、视频、模型库、音频](docs/media/readme/danmo-make-studio-carousel.gif)
 
@@ -225,7 +225,7 @@ Windows 桌面包未接线。详见 [desktop/README.md](desktop/README.md)。
 | 文生视频 | `create` | `POST /api/videos/generations` |
 | 图生视频 | `animate` | `POST /api/videos/edits` |
 
-LTX 2.5 两阶段音视频可真实跑通；Wan / Hunyuan / MiniMax / LongCat 等仍在迁移 — 未建成的 action 显式失败。
+LTX 2.5 两阶段音视频可真实跑通；Wan / MiniMax / LongCat Avatar 等仍在迁移 — 未建成的 action 显式失败。
 
 ### 音频
 
@@ -298,7 +298,7 @@ make pack-mlx-sidecar      # 发布用 danqing-api sidecar（mlx-metal / mlx-cud
 
 **应用设置** — 控制面 / 工作区下的 `.app_config.json`：语言、主题、默认模型、显存上限、队列策略、集成 API Key 等。
 
-**注册表** — `default_config/models_registry.json`（`schema_version: 3`）。MLX 版本键含 `fp16`、`mlx-q4`、`mlx-q8` 等；标签不保证张量 dtype（生产按 checkpoint 加载）。
+**注册表** — `default_config/models_registry.json`（`schema_version: 3`）。版本分 `kind: dense`（`fp16` / `bf16` / `fp32`，唯一可下载档）与 `kind: derived`（`q4-mixed`，由 dense 基座按 `default_config/quant_recipes/<id>.json` 在本机生成）。不再下载预量化包；标签不保证张量 dtype（生产按 checkpoint 加载）。
 
 **常用环境变量**：
 

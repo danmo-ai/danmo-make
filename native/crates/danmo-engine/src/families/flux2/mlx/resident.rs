@@ -11,9 +11,8 @@ use crate::weights::{MlxWeights, WeightDtype};
 pub(super) fn load_transformer(directory: &Path) -> Result<()> {
     admit(directory, "flux2 resident transformer", |path, _| {
         let weights = crate::weights::load_mlx_directory(path, WeightDtype::Native, None)?;
-        let map = super::super::checkpoint::remap_diffusers_names(weights.names()).map_err(
-            |error| Error::new("Flux2 Klein", error),
-        )?;
+        let map = super::super::checkpoint::remap_diffusers_names(weights.names())
+            .map_err(|error| Error::new("Flux2 Klein", error))?;
         let weights = if map.iter().any(|(source, target)| source != target) {
             weights.rename(&map)?
         } else {

@@ -91,7 +91,7 @@ pub fn ingest_from_hook(
     let group_size = hook_spec
         .get("group_size")
         .and_then(Value::as_i64)
-        .unwrap_or(64);
+        .unwrap_or(32);
     if group_size <= 0 || group_size > i32::MAX as i64 {
         return Err(format!(
             "LTX 2.5 quantization group_size {group_size} is invalid"
@@ -279,19 +279,8 @@ fn ensure_component_channel_last(
             path.display()
         ));
         let io = io_stream()?;
-        let tensors = danmo_mlx::SafeTensors::load(path, &io)
+        let (weights, _) = crate::weights::read_component(path, &io)
             .map_err(|error| format!("load {}: {error}", path.display()))?;
-        let mut weights = BTreeMap::new();
-        for name in tensors
-            .names()
-            .map_err(|error| format!("list {}: {error}", path.display()))?
-        {
-            let tensor = tensors
-                .get(&name)
-                .map_err(|error| format!("load {}:{name}: {error}", path.display()))?
-                .ok_or_else(|| format!("{}:{name} disappeared during load", path.display()))?;
-            weights.insert(name, tensor);
-        }
         let weights = transpose_component_weights(component, weights, stream)?;
         save_weights(path, weights, None, stream)?;
     }
@@ -551,38 +540,23 @@ fn load_checkpoint(path: &Path, _stream: &Stream) -> Result<(Weights, Value), St
 
 fn load_gemma_checkpoint(path: &Path, _stream: &Stream) -> Result<(Weights, Value), String> {
     let io = io_stream()?;
-    let tensors = danmo_mlx::SafeTensors::load(path, &io)
-        .map_err(|error| format!("load {}: {error}", path.display()))?;
-    let gemma_config = tensors
-        .metadata("gemma_config")
-        .map_err(|error| format!("read gemma_config {}: {error}", path.display()))?;
-    let config = if let Some(raw) = gemma_config {
-        serde_json::from_str(&raw)
-            .map_err(|error| format!("{} gemma_config is not JSON: {error}", path.display()))?
-    } else {
-        let (weights, config) = crate::weights::read_component(path, &io)
+    let (weights, meta) =
+        crate::weights::read_component_meta(path, &io, &["gemma_config", "config"])
             .map_err(|error| format!("load {}: {error}", path.display()))?;
-        let config = config
-            .ok_or_else(|| format!("{} lacks gemma_config / config metadata", path.display()))?;
-        let parsed: Value = serde_json::from_str(&config)
-            .map_err(|error| format!("{} config metadata is not JSON: {error}", path.display()))?;
-        if let Some(nested) = parsed.get("text_encoder_config").cloned() {
-            return Ok((weights, nested));
-        }
-        return Ok((weights, parsed));
-    };
-    let mut weights = BTreeMap::new();
-    for name in tensors
-        .names()
-        .map_err(|error| format!("list {}: {error}", path.display()))?
-    {
-        let tensor = tensors
-            .get(&name)
-            .map_err(|error| format!("load {}:{name}: {error}", path.display()))?
-            .ok_or_else(|| format!("{}:{name} disappeared during load", path.display()))?;
-        weights.insert(name, tensor);
+    if let Some(raw) = meta.get("gemma_config") {
+        let config = serde_json::from_str(raw)
+            .map_err(|error| format!("{} gemma_config is not JSON: {error}", path.display()))?;
+        return Ok((weights, config));
     }
-    Ok((weights, config))
+    let config = meta
+        .get("config")
+        .ok_or_else(|| format!("{} lacks gemma_config / config metadata", path.display()))?;
+    let parsed: Value = serde_json::from_str(config)
+        .map_err(|error| format!("{} config metadata is not JSON: {error}", path.display()))?;
+    if let Some(nested) = parsed.get("text_encoder_config").cloned() {
+        return Ok((weights, nested));
+    }
+    Ok((weights, parsed))
 }
 
 fn convert_text_encoder(
@@ -868,7 +842,7 @@ mod tests {
             &target,
             Some(Quantization {
                 bits: 4,
-                group_size: 64,
+                group_size: 32,
             }),
             &stream,
             &|| false,

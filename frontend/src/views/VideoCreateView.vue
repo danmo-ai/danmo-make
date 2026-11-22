@@ -129,9 +129,6 @@
         :enhancing="isEnhancing"
         :reversing="isReversing"
         :tail-reference-media="tailReferenceMedia"
-        :extra-reference-media="extraReferenceMedia"
-        :show-bernini-references="showBerniniReferences"
-        :bernini-ref-max="berniniRefMax"
         :showH3Ref2VA="showH3Ref2VA"
         :h3-media-refs="h3MediaRefMedia"
         :h3-ref-max="h3Ref2vaMax"
@@ -147,8 +144,6 @@
         @remove-reference="removeReference"
         @pick-tail-reference="showTailAssetPicker = true"
         @remove-tail-reference="removeTailImage"
-        @pick-extra-reference="showExtraRefPicker = true"
-        @remove-extra-reference="removeExtraReference"
         @pick-h3-reference="onPickH3Reference"
         @remove-h3-reference="removeH3Reference"
         @model-change="onModelVersionChange"
@@ -196,13 +191,6 @@
   </DqDrawer>
 
   <!-- Extra reference images -->
-  <DqDialog v-model:open="showExtraRefPicker" :title="$t('create.refImage')" width="70%">
-    <AssetPicker
-      accept-kind="image"
-      :recent-gallery="recentStartImages"
-      @pick="onExtraRefPick"
-    />
-  </DqDialog>
 
   <!-- MiniMax-H3 Ref2VA references -->
   <DqDialog v-model:open="showH3RefPicker" :title="h3RefPickerTitle" width="70%">
@@ -294,6 +282,7 @@ import { warnIfRiskyMemory } from '@/composables/memoryHint';
 import { pickDefaultVersionKey, resolveDefaultModelRegistryKey } from '@/utils/defaultModelSettings';
 import { useModelRegistryFilters, reconcileVersionPickerSelection } from '@/composables/useModelRegistryFilters';
 import { applyModelVersionFilters } from '@/utils/modelPickerFilters';
+import { compareModelPickerRows } from '@/utils/modelPickerSort';
 import { modelSelectOption } from '@/utils/modelSelectOption';
 import AssetPicker from '@/components/asset/AssetPicker.vue';
 import GalleryPreviewDialog from '@/components/gallery/GalleryPreviewDialog.vue';
@@ -346,11 +335,9 @@ import {
 } from '@/utils/videoSizeStorage';
 import {
   animateReferenceAcceptKind,
-  berniniMaxReferenceImages,
   galleryPathIsVideo,
   ref2vaSpec,
   ref2vaSubjectCount,
-  supportsBerniniReferenceImages,
   supportsRef2VA,
   videoRequiresSourceVideo,
   videoSupportsVideoEdit,
@@ -604,7 +591,6 @@ function persistComposerSnapshot() {
     start_image_path: startImagePath.value || undefined,
     tail_image_path: tailImagePath.value || undefined,
     source_video_path: sourceVideoPath.value || undefined,
-    reference_image_paths: extraRefPaths.value.length ? [...extraRefPaths.value] : undefined,
   });
 }
 
@@ -666,13 +652,6 @@ function onCanvasComposerRestore(snapshot: {
       ? api.gallery.getImageUrl(p.path)
       : p.previewUrl;
   }
-  if (snapshot.reference_image_paths?.length) {
-    extraRefPaths.value = [...snapshot.reference_image_paths];
-    extraRefPreviews.value = snapshot.reference_image_paths.map((path) => {
-      const p = bindVideoAssetFromPath(path);
-      return p.previewUrl;
-    });
-  }
   if (viewMode.value === 'canvas') {
     nextTick(() => syncCompositorOverlaysOnCanvasEnter());
   }
@@ -682,6 +661,10 @@ function buildCanvasMeta(extra: Record<string, unknown> = {}): Record<string, un
   const meta: Record<string, unknown> = { ...extra };
   const sid = videoCanvas.sessionId.value;
   if (sid) meta.canvas_session_id = sid;
+  // Pure text-to-video has no parent — never inherit canvas selection as lineage.
+  if (videoWorkMode.value === 'create') {
+    return meta;
+  }
   if (videoWorkMode.value === 'animate' || videoWorkMode.value === 'edit') {
     meta.relation_type = videoWorkMode.value === 'edit' ? 'edit' : 'animate';
   }
@@ -689,9 +672,6 @@ function buildCanvasMeta(extra: Record<string, unknown> = {}): Record<string, un
     canvasSelectedItem.value?.path || videoCanvas.activeAssetPath.value || '';
   if (parentPath.startsWith('asset:')) {
     meta.parent_asset_id = parentPath.slice('asset:'.length);
-    if (videoWorkMode.value === 'create') {
-      meta.relation_type = 'create';
-    }
   }
   return meta;
 }
@@ -1121,24 +1101,9 @@ const tailImagePath = ref('');
 const tailImageViewerVisible = ref(false);
 const sourceVideoSrc = ref('');
 const sourceVideoPath = ref('');
-const extraRefPaths = ref<string[]>([]);
-const extraRefPreviews = ref<string[]>([]);
-
-const berniniRefMax = berniniMaxReferenceImages();
-
-const showBerniniReferences = computed(() =>
-  supportsBerniniReferenceImages(currentModelConfig.value?.parameters),
-);
-
-const extraReferenceMedia = computed(() =>
-  extraRefPaths.value.map((path, idx) => ({
-    path,
-    previewUrl: extraRefPreviews.value[idx] || bindVideoAssetFromPath(path).previewUrl,
-  })),
-);
 
 watch(
-  [startImagePath, tailImagePath, sourceVideoPath, extraRefPaths],
+  [startImagePath, tailImagePath, sourceVideoPath],
   () => {
     persistComposerSnapshot();
   }
@@ -1146,7 +1111,6 @@ watch(
 
 const showAssetPicker = ref(false);
 const showTailAssetPicker = ref(false);
-const showExtraRefPicker = ref(false);
 const showH3RefPicker = ref(false);
 const h3RefPickKind = ref<'image' | 'video' | 'audio'>('image');
 type H3MediaRefRow = { kind: 'image' | 'video' | 'audio'; path: string; previewUrl: string };
@@ -1179,7 +1143,7 @@ function onPickH3Reference(kind: 'image' | 'video' | 'audio') {
   const count = h3MediaRefs.value.filter((row) => row.kind === kind).length;
   const cap = kind === 'image' ? spec.maxImages : kind === 'video' ? spec.maxVideos : spec.maxAudios;
   if (h3MediaRefs.value.length >= h3Ref2vaMax.value || count >= cap) {
-    toast.warning($tt('video.berniniRefMax', { n: h3Ref2vaMax.value }));
+    toast.warning($tt('video.refMax', { n: h3Ref2vaMax.value }));
     return;
   }
   h3RefPickKind.value = kind;
@@ -1238,41 +1202,6 @@ function removeTailImage() {
   tailImagePath.value = '';
 }
 
-function onExtraRefPick(payload: { path: string; previewUrl: string }) {
-  if (extraRefPaths.value.length >= berniniRefMax) {
-    toast.warning($tt('video.berniniRefMax', { n: berniniRefMax }));
-    return;
-  }
-  if (extraRefPaths.value.includes(payload.path)) {
-    showExtraRefPicker.value = false;
-    return;
-  }
-  extraRefPaths.value.push(payload.path);
-  extraRefPreviews.value.push(payload.previewUrl || '');
-  showExtraRefPicker.value = false;
-}
-
-function removeExtraReference(index: number) {
-  extraRefPaths.value = extraRefPaths.value.filter((_, i) => i !== index);
-  extraRefPreviews.value = extraRefPreviews.value.filter((_, i) => i !== index);
-}
-
-async function resolveReferenceAssetIds(paths: string[]): Promise<string[]> {
-  const ids: string[] = [];
-  for (const path of paths) {
-    if (path.startsWith('asset:')) {
-      ids.push(path.slice('asset:'.length));
-      continue;
-    }
-    const preview = extraRefPreviews.value[extraRefPaths.value.indexOf(path)] || '';
-    const blob = await api.gen.urlToBlob(preview || bindVideoAssetFromPath(path).previewUrl);
-    const up = await api.gen.uploadAsset(
-      new File([blob], 'ref.png', { type: blob.type || 'image/png' }),
-    );
-    ids.push((up as { id: string }).id);
-  }
-  return ids;
-}
 
 function onModelVersionChange(val: string) {
   const parsed = parseModelVersionValue(val);
@@ -1561,7 +1490,7 @@ const allVersions = computed(() => {
         size: (versionConfig as any).size || '',
         status: status.status,
         ready: status.ready,
-        recommended: config.recommended && (versionConfig as any).default,
+        recommended: config.recommended === true,
         commercialUseAllowed: config.commercial_use_allowed === true,
         actions,
       });
@@ -1649,18 +1578,7 @@ const videoModelPickerVersions = computed(() => {
     installedOnly: true,
     commercialOnly: modelFilterCommercialOnly.value,
   });
-  rows.sort((a, b) => {
-    const ar = a.recommended ? 1 : 0;
-    const br = b.recommended ? 1 : 0;
-    if (ar !== br) return br - ar;
-    const an = a.name || '';
-    const bn = b.name || '';
-    try {
-      return an.localeCompare(bn, 'zh');
-    } catch {
-      return an < bn ? -1 : an > bn ? 1 : 0;
-    }
-  });
+  rows.sort(compareModelPickerRows);
   return rows;
 });
 
@@ -2382,10 +2300,6 @@ const startGeneration = async (options: StartGenerationOptions = {}) => {
       if (adapters.length > 0) {
         animateBody.adapters = adapters;
       }
-      const refIds = await resolveReferenceAssetIds(extraRefPaths.value);
-      if (refIds.length > 0) {
-        animateBody.reference_asset_ids = refIds;
-      }
       appendActiveEnumFields(
         animateBody,
         params as Record<string, unknown>,
@@ -2413,10 +2327,6 @@ const startGeneration = async (options: StartGenerationOptions = {}) => {
       const adapters = buildVideoAdapters();
       if (adapters.length > 0) {
         body.adapters = adapters;
-      }
-      const refIds = await resolveReferenceAssetIds(extraRefPaths.value);
-      if (refIds.length > 0) {
-        body.reference_asset_ids = refIds;
       }
       appendActiveEnumFields(
         body,
@@ -2486,8 +2396,6 @@ watch(videoWorkMode, (mode) => {
     clearAnimateVideoReference();
     tailImageSrc.value = '';
     tailImagePath.value = '';
-    extraRefPaths.value = [];
-    extraRefPreviews.value = [];
   } else {
     h3MediaRefs.value = [];
   }
@@ -2615,15 +2523,6 @@ watch(durationOptions, (opts) => {
   syncNumFramesFromDuration();
 });
 
-watch(
-  () => currentModelConfig.value?.parameters?.bernini_renderer,
-  (isBernini) => {
-    if (!isBernini) {
-      extraRefPaths.value = [];
-      extraRefPreviews.value = [];
-    }
-  },
-);
 
 watch(selectedModelVersion, (val) => {
   onModelVersionChange(val);

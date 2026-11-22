@@ -120,11 +120,20 @@ Custom ops prefer stock MLX operators. A missing op is an explicit unavailable p
 
 ## 7. Weights, LoRA, and cache
 
-`weights/mlx.rs` loads every safetensors shard in a directory. Version keys are the published ones: `fp16`, `bf16`, `fp32`, `int8`, `int4`, `mlx-q4`, `mlx-q8`. An unfinished install does not enter the cache.
+`weights/mlx.rs` loads every safetensors shard in a directory. A version is one of two kinds: `kind: "dense"` is the only download (`fp16` / `bf16` / `fp32`); `kind: "derived"` names a dense `base` plus a `recipe` and is converted on the machine that installs it. Third-party pre-quantized packages are not registry versions. An unfinished install does not enter the cache.
 
 `WeightDtype::Native` is the production policy and it is not a family branch. Each dense tensor keeps the checkpoint dtype: BF16, FP16, or F32. `WeightDtype::F32` exists only under `cfg(test)` so a parity fixture can reproduce a widened reference. Production cannot select it. Norms, RoPE, and timestep tables may be cast inside the op. A registry label such as `fp16` is not evidence of the tensor dtype.
 
 Affine int4 and int8 stay packed: uint32 codes, scales, and biases live in an opaque `LinearWeight`. `apply` runs quantized matmul. The architecture guard rejects a path that dequantizes that matrix into a resident dense copy. Bits and group size are checked. Quantized norms or convolutions that the published loader widens do so in this weight layer, not in the family.
+
+### Local quantization (`kind: derived`)
+
+The registry publishes exactly one quantization tier per base model: `q4-mixed`, a `kind: "derived"` version that derives from the dense version. Nothing downloads a quantized package; `weights/quantize.rs` and `derive.rs` are the only producers, and the installer plus `danmo-quantize` share them.
+
+- A recipe in `default_config/quant_recipes/<id>.json` names the components to rewrite, `keep_dense` globs for the sensitive tensors (embeddings, norms, modulations, final projections), a `min_elements` floor, and one `{bits, group_size}` pair. One recipe quantizes every selected layer at one level because the loader rejects a bundle whose packed layers disagree.
+- Conversion runs on a CPU stream inside the process MLX executor. Output is the published layout the loader already reads: `{base}.weight` packed uint32 plus `{base}.scales` / `{base}.biases`, shard metadata `quantization_level`, and the untouched components copied verbatim.
+- `bundle.manifest.json` carries `format: "danmo-mlx-quantized"`, `format_version`, the recipe id and a hash of the recipe file, and a layout digest of the dense source. A recipe edit or a re-published base invalidates the bundle, and the load fails loud with a re-convert instruction. A converter that already owns a layout (LTX's split Comfy pack) reuses its own hook and gets the same manifest stamped afterwards.
+- A dense base is kept as the source of truth. Deleting it leaves the converted bundle usable but blocks converting another recipe until the base is re-installed.
 
 LoRA is a residual on that same `apply`: `y = Wx + scale * B(Ax)`, for both dense and packed linears. The shared loader matches published suffixes (`.lora_a` / `.lora_A` / `.lora_down`, including PEFT `.default`) onto weight names. `MlxWeights::attach_lora` attaches them. The cached base weights are not rewritten. Scale is strength times alpha over rank. Alpha comes from the tensor, else `lora_alpha` in `adapter_config.json` or `lora_config.json`, else the rank. A target that is not a 2-D linear fails.
 
@@ -136,7 +145,7 @@ The executor owns weights, compiled functions, and conditioning arrays. Cache id
 
 Invalid `DANQING_HTTP_PORT`, a missing MLX Cargo feature (`mlx-metal` / `mlx-cuda`), or a database init error fails startup. Registry JSON is opened on demand today; **startup-time registry validation is a tracked gap** and should fail loud once wired. Dequeue and task-finish failures are logged. They are not turned into an empty queue.
 
-The active control plane is the only writer of tasks and assets for the generation queue. A worker returns events and a file manifest. SSE progress is currently polled from the DB; realtime push is unfinished.
+The active control plane is the only writer of tasks and assets for the generation queue. A worker returns events and a file manifest. SSE progress is still polled from the DB (realtime push unfinished), but the stream emits `progress`/`status` only when values change and polls at ~200ms — unconditional 30ms emits starved the WebView during MLX denoise.
 
 Server adapters must not grow family-id branches. Availability gates call `danmo_engine::ensure_available`, capability checks read `FamilySpec`, and the training family comes from the catalog entry. The task-kind → `EngineRequest` mapping lives in `danmo_engine::engine_request` (`adapter.rs`) and is shared by every host.
 

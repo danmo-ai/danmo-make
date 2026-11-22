@@ -44,6 +44,7 @@
         <LoraTrainRunDetail
           :task-id="activeRunId"
           @verify="onVerifyGenerate"
+          @deleted="onRunDeleted"
         />
       </DqSurfaceCard>
 
@@ -661,6 +662,11 @@ function goToStep(i: number) {
 function openRun(taskId: string) {
   if (!taskId) return;
   activeRunId.value = taskId;
+}
+
+function onRunDeleted(taskId: string) {
+  if (activeRunId.value === taskId) activeRunId.value = '';
+  historyRef.value?.refresh();
 }
 
 function modelDisplayName(m: any): string {

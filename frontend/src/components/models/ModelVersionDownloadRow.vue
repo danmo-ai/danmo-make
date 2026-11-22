@@ -2,7 +2,7 @@
   <div
     class="model-version-row"
     :class="{
-      'model-version-row--prequantized': isPrequantized,
+      'model-version-row--prequantized': isPrequantized || isDerived,
       'is-ready': vstatus === 'ready',
       'is-pending': vstatus !== 'ready',
     }"
@@ -31,11 +31,15 @@
       </div>
     </div>
     <div class="model-version-row__actions" @click.stop>
+      <DqTag v-if="isDerived" type="info" effect="plain">
+        {{ $t('download.derived') }}
+      </DqTag>
       <ModelVersionDownloadActions
         :vstatus="vstatus"
         :can-download="canDownload"
         :dependency-hint="dependencyHint"
         :loading="loading"
+        :derived="isDerived"
         @download="$emit('download')"
         @delete="$emit('delete')"
       />
@@ -56,6 +60,7 @@ const props = defineProps<{
   vstatus: string;
   modelSource?: string;
   isPrequantized?: boolean;
+  isDerived?: boolean;
   hideSource?: boolean;
   canDownload: boolean;
   dependencyHint: string;
@@ -79,16 +84,16 @@ const displayName = computed(() => {
   return simplifyPrequantizedName(localizedName.value, resolvedSource.value);
 });
 
-const visibleBundleComponents = computed(() => {
-  if (props.bundleComponents.length === 0) return [];
-  if (props.vstatus !== 'ready') return [];
-  return props.bundleComponents.filter((comp) => !comp.ok);
-});
-
 const hasTags = computed(() => {
   if (props.ver.size) return true;
   if (!props.hideSource && resolvedSource.value) return true;
   if (props.vstatus === 'ready') return true;
   return visibleBundleComponents.value.length > 0;
+});
+
+const visibleBundleComponents = computed(() => {
+  if (props.bundleComponents.length === 0) return [];
+  if (props.vstatus !== 'ready') return [];
+  return props.bundleComponents.filter((comp) => !comp.ok);
 });
 </script>

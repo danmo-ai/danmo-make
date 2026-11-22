@@ -158,9 +158,7 @@ impl Host {
     /// `asset:` ids belong to the HTTP asset store and fail loud here.
     fn source_path(&self, source: &str) -> Result<PathBuf, String> {
         if let Some(id) = source.strip_prefix("asset:") {
-            return Err(format!(
-                "CLI has no asset store for {id}; pass a file path"
-            ));
+            return Err(format!("CLI has no asset store for {id}; pass a file path"));
         }
         let path = Path::new(source);
         Ok(if path.is_absolute() {
@@ -173,8 +171,8 @@ impl Host {
 
 impl ResolvePort for Host {
     fn resolve(&self, model: &str, action: Action) -> Result<ResolvedRun, EngineError> {
-        let catalog =
-            danmo_catalog::Catalog::open(&self.registry).map_err(|e| EngineError::Resolve(e.to_string()))?;
+        let catalog = danmo_catalog::Catalog::open(&self.registry)
+            .map_err(|e| EngineError::Resolve(e.to_string()))?;
         let bare = model.split(':').next().unwrap_or(model);
         let entry = catalog
             .model(bare)
@@ -183,7 +181,9 @@ impl ResolvePort for Host {
             .map_err(EngineError::Resolve)?;
         Ok(ResolvedRun {
             model: model.into(),
-            version: model.split_once(':').map(|(_, version)| version.to_string()),
+            version: model
+                .split_once(':')
+                .map(|(_, version)| version.to_string()),
             family: entry.family,
             action,
             bundle,
@@ -221,7 +221,9 @@ impl ResolvePort for Host {
         _run: &ResolvedRun,
         source_asset_id: &str,
     ) -> Result<(Vec<u8>, u32, u32), EngineError> {
-        let path = self.source_path(source_asset_id).map_err(EngineError::Resolve)?;
+        let path = self
+            .source_path(source_asset_id)
+            .map_err(EngineError::Resolve)?;
         danmo_engine::image::decode_file_rgb(&path).map_err(EngineError::Resolve)
     }
 
@@ -230,7 +232,9 @@ impl ResolvePort for Host {
         _run: &ResolvedRun,
         source_asset_id: &str,
     ) -> Result<PathBuf, EngineError> {
-        let path = self.source_path(source_asset_id).map_err(EngineError::Resolve)?;
+        let path = self
+            .source_path(source_asset_id)
+            .map_err(EngineError::Resolve)?;
         if !path.is_file() {
             return Err(EngineError::Resolve(format!(
                 "source video {} is missing",
@@ -285,10 +289,27 @@ fn write_bytes(path: &Path, bytes: &[u8]) -> Result<(), EngineError> {
     std::fs::write(path, bytes).map_err(|error| EngineError::Persist(error.to_string()))
 }
 
-struct CliObserver;
+struct CliObserver {
+    trace: Option<Arc<danmo_otel::TaskTrace>>,
+}
+
+impl CliObserver {
+    fn record_phase(&self, phase: &str) {
+        let Some(trace) = self.trace.as_ref() else {
+            return;
+        };
+        if phase.is_empty() || trace.current_phase().as_deref() == Some(phase) {
+            return;
+        }
+        trace.phase(phase);
+    }
+}
 
 impl RunObserver for CliObserver {
     fn progress(&self, phase: &str, step: u32, total: u32) -> Result<(), EngineError> {
+        if let Some(trace) = self.trace.as_ref() {
+            trace.progress(phase, step, total);
+        }
         let stride = (total / 20).max(1);
         if step == total || step % stride == 0 {
             eprintln!("[cli] {phase} {step}/{total}");
@@ -297,12 +318,28 @@ impl RunObserver for CliObserver {
     }
 
     fn log(&self, level: &str, message: &str) -> Result<(), EngineError> {
+        if let Some(trace) = self.trace.as_ref() {
+            trace.log_event(level, message);
+        }
         eprintln!("[cli] {level}: {message}");
         Ok(())
     }
 
     fn phase(&self, phase: &str) -> Result<(), EngineError> {
+        self.record_phase(phase);
         eprintln!("[cli] == {phase}");
+        Ok(())
+    }
+
+    fn annotate(&self, attributes: &[(&str, String)]) -> Result<(), EngineError> {
+        let Some(trace) = self.trace.as_ref() else {
+            return Ok(());
+        };
+        let attrs = attributes
+            .iter()
+            .map(|(key, value)| danmo_otel::attribute((*key).to_string(), value.clone()))
+            .collect::<Vec<_>>();
+        trace.set_attributes(attrs);
         Ok(())
     }
 }
@@ -335,10 +372,35 @@ pub fn run_task(host: &Host, kind: &str, model: &str, mut request: Value) -> Res
     let engine_request =
         danmo_engine::engine_request(kind, model, &params).map_err(|e| e.to_string())?;
     let engine = Engine::new(host, host, host.backend);
-    let exec = ExecutionContext::new(task_id, Arc::new(CliObserver));
-    let result = engine
-        .execute(engine_request, exec)
-        .map_err(|e| e.to_string())?;
+    // CLI runs land in the same trace store as the API so a local generation can
+    // be inspected in the task page. A store that cannot be opened fails loud:
+    // silently skipping would make "no trace" indistinguishable from "not traced".
+    let telemetry =
+        danmo_otel::Telemetry::init(&danmo_otel::cli_db_path(&host.workspace), "danmo-cli")
+            .map_err(|error| error.to_string())?;
+    let trace = Arc::new(telemetry.start_task(
+        &task_id,
+        vec![
+            danmo_otel::attribute("task.id", task_id.clone()),
+            danmo_otel::attribute("task.kind", kind),
+            danmo_otel::attribute("gen_ai.request.model", model),
+            danmo_otel::attribute("danmo.backend", host.backend.name()),
+            danmo_otel::attribute("danmo.source", "cli"),
+        ],
+    ));
+    let observer = Arc::new(CliObserver {
+        trace: Some(trace.clone()),
+    });
+    let exec = ExecutionContext::new(task_id, observer);
+    let outcome = engine.execute(engine_request, exec);
+    match &outcome {
+        Ok(_) => {}
+        Err(EngineError::Cancelled) => trace.cancelled(),
+        Err(error) => trace.fail(&error.to_string()),
+    }
+    trace.finish();
+    telemetry.shutdown().map_err(|error| error.to_string())?;
+    let result = outcome.map_err(|e| e.to_string())?;
     for path in &result.output_paths {
         println!("{}", path.display());
     }
@@ -407,9 +469,7 @@ fn stamp_edit_card(
 }
 
 fn ensure_seed(request: &mut Value) {
-    let missing = request
-        .get("seed")
-        .is_none_or(|seed| seed.is_null());
+    let missing = request.get("seed").is_none_or(|seed| seed.is_null());
     if missing {
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -459,8 +519,8 @@ fn user_lora_path(host: &Host, id: &str) -> Result<Option<PathBuf>, String> {
     if !path.is_file() {
         return Ok(None);
     }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let text =
+        std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     let root: Value =
         serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
     let Some(items) = root.get("items").and_then(Value::as_array) else {
@@ -496,7 +556,11 @@ fn registry_lora_path(host: &Host, id: &str) -> Result<PathBuf, String> {
 }
 
 /// Insert optional scalar flags into the request object when present.
-pub fn apply_options(request: &mut Map<String, Value>, args: &Args, keys: &[&str]) -> Result<(), String> {
+pub fn apply_options(
+    request: &mut Map<String, Value>,
+    args: &Args,
+    keys: &[&str],
+) -> Result<(), String> {
     for &key in keys {
         if let Some(raw) = args.get(key) {
             let field = key.replace('-', "_");
@@ -511,4 +575,153 @@ pub fn apply_options(request: &mut Map<String, Value>, args: &Args, keys: &[&str
         }
     }
     Ok(())
+}
+
+/// Workspace root for tools that take no `--output` (e.g. `danmo-quantize`).
+pub fn workspace_root(args: &Args) -> Result<PathBuf, String> {
+    Ok(args
+        .get("workspace")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("DANQING_WORKSPACE").map(PathBuf::from))
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))))
+}
+
+/// Factory checkout root: the parent of `default_config/quant_recipes`.
+pub fn repo_root(args: &Args) -> Result<PathBuf, String> {
+    if let Some(explicit) = args
+        .get("repo-root")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("DANQING_REPO_ROOT").map(PathBuf::from))
+    {
+        if !explicit.join("default_config/quant_recipes").is_dir() {
+            return Err(format!(
+                "{} has no default_config/quant_recipes",
+                explicit.display()
+            ));
+        }
+        return Ok(explicit);
+    }
+    let mut probe = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    for _ in 0..6 {
+        if probe.join("default_config/quant_recipes").is_dir() {
+            return Ok(probe);
+        }
+        if !probe.pop() {
+            break;
+        }
+    }
+    Err("cannot find default_config/quant_recipes; pass --repo-root".into())
+}
+
+/// Resolve a workspace-relative or absolute path.
+pub fn resolve_path(workspace: &Path, path: &str) -> PathBuf {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        path
+    } else {
+        workspace.join(path)
+    }
+}
+
+/// Every recipe id shipped in `default_config/quant_recipes`.
+pub fn list_recipes(workspace: &Path, repo_root: &Path) -> Result<Vec<String>, String> {
+    let mut ids = Vec::new();
+    for dir in [
+        workspace.join("config/quant_recipes"),
+        repo_root.join("default_config/quant_recipes"),
+    ] {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            if !ids.iter().any(|id| id == stem) {
+                ids.push(stem.to_string());
+            }
+        }
+    }
+    ids.sort();
+    Ok(ids)
+}
+
+/// Dense bundle layout decides which family recipe applies. Unknown layouts
+/// fail loud instead of guessing a recipe.
+pub fn default_recipe_for(base: &Path) -> Result<String, String> {
+    let has = |name: &str| base.join(name).is_dir();
+    let any_file = |ext: &str| {
+        std::fs::read_dir(base)
+            .ok()
+            .map(|entries| {
+                entries.flatten().any(|entry| {
+                    entry.path().extension().and_then(|value| value.to_str()) == Some(ext)
+                })
+            })
+            .unwrap_or(false)
+    };
+    if has("FL2VA") {
+        return Ok("minimax-h3-q4-mixed-v1".into());
+    }
+    if has("dit") && !has("transformer") {
+        return Ok("longcat-avatar-q4-mixed-v1".into());
+    }
+    if base.join("diffusion_models").is_dir() {
+        return Ok("ltx25-q4-mixed-v1".into());
+    }
+    if has("transformer") && has("text_encoder") && has("vae") {
+        return Ok("z-image-q4-mixed-v1".into());
+    }
+    if has("transformer") {
+        return Ok("flux2-q4-mixed-v1".into());
+    }
+    if any_file("safetensors") {
+        // Flat bundle: an LLM tree or an upscaler. A tokenizer beside the
+        // shards means an LLM.
+        if base.join("tokenizer.json").is_file() {
+            return Ok("qwen3-q4-mixed-v1".into());
+        }
+        return Ok("seedvr2-q4-mixed-v1".into());
+    }
+    Err(format!(
+        "cannot infer a quantization recipe for {}; pass --recipe",
+        base.display()
+    ))
+}
+
+/// Default output directory beside the dense base. Same layout rule as the
+/// installer (`danmo_engine::derived_layout`), so CLI and API cannot drift.
+pub fn default_output(base: &Path) -> String {
+    danmo_engine::derived_layout(Path::new(""), &base.display().to_string(), "q4-mixed")
+        .display()
+        .to_string()
+}
+
+/// Convert a dense bundle. Thin wrapper over the engine entry point so the CLI
+/// and the installer cannot drift.
+pub fn run_quantize(
+    workspace: &Path,
+    repo_root: &Path,
+    base: &Path,
+    output: &str,
+    recipe_id: &str,
+) -> Result<danmo_engine::QuantizeReport, String> {
+    danmo_engine::run_derive(
+        workspace,
+        repo_root,
+        &base.display().to_string(),
+        output,
+        recipe_id,
+        Box::new(|| false),
+        Box::new(|message| eprintln!("[danmo-quantize] {message}")),
+    )
+}
+
+/// Find a recipe file for `--print-recipe`.
+pub fn find_recipe(workspace: &Path, repo_root: &Path, id: &str) -> Result<String, String> {
+    danmo_engine::find_recipe(workspace, repo_root, id).map(|path| path.display().to_string())
 }

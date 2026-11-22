@@ -5,7 +5,21 @@ export interface ModelVersion {
   size?: string;
   source?: string;
   source_type?: string;
+  /** `dense` download or `derived` local quantization. */
+  kind?: string;
+  /** Dense version key a `derived` tier builds from. */
+  base?: string;
   default?: boolean;
+}
+
+export function isDerivedVersion(ver: ModelVersion | undefined): boolean {
+  return ver?.source_type === 'derived' || ver?.kind === 'derived';
+}
+
+export function isDenseVersion(ver: ModelVersion | undefined): boolean {
+  if (!ver) return false;
+  if (isDerivedVersion(ver)) return false;
+  return ver.kind === 'dense' || ver.source_type === 'full' || !ver.source_type;
 }
 
 /** Flatten registry version name for sort / regex (import $vn at call sites in Vue). */
@@ -89,16 +103,14 @@ export function buildModelVersionLayout(
 
   for (const [verKey, ver] of Object.entries(model.versions)) {
     if (isUnsupportedRuntimeVersion(verKey)) continue;
-    if (ver.source_type === 'derived') {
-      // Derived local quant is removed; ignore stale registry leftovers.
-      continue;
-    }
     const row: VersionRow = {
       verKey,
       ver,
       vstatus: getVersionStatus(model.id, verKey),
     };
-    if (ver.source_type === 'prequantized') {
+    // `derived` is the locally built quantization (q4-mixed). It sits in the
+    // lightweight column next to the full-precision download it derives from.
+    if (ver.source_type === 'prequantized' || ver.source_type === 'derived') {
       lightweightRows.push(row);
     } else {
       fullRows.push(row);
@@ -108,12 +120,14 @@ export function buildModelVersionLayout(
   fullRows.sort((a, b) => {
     if (a.ver.default === true && b.ver.default !== true) return -1;
     if (b.ver.default === true && a.ver.default !== true) return 1;
-    return versionNamePlain(a.ver.name).localeCompare(versionNamePlain(b.ver.name));
+    return versionNamePlain(a.ver.name).localeCompare(versionNamePlain(b.ver.name), 'zh');
   });
 
-  lightweightRows.sort((a, b) =>
-    versionNamePlain(a.ver.name).localeCompare(versionNamePlain(b.ver.name))
-  );
+  lightweightRows.sort((a, b) => {
+    if (a.ver.default === true && b.ver.default !== true) return -1;
+    if (b.ver.default === true && a.ver.default !== true) return 1;
+    return versionNamePlain(a.ver.name).localeCompare(versionNamePlain(b.ver.name), 'zh');
+  });
 
   const fullBlocks: FullVersionBlock[] = fullRows.map((row) => ({
     ...row,
