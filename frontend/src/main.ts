@@ -20,6 +20,7 @@ import '@danqing/dq-tokens/dq-agent.css';
 import '@danqing/dq-ui/style.css';
 import '@danqing/dq-shell/style.css';
 import './styles/theme.css';
+import './styles/productivity.css';
 import '@danqing/dq-tokens/dq-tauri-macos.css';
 
 // Default flash before Pinia init — macOS dark

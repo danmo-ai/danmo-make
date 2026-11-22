@@ -1,0 +1,119 @@
+{
+ "date": "2026-11-18",
+ "bundles": {
+  "q4-16": {
+   "fixture_sha256": "c753d18de7be77fbb1adc89fbb311610a6d26b899e8bf5632a675270fc356b95",
+   "width": 16,
+   "height": 16,
+   "steps": 9,
+   "quantization_bits": 4,
+   "quantization_group_size": 64,
+   "teacache": true,
+   "cache_counts": {
+    "computed": 4,
+    "skipped": 5
+   },
+   "main_timings": {
+    "encode": 0.634821291998378,
+    "dit_load_and_denoise": 1.8764813330053585,
+    "vae": 0.01746370899491012,
+    "total": 2.548978958002408
+   },
+   "main_memory": {
+    "peak": 4828067080,
+    "active": 285661830
+   }
+  },
+  "q4-768x1280": {
+   "fixture_sha256": "72b8c57110652639125136eda4a68ff2a7c9fec3dbc49d24576fb5aa7f6d4301",
+   "width": 768,
+   "height": 1280,
+   "steps": 9,
+   "quantization_bits": 4,
+   "quantization_group_size": 64,
+   "teacache": true,
+   "cache_counts": {
+    "computed": 9,
+    "skipped": 0
+   },
+   "main_timings": {
+    "encode": 0.6294740000012098,
+    "dit_load_and_denoise": 16.671410291994107,
+    "vae": 0.8387499170057708,
+    "total": 18.210469249999733
+   },
+   "main_memory": {
+    "peak": 14025201656,
+    "active": 418846426
+   },
+   "rust_memory": {
+    "active_memory": 330878732,
+    "dit_weight_bytes": 3465730304,
+    "main_active_memory": 418846426,
+    "main_peak_memory": 14025201656,
+    "peak_memory": 14706888508,
+    "weight_dtype": "checkpoint",
+    "report_sha256": "3189a52da64674f0cfa93f6544d60ec2b1217cf6e292f9b3f3d25371ec572f87",
+    "peak_ratio": 1.0486,
+    "active_ratio": 0.79
+   }
+  },
+  "q8-16": {
+   "fixture_sha256": "a779a22e5b8321270d16e29177354dbdce23f6c82311ba34bc28d9622c84209e",
+   "width": 16,
+   "height": 16,
+   "steps": 9,
+   "quantization_bits": 8,
+   "quantization_group_size": 64,
+   "teacache": true,
+   "cache_counts": {
+    "computed": 5,
+    "skipped": 4
+   },
+   "main_timings": {
+    "encode": 0.9543102080060635,
+    "dit_load_and_denoise": 2.577620375013794,
+    "vae": 0.01832320798712317,
+    "total": 3.5791541660000803
+   },
+   "main_memory": {
+    "peak": 7093581888,
+    "active": 336648838
+   }
+  },
+  "q8-768x1280": {
+   "fixture_sha256": "d9b991a60c5831b2e1e496d7ab9c364053e2c39be83c78ffcb1c64bda8fd01f9",
+   "width": 768,
+   "height": 1280,
+   "steps": 9,
+   "quantization_bits": 8,
+   "quantization_group_size": 64,
+   "teacache": true,
+   "cache_counts": {
+    "computed": 9,
+    "skipped": 0
+   },
+   "main_timings": {
+    "encode": 0.6860591669974383,
+    "dit_load_and_denoise": 17.220125750012812,
+    "vae": 0.6782377089984948,
+    "total": 18.670759291999275
+   },
+   "main_memory": {
+    "peak": 14076188664,
+    "active": 469833434
+   },
+   "rust_memory": {
+    "active_memory": 331419404,
+    "dit_weight_bytes": 6542661888,
+    "main_active_memory": 469833434,
+    "main_peak_memory": 14076188664,
+    "peak_memory": 14707429180,
+    "weight_dtype": "checkpoint",
+    "report_sha256": "db818f953c134a06b0634f295d22f6c79af329346c31edfd85a619d26417d83b",
+    "peak_ratio": 1.0448,
+    "active_ratio": 0.7054
+   }
+  }
+ }
+}

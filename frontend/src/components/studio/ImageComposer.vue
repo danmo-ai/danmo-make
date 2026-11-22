@@ -12,6 +12,15 @@
       class="image-composer__title"
     />
 
+    <DqSegmented
+      v-if="modeOptions && modeOptions.length > 0"
+      v-model="localMode"
+      block
+      size="sm"
+      :options="modeOptions"
+      class="studio-composer-setup__mode"
+    />
+
     <!-- Middle: Prompt input -->
     <div class="image-composer__prompt-block">
     <div class="image-composer__prompt-wrap">
@@ -27,7 +36,7 @@
       />
 
       <!-- Bottom-left: Reference image -->
-      <div class="image-composer__ref-area">
+      <div v-if="localMode === 'img2img'" class="image-composer__ref-area">
         <div
           v-if="referenceImage"
           class="image-composer__ref-pill"
@@ -46,7 +55,7 @@
               :aria-label="$t('create.reversePrompt')"
               @click="$emit('reverse-prompt')"
             >
-              <DqIcon :size="10"><Refresh /></DqIcon>
+              <DqIcon :size="14"><Refresh /></DqIcon>
             </DqIconButton>
           </ComposerIconTip>
           <ComposerIconTip :content="$t('create.composerTip.removeRef')">
@@ -56,7 +65,7 @@
               :aria-label="$t('common.delete')"
               @click="$emit('remove-reference')"
             >
-              <DqIcon :size="10"><Close /></DqIcon>
+              <DqIcon :size="14"><Close /></DqIcon>
             </DqIconButton>
           </ComposerIconTip>
         </div>
@@ -76,7 +85,7 @@
               :aria-label="$t('common.delete')"
               @click="$emit('remove-extra-reference', idx)"
             >
-              <DqIcon :size="10"><Close /></DqIcon>
+              <DqIcon :size="14"><Close /></DqIcon>
             </DqIconButton>
           </ComposerIconTip>
         </div>
@@ -95,7 +104,7 @@
             <DqIcon :size="14"><Picture /></DqIcon>
           </DqIconButton>
         </ComposerIconTip>
-        <ComposerIconTip v-else-if="!referenceImage && !referencesBlocked" :content="$t('create.composerTip.refImage')">
+        <ComposerIconTip v-else-if="!referenceImage" :content="$t('create.composerTip.refImage')">
           <DqIconButton
             type="text"
             size="sm"
@@ -168,33 +177,23 @@
     />
     </div>
 
-    <!-- Toolbar -->
-    <ComposerToolbar>
-      <template #mode>
-        <DqSegmented
-          v-if="modeOptions && modeOptions.length > 0"
-          v-model="localMode"
-          size="sm"
-          :options="modeOptions"
-        />
-      </template>
-      <template #controls>
-        <ModelSelect
-          v-model="localModel"
-          :options="modelOptions"
-          variant="ghost"
-          class="studio-composer-toolbar__select studio-composer-toolbar__select--model"
-          @change="(val: string) => emit('model-change', val)"
-        />
-
+    <div class="studio-composer-setup">
+      <ModelSelect
+        v-model="localModel"
+        :options="modelOptions"
+        variant="ghost"
+        class="studio-composer-toolbar__select studio-composer-toolbar__select--model"
+        @change="(val: string) => emit('model-change', val)"
+      />
+      <div class="studio-composer-setup__basics">
         <DqSelect
           v-if="!isImg2imgMode && !lockSize"
           v-model="localSize"
           size="sm"
           variant="ghost"
-          
+          :placeholder="$t('studio.resolution')"
+          :disabled="sizeOptions.length === 0"
           class="studio-composer-toolbar__select studio-composer-toolbar__select--size"
-        
         >
           <DqOption
             v-for="opt in sizeOptions"
@@ -203,15 +202,11 @@
             :label="formatResolutionOptionLabel(opt)"
           />
         </DqSelect>
-      </template>
-      <template #actions>
         <DqSelect
           v-model="localBatchCount"
           size="sm"
           variant="ghost"
-          
           class="studio-composer-toolbar__select studio-composer-toolbar__select--batch"
-        
         >
           <DqOption
             v-for="n in 4"
@@ -220,11 +215,11 @@
             :value="n"
           />
         </DqSelect>
+      </div>
+    </div>
 
-        <span
-          v-if="generateBlockReason"
-          class="studio-composer-toolbar__generate-reason"
-        >{{ generateBlockReason }}</span>
+    <ComposerToolbar>
+      <template #actions>
         <DqButton
           type="primary"
           size="sm"
@@ -254,15 +249,9 @@
         :compatible-control-nets="compatibleControlNets"
         :control-net-runtime-available="controlNetRuntimeAvailable"
         :control-image="controlImage"
-        :inpaint-source-image="inpaintSourceImage"
-        :inpaint-mask-image="inpaintMaskImage"
         :show-negative-prompt="showNegativePrompt"
         @pick-control="$emit('pick-control')"
         @remove-control="$emit('remove-control')"
-        @pick-inpaint-source="$emit('pick-inpaint-source')"
-        @remove-inpaint-source="$emit('remove-inpaint-source')"
-        @pick-inpaint-mask="$emit('pick-inpaint-mask')"
-        @remove-inpaint-mask="$emit('remove-inpaint-mask')"
       />
     </ComposerAdvancedCollapsible>
   </div>
@@ -325,8 +314,6 @@ const props = withDefaults(defineProps<{
   referenceImage: { previewUrl: string; path: string } | null;
   extraReferenceImages?: Array<{ previewUrl: string; path: string }>;
   controlImage?: { previewUrl: string; path: string } | null;
-  inpaintSourceImage?: { previewUrl: string; path: string } | null;
-  inpaintMaskImage?: { previewUrl: string; path: string } | null;
   /**
    * Optional mode selector. If provided, a segmented control is shown in the
    * toolbar for switching between text2img / img2img modes.
@@ -345,10 +332,6 @@ const props = withDefaults(defineProps<{
   lockSize?: boolean;
   /** Override primary generate button label. */
   generateLabel?: string;
-  /** Selected version cannot take reference images (HiDream mlx-q8). */
-  referencesBlocked?: boolean;
-  /** Shown beside the generate button when references are blocked. */
-  generateBlockReason?: string;
   promptApplyPreview?: string | null;
   successorHint?: { successorId: string; successorName: string } | null;
 }>(), {
@@ -357,8 +340,6 @@ const props = withDefaults(defineProps<{
   embedded: false,
   lockSize: false,
   extraReferenceImages: () => [],
-  referencesBlocked: false,
-  generateBlockReason: '',
 });
 
 const emit = defineEmits<{
@@ -376,10 +357,6 @@ const emit = defineEmits<{
   (e: 'remove-extra-reference', index: number): void;
   (e: 'pick-control'): void;
   (e: 'remove-control'): void;
-  (e: 'pick-inpaint-source'): void;
-  (e: 'remove-inpaint-source'): void;
-  (e: 'pick-inpaint-mask'): void;
-  (e: 'remove-inpaint-mask'): void;
   (e: 'model-change', value: string): void;
   (e: 'reset-defaults'): void;
   (e: 'enhance', ctx?: { stylePositive?: string }): void;
@@ -394,7 +371,6 @@ const emit = defineEmits<{
 const { t: $t } = useI18n();
 
 const extraReferenceCap = computed(() => {
-  if (props.referencesBlocked) return 0;
   const raw = props.currentModelConfig?.parameters as Record<string, unknown> | undefined;
   return extraReferenceSlotCap(raw);
 });
@@ -424,9 +400,7 @@ const advancedOpen = ref(false);
 const selectedStyle = ref('');
 const lastStylePositive = ref('');
 
-const isImg2imgMode = computed(
-  () => localMode.value === 'img2img' || props.referenceImage != null,
-);
+const isImg2imgMode = computed(() => localMode.value === 'img2img');
 
 const localTitle = computed({
   get: () => props.title || '',
@@ -537,10 +511,10 @@ function onStyleCommand(command: string) {
 <style scoped>
 .image-composer {
   border-radius: var(--dq-radius-group);
-  padding: 14px 16px 12px;
+  padding: 4px 0 16px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 16px;
   width: 100%;
   min-width: 0;
   container-type: inline-size;
@@ -571,9 +545,9 @@ function onStyleCommand(command: string) {
   border-radius: var(--dq-radius-group);
   font-size: var(--dq-font-size-body);
   line-height: 1.5;
-  padding: 10px 12px 32px;
-  min-height: 4.5rem;
-  max-height: 4.5rem;
+  padding: 12px 12px 36px;
+  min-height: 7.5rem;
+  max-height: 14rem;
   resize: none;
   overflow-y: auto;
   transition: border-color 0.15s ease, background 0.15s ease;
@@ -602,7 +576,7 @@ function onStyleCommand(command: string) {
 
 .image-composer__ref-index {
   min-width: 0.7rem;
-  font-size: 10px;
+  font-size: var(--dq-font-size-caption);
   line-height: 1;
   font-variant-numeric: tabular-nums;
   color: var(--dq-label-secondary);
@@ -614,14 +588,6 @@ function onStyleCommand(command: string) {
   height: 20px;
   object-fit: cover;
   border-radius: 3px;
-}
-
-.studio-composer-toolbar__generate-reason {
-  max-width: 16rem;
-  font-size: var(--dq-font-size-caption);
-  line-height: 1.3;
-  color: var(--dq-label-secondary);
-  text-align: right;
 }
 
 .image-composer__ref-add {
@@ -758,9 +724,4 @@ function onStyleCommand(command: string) {
   gap: 4px;
 }
 
-/* Hint - compact inline */
-.image-composer__prompt :deep(.dq-input--textarea) {
-  min-height: 7.5rem;
-  max-height: 14rem;
-}
 </style>

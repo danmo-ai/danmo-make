@@ -8,93 +8,119 @@
     <span class="canvas-item-toolbar__label">{{ toolbarLabel }}</span>
 
     <template v-if="pageMedia === 'image' && isImage">
-      <DqIconButton
-        type="text"
-        size="sm"
-        :label="$t('action.image.rewrite')"
-        @click="$emit('action', 'quick-reference')"
-      >
-        <DqIcon :size="14"><Picture /></DqIcon>
-      </DqIconButton>
-      <DqIconButton
-        type="text"
-        size="sm"
-        :label="$t('action.image.retouch')"
-        @click="$emit('action', 'retouch')"
-      >
-        <DqIcon :size="14"><Brush /></DqIcon>
-      </DqIconButton>
-      <DqIconButton
-        type="text"
-        size="sm"
-        :label="$t('action.image.extend')"
-        @click="$emit('action', 'extend')"
-      >
-        <DqIcon :size="14"><Grid /></DqIcon>
-      </DqIconButton>
-      <DqIconButton
-        type="text"
-        size="sm"
-        :label="$t('action.image.upscale')"
-        @click="$emit('action', 'upscale')"
-      >
-        <DqIcon :size="14"><ZoomIn /></DqIcon>
-      </DqIconButton>
+      <ComposerIconTip :content="$t('action.image.rewrite')">
+        <DqIconButton
+          type="text"
+          size="sm"
+          :label="$t('action.image.rewrite')"
+          @click="$emit('action', 'quick-reference')"
+        >
+          <DqIcon :size="14"><Pencil /></DqIcon>
+        </DqIconButton>
+      </ComposerIconTip>
+      <ComposerIconTip :content="$t('action.image.retouch')">
+        <DqIconButton
+          type="text"
+          size="sm"
+          :label="$t('action.image.retouch')"
+          @click="$emit('action', 'retouch')"
+        >
+          <DqIcon :size="14"><Brush /></DqIcon>
+        </DqIconButton>
+      </ComposerIconTip>
+      <ComposerIconTip :content="$t('action.image.extend')">
+        <DqIconButton
+          type="text"
+          size="sm"
+          :label="$t('action.image.extend')"
+          @click="$emit('action', 'extend')"
+        >
+          <DqIcon :size="14"><Grid /></DqIcon>
+        </DqIconButton>
+      </ComposerIconTip>
+      <ComposerIconTip :content="$t('action.image.upscale')">
+        <DqIconButton
+          type="text"
+          size="sm"
+          :label="$t('action.image.upscale')"
+          @click="$emit('action', 'upscale')"
+        >
+          <DqIcon :size="14"><ZoomIn /></DqIcon>
+        </DqIconButton>
+      </ComposerIconTip>
     </template>
 
     <template v-else-if="pageMedia === 'video' && isImage">
-      <DqIconButton
-        type="text"
-        size="sm"
-        :label="$t('action.video.animate')"
-        @click="$emit('action', 'quick-animate')"
-      >
-        <DqIcon :size="14"><VideoCamera /></DqIcon>
-      </DqIconButton>
+      <ComposerIconTip :content="$t('action.video.animate')">
+        <DqIconButton
+          type="text"
+          size="sm"
+          :label="$t('action.video.animate')"
+          @click="$emit('action', 'quick-animate')"
+        >
+          <DqIcon :size="14"><VideoCamera /></DqIcon>
+        </DqIconButton>
+      </ComposerIconTip>
     </template>
 
     <template v-else-if="pageMedia === 'video' && isVideo">
-      <DqIconButton
-        type="text"
-        size="sm"
-        :label="$t('action.video.edit')"
-        @click="$emit('action', 'quick-animate-video')"
-      >
-        <DqIcon :size="14"><VideoCamera /></DqIcon>
-      </DqIconButton>
-      <DqIconButton
-        type="text"
-        size="sm"
-        :label="$t('action.video.upscale')"
-        @click="$emit('action', 'upscale')"
-      >
-        <DqIcon :size="14"><ZoomIn /></DqIcon>
-      </DqIconButton>
+      <ComposerIconTip :content="$t('action.video.edit')">
+        <DqIconButton
+          type="text"
+          size="sm"
+          :label="$t('action.video.edit')"
+          @click="$emit('action', 'quick-animate-video')"
+        >
+          <DqIcon :size="14"><VideoCamera /></DqIcon>
+        </DqIconButton>
+      </ComposerIconTip>
+      <ComposerIconTip :content="$t('action.video.upscale')">
+        <DqIconButton
+          type="text"
+          size="sm"
+          :label="$t('action.video.upscale')"
+          @click="$emit('action', 'upscale')"
+        >
+          <DqIcon :size="14"><ZoomIn /></DqIcon>
+        </DqIconButton>
+      </ComposerIconTip>
     </template>
 
     <template v-else-if="pageMedia === 'audio' && isAudio">
+      <ComposerIconTip
+        v-for="action in audioEditActions"
+        :key="action.command"
+        :content="$t(action.labelKey)"
+      >
+        <DqIconButton
+          type="text"
+          size="sm"
+          :label="$t(action.labelKey)"
+          @click="$emit('action', action.command)"
+        >
+          <DqIcon :size="14"><component :is="action.icon" /></DqIcon>
+        </DqIconButton>
+      </ComposerIconTip>
+    </template>
+
+    <ComposerIconTip v-if="hasWorkflow" :content="$t('canvas.branchGenerate')">
       <DqIconButton
         type="text"
         size="sm"
-        :label="$t('action.audio.cover')"
-        @click="$emit('action', 'quick-cover')"
+        :label="$t('canvas.branchGenerate')"
+        @click="$emit('action', 'branch')"
       >
-        <DqIcon :size="14"><Headset /></DqIcon>
+        <DqIcon :size="14"><Plus /></DqIcon>
       </DqIconButton>
-    </template>
-
-    <DqIconButton
-      v-if="hasWorkflow"
-      type="text"
-      size="sm"
-      :label="$t('canvas.branchGenerate')"
-      @click="$emit('action', 'branch')"
-    >
-      <DqIcon :size="14"><Plus /></DqIcon>
-    </DqIconButton>
+    </ComposerIconTip>
 
     <DqDropdown trigger="click" size="sm" @command="(cmd: string) => $emit('action', cmd)">
-      <DqIconButton type="text" size="sm" :label="$t('canvas.moreMenu')" @click.stop>
+      <DqIconButton
+        type="text"
+        size="sm"
+        :label="$t('canvas.moreMenu')"
+        :title="$t('canvas.moreMenu')"
+      >
         <DqIcon :size="14"><Menu /></DqIcon>
       </DqIconButton>
       <template #dropdown>
@@ -122,9 +148,6 @@
             </DqDropdownItem>
           </template>
           <template v-else-if="pageMedia === 'video' && isVideo">
-            <DqDropdownItem command="use-animate-source">
-              {{ $t('canvas.useAsAnimateSource') }}
-            </DqDropdownItem>
             <DqDropdownItem command="use-video-source">
               {{ $t('canvas.useAsVideoSource') }}
             </DqDropdownItem>
@@ -164,13 +187,13 @@
           <DqDropdownItem command="ai-describe-text">
             {{ $t('canvas.aiDescribeTextOnly') }}
           </DqDropdownItem>
-            <DqDropdownItem
-              v-if="pageMedia === 'image' && isImage"
-              command="train-lora"
-            >
-              {{ $t('loraTrain.saveToDataset') }}
-            </DqDropdownItem>
-            <DqDropdownItem divided command="download">
+          <DqDropdownItem
+            v-if="pageMedia === 'image' && isImage"
+            command="train-lora"
+          >
+            {{ $t('loraTrain.saveToDataset') }}
+          </DqDropdownItem>
+          <DqDropdownItem divided command="download">
             {{ $t('gallery.download') }}
           </DqDropdownItem>
         </DqDropdownMenu>
@@ -179,14 +202,16 @@
 
     <span class="canvas-item-toolbar__sep" aria-hidden="true" />
 
-    <DqIconButton
-      type="text"
-      size="sm"
-      :label="$t('canvas.removeFromCanvas')"
-      @click="$emit('action', 'remove')"
-    >
-      <DqIcon :size="14"><Close /></DqIcon>
-    </DqIconButton>
+    <ComposerIconTip :content="$t('canvas.removeFromCanvas')">
+      <DqIconButton
+        type="text"
+        size="sm"
+        :label="$t('canvas.removeFromCanvas')"
+        @click="$emit('action', 'remove')"
+      >
+        <DqIcon :size="14"><Close /></DqIcon>
+      </DqIconButton>
+    </ComposerIconTip>
   </div>
 </template>
 
@@ -197,10 +222,11 @@ import { lineageRelationLabel } from '@/utils/lineageRelationLabel';
 import {
   Brush,
   Close,
+  Download,
   Grid,
   Headset,
   Menu,
-  Picture,
+  Pencil,
   Plus,
   VideoCamera,
   ZoomIn,
@@ -211,6 +237,7 @@ import {
   isImageGalleryItem,
   isVideoGalleryItem,
 } from '@/utils/canvasAssets';
+import ComposerIconTip from '@/components/studio/ComposerIconTip.vue';
 
 const props = defineProps<{
   visible: boolean;
@@ -228,6 +255,14 @@ defineEmits<{
 }>();
 
 const { t: $t } = useI18n();
+
+const audioEditActions = [
+  { command: 'audio-cover', labelKey: 'action.audio.cover', icon: Headset },
+  { command: 'audio-repaint', labelKey: 'action.audio.repaint', icon: Brush },
+  { command: 'audio-lego', labelKey: 'action.audio.lego', icon: Plus },
+  { command: 'audio-extract', labelKey: 'action.audio.extract', icon: Download },
+  { command: 'audio-complete', labelKey: 'action.audio.complete', icon: Grid },
+];
 
 const pageMedia = computed(() => props.media || 'image');
 

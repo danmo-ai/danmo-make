@@ -29,6 +29,29 @@ export function assetIdFromGalleryPath(path: string): string {
   return path.slice('asset:'.length);
 }
 
+/** Minimal gallery row so board nodes still render when the paged catalog lags. */
+export function galleryStubForAssetPath(
+  path: string,
+  dims?: { width?: number; height?: number; title?: string; prompt?: string },
+): GalleryItem {
+  const id = assetIdFromGalleryPath(path) || path;
+  const width = Math.max(0, Number(dims?.width) || 0);
+  const height = Math.max(0, Number(dims?.height) || 0);
+  return {
+    path: path.startsWith('asset:') ? path : `asset:${id}`,
+    name: id,
+    width: width || 512,
+    height: height || 512,
+    duration_seconds: null,
+    created_at: '',
+    title: dims?.title || '',
+    prompt: dims?.prompt || '',
+    model: '',
+    thumbnail: id ? `/api/assets/${encodeURIComponent(id)}/thumbnail` : '',
+    metadata: { asset_kind: 'image' },
+  };
+}
+
 /** Preview URL for composer / canvas overlays (thumbnail when available). */
 /** mm:ss for canvas badges and layer panel. */
 export function canvasNodeDisplayName(

@@ -6,68 +6,83 @@
     @scroll="onCanvasScroll"
   >
     <template #filters>
-      <StudioGalleryFilters
-        :filter-time="filterTime"
-        :filter-models="filterModels"
-        :search-text="searchText"
-        :time-options="timeOptions"
-        :model-options="allModelOptions"
-        :selection-mode="selectionMode"
-        :selected-count="selectedPaths.size"
-        :all-selected="allLoadedSelected"
-        :view-mode="viewMode"
-        :supports-canvas="true"
-        canvas-media="video"
-        :composer-busy="composerBusy"
-        @update:filter-time="filterTime = $event"
-        @update:filter-models="filterModels = $event"
-        @update:search-text="searchText = $event"
-        @refresh="refreshGallery"
-        @toggle-selection-mode="toggleSelectionMode"
-        @select-all="selectAllLoaded"
-        @batch-delete="batchDeleteSelected"
-        @clear-selection="clearSelection"
-        @update:view-mode="onViewModeChange"
-        @composer-restore="onCanvasComposerRestore"
-        @open-composer="openComposerDrawer()"
-      />
+      <div v-if="viewMode === 'grid'" class="create-filters create-filters--list">
+        <DqInput
+          v-model="stripSearchText"
+          size="sm"
+          class="create-filters__search"
+          :placeholder="$t('canvas.stripSearchPlaceholder')"
+          clearable
+        >
+          <template #prefix><DqIcon><Search /></DqIcon></template>
+        </DqInput>
+        <div class="create-filters__spacer" aria-hidden="true" />
+        <div class="create-filters__actions">
+          <DqButton size="sm" @click="onNewCanvas(() => onViewModeChange('canvas'))">
+            {{ $t('canvas.newCanvas') }}
+          </DqButton>
+          <DqIconButton
+            type="text"
+            size="sm"
+            :label="$t('common.refresh')"
+            @click="refreshStripList"
+          >
+            <DqIcon><Refresh /></DqIcon>
+          </DqIconButton>
+        </div>
+      </div>
+      <div v-else class="create-filters create-filters--detail">
+        <DqButton size="sm" type="text" @click="onBackToStripList(onViewModeChange)">
+          ← {{ $t('canvas.backToCanvasList') }}
+        </DqButton>
+        <span class="create-filters__session-title" :title="canvasSessionTitle">
+          {{ canvasSessionTitle }}
+        </span>
+        <div class="create-filters__spacer" />
+        <DqIconButton
+          type="text"
+          size="sm"
+          :label="$t('common.refresh')"
+          @click="refreshGallery"
+        >
+          <DqIcon><Refresh /></DqIcon>
+        </DqIconButton>
+        <DqButton
+          type="primary"
+          size="sm"
+          :class="{ 'is-busy': composerBusy }"
+          @click="openGenerationComposer()"
+        >
+          {{ $t('studio.openComposer') }}
+        </DqButton>
+      </div>
     </template>
 
     <template #canvas>
-      <StudioCanvas
+      <StudioCanvasStripList
         v-if="viewMode === 'grid'"
-        :items="galleryItems"
-        :groups="galleryGroups"
-        :active-tasks="activeVideoTasks"
-        :loading="galleryLoading"
-        :has-more="galleryHasMore"
         media="video"
-        :group-mode="groupMode"
-        :selected-group-id="selectedGroupId"
-        :has-active-filters="hasActiveFilters"
-        :selection-mode="selectionMode"
-        :selected-paths="selectedPaths"
-        :all-selected="allLoadedSelected"
-        @select="onGallerySelect"
-        @enter-group="enterGroup"
-        @exit-group="exitGroup"
-        @card-action="onCardAction"
-        @reset-filters="resetGalleryFilters"
-        @load-more="loadGallery(false)"
-        @toggle-select="toggleSelect"
-        @select-all="selectAllLoaded"
-        @batch-delete="batchDeleteSelected"
-        @clear-selection="clearSelection"
-        @open-composer="openComposerDrawer()"
+        :sessions="canvasSessions"
+        :search-text="stripSearchText"
+        :session-asset-ids="sessionAssetIdsBySession"
+        :loading="!canvasReady"
+        :active-tasks="activeVideoTasks"
+        :gallery-by-asset-id="galleryByAssetId"
+        @open="(id) => onStripOpen(id, onViewModeChange)"
+        @preview="onStripPreview"
+        @create="onStripCreate"
+        @rename="onStripRename"
+        @delete="onStripDelete"
       />
       <InfiniteCanvas
         v-else
         ref="infiniteCanvasRef"
         :items="galleryItems"
         media="video"
+        hide-composer-entry
         @card-action="onCardAction"
         @download="downloadVideoItem"
-        @toggle-grid-view="() => onViewModeChange('grid')"
+        @toggle-grid-view="() => onBackToStripList(onViewModeChange)"
         @node-selected="onCanvasNodeSelected"
         @session-ready="onCanvasSessionReady"
         @open-preview="onCanvasOpenPreview"
@@ -77,22 +92,15 @@
         @use-as-tail-frame="onCanvasUseAsTailFrame"
         @use-as-video-source="onCanvasUseAsVideoSource"
         @use-as-animate-source="onCanvasUseAsAnimateSource"
-        @open-composer="onCanvasOpenComposer()"
+        @open-composer="onCanvasOpenComposer"
         @request-close-composer="closeComposerDrawer()"
       />
     </template>
   </StudioLayout>
 
-  <StudioComposeFab
-    v-if="!composerDrawerOpen"
-    media="video"
-    :busy="composerBusy"
-    @open="openComposerDrawer()"
-  />
-
   <StudioComposerHost
     v-model:open="composerDrawerOpen"
-    :drawer-title="$t('studio.composerDrawerTitle')"
+    :drawer-title="composerDrawerTitle"
   >
     <VideoComposer
         v-model="params.prompt"
@@ -121,9 +129,6 @@
         :enhancing="isEnhancing"
         :reversing="isReversing"
         :tail-reference-media="tailReferenceMedia"
-        :extra-reference-media="extraReferenceMedia"
-        :show-bernini-references="showBerniniReferences"
-        :bernini-ref-max="berniniRefMax"
         :showH3Ref2VA="showH3Ref2VA"
         :h3-media-refs="h3MediaRefMedia"
         :h3-ref-max="h3Ref2vaMax"
@@ -133,14 +138,12 @@
         :compatible-loras="composerCompatibleLoras"
         :model-not-ready="selectedModelNotReady"
         :model-not-ready-name="currentModelDisplayName"
-        :work-mode-options="videoWorkSegmentOptions"
+        :work-mode-options="composerWorkModeOptions"
         @generate="onComposerSubmit"
         @pick-reference="showAssetPicker = true"
         @remove-reference="removeReference"
         @pick-tail-reference="showTailAssetPicker = true"
         @remove-tail-reference="removeTailImage"
-        @pick-extra-reference="showExtraRefPicker = true"
-        @remove-extra-reference="removeExtraReference"
         @pick-h3-reference="onPickH3Reference"
         @remove-h3-reference="removeH3Reference"
         @model-change="onModelVersionChange"
@@ -188,13 +191,6 @@
   </DqDrawer>
 
   <!-- Extra reference images -->
-  <DqDialog v-model:open="showExtraRefPicker" :title="$t('create.refImage')" width="70%">
-    <AssetPicker
-      accept-kind="image"
-      :recent-gallery="recentStartImages"
-      @pick="onExtraRefPick"
-    />
-  </DqDialog>
 
   <!-- MiniMax-H3 Ref2VA references -->
   <DqDialog v-model:open="showH3RefPicker" :title="h3RefPickerTitle" width="70%">
@@ -241,9 +237,28 @@
   <GalleryPreviewDialog
     v-model:open="videoPreviewVisible"
     v-model:index="selectedVideoIndex"
-    :items="galleryItems"
+    :items="previewItems"
     media="video"
+    :transfer-targets="previewTransferTargets"
+    @transfer="onPreviewTransfer"
   />
+
+  <DqDialog
+    v-model:open="stripRenameOpen"
+    :title="$t('canvas.renameSession')"
+    width="360px"
+  >
+    <DqInput
+      v-model="stripRenameDraft"
+      size="sm"
+      :placeholder="$t('canvas.sessionSelect')"
+      @keydown.enter="commitStripRename"
+    />
+    <template #footer>
+      <DqButton size="sm" @click="stripRenameOpen = false">{{ $t('common.cancel') }}</DqButton>
+      <DqButton type="primary" @click="commitStripRename">{{ $t('common.confirm') }}</DqButton>
+    </template>
+  </DqDialog>
 
   <StudioLineagePanel
     v-model:modelValue="showLineageDrawer"
@@ -267,22 +282,24 @@ import { warnIfRiskyMemory } from '@/composables/memoryHint';
 import { pickDefaultVersionKey, resolveDefaultModelRegistryKey } from '@/utils/defaultModelSettings';
 import { useModelRegistryFilters, reconcileVersionPickerSelection } from '@/composables/useModelRegistryFilters';
 import { applyModelVersionFilters } from '@/utils/modelPickerFilters';
+import { compareModelPickerRows } from '@/utils/modelPickerSort';
 import { modelSelectOption } from '@/utils/modelSelectOption';
 import AssetPicker from '@/components/asset/AssetPicker.vue';
 import GalleryPreviewDialog from '@/components/gallery/GalleryPreviewDialog.vue';
 import { previewDisplayCaption } from '@/utils/assetDisplay';
+import { seedForSubmit } from '@/utils/seed';
 
 // Studio components
+import { Refresh, Search } from '@danqing/dq-shell';
 import StudioLayout from '@/components/studio/StudioLayout.vue';
-import StudioCanvas from '@/components/studio/StudioCanvas.vue';
-import StudioGalleryFilters from '@/components/studio/StudioGalleryFilters.vue';
+import StudioCanvasStripList from '@/components/studio/StudioCanvasStripList.vue';
 import VideoComposer from '@/components/studio/VideoComposer.vue';
 import CreateUpscaleParams from '@/components/create/CreateUpscaleParams.vue';
 import StudioComposerHost from '@/components/studio/StudioComposerHost.vue';
-import StudioComposeFab from '@/components/studio/StudioComposeFab.vue';
 import InfiniteCanvas from '@/components/studio/InfiniteCanvas.vue';
 import StudioLineagePanel from '@/components/studio/StudioLineagePanel.vue';
 import { canvasAutoAddEnabled, useCanvasStore } from '@/composables/useCanvasStore';
+import { useCanvasStripIa } from '@/composables/useCanvasStripIa';
 import { useComposerDrawer } from '@/composables/useComposerDrawer';
 import {
   activateCanvasViewForResults,
@@ -318,11 +335,9 @@ import {
 } from '@/utils/videoSizeStorage';
 import {
   animateReferenceAcceptKind,
-  berniniMaxReferenceImages,
   galleryPathIsVideo,
   ref2vaSpec,
   ref2vaSubjectCount,
-  supportsBerniniReferenceImages,
   supportsRef2VA,
   videoRequiresSourceVideo,
   videoSupportsVideoEdit,
@@ -332,6 +347,7 @@ import {
   filterOutH3TurboLoras,
   findCompatibleLora,
   isH3TurboLora,
+  withRegistryLoraMeta,
   type CompatibleLoraRow,
 } from '@/utils/loraAdapterMeta';
 
@@ -447,42 +463,13 @@ const viewMode = ref<'grid' | 'canvas'>(
   savedViewMode === 'canvas' || savedViewMode === 'grid' ? savedViewMode : 'grid'
 );
 
+const videoPreviewVisible = ref(false);
+const selectedVideoIndex = ref(0);
+
 watch(viewMode, (mode) => {
   setItem(DQ_STORAGE.VIDEO_VIEW_MODE, mode);
+  if (mode === 'grid') closeComposerDrawer();
 });
-
-function onViewModeChange(mode: 'grid' | 'canvas') {
-  if (viewMode.value === mode) return;
-  if (mode === 'canvas' && selectedGroupId.value) {
-    exitGroup();
-  }
-  const batchPaths =
-    mode === 'canvas' && selectedPaths.value.size > 0
-      ? Array.from(selectedPaths.value)
-      : [];
-  viewMode.value = mode;
-  if (mode === 'canvas') {
-    clearSelection();
-    maybeShowCanvasWorkspaceHint();
-    const batchCount = batchPaths.length;
-    nextTick(() => {
-      syncCompositorOverlaysOnCanvasEnter();
-      persistComposerSnapshot();
-      if (batchCount > 0) {
-        addAssetPathsToCanvas(batchPaths, {
-          fit: true,
-          placement: 'center',
-          focusLast: false,
-        });
-        toast.success($tt('canvas.batchAdded', { n: batchCount }));
-      } else if (Object.keys(videoCanvas.items).length > 0) {
-        infiniteCanvasRef.value?.fitAll();
-      }
-    });
-  } else {
-    clearSelection();
-  }
-}
 
 function shouldAutoAddToCanvas(): boolean {
   return viewMode.value === 'canvas' || canvasAutoAddEnabled('video');
@@ -574,11 +561,20 @@ function fillComposerFromGalleryItem(item: GalleryItem) {
   persistComposerSnapshot();
 }
 
-function onCanvasOpenComposer() {
+function onCanvasOpenComposer(
+  payload?: {
+    intent?: 'generate' | 'edit' | 'cover' | 'repaint' | 'lego' | 'extract' | 'complete';
+  },
+) {
   if (canvasSelectedItem.value) {
     fillComposerFromGalleryItem(canvasSelectedItem.value);
   }
-  openComposerDrawer();
+  // Toolbar「视频编辑」sets edit then opens composer — must not wipe back to 文生/图生 tabs.
+  if (payload?.intent === 'edit' || (videoWorkMode.value === 'edit' && payload?.intent !== 'generate')) {
+    openComposerDrawer();
+    return;
+  }
+  openGenerationComposer();
 }
 
 function onCanvasNodeSelected(item: GalleryItem | null) {
@@ -599,7 +595,6 @@ function persistComposerSnapshot() {
     start_image_path: startImagePath.value || undefined,
     tail_image_path: tailImagePath.value || undefined,
     source_video_path: sourceVideoPath.value || undefined,
-    reference_image_paths: extraRefPaths.value.length ? [...extraRefPaths.value] : undefined,
   });
 }
 
@@ -661,13 +656,6 @@ function onCanvasComposerRestore(snapshot: {
       ? api.gallery.getImageUrl(p.path)
       : p.previewUrl;
   }
-  if (snapshot.reference_image_paths?.length) {
-    extraRefPaths.value = [...snapshot.reference_image_paths];
-    extraRefPreviews.value = snapshot.reference_image_paths.map((path) => {
-      const p = bindVideoAssetFromPath(path);
-      return p.previewUrl;
-    });
-  }
   if (viewMode.value === 'canvas') {
     nextTick(() => syncCompositorOverlaysOnCanvasEnter());
   }
@@ -677,6 +665,10 @@ function buildCanvasMeta(extra: Record<string, unknown> = {}): Record<string, un
   const meta: Record<string, unknown> = { ...extra };
   const sid = videoCanvas.sessionId.value;
   if (sid) meta.canvas_session_id = sid;
+  // Pure text-to-video has no parent — never inherit canvas selection as lineage.
+  if (videoWorkMode.value === 'create') {
+    return meta;
+  }
   if (videoWorkMode.value === 'animate' || videoWorkMode.value === 'edit') {
     meta.relation_type = videoWorkMode.value === 'edit' ? 'edit' : 'animate';
   }
@@ -684,17 +676,22 @@ function buildCanvasMeta(extra: Record<string, unknown> = {}): Record<string, un
     canvasSelectedItem.value?.path || videoCanvas.activeAssetPath.value || '';
   if (parentPath.startsWith('asset:')) {
     meta.parent_asset_id = parentPath.slice('asset:'.length);
-    if (videoWorkMode.value === 'create') {
-      meta.relation_type = 'create';
-    }
   }
   return meta;
 }
 
 function onCanvasOpenPreview(item: GalleryItem) {
-  const idx = galleryItems.value.findIndex((g) => g.path === item.path);
+  markPreviewSource(videoCanvas.sessionId.value);
+  const list = previewItems.value;
+  const idx = list.findIndex((g) => g.path === item.path);
   if (idx >= 0) {
     selectedVideoIndex.value = idx;
+    videoPreviewVisible.value = true;
+    return;
+  }
+  const gIdx = galleryItems.value.findIndex((g) => g.path === item.path);
+  if (gIdx >= 0) {
+    selectedVideoIndex.value = gIdx;
     videoPreviewVisible.value = true;
   }
 }
@@ -764,6 +761,66 @@ const {
   batchDeleteSelected,
   clearSelection,
 } = useStudioGallery('video');
+
+const {
+  stripSearchText,
+  stripRenameOpen,
+  stripRenameDraft,
+  sessionAssetIdsBySession,
+  canvasSessions,
+  canvasSessionTitle,
+  canvasReady,
+  galleryByAssetId,
+  previewItems,
+  previewTransferTargets,
+  rebuildSessionAssetIndex,
+  onStripOpen,
+  onStripPreview,
+  onStripCreate,
+  onBackToStripList,
+  onNewCanvas,
+  refreshStripList,
+  onStripRename,
+  commitStripRename,
+  onStripDelete,
+  markPreviewSource,
+  clearPreviewOverride,
+  onPreviewTransfer,
+} = useCanvasStripIa({
+  media: 'video',
+  store: videoCanvas,
+  galleryItems,
+  viewMode,
+  previewVisible: videoPreviewVisible,
+  selectedIndex: selectedVideoIndex,
+  onComposerRestore: (snap) => onCanvasComposerRestore(snap as any),
+  openCreateComposer: () => openGenerationComposer(),
+  reloadGallery: () => loadGallery(true),
+});
+
+watch(videoPreviewVisible, (open) => {
+  if (!open) clearPreviewOverride();
+});
+
+function onViewModeChange(mode: 'grid' | 'canvas') {
+  if (viewMode.value === mode) return;
+  viewMode.value = mode;
+  if (mode === 'canvas') {
+    clearSelection();
+    maybeShowCanvasWorkspaceHint();
+    nextTick(() => {
+      syncCompositorOverlaysOnCanvasEnter();
+      persistComposerSnapshot();
+      if (Object.keys(videoCanvas.items).length > 0) {
+        infiniteCanvasRef.value?.fitAll();
+      }
+    });
+  } else {
+    clearSelection();
+    closeComposerDrawer();
+    void videoCanvas.refreshSessions().then(() => rebuildSessionAssetIndex());
+  }
+}
 
 function registryModelLabel(modelId: string): string {
   const cfg = modelRegistry.value[modelId];
@@ -1048,24 +1105,9 @@ const tailImagePath = ref('');
 const tailImageViewerVisible = ref(false);
 const sourceVideoSrc = ref('');
 const sourceVideoPath = ref('');
-const extraRefPaths = ref<string[]>([]);
-const extraRefPreviews = ref<string[]>([]);
-
-const berniniRefMax = berniniMaxReferenceImages();
-
-const showBerniniReferences = computed(() =>
-  supportsBerniniReferenceImages(currentModelConfig.value?.parameters),
-);
-
-const extraReferenceMedia = computed(() =>
-  extraRefPaths.value.map((path, idx) => ({
-    path,
-    previewUrl: extraRefPreviews.value[idx] || bindVideoAssetFromPath(path).previewUrl,
-  })),
-);
 
 watch(
-  [startImagePath, tailImagePath, sourceVideoPath, extraRefPaths],
+  [startImagePath, tailImagePath, sourceVideoPath],
   () => {
     persistComposerSnapshot();
   }
@@ -1073,7 +1115,6 @@ watch(
 
 const showAssetPicker = ref(false);
 const showTailAssetPicker = ref(false);
-const showExtraRefPicker = ref(false);
 const showH3RefPicker = ref(false);
 const h3RefPickKind = ref<'image' | 'video' | 'audio'>('image');
 type H3MediaRefRow = { kind: 'image' | 'video' | 'audio'; path: string; previewUrl: string };
@@ -1106,7 +1147,7 @@ function onPickH3Reference(kind: 'image' | 'video' | 'audio') {
   const count = h3MediaRefs.value.filter((row) => row.kind === kind).length;
   const cap = kind === 'image' ? spec.maxImages : kind === 'video' ? spec.maxVideos : spec.maxAudios;
   if (h3MediaRefs.value.length >= h3Ref2vaMax.value || count >= cap) {
-    toast.warning($tt('video.berniniRefMax', { n: h3Ref2vaMax.value }));
+    toast.warning($tt('video.refMax', { n: h3Ref2vaMax.value }));
     return;
   }
   h3RefPickKind.value = kind;
@@ -1165,41 +1206,6 @@ function removeTailImage() {
   tailImagePath.value = '';
 }
 
-function onExtraRefPick(payload: { path: string; previewUrl: string }) {
-  if (extraRefPaths.value.length >= berniniRefMax) {
-    toast.warning($tt('video.berniniRefMax', { n: berniniRefMax }));
-    return;
-  }
-  if (extraRefPaths.value.includes(payload.path)) {
-    showExtraRefPicker.value = false;
-    return;
-  }
-  extraRefPaths.value.push(payload.path);
-  extraRefPreviews.value.push(payload.previewUrl || '');
-  showExtraRefPicker.value = false;
-}
-
-function removeExtraReference(index: number) {
-  extraRefPaths.value = extraRefPaths.value.filter((_, i) => i !== index);
-  extraRefPreviews.value = extraRefPreviews.value.filter((_, i) => i !== index);
-}
-
-async function resolveReferenceAssetIds(paths: string[]): Promise<string[]> {
-  const ids: string[] = [];
-  for (const path of paths) {
-    if (path.startsWith('asset:')) {
-      ids.push(path.slice('asset:'.length));
-      continue;
-    }
-    const preview = extraRefPreviews.value[extraRefPaths.value.indexOf(path)] || '';
-    const blob = await api.gen.urlToBlob(preview || bindVideoAssetFromPath(path).previewUrl);
-    const up = await api.gen.uploadAsset(
-      new File([blob], 'ref.png', { type: blob.type || 'image/png' }),
-    );
-    ids.push((up as { id: string }).id);
-  }
-  return ids;
-}
 
 function onModelVersionChange(val: string) {
   const parsed = parseModelVersionValue(val);
@@ -1402,15 +1408,30 @@ function syncVideoLoraSelection() {
     params.lora = '';
     return;
   }
-  applyLoraComposeOverrides(params as Record<string, unknown>, row);
+  const bare = String(row.id || params.lora).split(':')[0];
+  applyLoraComposeOverrides(
+    params as Record<string, unknown>,
+    row,
+    modelRegistry.value[bare] as Record<string, unknown> | undefined,
+  );
 }
 
 function buildVideoAdapters() {
   const adapters: { id: string; weight: number }[] = [];
-  if (!params.lora) return adapters;
-  const row = findCompatibleLora(composerCompatibleLoras.value, params.lora);
-  if (!row || isH3TurboLora(row)) return adapters;
-  adapters.push({ id: String(params.lora), weight: Number(params.lora_scale) || 1.0 });
+  if (params.lora) {
+    const row = findCompatibleLora(composerCompatibleLoras.value, params.lora);
+    if (row && !isH3TurboLora(row)) {
+      adapters.push({ id: String(params.lora), weight: Number(params.lora_scale) || 1.0 });
+    }
+  }
+  const required = ref2vaLimits.value.requiresAdapter;
+  if (
+    videoWorkMode.value === 'ref2va' &&
+    required &&
+    !adapters.some((row) => row.id === required || row.id.startsWith(`${required}:`))
+  ) {
+    adapters.unshift({ id: required, weight: 1.0 });
+  }
   return adapters;
 }
 
@@ -1435,7 +1456,15 @@ const loadCompatibleLoras = async () => {
   }
   try {
     const loras = await api.settings.getCompatibleLoras(params.model);
-    compatibleLoras.value = (loras as typeof compatibleLoras.value) || [];
+    compatibleLoras.value = ((loras as CompatibleLoraRow[]) || [])
+      .filter((lora) => lora.ready !== false)
+      .map((row) => {
+        const bare = String(row.id || '').split(':')[0];
+        return withRegistryLoraMeta(
+          row,
+          modelRegistry.value[bare] as Record<string, unknown> | undefined,
+        );
+      });
     syncVideoLoraSelection();
   } catch (e) {
     console.error('Failed to load compatible loras:', e);
@@ -1465,7 +1494,7 @@ const allVersions = computed(() => {
         size: (versionConfig as any).size || '',
         status: status.status,
         ready: status.ready,
-        recommended: config.recommended && (versionConfig as any).default,
+        recommended: config.recommended === true,
         commercialUseAllowed: config.commercial_use_allowed === true,
         actions,
       });
@@ -1474,6 +1503,7 @@ const allVersions = computed(() => {
   return result;
 });
 
+/** Create-phase modes only — video edit is canvas-toolbar driven (like image retouch drawer). */
 const videoWorkSegmentOptions = computed(() => {
   const opts: { label: string; value: string }[] = [];
   if (allVersions.value.some((v) => videoSupportsCreate(v.actions || {}))) {
@@ -1487,9 +1517,6 @@ const videoWorkSegmentOptions = computed(() => {
   ) {
     opts.push({ label: $tt('create.ref2vaMode'), value: 'ref2va' });
   }
-  if (allVersions.value.some((v) => videoVersionSupportsEdit(v))) {
-    opts.push({ label: $tt('video.modeEdit'), value: 'edit' });
-  }
   if (opts.length === 0) {
     return [
       { label: $tt('action.video.create'), value: 'create' },
@@ -1498,6 +1525,24 @@ const videoWorkSegmentOptions = computed(() => {
   }
   return opts;
 });
+
+/** Hide create/animate/ref2va tabs while canvas-driven video edit is active. */
+const composerWorkModeOptions = computed(() =>
+  videoWorkMode.value === 'edit' ? [] : videoWorkSegmentOptions.value,
+);
+
+const composerDrawerTitle = computed(() =>
+  videoWorkMode.value === 'edit'
+    ? $tt('action.video.edit')
+    : $tt('studio.composerDrawerTitle'),
+);
+
+function openGenerationComposer() {
+  if (videoWorkMode.value === 'edit') {
+    videoWorkMode.value = videoWorkSegmentOptions.value[0]?.value || 'create';
+  }
+  openComposerDrawer();
+}
 
 const videoVersionsForMode = computed(() => {
   const filtered = allVersions.value.filter((v) => {
@@ -1537,18 +1582,7 @@ const videoModelPickerVersions = computed(() => {
     installedOnly: true,
     commercialOnly: modelFilterCommercialOnly.value,
   });
-  rows.sort((a, b) => {
-    const ar = a.recommended ? 1 : 0;
-    const br = b.recommended ? 1 : 0;
-    if (ar !== br) return br - ar;
-    const an = a.name || '';
-    const bn = b.name || '';
-    try {
-      return an.localeCompare(bn, 'zh');
-    } catch {
-      return an < bn ? -1 : an > bn ? 1 : 0;
-    }
-  });
+  rows.sort(compareModelPickerRows);
   return rows;
 });
 
@@ -2149,6 +2183,19 @@ const startGeneration = async (options: StartGenerationOptions = {}) => {
       );
       return;
     }
+    if (spec.requiresAdapter) {
+      const ready = composerCompatibleLoras.value.some(
+        (row) =>
+          row.id === spec.requiresAdapter ||
+          String(row.id || '').startsWith(`${spec.requiresAdapter}:`),
+      );
+      if (!ready) {
+        toast.warning(
+          $tt('create.ref2vaNeedAdapter', { id: spec.requiresAdapter }),
+        );
+        return;
+      }
+    }
   }
 
   if (!queueOnly) {
@@ -2179,7 +2226,7 @@ const startGeneration = async (options: StartGenerationOptions = {}) => {
         steps: params.steps,
         guidance: params.guide_scale,
         shift: params.shift || undefined,
-        seed: params.seed ? parseInt(params.seed, 10) : null,
+        seed: seedForSubmit(params.seed),
         metadata: { ...meta },
         priority: 'normal',
         media_references: await resolveH3MediaReferences(),
@@ -2246,7 +2293,7 @@ const startGeneration = async (options: StartGenerationOptions = {}) => {
         steps: params.steps,
         guidance: params.guide_scale,
         shift: params.shift || undefined,
-        seed: params.seed ? parseInt(params.seed, 10) : null,
+        seed: seedForSubmit(params.seed),
         metadata: { ...meta },
         priority: 'normal',
       };
@@ -2256,10 +2303,6 @@ const startGeneration = async (options: StartGenerationOptions = {}) => {
       const adapters = buildVideoAdapters();
       if (adapters.length > 0) {
         animateBody.adapters = adapters;
-      }
-      const refIds = await resolveReferenceAssetIds(extraRefPaths.value);
-      if (refIds.length > 0) {
-        animateBody.reference_asset_ids = refIds;
       }
       appendActiveEnumFields(
         animateBody,
@@ -2281,17 +2324,13 @@ const startGeneration = async (options: StartGenerationOptions = {}) => {
         steps: params.steps,
         guidance: params.guide_scale,
         shift: params.shift || undefined,
-        seed: params.seed ? parseInt(params.seed, 10) : null,
+        seed: seedForSubmit(params.seed),
         metadata: { ...meta },
         priority: 'normal',
       };
       const adapters = buildVideoAdapters();
       if (adapters.length > 0) {
         body.adapters = adapters;
-      }
-      const refIds = await resolveReferenceAssetIds(extraRefPaths.value);
-      if (refIds.length > 0) {
-        body.reference_asset_ids = refIds;
       }
       appendActiveEnumFields(
         body,
@@ -2347,16 +2386,6 @@ const getVideoUrl = (video: GalleryItem) => {
   return api.gallery.getImageUrl(video.path);
 };
 
-// Video preview
-const videoPreviewVisible = ref(false);
-const selectedVideoIndex = ref(0);
-
-function onGallerySelect(item: GalleryItem) {
-  const idx = galleryItems.value.findIndex((it) => it.path === item.path);
-  selectedVideoIndex.value = idx >= 0 ? idx : 0;
-  videoPreviewVisible.value = true;
-}
-
 watch(videoWorkMode, (mode) => {
   if (mode === 'animate') {
     clearAnimateVideoReference();
@@ -2371,8 +2400,6 @@ watch(videoWorkMode, (mode) => {
     clearAnimateVideoReference();
     tailImageSrc.value = '';
     tailImagePath.value = '';
-    extraRefPaths.value = [];
-    extraRefPreviews.value = [];
   } else {
     h3MediaRefs.value = [];
   }
@@ -2406,6 +2433,8 @@ watch(videoWorkMode, (mode) => {
 watch(
   () => currentModelConfig.value?.actions,
   () => {
+    // Keep canvas-driven edit mode; only reconcile create-phase tabs.
+    if (videoWorkMode.value === 'edit') return;
     const values = videoWorkSegmentOptions.value.map((o) => o.value);
     if (values.length > 0 && !values.includes(videoWorkMode.value)) {
       videoWorkMode.value = values[0];
@@ -2432,7 +2461,12 @@ watch(
       params.lora = '';
       return;
     }
-    applyLoraComposeOverrides(params as Record<string, unknown>, row);
+    const bare = String(row.id || loraId).split(':')[0];
+    applyLoraComposeOverrides(
+      params as Record<string, unknown>,
+      row,
+      modelRegistry.value[bare] as Record<string, unknown> | undefined,
+    );
   },
 );
 
@@ -2493,15 +2527,6 @@ watch(durationOptions, (opts) => {
   syncNumFramesFromDuration();
 });
 
-watch(
-  () => currentModelConfig.value?.parameters?.bernini_renderer,
-  (isBernini) => {
-    if (!isBernini) {
-      extraRefPaths.value = [];
-      extraRefPreviews.value = [];
-    }
-  },
-);
 
 watch(selectedModelVersion, (val) => {
   onModelVersionChange(val);
@@ -2512,6 +2537,17 @@ onMounted(async () => {
   loadPresets();
   loadRecentStartImages();
   loadGallery(true);
+  try {
+    await videoCanvas.ensureDefaultAndAdoptOrphans();
+  } catch (e) {
+    console.error('video canvas adopt failed', e);
+  }
+  try {
+    await videoCanvas.refreshSessions();
+    await rebuildSessionAssetIndex();
+  } catch (e) {
+    console.error('video canvas strip index failed', e);
+  }
   tasksStore.ensureQueuePoller();
   window.addEventListener('keydown', onCreatePageKeydown);
   const promptDraft = consumePromptDraft(DQ_STORAGE.VIDEO_CREATE_PROMPT_DRAFT);
@@ -2548,7 +2584,7 @@ function onCreatePageKeydown(e: KeyboardEvent) {
   }
   if (e.key.toLowerCase() === 'c' && !e.metaKey && !e.ctrlKey && !e.altKey) {
     e.preventDefault();
-    openComposerDrawer();
+    openGenerationComposer();
   }
 }
 </script>
@@ -2588,6 +2624,47 @@ function onCreatePageKeydown(e: KeyboardEvent) {
 
 .studio-drawer-submit {
   margin-top: auto;
+}
+
+.create-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.create-filters--list {
+  width: 100%;
+  max-width: none;
+}
+
+.create-filters__search {
+  flex: 0 1 320px;
+  min-width: 160px;
+  max-width: 420px;
+}
+
+.create-filters__spacer {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+
+.create-filters__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.create-filters__session-title {
+  font-size: var(--dq-font-size-body);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40vw;
 }
 </style>
 

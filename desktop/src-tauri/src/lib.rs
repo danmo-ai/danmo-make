@@ -15,7 +15,7 @@ use tauri::{AppHandle, Manager, RunEvent, Url};
 const API_PID_FILE: &str = "api.pid";
 const API_PORT_FILE: &str = "api.port";
 
-/// Owns the desktop API child (PyInstaller sidecar or thin uvicorn).
+/// Owns the desktop API child (`danqing-api` sidecar).
 /// Rust's `Child` drop does **not** kill the OS process — terminate explicitly
 /// on stop / ExitRequested / Exit / Drop (aligned with danmo-work).
 pub struct ApiProcess {
@@ -296,7 +296,7 @@ fn clear_pid_files(data_dir: &Path) {
 
 fn apply_process_group(cmd: &mut Command) {
     // Own process group on Unix so Exit/Drop can SIGTERM/SIGKILL the whole tree
-    // (uvicorn/PyInstaller helpers; killing only the parent leaves orphans).
+    // (sidecar helpers; killing only the parent leaves orphans).
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -408,59 +408,6 @@ fn fail_if_exited_immediately(
     }
 }
 
-fn start_thin_api(app: &AppHandle) -> Result<u16, String> {
-    let user_dir = runtime::server_data_dir(app)?;
-    reclaim_stale_api(app, &user_dir);
-
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    drop(listener);
-
-    let log_path = prepare_api_log(&user_dir)?;
-    let _ = writeln!(
-        &mut OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .map_err(|e| e.to_string())?,
-        "Starting thin runtime API on port {port}…"
-    );
-
-    let py = runtime::venv_python(app)?;
-    let app_root = runtime::app_root(app)?;
-    let mut cmd = Command::new(&py);
-    cmd.current_dir(&app_root)
-        .arg("-m")
-        .arg("uvicorn")
-        .arg("backend.main:app")
-        .arg("--host")
-        .arg("127.0.0.1")
-        .arg("--port")
-        .arg(port.to_string())
-        .env("DANQING_HTTP_HOST", "127.0.0.1")
-        .env("DANQING_HTTP_PORT", port.to_string())
-        .env("DANQING_USER_DATA_DIR", user_dir.as_os_str())
-        .env("PYTHONPATH", app_root.as_os_str());
-    apply_process_group(&mut cmd);
-
-    let (stdout, stderr) = open_log(&log_path)?;
-    let mut child = cmd
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .spawn()
-        .map_err(|e| format!("spawn {}: {e}", py.display()))?;
-
-    write_pid_files(&user_dir, child.id(), port);
-    fail_if_exited_immediately(&mut child, &user_dir, &log_path)?;
-    wait_for_health(port, &mut child, &log_path)?;
-    eprintln!(
-        "[sidecar] thin api spawned pid={} on 127.0.0.1:{port}",
-        child.id()
-    );
-    register_child(app, user_dir, child)?;
-    Ok(port)
-}
-
 fn start_sidecar(app: &AppHandle) -> Result<u16, String> {
     let user_dir = runtime::server_data_dir(app)?;
     reclaim_stale_api(app, &user_dir);
@@ -541,13 +488,7 @@ fn navigate_runtime_setup(app: &AppHandle) -> Result<(), String> {
 #[cfg(not(debug_assertions))]
 fn bootstrap_production(app: &AppHandle) -> Result<(), String> {
     wait_for_main_window(app)?;
-    if runtime::is_thin_runtime(app) {
-        if !runtime::env_ready(app) {
-            return navigate_runtime_setup(app);
-        }
-        let port = start_thin_api(app)?;
-        return navigate_main(app, port);
-    }
+    // Python thin uvicorn runtime was removed; desktop always starts danqing-api.
     let port = start_sidecar(app)?;
     navigate_main(app, port)
 }
@@ -652,18 +593,9 @@ fn runtime_stop_api(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn runtime_start_api(app: AppHandle) -> Result<u16, String> {
     // Always reclaim previous child/pidfile before (re)start.
-    if runtime::is_thin_runtime(&app) {
-        if !runtime::env_ready(&app) {
-            return Err("Runtime not ready".into());
-        }
-        let port = start_thin_api(&app)?;
-        navigate_main(&app, port)?;
-        Ok(port)
-    } else {
-        let port = start_sidecar(&app)?;
-        navigate_main(&app, port)?;
-        Ok(port)
-    }
+    let port = start_sidecar(&app)?;
+    navigate_main(&app, port)?;
+    Ok(port)
 }
 
 #[tauri::command]

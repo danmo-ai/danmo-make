@@ -1,62 +1,46 @@
 <!-- @ts-nocheck -->
 <template>
-  <div class="models-page">
-    <!-- Left sidebar: category navigation -->
-    <div class="models-page__sidebar">
-      <DqSurfaceCard class="models-page__sidebar-card">
-        <div class="card-title">
-          <DqIcon><box /></DqIcon>
-          {{ $t('download.modelLibrary') }}
-        </div>
-        <div class="models-page__sidebar-intro">
-          {{ $t('models.pageSubtitle') }}
-        </div>
-
+  <WorkspaceLayout class="models-page">
+    <template #sidebar>
+      <WorkspaceSidebar
+        :title="$t('download.modelLibrary')"
+        :description="$t('models.pageSubtitle')"
+      >
+        <template #icon><DqIcon><box /></DqIcon></template>
         <ModelsCategoryNav
           :active-category="activeCategory"
           :total-model-count="totalModelCount"
           :active-download-count="activeDownloadCount"
           @select="handleCategorySelect"
         />
-
-
-        <!-- Disk space -->
-        <div v-if="diskSpace" class="disk-space-panel">
-          <div class="disk-space-title">
-            <DqIcon><monitor /></DqIcon>
-            {{ $t('download.diskSpace') }}
-          </div>
-          <div class="disk-space-item">
-            <div class="disk-space-label">
-              <span>{{ $t('download.modelLabel') }}</span>
-              <span class="disk-space-value">{{ diskSpace.models?.size_human }}</span>
+        <template #footer>
+          <div v-if="diskSpace" class="disk-space-panel">
+            <div class="disk-space-title">
+              <DqIcon><monitor /></DqIcon>
+              {{ $t('download.diskSpace') }}
             </div>
-            <DqProgress
-              :percentage="getDiskPercent('models')"
-              :show-text="false"
-              :stroke-width="4"
-            />
-          </div>
-          <div class="disk-space-item">
-            <div class="disk-space-label">
-              <span>{{ $t('download.loraLabel') }}</span>
-              <span class="disk-space-value">{{ diskSpace.loras?.size_human }}</span>
+            <div class="disk-space-item">
+              <div class="disk-space-label">
+                <span>{{ $t('download.modelLabel') }}</span>
+                <span class="disk-space-value">{{ diskSpace.models?.size_human }}</span>
+              </div>
+              <DqProgress :percentage="getDiskPercent('models')" :show-text="false" :stroke-width="4" />
             </div>
-            <DqProgress
-              :percentage="getDiskPercent('loras')"
-              :show-text="false"
-              :stroke-width="4"
-              color="var(--dq-success)"
-            />
+            <div class="disk-space-item">
+              <div class="disk-space-label">
+                <span>{{ $t('download.loraLabel') }}</span>
+                <span class="disk-space-value">{{ diskSpace.loras?.size_human }}</span>
+              </div>
+              <DqProgress :percentage="getDiskPercent('loras')" :show-text="false" :stroke-width="4" color="var(--dq-success)" />
+            </div>
+            <div class="disk-space-footer">
+              {{ $t('download.free') }}: {{ diskSpace.models?.free_human }}
+            </div>
           </div>
-          <div class="disk-space-footer">
-            {{ $t('download.free') }}: {{ diskSpace.models?.free_human }}
-          </div>
-        </div>
-      </DqSurfaceCard>
-    </div>
+        </template>
+      </WorkspaceSidebar>
+    </template>
 
-    <!-- Right content area -->
     <div class="models-page__main">
       <!-- Model grid (category browsing) -->
       <div
@@ -76,67 +60,40 @@
         "
       >
         <!-- Category title -->
-        <div class="page-header models-page__page-header">
-          <h2 class="page-title models-page__category-title">
-            <DqIcon v-if="categoryPageIcon" class="models-page__title-icon" aria-hidden="true">
-              <component :is="categoryPageIcon" />
-            </DqIcon>
-            <span>{{ categoryTitleText }}</span>
-          </h2>
-          <div
-            v-if="
-              [
-                'all',
-                'image_models',
-                'video_models',
-                'music_models',
-                'llm_models',
-                'vlm_models',
-                'controlnets',
-                'upscalers',
-                'tools',
-                'loras',
-              ].includes(activeCategory)
-            "
-            class="models-page__header-center"
-          >
+        <WorkspaceHeader :title="categoryTitleText">
+          <template v-if="categoryPageIcon" #icon>
+            <DqIcon><component :is="categoryPageIcon" /></DqIcon>
+          </template>
+          <template #filters>
             <DqInput
               v-model="filterQuery"
               :placeholder="$t('download.searchModel')"
               class="models-page__search-input"
               clearable
             >
-              <template #prefix>
-                <DqIcon><search /></DqIcon>
-              </template>
+              <template #prefix><DqIcon><search /></DqIcon></template>
             </DqInput>
             <ModelPickerFilters
               v-model:installed-only="modelFilterInstalledOnly"
               v-model:commercial-only="modelFilterCommercialOnly"
               v-model:current-models-only="modelFilterCurrentModelsOnly"
             />
-          </div>
-          <div class="page-actions models-page__actions">
+          </template>
+          <template #actions>
             <DqButton
-              v-if="
-                activeCategory !== 'loras' && activeCategory !== 'installed'
-              "
-              class="models-toolbar-btn models-page__import-btn"
+              v-if="activeCategory !== 'loras' && activeCategory !== 'installed'"
+              class="models-toolbar-btn"
               @click="showImportDialog"
             >
-              <DqIcon class="models-toolbar-btn__icon"><upload /></DqIcon>
-              <span class="models-toolbar-btn__label">{{ $t('download.importLocal') }}</span>
+              <DqIcon><upload /></DqIcon>
+              <span>{{ $t('download.importLocal') }}</span>
             </DqButton>
-            <DqButton
-              class="models-toolbar-btn models-page__refresh-btn"
-              :loading="refreshing"
-              @click="refreshStatus"
-            >
-              <DqIcon class="models-toolbar-btn__icon"><refresh /></DqIcon>
-              <span class="models-toolbar-btn__label">{{ $t('gallery.refresh') }}</span>
+            <DqButton class="models-toolbar-btn" :loading="refreshing" @click="refreshStatus">
+              <DqIcon><refresh /></DqIcon>
+              <span>{{ $t('gallery.refresh') }}</span>
             </DqButton>
-          </div>
-        </div>
+          </template>
+        </WorkspaceHeader>
 
         <ModelsImportDialog
           v-model:open="importDialogVisible"
@@ -266,11 +223,11 @@
                   :uniform-source="uniformDownloadSource(model)"
                   :loading-keys="downloadingModels"
                   :can-download="canDownload(model)"
+                  dependency-hint=""
                   :get-version-status="getVersionStatus"
                   :bundle-components-for="(verKey) => versionBundleComponents(model.id, verKey)"
                   @download="downloadVersion(model, $event)"
                   @delete="deleteVersion(model, $event)"
-                  @quantize="quantizeVersion(model, $event)"
                 />
 
               </div>
@@ -499,7 +456,7 @@
         </DqSurfaceCard>
       </div>
     </div>
-  </div>
+  </WorkspaceLayout>
 </template>
 
 <script setup lang="ts">
@@ -524,20 +481,20 @@ import UserLoraCard from '@/components/lora/UserLoraCard.vue';
 import ModelCardVersions from '@/components/models/ModelCardVersions.vue';
 import ModelVersionSourceBadge from '@/components/models/ModelVersionSourceBadge.vue';
 import ZImageMergePanel from '@/components/tools/ZImageMergePanel.vue';
-import { uniformDownloadSource } from '@/utils/modelVersionLayout';
+import WorkspaceLayout from '@/components/workspace/WorkspaceLayout.vue';
+import WorkspaceHeader from '@/components/workspace/WorkspaceHeader.vue';
+import WorkspaceSidebar from '@/components/workspace/WorkspaceSidebar.vue';
+import {
+  isDenseVersion,
+  isDerivedVersion,
+  uniformDownloadSource,
+  type ModelVersion,
+} from '@/utils/modelVersionLayout';
 import { formatDownloadDisplayName } from '@/utils/registryLabel';
 import { useModelRegistryFilters } from '@/composables/useModelRegistryFilters';
 import { modelPassesRegistryFilters } from '@/utils/modelPickerFilters';
 
 /* ───── Types ───── */
-
-interface ModelVersion {
-  name: string | { zh?: string; en?: string };
-  size?: string;
-  source?: string;
-  source_type?: string;
-  from_version?: string;
-}
 
 interface ModelConfig {
   media?: string;
@@ -572,7 +529,6 @@ interface DownloadItem {
   error: string;
   total_size: number;
   downloaded_size: number;
-  kind?: string;
 }
 
 interface DiskInfo {
@@ -760,7 +716,12 @@ const filteredModels = computed(() => {
     list.push(model);
   }
 
-  return list.sort((a, b) => $mn(a, a.id).localeCompare($mn(b, b.id)));
+  return list.sort((a, b) => {
+    const ar = a.recommended ? 1 : 0;
+    const br = b.recommended ? 1 : 0;
+    if (ar !== br) return br - ar;
+    return $mn(a, a.id).localeCompare($mn(b, b.id), 'zh');
+  });
 });
 
 const totalModelCount = computed(() => Object.keys(modelRegistry.value).length);
@@ -880,13 +841,13 @@ function verifyUserLora(ul: {
     guidance?: number;
     lora_weight?: number;
     scheduler?: string;
-    extra_adapters?: string[];
+    extra_adapters?: Array<string | { id?: string; weight?: number }>;
   };
 }) {
   const inference = ul.inference || {};
   const query: Record<string, string> = {
     verify: '1',
-    model: String(inference.model || ul.base_model || 'flux1-dev'),
+    model: String(inference.model || ul.base_model || 'z-image-turbo'),
     lora: String(ul.id || ''),
     width: '1024',
     height: '1024',
@@ -896,8 +857,7 @@ function verifyUserLora(ul: {
   if (inference.guidance != null) query.guidance = String(inference.guidance);
   if (inference.lora_weight != null) query.lora_scale = String(inference.lora_weight);
   if (inference.scheduler) query.scheduler = String(inference.scheduler);
-  const extras = (inference.extra_adapters || []).map((id) => String(id).trim()).filter(Boolean);
-  if (extras.length) query.extra_adapters = extras.join(',');
+  // Companion adapters stay on the LoRA inference record; the API expands them.
   void router.push({ name: 'image_create', query });
 }
 
@@ -1076,17 +1036,6 @@ function getVersionStatus(modelId: string, versionKey: string): string {
 
   if (verStatus.ready) return 'ready';
 
-  const model = modelRegistry.value[modelId];
-  const ver = model?.versions?.[versionKey];
-  if (ver && ver.source_type === 'derived' && ver.from_version) {
-    const parentVer = ver.from_version;
-    const parentSt = parentVer ? detail.versions[parentVer] : null;
-    if (!parentSt || !parentSt.ready) {
-      return 'parent_missing';
-    }
-    return 'quantize';
-  }
-
   return 'missing';
 }
 
@@ -1103,7 +1052,7 @@ function versionBundleComponents(modelId: string, verKey: string) {
   }));
 }
 
-/* ───── Download / Quantize / Delete ───── */
+/* ───── Download / Delete ───── */
 
 async function downloadVersion(
   model: ModelRow,
@@ -1136,7 +1085,10 @@ async function downloadVersion(
       if (active.status === 'failed') {
         await resumeDownload(active.id);
       } else {
-        connectProgressSSE(active.id, label, uiKey);
+        connectProgressSSE(active.id, label, uiKey, {
+          modelId: model.id,
+          versionKey,
+        });
       }
       return;
     }
@@ -1152,46 +1104,13 @@ async function downloadVersion(
     const label = version
       ? $mvn(model.id, model, version)
       : `${$mn(model, model.id)} ${versionKey}`;
-    connectProgressSSE(data.task_id, label, uiKey);
+    connectProgressSSE(data.task_id, label, uiKey, {
+      modelId: model.id,
+      versionKey,
+    });
   } catch (e: any) {
     console.error('Download failed:', e);
     toast.error($tt('download.downloadFailed', { msg: e.message }));
-    delete downloadingModels.value[uiKey];
-  }
-}
-
-async function quantizeVersion(model: ModelRow, versionKey: string) {
-  const ver = model.versions?.[versionKey];
-  const fromV = ver?.from_version;
-  if (!fromV) {
-    toast.error($tt('download.versionConfigError'));
-    return;
-  }
-  const uiKey = `${model.id}-${versionKey}`;
-  if (downloadingModels.value[uiKey]) return;
-
-  downloadingModels.value[uiKey] = true;
-  try {
-    const data = (await api.download.startConvert({
-      model_name: model.id,
-      from_version: fromV,
-      to_version: versionKey,
-    })) as any;
-    const taskId = data.task_id;
-    const label = ver
-      ? $mvn(model.id, model, ver)
-      : `${$mn(model, model.id)} ${versionKey}`;
-    connectConversionSSE(taskId, label, uiKey);
-  } catch (e: any) {
-    console.error('Quantize failed:', e);
-    const detail = e?.response?.data?.detail;
-    const msg =
-      typeof detail === 'string'
-        ? detail
-        : Array.isArray(detail)
-          ? detail.map((d: any) => d?.msg || String(d)).join('; ')
-          : e.message || String(e);
-    toast.error($tt('download.quantizeFailed', { msg }));
     delete downloadingModels.value[uiKey];
   }
 }
@@ -1234,7 +1153,8 @@ async function deleteVersion(model: ModelRow, versionKey: string) {
 function connectProgressSSE(
   taskId: string,
   name: string,
-  downloadingKey: string | null = null
+  downloadingKey: string | null = null,
+  meta: { modelId?: string; versionKey?: string } = {},
 ) {
   const dmKey = downloadingKey != null ? downloadingKey : taskId;
   if (sseConnections.value[taskId]) {
@@ -1267,6 +1187,7 @@ function connectProgressSSE(
           delete downloadingModels.value[dmKey];
         }, 2000);
         toast.success($tt('download.downloadComplete', { name }));
+        maybeSuggestQuantize(meta.modelId, meta.versionKey, name);
         refreshStatus();
         void loadDownloadedLoras();
       } else if (data.status === 'failed') {
@@ -1296,84 +1217,26 @@ function connectProgressSSE(
   };
 }
 
-function connectConversionSSE(
-  taskId: string,
-  name: string,
-  dmKey: string | null = null
+function maybeSuggestQuantize(
+  modelId: string | undefined,
+  versionKey: string | undefined,
+  label: string,
 ) {
-  const rowKey = dmKey != null ? dmKey : taskId;
-  if (sseConnections.value[taskId]) {
-    try {
-      sseConnections.value[taskId].close();
-    } catch (e) {}
-  }
-
-  const eventSource = new EventSource(
-    api.download.convertProgressStreamUrl(taskId)
+  if (!modelId || !versionKey) return;
+  const model = modelRegistry.value[modelId];
+  const finished = model?.versions?.[versionKey];
+  if (!isDenseVersion(finished)) return;
+  const hasPendingDerived = Object.entries(model?.versions || {}).some(
+    ([key, ver]) =>
+      isDerivedVersion(ver) && getVersionStatus(modelId, key) !== 'ready',
   );
-  sseConnections.value[taskId] = eventSource;
-
-  eventSource.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      activeDownloads.value[taskId] = {
-        kind: 'quantize',
-        name,
-        progress: typeof data.progress === 'number' ? data.progress : 0,
-        status: data.status || 'running',
-        speed: '',
-        total_size: 1,
-        downloaded_size: 0,
-        error: data.error_message || '',
-      };
-
-      if (data.status === 'completed') {
-        eventSource.close();
-        delete sseConnections.value[taskId];
-        setTimeout(() => {
-          delete activeDownloads.value[taskId];
-          delete downloadingModels.value[rowKey];
-        }, 2000);
-        toast.success($tt('download.quantizeComplete', { name }));
-        refreshStatus();
-      } else if (data.status === 'failed') {
-        eventSource.close();
-        delete sseConnections.value[taskId];
-        delete downloadingModels.value[rowKey];
-        toast.error(
-          $tt('download.quantizeFailed', { msg: data.error_message || '' })
-        );
-      } else if (data.status === 'cancelled') {
-        eventSource.close();
-        delete sseConnections.value[taskId];
-        delete activeDownloads.value[taskId];
-        delete downloadingModels.value[rowKey];
-        toast.info($tt('download.genCancelled', { name }));
-      }
-    } catch (e) {
-      console.error('Conversion SSE parse error:', e);
-    }
-  };
-
-  eventSource.onerror = () => {
-    eventSource.close();
-    delete sseConnections.value[taskId];
-    delete downloadingModels.value[rowKey];
-  };
+  if (!hasPendingDerived) return;
+  toast.info($tt('download.convertAfterDense', { name: label }));
 }
 
 /* ───── Batch / Cancel / Resume ───── */
 
 async function cancelDownload(taskId: string) {
-  const item = activeDownloads.value[taskId];
-  if (item && item.kind === 'quantize') {
-    try {
-      await api.download.cancelConversion(taskId);
-    } catch (e) {
-      console.error('Cancel conversion failed:', e);
-    }
-    return;
-  }
   try {
     await api.download.cancel(taskId);
   } catch (e) {
@@ -1400,10 +1263,7 @@ async function resumeDownload(taskId: string) {
 
 async function deleteDownload(taskId: string) {
   try {
-    const item = activeDownloads.value[taskId];
-    if (!item || item.kind !== 'quantize') {
-      await api.download.delete(taskId);
-    }
+    await api.download.delete(taskId);
     delete activeDownloads.value[taskId];
     toast.success($tt('download.deleteSuccess'));
   } catch (e) {

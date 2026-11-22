@@ -1,0 +1,16 @@
+[package]
+name = "danmo-mlx-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+links = "mlxc"
+build = "build.rs"
+
+[features]
+default = []
+metal = []
+cuda = []
+
+[build-dependencies]
+bindgen = "0.70"

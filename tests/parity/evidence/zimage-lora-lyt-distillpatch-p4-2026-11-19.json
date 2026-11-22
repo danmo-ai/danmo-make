@@ -1,0 +1,80 @@
+{
+  "kind": "z_image_lora_distillpatch_companion_e2e",
+  "date": "2026-11-19",
+  "platform": "macos-arm64",
+  "backend": "mlx-metal",
+  "model": "z-image-turbo",
+  "version": "fp16",
+  "action": "image.create",
+  "task_id": "3e534cf4-a451-4161-bfe2-dfee5146e6fe",
+  "dataset": {
+    "id": "ds_f5cf344d9e3f9702",
+    "name": "lyt",
+    "trigger": "Lyt"
+  },
+  "lora": {
+    "id": "user-lora-lyt-distill-e2e",
+    "name": "李雪01-sft-stack-e2e",
+    "source_weights": "models/Lora/李雪01/final_adapters.safetensors",
+    "source_task": "tsk_aa0ce54848f9e4dd060317f7",
+    "weight": 0.8,
+    "inference": {
+      "scheme": "sft",
+      "steps": 8,
+      "guidance": 0.0,
+      "scheduler": "linear",
+      "lora_weight": 0.8,
+      "extra_adapters": [
+        {
+          "id": "z-image-turbo-distillpatch-lora:bf16",
+          "weight": 1.0
+        }
+      ]
+    }
+  },
+  "companion": {
+    "id": "z-image-turbo-distillpatch-lora:bf16",
+    "install_source": "modelscope",
+    "repo_id": "DiffSynth-Studio/Z-Image-Turbo-DistillPatch",
+    "local_path": "models/Lora/Z-Image/z-image-turbo-distillpatch-bf16/model.safetensors",
+    "note": "Registry version source switched from huggingface→modelscope after HF connect timeout."
+  },
+  "request": {
+    "prompt": "Lyt, portrait photo, natural light",
+    "size": "1024x1024",
+    "steps": 8,
+    "guidance": 0.0,
+    "seed": 42,
+    "scheduler": "linear",
+    "submitted_adapters": [
+      "user-lora-lyt-distill-e2e"
+    ]
+  },
+  "bound_adapters": [
+    {
+      "id": "user-lora-lyt-distill-e2e",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/models/Lora/李雪01/final_adapters.safetensors",
+      "weight": 0.800000011920929
+    },
+    {
+      "id": "z-image-turbo-distillpatch-lora:bf16",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/models/Lora/Z-Image/z-image-turbo-distillpatch-bf16/model.safetensors",
+      "weight": 1.0
+    }
+  ],
+  "result": {
+    "status": "completed",
+    "asset_id": "ast_b4ac1b5b542b46eeabaf",
+    "output": "tests/parity/evidence/zimage-lora-lyt-distillpatch-p4-2026-11-19.png",
+    "width": 1024,
+    "height": 1024,
+    "steps": 8,
+    "managed_bytes": 317579544
+  },
+  "notes": [
+    "Client submitted only the user LoRA; bind_installed_loras expanded inference.extra_adapters to include DistillPatch.",
+    "DistillPatch install via ModelScope succeeded after Hugging Face API connect timeout.",
+    "E2E row uses a dedicated user_loras entry pointing at the same lyt/李雪01 weights with turbo-sft style inference metadata; does not mutate the original turbo-scheme 李雪01 row.",
+    "Not a numerical parity claim; proves companion stack path on Metal MLX create."
+  ]
+}

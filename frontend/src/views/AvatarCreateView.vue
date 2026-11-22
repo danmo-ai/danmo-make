@@ -52,14 +52,7 @@
     </template>
   </StudioLayout>
 
-  <StudioComposeFab
-    v-if="!composerDrawerOpen"
-    media="video"
-    :busy="composerBusy"
-    @open="openComposerDrawer()"
-  />
-
-  <StudioComposerHost v-model:open="composerDrawerOpen" :drawer-title="$t('avatar.composerTitle')">
+  <StudioComposerHost v-model:open="composerDrawerOpen" :drawer-title="$t('studio.composerDrawerTitle')">
     <AvatarComposer
       v-model="params.prompt"
       v-model:title="params.title"
@@ -87,6 +80,7 @@
       @pick-audio="openAudioPicker"
       @remove-audio="clearAudio"
       @model-change="onModelChange"
+      @reset-defaults="resetParamsToDefaults"
     />
   </StudioComposerHost>
 
@@ -116,20 +110,22 @@ import { useTasksStore } from '@/stores/tasks';
 import { useRegistryStore } from '@/stores/registry';
 import { useModelRegistryFilters } from '@/composables/useModelRegistryFilters';
 import { applyModelVersionFilters } from '@/utils/modelPickerFilters';
+import { compareModelPickerRows } from '@/utils/modelPickerSort';
 import { modelSelectOption } from '@/utils/modelSelectOption';
 import { warnIfRiskyMemory } from '@/composables/memoryHint';
 import { useStudioGallery } from '@/composables/useStudioGallery';
 import { useComposerDrawer } from '@/composables/useComposerDrawer';
 import { ACTIVE_COMPOSER_TASK_STATUSES } from '@/utils/composerQueue';
+import { seedForSubmit } from '@/utils/seed';
 import type { GalleryItem, SystemInfo, Task } from '@/types';
 import StudioLayout from '@/components/studio/StudioLayout.vue';
 import StudioCanvas from '@/components/studio/StudioCanvas.vue';
 import StudioGalleryFilters from '@/components/studio/StudioGalleryFilters.vue';
 import AvatarComposer from '@/components/studio/AvatarComposer.vue';
 import StudioComposerHost from '@/components/studio/StudioComposerHost.vue';
-import StudioComposeFab from '@/components/studio/StudioComposeFab.vue';
 import AssetPicker from '@/components/asset/AssetPicker.vue';
 import GalleryPreviewDialog from '@/components/gallery/GalleryPreviewDialog.vue';
+import { buildResolutionSizeOptions } from '@/utils/registryParamSchema';
 
 const tasksStore = useTasksStore();
 const registryStore = useRegistryStore();
@@ -233,7 +229,7 @@ const allAvatarVersions = computed(() => {
         name: $mvn(modelKey, config as any, versionConfig as any),
         description: $md(config as any),
         ready: status.ready,
-        recommended: (config as any).recommended && (versionConfig as any).default,
+        recommended: (config as any).recommended === true,
         commercialUseAllowed: (config as any).commercial_use_allowed === true,
       });
     }
@@ -248,12 +244,7 @@ const avatarModelPickerVersions = computed(() => {
     installedOnly: true,
     commercialOnly: modelFilterCommercialOnly.value,
   });
-  rows.sort((a, b) => {
-    const ar = a.recommended ? 1 : 0;
-    const br = b.recommended ? 1 : 0;
-    if (ar !== br) return br - ar;
-    return String(a.name || '').localeCompare(String(b.name || ''), 'zh');
-  });
+  rows.sort(compareModelPickerRows);
   return rows;
 });
 
@@ -263,11 +254,9 @@ const avatarModelSelectOptions = computed(() =>
 
 const currentModelConfig = computed(() => (modelRegistry.value[params.model] as Record<string, unknown>) || null);
 
-const resolutionSelectOptions = computed(() => {
-  const presets = (currentModelConfig.value?.parameters as any)?.resolution_presets;
-  const options = presets?.options || ['512x512', '832x480'];
-  return options.map((s: string) => ({ label: s, value: s }));
-});
+const resolutionSelectOptions = computed(() =>
+  buildResolutionSizeOptions(currentModelConfig.value?.parameters as Record<string, unknown> | undefined),
+);
 
 const supportsNegativePrompt = computed(() => {
   const p = (currentModelConfig.value?.parameters as any) || {};
@@ -282,6 +271,7 @@ const modelReady = computed(() => {
 });
 
 const submitDisabled = computed(() => {
+  if (mode.value === 'script') return true;
   if (generating.value) return true;
   if (!params.model || !modelReady.value) return true;
   if (!portraitAssetId.value && !portraitFile.value) return true;
@@ -352,6 +342,13 @@ function syncParamsFromModelConfig() {
   const [w, h] = preset.split('x').map((x: string) => parseInt(x, 10));
   if (w > 0) params.width = w;
   if (h > 0) params.height = h;
+}
+
+function resetParamsToDefaults() {
+  params.seed = null;
+  params.negative_prompt = '';
+  syncParamsFromModelConfig();
+  toast.success($tt('studio.restoredDefaults'));
 }
 
 function onModelChange() {
@@ -500,7 +497,7 @@ async function onGenerate() {
       num_frames: params.num_frames,
       fps: params.fps,
       steps: params.steps,
-      seed: params.seed,
+      seed: seedForSubmit(params.seed),
     };
 
     let submitRes: unknown;

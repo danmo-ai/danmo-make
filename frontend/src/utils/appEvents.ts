@@ -3,8 +3,10 @@
  * Extend `AppEventMap` and `ensureKnownKeys` when adding signals.
  */
 export type AppEventMap = {
-  'open-global-task-queue': void;
+  'open-global-task-queue': { taskId?: string };
   'open-task-log': { taskId: string };
+  /** Re-open the first-run onboarding wizard from Settings → Quick Setup. */
+  'open-onboarding': void;
 };
 
 type Handler<K extends keyof AppEventMap> = (payload: AppEventMap[K]) => void;
@@ -40,9 +42,10 @@ export const appEvents = {
   },
 };
 
-/** Open the global task queue drawer (shell). */
-export function openGlobalTaskQueue(): void {
-  appEvents.emit('open-global-task-queue', undefined as void);
+/** Open the task page (optionally focused on one task). */
+export function openGlobalTaskQueue(taskId?: string): void {
+  const id = String(taskId || '').trim();
+  appEvents.emit('open-global-task-queue', id ? { taskId: id } : {});
 }
 
 /** Open generation task log dialog for a task id. */
@@ -50,4 +53,9 @@ export function openTaskLog(taskId: string): void {
   const id = String(taskId || '').trim();
   if (!id) return;
   appEvents.emit('open-task-log', { taskId: id });
+}
+
+/** Re-run the first-run onboarding wizard (Settings → Quick Setup). */
+export function openOnboarding(): void {
+  appEvents.emit('open-onboarding', undefined as void);
 }

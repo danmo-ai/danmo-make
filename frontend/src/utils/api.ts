@@ -10,6 +10,7 @@ import type {
   RegistryData,
   SettingsData,
   SystemInfo,
+  TaskTrace,
 } from '@/types';
 import { DQ_STORAGE, getItem } from '@/utils/storage';
 
@@ -19,22 +20,8 @@ const API_BASE = '';
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 /** Dataset uploads and other bulk jobs can run many minutes. */
 const LONG_REQUEST_TIMEOUT_MS = 600_000;
-/** Single-round local LLM (prompt enhance, lyrics, vision caption) — includes cold model load. */
+/** Product LLM features (prompt enhance, assistant tasks) — includes cold model load. */
 const LLM_REQUEST_TIMEOUT_MS = 180_000;
-
-/** OpenAI chat.completion response. */
-export type ChatCompletionResult = {
-  id: string;
-  object: string;
-  created: number;
-  model: string;
-  choices: Array<{ message: { role: string; content: string } }>;
-  usage?: Record<string, unknown>;
-};
-
-export function completionText(res: ChatCompletionResult): string {
-  return (res.choices?.[0]?.message?.content ?? '').trim();
-}
 
 
 const client = axios.create({
@@ -53,6 +40,18 @@ const client = axios.create({
     return searchParams.toString();
   },
 });
+
+client.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const data = error?.response?.data;
+    const detail = data && typeof data === 'object' ? data.detail : data;
+    if (typeof detail === 'string' && detail.trim()) {
+      error.message = detail.trim();
+    }
+    return Promise.reject(error);
+  },
+);
 
 client.interceptors.request.use((config) => {
   const lang = getItem(DQ_STORAGE.LANG) || 'zh';
@@ -142,6 +141,11 @@ export const api = {
       }
       const id = path.slice('asset:'.length);
       return `${API_BASE}/api/assets/${id}/file`;
+    },
+
+    async updateAsset(id: string, body: Record<string, unknown>): Promise<AssetRow> {
+      const response = await client.patch(`/api/assets/${encodeURIComponent(id)}`, body);
+      return response.data;
     },
 
     async deleteImage(path: string): Promise<unknown> {
@@ -297,21 +301,6 @@ export const api = {
         `${API_BASE}/api/download/progress/${encodeURIComponent(taskId)}/stream`,
       );
     },
-
-    async startConvert(body: Record<string, unknown>): Promise<unknown> {
-      const response = await client.post('/api/download/convert', body);
-      return response.data;
-    },
-
-    convertProgressStreamUrl(taskId: string): string {
-      return withAccessApiKey(
-        `${API_BASE}/api/download/convert/${encodeURIComponent(taskId)}/stream`,
-      );
-    },
-
-    async cancelConversion(taskId: string): Promise<void> {
-      await client.post(`/api/download/convert/${encodeURIComponent(taskId)}/cancel`);
-    },
   },
 
   tasks: {
@@ -331,6 +320,12 @@ export const api = {
     async fetchGraph(taskId: string): Promise<Record<string, unknown>> {
       const response = await client.get(`/api/tasks/${encodeURIComponent(taskId)}/graph`);
       return response.data;
+    },
+
+    /** OTel spans recorded for this task; empty with a `reason` when untraced. */
+    async fetchTrace(taskId: string): Promise<TaskTrace> {
+      const response = await client.get(`/api/tasks/${encodeURIComponent(taskId)}/trace`);
+      return response.data as TaskTrace;
     },
 
     async diagnose(taskId: string, body?: { locale?: string }): Promise<{ summary: string }> {
@@ -495,11 +490,18 @@ export const api = {
   },
 
   gen: {
-    async uploadAsset(file: File): Promise<unknown> {
+    async uploadAsset(
+      file: File,
+      options: { ephemeral?: boolean; purpose?: string } = {},
+    ): Promise<unknown> {
       const fd = new FormData();
       fd.append('file', file);
+      const params: Record<string, string | boolean> = {};
+      if (options.ephemeral) params.ephemeral = true;
+      if (options.purpose) params.purpose = options.purpose;
       const response = await client.post('/api/assets', fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        params,
       });
       return response.data;
     },
@@ -647,6 +649,12 @@ export const api = {
       return response.data;
     },
 
+    /** Delete a finished task (row, logs, spans); cancel queued/running first. */
+    async purgeMediaTask(taskId: string): Promise<{ ok?: boolean; spans_removed?: number }> {
+      const response = await client.post(`/api/tasks/${encodeURIComponent(taskId)}/purge`);
+      return response.data;
+    },
+
     async getQueue(): Promise<QueueState> {
       const response = await client.get('/api/queue');
       return response.data;
@@ -728,34 +736,23 @@ export const api = {
       return response.data;
     },
 
-    async chatCompletion(body: {
-      model?: string;
-      messages: Array<{
-        role: string;
-        content:
-          | string
-          | Array<
-              | { type: 'text'; text: string }
-              | { type: 'image_url'; image_url: { url: string } }
-            >;
-      }>;
-      temperature?: number;
-      max_tokens?: number;
-      stream?: boolean;
-      top_p?: number;
-    }): Promise<ChatCompletionResult> {
-      const response = await client.post('/v1/chat/completions', body, {
-        timeout: body.messages.some(
-          (m) =>
-            Array.isArray(m.content) &&
-            m.content.some((p) => p.type === 'image_url'),
-        )
-          ? LLM_REQUEST_TIMEOUT_MS
-          : DEFAULT_REQUEST_TIMEOUT_MS,
+    /** Product assistant tasks — not an OpenAI chat proxy. */
+    async assistantRun(body: {
+      kind: 'lyrics' | 'image_to_prompt' | 'analyze_reference' | 'canvas_describe';
+      prompt?: string;
+      style?: string;
+      style_positive?: string;
+      question?: string;
+      asset_id?: string;
+      locale?: string;
+      video?: boolean;
+      prefer_vision?: boolean;
+    }): Promise<{ text: string; vision_used?: boolean }> {
+      const response = await client.post('/api/assistant/run', body, {
+        timeout: LLM_REQUEST_TIMEOUT_MS,
       });
       return response.data;
     },
-
 
     async getLlmModelInfo(): Promise<{
       model_id: string;
@@ -774,52 +771,6 @@ export const api = {
     }> {
       const response = await client.get('/v1/vision/model');
       return response.data;
-    },
-
-    async *chatCompletionStream(body: {
-      model?: string;
-      messages: Array<{
-        role: string;
-        content:
-          | string
-          | Array<
-              | { type: 'text'; text: string }
-              | { type: 'image_url'; image_url: { url: string } }
-            >;
-      }>;
-      temperature?: number;
-      max_tokens?: number;
-      top_p?: number;
-    }): AsyncGenerator<string, void, unknown> {
-      const response = await fetch('/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...body, stream: true }),
-      });
-      if (!response.body) return;
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith('data: ')) continue;
-          const data = trimmed.slice(6);
-          if (data === '[DONE]') return;
-          try {
-            const parsed = JSON.parse(data);
-            const content = parsed.choices?.[0]?.delta?.content;
-            if (content) yield content;
-          } catch {
-            // ignore malformed JSON
-          }
-        }
-      }
     },
   },
 
@@ -878,6 +829,14 @@ export const api = {
 
     async deleteSession(sessionId: string): Promise<void> {
       await client.delete(`/api/canvas/sessions/${encodeURIComponent(sessionId)}`);
+    },
+
+    /** Adopt gallery assets not on any canvas into the default session (image|video|audio). */
+    async adoptOrphans(
+      media: string = 'image',
+    ): Promise<{ default_session_id: string; adopted_count: number }> {
+      const response = await client.post('/api/canvas/sessions/adopt-orphans', { media });
+      return response.data as { default_session_id: string; adopted_count: number };
     },
   },
 
@@ -1010,20 +969,6 @@ export const api = {
       return response.data;
     },
 
-    async submitCheckpointEvaluation(
-      taskId: string,
-      body: { force?: boolean; priority?: 'normal' | 'high' } = {}
-    ): Promise<unknown> {
-      const response = await client.post(
-        `/api/loras/trainings/${encodeURIComponent(taskId)}/evaluate`,
-        {
-          force: Boolean(body.force),
-          priority: body.priority || 'normal',
-        }
-      );
-      return response.data;
-    },
-
     datasetImageUrl(datasetId: string, file: string): string {
       return `${API_BASE}/api/loras/datasets/${encodeURIComponent(datasetId)}/file/${encodeURIComponent(file)}`;
     },
@@ -1033,12 +978,9 @@ export const api = {
       return response.data;
     },
 
-    async trainingRequirements(baseModel?: string, qloraBits?: number | null): Promise<unknown> {
-      const params: Record<string, string | number> = {};
-      if (baseModel) params.base_model = baseModel;
-      if (qloraBits === 4 || qloraBits === 8) params.qlora_bits = qloraBits;
+    async trainingRequirements(baseModel?: string): Promise<unknown> {
       const response = await client.get('/api/loras/training/requirements', {
-        params: Object.keys(params).length ? params : undefined,
+        params: baseModel ? { base_model: baseModel } : undefined,
       });
       return response.data;
     },
@@ -1048,24 +990,8 @@ export const api = {
       return response.data;
     },
 
-    async continueTraining(
-      taskId: string,
-      body: { checkpoint?: string; priority?: 'normal' | 'high' } = {}
-    ): Promise<unknown> {
-      const response = await client.post(
-        `/api/loras/trainings/${encodeURIComponent(taskId)}/continue`,
-        body
-      );
-      return response.data;
-    },
-
     async trainingArtifacts(taskId: string): Promise<unknown> {
       const response = await client.get(`/api/loras/trainings/${encodeURIComponent(taskId)}/artifacts`);
-      return response.data;
-    },
-
-    async deleteTraining(taskId: string): Promise<unknown> {
-      const response = await client.delete(`/api/loras/trainings/${encodeURIComponent(taskId)}`);
       return response.data;
     },
 
@@ -1121,6 +1047,11 @@ export const api = {
 
     async createEdit(body: Record<string, unknown> = {}): Promise<unknown> {
       const response = await client.post('/api/audios/edits', body);
+      return response.data;
+    },
+
+    async createLm(body: Record<string, unknown> = {}): Promise<unknown> {
+      const response = await client.post('/api/audios/lm', body);
       return response.data;
     },
   },

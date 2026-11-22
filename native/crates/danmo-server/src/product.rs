@@ -1,0 +1,5501 @@
+//! Routes the Vue SPA calls besides generation submit.
+//! Graphs that are not built return a JSON `detail` and do not pretend to run.
+
+use crate::app::AppState;
+use crate::download;
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::sse::{Event, Sse};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use danmo_catalog::Catalog;
+use danmo_store::{AssetRow, CanvasRow, TaskRow};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::convert::Infallible;
+use std::path::{Path as FsPath, PathBuf};
+use std::time::Duration;
+use tokio_stream::wrappers::ReceiverStream;
+use uuid::Uuid;
+
+const MAX_UPLOAD_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+pub struct ApiError {
+    pub status: StatusCode,
+    pub detail: String,
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.status, Json(json!({ "detail": self.detail }))).into_response()
+    }
+}
+
+pub fn fail(status: StatusCode, detail: impl Into<String>) -> ApiError {
+    ApiError {
+        status,
+        detail: detail.into(),
+    }
+}
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/tasks", get(list_tasks))
+        .route("/api/tasks/list", get(list_tasks))
+        .route(
+            "/api/tasks/:id",
+            get(get_task).patch(patch_task).delete(cancel_task),
+        )
+        .route("/api/tasks/:id/logs", get(task_logs))
+        .route("/api/tasks/:id/trace", get(task_trace))
+        .route("/api/tasks/:id/graph", get(task_graph))
+        .route("/api/tasks/:id/preview", get(task_preview))
+        .route("/api/tasks/:id/purge", post(purge_task))
+        .route("/api/tasks/:id/diagnose", post(task_diagnose))
+        .route("/api/tasks/:id/diagnostic", get(task_diagnostic))
+        .route("/api/models", get(list_models))
+        .route("/api/models/:id/install", post(install_model))
+        .route(
+            "/api/models/:id/versions/:version",
+            axum::routing::delete(delete_model_version),
+        )
+        .route("/api/models/install-batch", post(install_batch))
+        .route("/api/adapters", get(empty_items))
+        .route("/api/setup/recommendations", get(recommendations))
+        .route(
+            "/api/assets",
+            get(list_assets)
+                .post(upload_asset)
+                .layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_BYTES)),
+        )
+        .route("/api/assets/groups", get(empty_items))
+        .route("/api/assets/batch-delete", post(batch_delete_assets))
+        .route("/api/assets/reconcile", post(reconcile_assets))
+        .route(
+            "/api/assets/:id",
+            axum::routing::delete(delete_asset).patch(patch_asset),
+        )
+        .route("/api/assets/:id/file", get(asset_file))
+        .route("/api/assets/:id/thumbnail", get(asset_thumbnail))
+        .route("/api/assets/:id/lineage", get(asset_lineage))
+        .route(
+            "/api/gallery/upload",
+            post(upload_asset).layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_BYTES)),
+        )
+        .route("/api/canvas/sessions", get(list_canvas).post(create_canvas))
+        .route(
+            "/api/canvas/sessions/adopt-orphans",
+            post(adopt_canvas_orphans),
+        )
+        .route(
+            "/api/canvas/sessions/:id",
+            get(get_canvas).put(update_canvas).delete(delete_canvas),
+        )
+        .route("/api/settings", get(get_settings).put(put_settings))
+        .route("/api/settings/access-keys", post(create_access_key))
+        .route(
+            "/api/settings/access-keys/:kind",
+            axum::routing::delete(revoke_access_key),
+        )
+        .route("/api/settings/workspace-paths", get(workspace_paths))
+        .route("/api/settings/workspace-status", get(workspace_status))
+        .route("/api/settings/apply-workspace", post(apply_workspace))
+        .route(
+            "/api/settings/pick-workspace-directory",
+            post(pick_workspace),
+        )
+        .route(
+            "/api/settings/restore-config-defaults",
+            post(restore_defaults),
+        )
+        .route("/api/settings/models", get(installed_models))
+        .route("/api/settings/loras", get(empty_items))
+        .route("/api/settings/refresh", post(refresh_ok))
+        .route("/api/settings/system", get(system_info))
+        .route("/api/settings/install", post(install_runtime))
+        .route("/api/settings/registry", get(settings_registry))
+        .route("/api/settings/models/status", get(models_status))
+        .route("/api/settings/models/status/detailed", get(models_detailed))
+        .route("/api/settings/disk-space", get(disk_space))
+        .route(
+            "/api/settings/loras/compatible/:model",
+            get(compatible_loras),
+        )
+        .route(
+            "/api/settings/controlnets/compatible/:model",
+            get(compatible_controlnets),
+        )
+        .route("/api/settings/presets", get(get_presets).post(save_preset))
+        .route(
+            "/api/settings/presets/:name",
+            axum::routing::delete(delete_preset),
+        )
+        .route("/api/settings/system/monitor", get(system_monitor))
+        .route("/api/system/metrics", get(system_monitor))
+        .route("/api/system/cache", get(cache_status))
+        .route("/api/system/cache/unload", post(unload_model_cache))
+        .route("/api/download/tasks", get(list_downloads))
+        .route(
+            "/api/download/tasks/:task_id",
+            axum::routing::delete(delete_download),
+        )
+        .route("/api/download/start", post(start_download))
+        .route("/api/download/cancel/:task_id", post(cancel_download))
+        .route("/api/download/resume/:task_id", post(resume_download))
+        .route(
+            "/api/download/progress/:task_id/stream",
+            get(download_progress),
+        )
+        .route("/api/download/lora/search", get(search_loras))
+        .route("/api/download/lora/base-models", get(lora_base_models))
+        .route("/api/download/lora/hub", post(start_lora_download))
+        .route("/api/download/lora", post(start_lora_download))
+        .route(
+            "/api/loras/datasets",
+            get(list_lora_datasets).post(create_lora_dataset),
+        )
+        .route(
+            "/api/loras/datasets/:id",
+            get(get_lora_dataset)
+                .patch(patch_lora_dataset)
+                .delete(delete_lora_dataset),
+        )
+        .route(
+            "/api/loras/datasets/:id/images",
+            post(upload_lora_dataset_images).delete(delete_lora_dataset_image_query),
+        )
+        .route(
+            "/api/loras/datasets/:id/images/:file",
+            axum::routing::delete(delete_lora_dataset_image),
+        )
+        .route(
+            "/api/loras/datasets/:id/file/:file",
+            get(serve_lora_dataset_file),
+        )
+        .route(
+            "/api/loras/datasets/:id/skipped-images",
+            axum::routing::put(put_lora_dataset_skipped),
+        )
+        .route("/api/loras/datasets/:id/health", get(lora_dataset_health))
+        .route(
+            "/api/loras/datasets/:id/health/vlm",
+            post(lora_dataset_health_vlm),
+        )
+        .route(
+            "/api/loras/datasets/:id/import-assets",
+            post(import_lora_dataset_assets),
+        )
+        .route(
+            "/api/loras/datasets/:id/import-csv",
+            post(import_lora_dataset_csv),
+        )
+        .route("/api/loras/user-adapters", get(empty_items))
+        .route(
+            "/api/loras/user-adapters/:id",
+            axum::routing::delete(delete_lora),
+        )
+        .route("/api/loras/downloaded-adapters", get(list_downloaded_loras))
+        .route("/api/loras/trainable-models", get(list_trainable_models))
+        .route(
+            "/api/loras/training/requirements",
+            get(training_requirements),
+        )
+        .route("/api/loras/training/presets", get(list_training_presets))
+        .route("/api/loras/trainings", post(submit_training))
+        .route(
+            "/api/loras/trainings/:id/artifacts",
+            get(training_artifacts),
+        )
+        .route(
+            "/api/loras/trainings/:id/artifacts/file/:filename",
+            get(training_artifact_file),
+        )
+        .route(
+            "/api/loras/trainings/:id/register",
+            post(register_training_checkpoint),
+        )
+        .route("/api/tools/z-image/merge", post(reject_merge))
+        .route("/api/tools/z-image/merge/models", get(merge_models))
+        .route("/api/tools/z-image/merge/merged", get(empty_items))
+        .route("/api/audios/generations", get(list_audio_tasks))
+        .route("/api/chat/enhance-prompt", post(enhance_prompt))
+        .route("/api/assistant/run", post(assistant_run))
+        .route("/v1/llm/model", get(llm_model_info))
+        .route("/v1/vision/model", get(vision_model_info))
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct ListQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+    kind: Option<String>,
+    status: Option<String>,
+    since: Option<String>,
+    media: Option<String>,
+    action: Option<String>,
+    installed: Option<String>,
+    /// When true (gallery default), hide ephemeral upload refs such as inpaint masks.
+    exclude_upload_refs: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct UploadQuery {
+    /// Mark the asset as a one-shot ref (hidden from gallery; deleted after task end).
+    ephemeral: Option<bool>,
+    purpose: Option<String>,
+}
+
+pub fn task_json(row: &TaskRow, queue_position: Option<i64>) -> Value {
+    let mut params: Value = serde_json::from_str(&row.params).unwrap_or_else(|_| json!({}));
+    if let Some(request) = params.get("request").cloned() {
+        if let Some(obj) = params.as_object_mut() {
+            for key in ["prompt", "title", "model"] {
+                if let Some(value) = request.get(key) {
+                    obj.insert(key.to_string(), value.clone());
+                }
+            }
+        }
+    }
+    let result = row
+        .result
+        .as_deref()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .unwrap_or(Value::Null);
+    json!({
+        "id": row.id,
+        "kind": row.kind,
+        "model_id": row.model_id,
+        "model": { "id": row.model_id, "name": row.model_id },
+        "status": row.status,
+        "priority": row.priority,
+        "progress": row.progress,
+        "params": params,
+        "result": result,
+        "error_message": row.error_message.clone().unwrap_or_default(),
+        "error": row.error_message.clone().filter(|text| !text.is_empty()),
+        "created_at": row.created_at,
+        "started_at": row.started_at,
+        "completed_at": row.completed_at,
+        "queue_position": queue_position,
+    })
+}
+
+pub fn asset_json(row: &AssetRow) -> Value {
+    let metadata: Value = serde_json::from_str(&row.metadata).unwrap_or_else(|_| json!({}));
+    json!({
+        "id": row.id,
+        "kind": row.kind,
+        "mime_type": row.mime_type,
+        "path": row.file_path,
+        "thumbnail_url": format!("/api/assets/{}/thumbnail", row.id),
+        "width": row.width,
+        "height": row.height,
+        "duration_seconds": row.duration_seconds,
+        "source_task_id": row.source_task_id,
+        "source_action": row.source_action,
+        "metadata": metadata,
+        "created_at": row.created_at,
+        "parent_asset_id": row.parent_asset_id,
+        "relation_type": row.relation_type,
+        "group_id": row.group_id,
+    })
+}
+
+pub async fn get_task(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let row = state
+        .scheduler
+        .get(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "task not found"))?;
+    Ok(Json(task_json(&row, None)))
+}
+
+pub async fn patch_task(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let label = body.get("priority").and_then(|v| v.as_str()).unwrap_or("");
+    let priority = match label {
+        "high" => 10,
+        "normal" => 100,
+        _ => {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                "priority must be high or normal",
+            ))
+        }
+    };
+    match state
+        .scheduler
+        .set_priority(&id, priority)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+    {
+        "ok" => get_task(State(state), Path(id)).await,
+        "missing" => Err(fail(StatusCode::NOT_FOUND, "task not found")),
+        _ => Err(fail(
+            StatusCode::CONFLICT,
+            "only queued tasks can change priority",
+        )),
+    }
+}
+
+pub async fn cancel_task(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    match state
+        .scheduler
+        .cancel(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+    {
+        "ok" => Ok(Json(json!({ "ok": true }))),
+        "missing" => Err(fail(StatusCode::NOT_FOUND, "task not found")),
+        _ => Err(fail(
+            StatusCode::CONFLICT,
+            "only queued or running tasks can be cancelled",
+        )),
+    }
+}
+
+/// Permanently remove a finished task: DB row, logs, spans, and on-disk work
+/// dirs (training adapters/progress/loss, gen work/preview). Cancel queued
+/// or running tasks first so a live worker never writes into a deleted row.
+/// Registered user LoRAs (copied out of the task dir) are left alone.
+pub async fn purge_task(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let outcome = state
+        .scheduler
+        .purge(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    match outcome {
+        "ok" => {
+            let spans = match danmo_otel::purge_task_spans(&state.otel_db, &id) {
+                Ok(removed) => removed,
+                Err(danmo_otel::TraceSpanQueryError::Missing(_)) => 0,
+                Err(error) => {
+                    return Err(fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))
+                }
+            };
+            let removed_paths = purge_task_workdir(&state, &id);
+            Ok(Json(json!({
+                "ok": true,
+                "task_id": id,
+                "spans_removed": spans,
+                "removed_paths": removed_paths,
+            })))
+        }
+        "missing" => Err(fail(StatusCode::NOT_FOUND, "task not found")),
+        _ => Err(fail(
+            StatusCode::CONFLICT,
+            "cancel the task before deleting it",
+        )),
+    }
+}
+
+/// Drop known on-disk leftovers for a purged task. Missing paths are fine.
+fn purge_task_workdir(state: &AppState, id: &str) -> Vec<String> {
+    let mut removed = Vec::new();
+    let candidates = [
+        state.workspace.join("tasks").join(id),
+        state.outputs.join("work").join(id),
+        state.outputs.join("previews").join(format!("{id}.png")),
+    ];
+    for path in candidates {
+        if !path.exists() {
+            continue;
+        }
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        match result {
+            Ok(()) => removed.push(path.display().to_string()),
+            Err(error) => {
+                tracing::error!("purge {id}: failed to remove {}: {error}", path.display())
+            }
+        }
+    }
+    removed
+}
+
+async fn list_tasks(
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let offset = query.offset.unwrap_or(0).max(0);
+    let rows = state
+        .scheduler
+        .list_tasks(
+            limit,
+            offset,
+            query.kind.as_deref(),
+            query.status.as_deref(),
+            query.since.as_deref(),
+        )
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let tasks: Vec<Value> = rows.iter().map(|row| task_json(row, None)).collect();
+    Ok(Json(json!({ "tasks": tasks })))
+}
+
+pub fn queue_body(state: &AppState) -> Result<Value, ApiError> {
+    let rows = state
+        .scheduler
+        .list_tasks(500, 0, None, None, None)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let running: Vec<Value> = rows
+        .iter()
+        .filter(|row| row.status == "running")
+        .take(5)
+        .map(|row| task_json(row, None))
+        .collect();
+    let mut queued_rows: Vec<&TaskRow> = rows.iter().filter(|row| row.status == "queued").collect();
+    queued_rows.sort_by_key(|row| (row.priority, row.created_at.clone()));
+    let mut wait = 0i64;
+    let queued: Vec<Value> = queued_rows
+        .iter()
+        .take(50)
+        .enumerate()
+        .map(|(index, row)| {
+            wait += 30;
+            let mut item = task_json(row, Some((index as i64) + 1));
+            if let Some(obj) = item.as_object_mut() {
+                obj.insert("estimated_wait_seconds".into(), json!(wait));
+            }
+            item
+        })
+        .collect();
+    Ok(json!({
+        "running": running,
+        "queued": queued,
+        "queue_image_first": state.scheduler.queue_image_first,
+        "counts": { "running": running.len(), "queued": queued_rows.len() },
+    }))
+}
+
+async fn task_logs(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let offset = query.offset.unwrap_or(0).max(0);
+    let limit = query.limit.unwrap_or(500).clamp(1, 2000);
+    let rows = state
+        .scheduler
+        .logs(&id, offset, limit)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let items: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            json!({
+                "id": row.id,
+                "message": row.message,
+                "level": row.level,
+                "time": row.time,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "items": items })))
+}
+
+async fn task_graph(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let row = state
+        .scheduler
+        .get(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "task not found"))?;
+    Ok(Json(task_graph_json(&state, &row)?))
+}
+
+/// One task's inference trace. A task with no spans yet (queued, or a run from
+/// before tracing was enabled) is an empty list with a `reason`, never a
+/// fabricated chain.
+async fn task_trace(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let row = state
+        .scheduler
+        .get(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "task not found"))?;
+    Ok(Json(task_trace_json(&state, &row)?))
+}
+
+async fn task_diagnostic(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let row = state
+        .scheduler
+        .get(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "task not found"))?;
+    let graph = task_graph_json(&state, &row)?;
+    let trace = task_trace_json(&state, &row)?;
+    let failure = match row.status.as_str() {
+        "failed" | "cancelled" => json!({
+            "code": if row.status == "cancelled" { "cancelled" } else { "engine_error" },
+            "message": row.error_message.clone().unwrap_or_default(),
+            "span_name": failing_span(&trace),
+        }),
+        _ => Value::Null,
+    };
+    Ok(Json(json!({
+        "task_id": row.id,
+        "status": row.status,
+        "kind": row.kind,
+        "model_id": row.model_id,
+        "failure": failure,
+        "graph": graph,
+        "trace": trace,
+    })))
+}
+
+fn task_graph_json(state: &AppState, row: &TaskRow) -> Result<Value, ApiError> {
+    let spans = load_spans(state, &row.id)?;
+    Ok(graph_from_spans(
+        row,
+        &spans,
+        state.scheduler.progress_tip(&row.id),
+    ))
+}
+
+fn task_trace_json(state: &AppState, row: &TaskRow) -> Result<Value, ApiError> {
+    let spans = load_spans(state, &row.id)?;
+    let reason = if !spans.is_empty() {
+        Value::Null
+    } else if let Some(error) = state.telemetry_error.as_deref() {
+        json!(error)
+    } else if row.status == "queued" {
+        json!("task has not started; no spans yet")
+    } else {
+        json!("no spans recorded for this task")
+    };
+    let step_progress = step_progress_json(
+        state.scheduler.progress_tip(&row.id),
+        progress_from_spans(&spans),
+    );
+    Ok(json!({
+        "task_id": row.id,
+        "status": row.status,
+        // Same identity as task.id (UUID octets); kept for OTel tooling.
+        "trace_id": spans
+            .first()
+            .map(|span| span.trace_id.clone())
+            .unwrap_or_else(|| danmo_otel::trace_id_hex_for_task(&row.id)),
+        "spans": spans,
+        "reason": reason,
+        "db": state.otel_db.display().to_string(),
+        "step_progress": step_progress,
+        "progress": row.progress,
+    }))
+}
+
+fn load_spans(state: &AppState, task_id: &str) -> Result<Vec<danmo_otel::TraceSpan>, ApiError> {
+    if state.telemetry.is_none() {
+        // Tracing was never initialized in this process; an empty trace is
+        // accurate, and `/api/system/health` carries the reason.
+        return Ok(Vec::new());
+    }
+    match danmo_otel::spans_for_task(&state.otel_db, task_id) {
+        Ok(spans) => Ok(spans),
+        Err(danmo_otel::TraceSpanQueryError::Missing(_)) => Ok(Vec::new()),
+        Err(error) => Err(fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())),
+    }
+}
+
+fn failing_span(trace: &Value) -> Value {
+    trace
+        .get("spans")
+        .and_then(Value::as_array)
+        .and_then(|spans| {
+            spans
+                .iter()
+                .filter(|span| span.get("status").and_then(Value::as_str) == Some("error"))
+                .max_by(|left, right| {
+                    let key = |value: &Value| {
+                        value
+                            .get("duration_ms")
+                            .and_then(Value::as_f64)
+                            .unwrap_or(0.0)
+                    };
+                    key(left).total_cmp(&key(right))
+                })
+                .and_then(|span| span.get("name").cloned())
+        })
+        .unwrap_or(Value::Null)
+}
+
+/// Pipeline strip derived only from exported `phase.*` spans. Missing phases
+/// are omitted (no heuristic filler). Live denoise `N/M` comes from the
+/// scheduler tip while the task runs, else the latest `progress` span event.
+fn graph_from_spans(
+    row: &TaskRow,
+    spans: &[danmo_otel::TraceSpan],
+    live_tip: Option<danmo_schedule::ProgressTip>,
+) -> Value {
+    let open_phase = if row.status == "running" {
+        last_phase_name(spans)
+    } else {
+        None
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut nodes = Vec::new();
+    for span in spans
+        .iter()
+        .filter(|span| span.name.starts_with(danmo_otel::PHASE_SPAN_PREFIX))
+    {
+        let name = &span.name[danmo_otel::PHASE_SPAN_PREFIX.len()..];
+        if !seen.insert(name.to_string()) {
+            continue;
+        }
+        let status = if span.status == "error" {
+            "failed"
+        } else if open_phase.as_deref() == Some(name) {
+            "running"
+        } else if span.status == "unset" && row.status == "running" {
+            "running"
+        } else {
+            "ok"
+        };
+        nodes.push(json!({
+            "id": name,
+            "label": name,
+            "status": status,
+            "duration_ms": span.duration_ms,
+        }));
+    }
+    let step_progress = step_progress_json(live_tip, progress_from_spans(spans));
+    json!({
+        "graph_id": row.id,
+        "source": "otel",
+        "nodes": nodes,
+        "active_node": open_phase,
+        "progress": row.progress,
+        "step_progress": step_progress,
+        "trace_id": root_span(spans).map(|span| span.trace_id.clone()),
+        "duration_ms": root_span(spans).map(|span| span.duration_ms),
+    })
+}
+
+fn root_span(spans: &[danmo_otel::TraceSpan]) -> Option<&danmo_otel::TraceSpan> {
+    spans.iter().find(|span| span.name == danmo_otel::ROOT_SPAN)
+}
+
+/// Name (without the `phase.` prefix) of the most recently started phase span.
+fn last_phase_name(spans: &[danmo_otel::TraceSpan]) -> Option<String> {
+    spans
+        .iter()
+        .filter(|span| span.name.starts_with(danmo_otel::PHASE_SPAN_PREFIX))
+        .max_by_key(|span| span.start_unix_nanos)
+        .map(|span| span.name[danmo_otel::PHASE_SPAN_PREFIX.len()..].to_string())
+}
+
+fn progress_from_spans(spans: &[danmo_otel::TraceSpan]) -> Option<danmo_schedule::ProgressTip> {
+    let mut best: Option<(i64, danmo_schedule::ProgressTip)> = None;
+    for span in spans {
+        let Some(events) = span.events.as_array() else {
+            continue;
+        };
+        for event in events {
+            if event.get("name").and_then(Value::as_str) != Some("progress") {
+                continue;
+            }
+            let attrs = event.get("attributes").unwrap_or(&Value::Null);
+            let phase = attrs
+                .get("phase")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let step = attrs
+                .get("progress.step")
+                .and_then(Value::as_i64)
+                .unwrap_or(0) as u32;
+            let total = attrs
+                .get("progress.total")
+                .and_then(Value::as_i64)
+                .unwrap_or(0) as u32;
+            let time = event
+                .get("time_unix_nanos")
+                .and_then(Value::as_i64)
+                .unwrap_or(span.start_unix_nanos);
+            let tip = danmo_schedule::ProgressTip { phase, step, total };
+            if best.as_ref().map(|(t, _)| *t).unwrap_or(i64::MIN) <= time {
+                best = Some((time, tip));
+            }
+        }
+    }
+    best.map(|(_, tip)| tip)
+}
+
+fn step_progress_json(
+    live: Option<danmo_schedule::ProgressTip>,
+    from_spans: Option<danmo_schedule::ProgressTip>,
+) -> Value {
+    let Some(tip) = live.or(from_spans) else {
+        return Value::Null;
+    };
+    json!({
+        "phase": tip.phase,
+        "step": tip.step,
+        "total": tip.total,
+    })
+}
+
+async fn task_preview(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let path = state.outputs.join("previews").join(format!("{id}.png"));
+    match std::fs::read(&path) {
+        Ok(bytes) => ([(header::CONTENT_TYPE, "image/png")], bytes).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "preview is not ready").into_response(),
+    }
+}
+
+/// `POST /api/tasks/:id/diagnose` is the assistant-graph entry point and is
+/// still not built; the real evidence lives in `GET .../diagnostic`.
+async fn task_diagnose(Path(id): Path<String>) -> Json<Value> {
+    Json(json!({
+        "task_id": id,
+        "summary": "assistant graph is not built; use GET /api/tasks/{id}/diagnostic",
+    }))
+}
+
+async fn list_models(
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let mut out = serde_json::Map::new();
+    let Some(models) = catalog.root().get("models").and_then(|v| v.as_object()) else {
+        return Ok(Json(json!({ "models": {} })));
+    };
+    for (id, entry) in models {
+        let media = entry
+            .pointer("/catalog/media")
+            .and_then(|v| v.as_str())
+            .unwrap_or("image");
+        if let Some(want) = query.media.as_deref() {
+            if !want.is_empty() && want != media {
+                continue;
+            }
+        }
+        if let Some(action) = query.action.as_deref().filter(|a| !a.is_empty()) {
+            let actions = entry.get("actions").and_then(|v| v.as_object());
+            if actions.map(|map| map.contains_key(action)) != Some(true) {
+                continue;
+            }
+        }
+        let ready = model_ready(&state.workspace, entry);
+        if let Some(flag) = query.installed.as_deref() {
+            let want = flag == "true" || flag == "1";
+            if want != ready {
+                continue;
+            }
+        }
+        let family = entry
+            .pointer("/runtime/family")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let engine = entry
+            .pointer("/catalog/engine")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let actions = entry
+            .get("actions")
+            .and_then(|v| v.as_object())
+            .map(|map| map.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        out.insert(
+            id.clone(),
+            json!({
+                "media": media,
+                "family": family,
+                "engine": engine,
+                "actions": actions,
+                "installed": ready,
+                "commercial_use_allowed": entry.pointer("/catalog/commercial_use_allowed"),
+            }),
+        );
+    }
+    Ok(Json(json!({ "models": out })))
+}
+
+async fn models_status(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let mut out = serde_json::Map::new();
+    if let Some(models) = catalog.root().get("models").and_then(|v| v.as_object()) {
+        for (id, entry) in models {
+            out.insert(id.clone(), json!(model_ready(&state.workspace, entry)));
+        }
+    }
+    Ok(Json(Value::Object(out)))
+}
+
+async fn models_detailed(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let mut out = serde_json::Map::new();
+    if let Some(models) = catalog.root().get("models").and_then(|v| v.as_object()) {
+        for (id, entry) in models {
+            out.insert(id.clone(), detailed_status(&state.workspace, entry));
+        }
+    }
+    Ok(Json(Value::Object(out)))
+}
+
+fn detailed_status(workspace: &FsPath, entry: &Value) -> Value {
+    let versions = entry
+        .pointer("/distribution/versions")
+        .and_then(|v| v.as_object());
+    let mut ready = false;
+    let mut listed = serde_json::Map::new();
+    if let Some(versions) = versions {
+        for (key, version) in versions {
+            let path = version
+                .get("local_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let resolved = download::resolve_model_path(workspace, path);
+            let is_ready = !path.is_empty() && download::version_ready(&resolved);
+            if is_ready {
+                ready = true;
+            }
+            let status = if is_ready {
+                "ready"
+            } else if !path.is_empty() && resolved.exists() {
+                "incomplete"
+            } else {
+                "not_downloaded"
+            };
+            listed.insert(
+                key.clone(),
+                json!({
+                    "ready": is_ready,
+                    "status": status,
+                    "local_path": path,
+                }),
+            );
+        }
+    }
+    let overall = if ready {
+        "ready"
+    } else if listed.is_empty()
+        || listed
+            .values()
+            .all(|row| row.get("status").and_then(|v| v.as_str()) == Some("not_downloaded"))
+    {
+        "not_downloaded"
+    } else {
+        "incomplete"
+    };
+    json!({ "ready": ready, "status": overall, "versions": listed })
+}
+
+fn model_ready(workspace: &FsPath, entry: &Value) -> bool {
+    detailed_status(workspace, entry)
+        .get("ready")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Every published version of this model is resolved on disk.
+fn model_fully_installed(workspace: &FsPath, entry: &Value) -> bool {
+    let versions = entry
+        .pointer("/distribution/versions")
+        .and_then(|v| v.as_object());
+    let Some(versions) = versions.filter(|rows| !rows.is_empty()) else {
+        return false;
+    };
+    versions.values().all(|version| {
+        let path = version
+            .get("local_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        !path.is_empty() && download::version_ready(&download::resolve_model_path(workspace, path))
+    })
+}
+
+async fn installed_models(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let mut rows = Vec::new();
+    if let Some(models) = catalog.root().get("models").and_then(|v| v.as_object()) {
+        for (id, entry) in models {
+            let Some(versions) = entry
+                .pointer("/distribution/versions")
+                .and_then(|v| v.as_object())
+            else {
+                continue;
+            };
+            for (key, version) in versions {
+                let Some(path) = version.get("local_path").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                if !download::version_ready(&download::resolve_model_path(&state.workspace, path)) {
+                    continue;
+                }
+                let full = download::resolve_model_path(&state.workspace, path);
+                let bytes = dir_size(&full);
+                rows.push(json!({
+                    "name": format!("{id}:{key}"),
+                    "model_id": id,
+                    "version": key,
+                    "path": full.display().to_string(),
+                    "size_human": human_bytes(bytes),
+                    "size_bytes": bytes,
+                }));
+            }
+        }
+    }
+    Ok(Json(Value::Array(rows)))
+}
+
+async fn install_model(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let version = body
+        .get("version")
+        .and_then(|v| v.as_str())
+        .filter(|version| !version.is_empty())
+        .ok_or_else(|| fail(StatusCode::BAD_REQUEST, "version is required"))?;
+    let task_id = enqueue_install(&state, &id, version)?;
+    Ok(Json(json!({ "task_id": task_id })))
+}
+
+async fn install_batch(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    if let Some(items) = body.get("items").and_then(|v| v.as_array()) {
+        for item in items {
+            let model_id = item
+                .get("model_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let version = item
+                .get("version")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if model_id.is_empty() || version.is_empty() {
+                return Err(fail(
+                    StatusCode::BAD_REQUEST,
+                    "each install item needs model_id and version",
+                ));
+            }
+            pairs.push((model_id, version));
+        }
+    } else if let Some(ids) = body.get("model_ids").and_then(|v| v.as_array()) {
+        let catalog = open_catalog(&state)?;
+        for id in ids {
+            let Some(model_id) = id.as_str() else {
+                continue;
+            };
+            let version = default_version(catalog.root(), model_id).ok_or_else(|| {
+                fail(
+                    StatusCode::BAD_REQUEST,
+                    format!("{model_id} has no downloadable version"),
+                )
+            })?;
+            pairs.push((model_id.to_string(), version));
+        }
+    }
+    if pairs.is_empty() {
+        return Err(fail(StatusCode::BAD_REQUEST, "no models to install"));
+    }
+    let mut task_ids = Vec::new();
+    for (model_id, version) in &pairs {
+        task_ids.push(enqueue_install(&state, model_id, version)?);
+    }
+    Ok(Json(json!({ "task_ids": task_ids })))
+}
+
+fn enqueue_install(state: &AppState, model_id: &str, version: &str) -> Result<String, ApiError> {
+    let catalog = open_catalog(state)?;
+    let catalog_source = catalog
+        .root()
+        .pointer(&format!("/models/{model_id}/catalog/source"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let spec = install_spec(catalog.root(), model_id, version, catalog_source.as_deref())
+        .map_err(|detail| fail(StatusCode::BAD_REQUEST, detail))?;
+    state
+        .downloads
+        .install_model(model_id, version, &spec)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err))
+}
+
+/// Resolve one installable version. A `kind: derived` version names its dense
+/// base; the base is inlined under `base` so the download worker never needs
+/// the registry again. Only one level of derivation is allowed.
+fn install_spec(
+    root: &Value,
+    model_id: &str,
+    version: &str,
+    catalog_source: Option<&str>,
+) -> Result<Value, String> {
+    let mut spec = root
+        .pointer(&format!(
+            "/models/{model_id}/distribution/versions/{version}"
+        ))
+        .cloned()
+        .ok_or_else(|| format!("{model_id} has no {version} package"))?;
+    crate::download::fill_missing_download_source(&mut spec, catalog_source);
+    let Some(base_key) = spec
+        .get("base")
+        .and_then(|value| value.as_str())
+        .filter(|key| !key.is_empty())
+        .map(str::to_string)
+    else {
+        if !version_is_download(&spec) {
+            return Err(format!("{model_id}:{version} has no published download"));
+        }
+        return Ok(spec);
+    };
+    let mut base = root
+        .pointer(&format!(
+            "/models/{model_id}/distribution/versions/{base_key}"
+        ))
+        .cloned()
+        .ok_or_else(|| format!("{model_id}:{version} derives from missing base {base_key}"))?;
+    crate::download::fill_missing_download_source(&mut spec, catalog_source);
+    crate::download::fill_missing_download_source(&mut base, catalog_source);
+    if base.get("base").is_some() {
+        return Err(format!(
+            "{model_id}:{base_key} is itself derived; only one level is allowed"
+        ));
+    }
+    if !version_is_download(&base) {
+        return Err(format!("{model_id}:{base_key} has no published download"));
+    }
+    spec["base"] = base;
+    Ok(spec)
+}
+
+fn version_is_download(version: &Value) -> bool {
+    let nonempty = |key: &str| {
+        version
+            .get(key)
+            .and_then(|value| value.as_str())
+            .is_some_and(|text| !text.is_empty())
+    };
+    let listed = |key: &str| {
+        version
+            .get(key)
+            .and_then(|value| value.as_array())
+            .is_some_and(|rows| !rows.is_empty())
+    };
+    nonempty("repo_id")
+        || nonempty("url")
+        || listed("files")
+        || listed("bundle_repos")
+        || listed("components")
+}
+
+fn default_version(root: &Value, model_id: &str) -> Option<String> {
+    let versions = root
+        .pointer(&format!("/models/{model_id}/distribution/versions"))?
+        .as_object()?;
+    let mut fallback = None;
+    for (key, version) in versions {
+        if !version_is_download(version) && version.get("base").is_none() {
+            continue;
+        }
+        if version
+            .get("default")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            return Some(key.clone());
+        }
+        if fallback.is_none() {
+            fallback = Some(key.clone());
+        }
+    }
+    fallback
+}
+
+async fn delete_model_version(
+    State(state): State<AppState>,
+    Path((id, version)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let spec = catalog
+        .root()
+        .pointer(&format!("/models/{id}/distribution/versions/{version}"))
+        .ok_or_else(|| {
+            fail(
+                StatusCode::NOT_FOUND,
+                format!("{id} has no {version} package"),
+            )
+        })?;
+    let local = spec
+        .get("local_path")
+        .and_then(|v| v.as_str())
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| fail(StatusCode::BAD_REQUEST, "version has no local_path"))?;
+    remove_model_dir(
+        &state,
+        &download::resolve_model_path(&state.workspace, local),
+    )?;
+    Ok(Json(json!({ "success": true })))
+}
+
+fn remove_model_dir(state: &AppState, path: &FsPath) -> Result<(), ApiError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let canon = path
+        .canonicalize()
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
+    let roots = [state.workspace.join("models")];
+    let allowed = roots.iter().any(|root| {
+        let Ok(root) = root.canonicalize() else {
+            return false;
+        };
+        canon.starts_with(&root) && canon != root
+    });
+    if !allowed {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            "refusing to delete a path outside the models directory",
+        ));
+    }
+    std::fs::remove_dir_all(&canon)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+}
+
+async fn empty_items() -> Json<Value> {
+    Json(json!({ "items": [] }))
+}
+
+async fn empty_list() -> Json<Value> {
+    Json(json!([]))
+}
+
+#[derive(Debug, Deserialize)]
+struct CompatibleControlNetQuery {
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+/// Registry ControlNets whose `base_model` matches the selected create/edit model.
+async fn compatible_controlnets(
+    State(state): State<AppState>,
+    Path(model): Path<String>,
+    Query(query): Query<CompatibleControlNetQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let models = catalog
+        .root()
+        .get("models")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| fail(StatusCode::INTERNAL_SERVER_ERROR, "registry has no models"))?;
+    let scope = query
+        .scope
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(scope) = scope {
+        if !matches!(scope, "create" | "retouch" | "extend") {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                format!("invalid controlnet scope {scope}"),
+            ));
+        }
+    }
+    let runtime_available = cfg!(feature = "mlx");
+    let mut rows = Vec::new();
+    for (id, entry) in models {
+        if entry
+            .pointer("/catalog/category")
+            .and_then(|value| value.as_str())
+            != Some("controlnets")
+        {
+            continue;
+        }
+        if entry
+            .pointer("/catalog/type")
+            .and_then(|value| value.as_str())
+            != Some("controlnet")
+        {
+            continue;
+        }
+        let base = entry
+            .pointer("/catalog/base_model")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if !controlnet_compatible(&model, base) {
+            continue;
+        }
+        let actions = entry.get("actions").cloned().unwrap_or_else(|| json!({}));
+        if !controlnet_matches_scope(&actions, scope) {
+            continue;
+        }
+        let status = detailed_status(&state.workspace, entry);
+        let ready = status
+            .get("ready")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let mut versions_ready = serde_json::Map::new();
+        if let Some(versions) = status.get("versions").and_then(|value| value.as_object()) {
+            for (key, version) in versions {
+                versions_ready.insert(
+                    key.clone(),
+                    json!(version
+                        .get("ready")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false)),
+                );
+            }
+        }
+        let name = lora_display_name(entry, id);
+        let name_en = entry
+            .pointer("/catalog/name/en")
+            .and_then(|value| value.as_str())
+            .unwrap_or(id)
+            .to_string();
+        let parameters = entry
+            .pointer("/ui/parameters")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let backends = entry
+            .pointer("/runtime/backends")
+            .cloned()
+            .unwrap_or_else(|| json!(["mlx"]));
+        let binding = entry
+            .pointer("/catalog/binding")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("controlnet {id} missing catalog.binding"),
+                )
+            })?;
+        if !matches!(binding, "structural" | "standalone_edit") {
+            return Err(fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("controlnet {id} has invalid catalog.binding {binding}"),
+            ));
+        }
+        let guide_type = entry
+            .pointer("/catalog/guide_type")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("controlnet {id} missing catalog.guide_type"),
+                )
+            })?;
+        let supports_inpaint = entry
+            .pointer("/catalog/supports_inpaint")
+            .and_then(|value| value.as_bool())
+            .ok_or_else(|| {
+                fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("controlnet {id} missing catalog.supports_inpaint"),
+                )
+            })?;
+        let allows_with_reference = entry
+            .pointer("/catalog/allows_with_reference")
+            .and_then(|value| value.as_bool())
+            .ok_or_else(|| {
+                fail(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("controlnet {id} missing catalog.allows_with_reference"),
+                )
+            })?;
+        rows.push(json!({
+            "name": name,
+            "name_en": name_en,
+            "key": id,
+            "base_model": base,
+            "binding": binding,
+            "guide_type": guide_type,
+            "supports_inpaint": supports_inpaint,
+            "allows_with_reference": allows_with_reference,
+            "ready": ready,
+            "versions_ready": versions_ready,
+            "actions": actions,
+            "parameters": parameters,
+            "runtime_backends": backends,
+            "runtime_available": runtime_available,
+            "cuda_batch_planned": false,
+        }));
+    }
+    rows.sort_by(|left, right| {
+        let name = |row: &Value| {
+            row.get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        name(left).cmp(&name(right))
+    });
+    Ok(Json(Value::Array(rows)))
+}
+
+fn controlnet_compatible(model: &str, base: &str) -> bool {
+    let model = model.split(':').next().unwrap_or(model).trim();
+    let base = base.split(':').next().unwrap_or(base).trim();
+    if model.is_empty() {
+        return false;
+    }
+    if model.starts_with("flux") {
+        return base.is_empty() || base.starts_with("flux");
+    }
+    if model.starts_with("z-image") {
+        return base.is_empty()
+            || base.starts_with("z-image")
+            || base == "z-image"
+            || base == "z-image-turbo";
+    }
+    !base.is_empty() && model == base
+}
+
+fn controlnet_matches_scope(actions: &Value, scope: Option<&str>) -> bool {
+    let Some(scope) = scope else {
+        return true;
+    };
+    let acts = actions.as_object();
+    let has_create = acts.is_some_and(|map| map.contains_key("create"));
+    let has_retouch = acts.is_some_and(|map| map.contains_key("retouch"));
+    let has_extend = acts.is_some_and(|map| map.contains_key("extend"));
+    let actions_empty = acts.map_or(true, |map| map.is_empty());
+    match scope {
+        // Empty actions = legacy structural create-eligible. Having retouch
+        // no longer excludes a net that also declares create.
+        "create" => has_create || actions_empty,
+        "retouch" => has_retouch,
+        "extend" => has_extend,
+        _ => false,
+    }
+}
+
+/// Installed and registry LoRAs whose `base_model` matches the selected model.
+/// ACE-Step XL SFT, Turbo, and base share one LoRA set.
+async fn compatible_loras(
+    State(state): State<AppState>,
+    Path(model): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let models = catalog
+        .root()
+        .get("models")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| fail(StatusCode::INTERNAL_SERVER_ERROR, "registry has no models"))?;
+    let mut rows = Vec::new();
+    for (id, entry) in models {
+        if entry
+            .pointer("/catalog/category")
+            .and_then(|value| value.as_str())
+            != Some("loras")
+            && entry
+                .pointer("/catalog/type")
+                .and_then(|value| value.as_str())
+                != Some("lora")
+        {
+            continue;
+        }
+        let base = entry
+            .pointer("/catalog/base_model")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if !lora_compatible(&model, base) {
+            continue;
+        }
+        let mut row = json!({
+            "kind": "lora",
+            "id": id,
+            "name": lora_display_name(entry, id),
+            "base_model": base,
+            "source": "registry",
+            "ready": lora_versions_ready(&state.workspace, entry),
+        });
+        attach_registry_lora_meta(&mut row, entry, &state.workspace);
+        rows.push(row);
+    }
+    let user_path = state.workspace.join("config").join("user_loras.json");
+    if user_path.is_file() {
+        let text = std::fs::read_to_string(&user_path).map_err(|error| {
+            fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{}: {error}", user_path.display()),
+            )
+        })?;
+        let value: Value = serde_json::from_str(&text).map_err(|error| {
+            fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{} is not json: {error}", user_path.display()),
+            )
+        })?;
+        for item in value
+            .get("items")
+            .and_then(|value| value.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let id = item
+                .get("id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let base = item
+                .get("base_model")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let path = item
+                .get("local_path")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            if id.is_empty() || !lora_compatible(&model, base) {
+                continue;
+            }
+            let root = download::resolve_model_path(&state.workspace, path);
+            if download::lora_weight_file(&root).is_err() {
+                continue;
+            }
+            if rows
+                .iter()
+                .any(|row| row.get("id").and_then(|value| value.as_str()) == Some(id))
+            {
+                continue;
+            }
+            let mut row = json!({
+                "kind": "lora",
+                "id": id,
+                "name": item.get("name").and_then(|value| value.as_str()).unwrap_or(id),
+                "base_model": base,
+                "source": item.get("source").and_then(|value| value.as_str()).unwrap_or("user_trained"),
+                "ready": true,
+            });
+            if let Some(inference) = item.get("inference").filter(|value| value.is_object()) {
+                let extras =
+                    danmo_contracts::stacked_adapters_from_value(inference.get("extra_adapters"))
+                        .map_err(|detail| {
+                        fail(StatusCode::BAD_REQUEST, format!("lora {id}: {detail}"))
+                    })?;
+                if !extras.is_empty() {
+                    row["extra_adapters"] = json!(extras);
+                }
+                let mut overrides = serde_json::Map::new();
+                if let Some(steps) = inference.get("steps").and_then(|value| value.as_u64()) {
+                    overrides.insert("steps".into(), json!(steps));
+                }
+                if let Some(guidance) = inference.get("guidance").and_then(|value| value.as_f64()) {
+                    overrides.insert("guidance".into(), json!(guidance));
+                }
+                if let Some(scheduler) = inference
+                    .get("scheduler")
+                    .and_then(|value| value.as_str())
+                    .filter(|text| !text.is_empty())
+                {
+                    overrides.insert("scheduler".into(), json!(scheduler));
+                }
+                if let Some(weight) = inference
+                    .get("lora_weight")
+                    .and_then(|value| value.as_f64())
+                {
+                    overrides.insert("lora_scale".into(), json!(weight));
+                }
+                if !overrides.is_empty() {
+                    row["compose_overrides"] = Value::Object(overrides);
+                }
+                if let Some(range) = inference.get("lora_weight_range") {
+                    row["recommended_lora_scale"] = range.clone();
+                }
+            }
+            rows.insert(0, row);
+        }
+    }
+    if let Some(items) = state
+        .downloads
+        .list_loras()
+        .get("items")
+        .and_then(|value| value.as_array())
+    {
+        for item in items {
+            let id = item
+                .get("id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let base = item
+                .get("base_model")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            if id.is_empty() || !lora_compatible(&model, base) {
+                continue;
+            }
+            if rows
+                .iter()
+                .any(|row| row.get("id").and_then(|value| value.as_str()) == Some(id))
+            {
+                continue;
+            }
+            rows.push(json!({
+                "kind": "lora",
+                "id": id,
+                "name": item.get("name").and_then(|value| value.as_str()).unwrap_or(id),
+                "base_model": base,
+                "source": "remote_download",
+                "ready": true,
+            }));
+        }
+    }
+    rows.sort_by(|left, right| {
+        let name = |row: &Value| {
+            row.get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        name(left).cmp(&name(right))
+    });
+    Ok(Json(Value::Array(rows)))
+}
+
+fn attach_registry_lora_meta(row: &mut Value, entry: &Value, workspace: &FsPath) {
+    if let Some(overrides) =
+        registry_compose_overrides(entry, installed_lora_version(entry, workspace))
+    {
+        row["compose_overrides"] = overrides;
+    }
+    let Some(meta) = entry.pointer("/catalog/metadata/lora") else {
+        return;
+    };
+    if let Some(hint) = meta
+        .get("hint_key")
+        .and_then(|value| value.as_str())
+        .filter(|text| !text.is_empty())
+    {
+        row["hint_key"] = json!(hint);
+    }
+    if let Some(tags) = meta.get("tags").filter(|value| value.is_array()) {
+        row["tags"] = tags.clone();
+    }
+    if let Some(range) = meta
+        .get("recommended_lora_scale")
+        .filter(|value| value.is_array())
+    {
+        row["recommended_lora_scale"] = range.clone();
+    }
+}
+
+/// Card overrides, then the installed version. `ui.parameters.compose_overrides`
+/// and `runtime.overrides.compose_overrides` are the same map.
+fn registry_compose_overrides(entry: &Value, version: Option<&Value>) -> Option<Value> {
+    let mut overrides = serde_json::Map::new();
+    merge_compose_overrides(
+        &mut overrides,
+        entry.pointer("/runtime/overrides/compose_overrides"),
+    );
+    merge_compose_overrides(
+        &mut overrides,
+        entry.pointer("/ui/parameters/compose_overrides"),
+    );
+    if let Some(version) = version {
+        merge_compose_overrides(&mut overrides, version.get("compose_overrides"));
+    }
+    if overrides.is_empty() {
+        None
+    } else {
+        Some(Value::Object(overrides))
+    }
+}
+
+fn merge_compose_overrides(into: &mut serde_json::Map<String, Value>, source: Option<&Value>) {
+    let Some(source) = source.and_then(|value| value.as_object()) else {
+        return;
+    };
+    for (key, value) in source {
+        if value.is_null() {
+            continue;
+        }
+        into.insert(key.clone(), value.clone());
+    }
+}
+
+fn installed_lora_version<'a>(entry: &'a Value, workspace: &FsPath) -> Option<&'a Value> {
+    let versions = entry
+        .pointer("/distribution/versions")
+        .and_then(|value| value.as_object())?;
+    let ready: Vec<&Value> = versions
+        .values()
+        .filter(|spec| {
+            spec.get("local_path")
+                .and_then(|value| value.as_str())
+                .is_some_and(|path| {
+                    download::version_ready(&download::resolve_model_path(workspace, path))
+                })
+        })
+        .collect();
+    if ready.len() == 1 {
+        return Some(ready[0]);
+    }
+    ready
+        .into_iter()
+        .find(|spec| spec.get("default").and_then(|value| value.as_bool()) == Some(true))
+}
+
+fn lora_display_name(entry: &Value, id: &str) -> String {
+    match entry.pointer("/catalog/name") {
+        Some(Value::String(text)) => text.clone(),
+        Some(value) => value
+            .get("zh")
+            .and_then(|item| item.as_str())
+            .filter(|text| !text.is_empty())
+            .or_else(|| value.get("en").and_then(|item| item.as_str()))
+            .unwrap_or(id)
+            .to_string(),
+        None => id.to_string(),
+    }
+}
+
+pub(crate) fn lora_compatible(model: &str, base: &str) -> bool {
+    let model = model.split(':').next().unwrap_or(model).trim();
+    let base = base.split(':').next().unwrap_or(base).trim();
+    if model.is_empty() || base.is_empty() {
+        return false;
+    }
+    if model == base {
+        return true;
+    }
+    const ACE_XL: &[&str] = &["ace-step-xl-sft", "ace-step-xl-turbo", "ace-step-xl-base"];
+    ACE_XL.contains(&model) && ACE_XL.contains(&base)
+}
+
+fn lora_versions_ready(workspace: &FsPath, entry: &Value) -> bool {
+    let Some(versions) = entry
+        .pointer("/distribution/versions")
+        .and_then(|value| value.as_object())
+    else {
+        return false;
+    };
+    versions.values().any(|version| {
+        version
+            .get("local_path")
+            .and_then(|value| value.as_str())
+            .is_some_and(|path| {
+                download::version_ready(&download::resolve_model_path(workspace, path))
+            })
+    })
+}
+
+async fn list_downloads(State(state): State<AppState>) -> Json<Value> {
+    Json(Value::Array(state.downloads.list()))
+}
+
+async fn start_download(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let url = body.get("url").and_then(|v| v.as_str()).unwrap_or("");
+    let name = body
+        .get("target_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let kind = body.get("type").and_then(|v| v.as_str()).unwrap_or("model");
+    let task_id = state
+        .downloads
+        .start_url(url, name, kind)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err))?;
+    Ok(Json(json!({ "task_id": task_id })))
+}
+
+async fn cancel_download(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    state
+        .downloads
+        .cancel(&task_id)
+        .map_err(|err| fail(StatusCode::NOT_FOUND, err))?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn resume_download(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    if let Some(snap) = state.downloads.snapshot(&task_id) {
+        if snap.get("kind").and_then(|v| v.as_str()) == Some("model") {
+            let model_id = snap
+                .get("model_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let version = snap.get("version").and_then(|v| v.as_str()).unwrap_or("");
+            if !model_id.is_empty() && !version.is_empty() {
+                let catalog = open_catalog(&state)?;
+                if let Some(spec) = catalog
+                    .root()
+                    .pointer(&format!(
+                        "/models/{model_id}/distribution/versions/{version}"
+                    ))
+                    .cloned()
+                {
+                    state
+                        .downloads
+                        .refresh_model_spec(&task_id, spec)
+                        .map_err(|err| fail(StatusCode::BAD_REQUEST, err))?;
+                }
+            }
+        }
+    }
+    state
+        .downloads
+        .resume(&task_id)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err))?;
+    Ok(Json(json!({ "task_id": task_id })))
+}
+
+async fn delete_download(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    state
+        .downloads
+        .delete_task(&task_id)
+        .map_err(|err| fail(StatusCode::NOT_FOUND, err))?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn download_progress(
+    State(state): State<AppState>,
+    Path(task_id): Path<String>,
+) -> Sse<ReceiverStream<Result<Event, Infallible>>> {
+    let downloads = state.downloads.clone();
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move {
+        loop {
+            let Some(snap) = downloads.snapshot(&task_id) else {
+                let missing = json!({
+                    "status": "failed",
+                    "error_message": "download task not found",
+                    "progress": 0,
+                    "total_size": 0,
+                    "downloaded_size": 0,
+                });
+                let _ = tx
+                    .send(Ok(Event::default().data(missing.to_string())))
+                    .await;
+                break;
+            };
+            let _ = tx.send(Ok(Event::default().data(snap.to_string()))).await;
+            let status = snap.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            if matches!(status, "completed" | "failed" | "cancelled") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    });
+    Sse::new(ReceiverStream::new(rx))
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct LoraSearchQuery {
+    q: Option<String>,
+    base_model: Option<String>,
+    source: Option<String>,
+    limit: Option<String>,
+}
+
+async fn search_loras(
+    State(state): State<AppState>,
+    Query(query): Query<LoraSearchQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let text = lora_query_text(
+        catalog.root(),
+        query.q.as_deref(),
+        query.base_model.as_deref(),
+    )?;
+    let limit = query
+        .limit
+        .as_deref()
+        .and_then(|text| text.parse::<usize>().ok())
+        .unwrap_or(24)
+        .clamp(1, 100);
+    let source = query.source.unwrap_or_else(|| "all".into());
+    let items = tokio::task::spawn_blocking(move || state.downloads.search(&source, &text, limit))
+        .await
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .map_err(|err| fail(StatusCode::BAD_GATEWAY, err))?;
+    Ok(Json(json!({ "items": items })))
+}
+
+fn lora_query_text(
+    root: &Value,
+    q: Option<&str>,
+    base_model: Option<&str>,
+) -> Result<String, ApiError> {
+    if let Some(q) = q.map(str::trim).filter(|q| !q.is_empty()) {
+        return Ok(q.to_string());
+    }
+    let Some(base_model) = base_model.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            "select a base model to search",
+        ));
+    };
+    if let Some(term) = root
+        .pointer(&format!(
+            "/models/{base_model}/ui/parameters/lora_search/terms/0"
+        ))
+        .and_then(|v| v.as_str())
+        .filter(|term| !term.is_empty())
+    {
+        return Ok(term.to_string());
+    }
+    Ok(base_model.to_string())
+}
+
+async fn lora_base_models(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let mut rows = Vec::new();
+    if let Some(models) = catalog.root().get("models").and_then(|v| v.as_object()) {
+        for (id, entry) in models {
+            let supported = entry
+                .pointer("/ui/parameters/lora_support")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !supported {
+                continue;
+            }
+            rows.push(json!({
+                "id": id,
+                "name": model_label(entry, id),
+            }));
+        }
+    }
+    rows.sort_by(|a, b| {
+        a.get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .cmp(b.get("name").and_then(|v| v.as_str()).unwrap_or(""))
+    });
+    Ok(Json(Value::Array(rows)))
+}
+
+fn model_label(entry: &Value, id: &str) -> String {
+    match entry.pointer("/catalog/name") {
+        Some(Value::String(text)) => text.clone(),
+        Some(value) => value
+            .get("en")
+            .and_then(|v| v.as_str())
+            .filter(|text| !text.is_empty())
+            .or_else(|| value.get("zh").and_then(|v| v.as_str()))
+            .unwrap_or(id)
+            .to_string(),
+        None => id.to_string(),
+    }
+}
+
+async fn start_lora_download(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let task_id = state
+        .downloads
+        .start_lora(&body)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err))?;
+    Ok(Json(json!({ "task_id": task_id })))
+}
+
+async fn list_downloaded_loras(State(state): State<AppState>) -> Json<Value> {
+    Json(state.downloads.list_loras())
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RemoveFilesQuery {
+    remove_files: Option<String>,
+}
+
+async fn delete_lora(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<RemoveFilesQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let remove = matches!(query.remove_files.as_deref(), Some("true" | "1" | "yes"));
+    state
+        .downloads
+        .delete_lora(&id, remove)
+        .map_err(|err| fail(StatusCode::NOT_FOUND, err))
+        .map(Json)
+}
+
+async fn empty_models() -> Json<Value> {
+    Json(json!({ "models": [] }))
+}
+
+async fn recommendations(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let settings = current_settings(&state);
+    let (memory_gb, memory_available_gb) = crate::setup::host_memory();
+    let mlx_memory_limit = settings
+        .get("mlx_memory_limit")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.0);
+    let models = catalog
+        .root()
+        .get("models")
+        .and_then(|value| value.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let ready = |model_id: &str| {
+        models
+            .get(model_id)
+            .is_some_and(|entry| model_fully_installed(&state.workspace, entry))
+    };
+    Ok(Json(crate::setup::recommendations(
+        &catalog,
+        memory_gb,
+        memory_available_gb,
+        mlx_memory_limit,
+        &ready,
+    )))
+}
+
+async fn refresh_ok() -> Json<Value> {
+    Json(json!({ "success": true }))
+}
+
+async fn list_assets(
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let limit = query.limit.unwrap_or(100).clamp(1, 500);
+    let offset = query.offset.unwrap_or(0).max(0);
+    let exclude_upload_refs = query.exclude_upload_refs.unwrap_or(false);
+    let (rows, total) = state
+        .scheduler
+        .list_assets(query.kind.as_deref(), limit, offset, exclude_upload_refs)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let items: Vec<Value> = rows.iter().map(asset_json).collect();
+    Ok(Json(json!({ "items": items, "total": total })))
+}
+
+async fn upload_asset(
+    State(state): State<AppState>,
+    Query(query): Query<UploadQuery>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<Value>, ApiError> {
+    if body.len() > MAX_UPLOAD_BODY_BYTES {
+        return Err(fail(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "upload is larger than 64MB",
+        ));
+    }
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let (filename, bytes) = if content_type.starts_with("multipart/") {
+        multipart_file(content_type, &body)
+            .map_err(|detail| fail(StatusCode::BAD_REQUEST, detail))?
+    } else {
+        let value: Value = serde_json::from_slice(&body)
+            .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?;
+        let filename = value
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .unwrap_or("upload.bin")
+            .to_string();
+        let encoded = value
+            .get("data_base64")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| fail(StatusCode::BAD_REQUEST, "data_base64 is required"))?;
+        let bytes =
+            base64_decode(encoded).map_err(|detail| fail(StatusCode::BAD_REQUEST, detail))?;
+        (filename, bytes)
+    };
+    let id = new_id("ast_");
+    let ext = FsPath::new(&filename)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("bin");
+    let mime = mime_for(ext);
+    let kind = kind_for(mime);
+    let dir = state.outputs.join("assets");
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let path = dir.join(format!("{id}.{ext}"));
+    std::fs::write(&path, &bytes)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let ephemeral = query.ephemeral.unwrap_or(false) || filename.eq_ignore_ascii_case("mask.png");
+    let mut meta = json!({ "filename": filename });
+    if ephemeral {
+        meta["ephemeral"] = json!(true);
+        meta["upload_ref"] = json!(true);
+    }
+    if let Some(purpose) = query
+        .purpose
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        meta["purpose"] = json!(purpose);
+    } else if ephemeral && filename.eq_ignore_ascii_case("mask.png") {
+        meta["purpose"] = json!("inpaint_mask");
+    }
+    let row = AssetRow {
+        id: id.clone(),
+        kind: kind.into(),
+        mime_type: mime.into(),
+        file_path: path.display().to_string(),
+        thumbnail_path: None,
+        width: None,
+        height: None,
+        duration_seconds: None,
+        source_task_id: None,
+        source_action: Some("upload".into()),
+        metadata: meta.to_string(),
+        created_at: String::new(),
+        parent_asset_id: None,
+        relation_type: None,
+        group_id: None,
+    };
+    state
+        .scheduler
+        .insert_asset(&row)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let stored = state
+        .scheduler
+        .get_asset(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| fail(StatusCode::INTERNAL_SERVER_ERROR, "asset was not stored"))?;
+    Ok(Json(asset_json(&stored)))
+}
+
+async fn patch_asset(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let row = state
+        .scheduler
+        .get_asset(&id)
+        .map_err(|error| fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "asset not found"))?;
+    let mut metadata: Value = serde_json::from_str(&row.metadata).unwrap_or_else(|_| json!({}));
+    let target = metadata.as_object_mut().ok_or_else(|| {
+        fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "asset metadata is not an object",
+        )
+    })?;
+    for key in [
+        "title",
+        "lyrics_effective",
+        "lyrics_input",
+        "lyrics_segments",
+        "lyrics_alignment",
+        "engine_lyrics_segments",
+        "engine_lyrics_alignment",
+    ] {
+        if let Some(value) = body.get(key) {
+            target.insert(key.into(), value.clone());
+        }
+    }
+    if let Some(lrc) = body.get("lrc").and_then(Value::as_str) {
+        let asset_dir = state.outputs.join("assets");
+        std::fs::create_dir_all(&asset_dir)
+            .map_err(|error| fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        let path = asset_dir.join(format!("{id}.lrc"));
+        let temporary = asset_dir.join(format!("{id}.lrc.tmp-{}", std::process::id()));
+        std::fs::write(&temporary, lrc)
+            .and_then(|()| std::fs::rename(&temporary, &path))
+            .map_err(|error| fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    }
+    let encoded = metadata.to_string();
+    let updated = state
+        .scheduler
+        .update_asset_metadata(&id, &encoded)
+        .map_err(|error| fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    if !updated {
+        return Err(fail(StatusCode::NOT_FOUND, "asset not found"));
+    }
+    let stored = state
+        .scheduler
+        .get_asset(&id)
+        .map_err(|error| fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "asset not found"))?;
+    Ok(Json(asset_json(&stored)))
+}
+
+async fn delete_asset(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let row = state
+        .scheduler
+        .delete_asset(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "asset not found"))?;
+    remove_asset_files(&state, &row);
+    Ok(Json(json!({ "ok": true, "id": id })))
+}
+
+async fn batch_delete_assets(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let ids = body
+        .get("asset_ids")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut deleted = Vec::new();
+    for id in ids {
+        let Some(id) = id.as_str() else { continue };
+        if let Ok(Some(row)) = state.scheduler.delete_asset(id) {
+            remove_asset_files(&state, &row);
+            deleted.push(id.to_string());
+        }
+    }
+    Ok(Json(json!({ "deleted": deleted })))
+}
+
+async fn reconcile_assets(Json(body): Json<Value>) -> Json<Value> {
+    Json(json!({
+        "dry_run": body.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true),
+        "missing": [],
+        "orphans": [],
+    }))
+}
+
+async fn asset_file(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let row = match state.scheduler.get_asset(&id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return (StatusCode::NOT_FOUND, "asset not found").into_response(),
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+    serve_asset_bytes(&state, &row.file_path, &row.mime_type)
+}
+
+async fn asset_thumbnail(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let row = match state.scheduler.get_asset(&id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return (StatusCode::NOT_FOUND, "asset not found").into_response(),
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    };
+    if let Some(thumb) = row
+        .thumbnail_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        let mime = mime_for_stored_path(thumb);
+        let response = serve_asset_bytes(&state, thumb, mime);
+        if response.status() != StatusCode::NOT_FOUND {
+            return response;
+        }
+    }
+    serve_asset_bytes(&state, &row.file_path, &row.mime_type)
+}
+
+/// Resolve legacy Python DB paths (`ast_….png`) under `{outputs}/assets`, plus absolute paths.
+pub(crate) fn resolve_asset_fs_path(outputs: &FsPath, workspace: &FsPath, stored: &str) -> PathBuf {
+    let raw = PathBuf::from(stored);
+    if raw.is_absolute() {
+        return raw;
+    }
+    let under_assets = outputs.join("assets").join(&raw);
+    if under_assets.is_file() {
+        return under_assets;
+    }
+    let under_workspace = workspace.join(&raw);
+    if under_workspace.is_file() {
+        return under_workspace;
+    }
+    under_assets
+}
+
+fn serve_asset_bytes(state: &AppState, stored: &str, mime: &str) -> Response {
+    let path = resolve_asset_fs_path(&state.outputs, &state.workspace, stored);
+    match std::fs::read(&path) {
+        Ok(bytes) => ([(header::CONTENT_TYPE, mime.to_string())], bytes).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "asset file is missing").into_response(),
+    }
+}
+
+fn remove_asset_files(state: &AppState, row: &AssetRow) {
+    let main = resolve_asset_fs_path(&state.outputs, &state.workspace, &row.file_path);
+    let _ = std::fs::remove_file(main);
+    if let Some(thumb) = row
+        .thumbnail_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        let path = resolve_asset_fs_path(&state.outputs, &state.workspace, thumb);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn asset_is_ephemeral(row: &AssetRow) -> bool {
+    let meta: Value = serde_json::from_str(&row.metadata).unwrap_or_else(|_| json!({}));
+    if meta
+        .get("ephemeral")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if meta
+        .get("upload_ref")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    meta.get("filename")
+        .and_then(|v| v.as_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("mask.png"))
+}
+
+fn collect_request_asset_ids(request: &Value, out: &mut Vec<String>) {
+    let push = |out: &mut Vec<String>, value: Option<&Value>| {
+        if let Some(id) = value
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            out.push(id.to_string());
+        }
+    };
+    push(out, request.get("mask_asset_id"));
+    push(out, request.get("inpaint_mask_asset_id"));
+    if let Some(guide) = request.get("structural_guide") {
+        push(out, guide.get("inpaint_mask_asset_id"));
+        // Control image for inpaint companion is the source frame, not ephemeral by default.
+    }
+}
+
+/// Delete one-shot upload refs (e.g. inpaint masks) once the task has finished.
+pub(crate) fn cleanup_ephemeral_task_assets(state: &AppState, params: &Value) {
+    let mut ids = Vec::new();
+    if let Some(request) = params.get("request") {
+        collect_request_asset_ids(request, &mut ids);
+    }
+    collect_request_asset_ids(params, &mut ids);
+    ids.sort();
+    ids.dedup();
+    for id in ids {
+        let Ok(Some(row)) = state.scheduler.get_asset(&id) else {
+            continue;
+        };
+        if !asset_is_ephemeral(&row) {
+            continue;
+        }
+        match state.scheduler.delete_asset(&id) {
+            Ok(Some(deleted)) => remove_asset_files(state, &deleted),
+            Ok(None) => {}
+            Err(err) => tracing::warn!("ephemeral asset cleanup failed for {id}: {err}"),
+        }
+    }
+}
+
+fn mime_for_stored_path(stored: &str) -> &'static str {
+    FsPath::new(stored)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(mime_for)
+        .unwrap_or("application/octet-stream")
+}
+
+async fn asset_lineage(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let row = state
+        .scheduler
+        .get_asset(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "asset not found"))?;
+    let parent = match row.parent_asset_id.as_deref() {
+        Some(parent_id) => state
+            .scheduler
+            .get_asset(parent_id)
+            .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+            .map(|parent| asset_json(&parent)),
+        None => None,
+    };
+    let children = state
+        .scheduler
+        .child_assets(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let mut node = asset_json(&row);
+    if let Some(obj) = node.as_object_mut() {
+        obj.insert("parent".into(), parent.unwrap_or(Value::Null));
+        obj.insert(
+            "children".into(),
+            Value::Array(children.iter().map(asset_json).collect()),
+        );
+    }
+    Ok(Json(node))
+}
+
+fn default_canvas_state() -> Value {
+    json!({
+        "items": {},
+        "shelf": [],
+        "viewport": { "zoom": 1, "panX": 0, "panY": 0 },
+        "staging": { "x": 240, "y": 180, "width": 360, "height": 360, "visible": true },
+        "active_asset_path": "",
+        "overlays": { "reference": null, "control": null },
+        "edges": [],
+    })
+}
+
+const CANVAS_PREVIEW_LIMIT: usize = 6;
+
+fn canvas_items_map(state: &Value) -> Option<&serde_json::Map<String, Value>> {
+    state.get("items").and_then(|v| v.as_object())
+}
+
+fn canvas_shelf_paths(state: &Value) -> Vec<String> {
+    state
+        .get("shelf")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn asset_id_from_canvas_key(key: &str) -> Option<String> {
+    key.strip_prefix("asset:")
+        .map(str::to_string)
+        .filter(|id| !id.is_empty())
+}
+
+fn preview_asset_ids_from_state(state: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(items) = canvas_items_map(state) {
+        for key in items.keys() {
+            if out.len() >= CANVAS_PREVIEW_LIMIT {
+                break;
+            }
+            if let Some(id) = asset_id_from_canvas_key(key) {
+                out.push(id);
+            }
+        }
+    }
+    if out.len() < CANVAS_PREVIEW_LIMIT {
+        for path in canvas_shelf_paths(state) {
+            if out.len() >= CANVAS_PREVIEW_LIMIT {
+                break;
+            }
+            if let Some(id) = asset_id_from_canvas_key(&path) {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn canvas_membership_count(state: &Value) -> usize {
+    let board = canvas_items_map(state).map(|m| m.len()).unwrap_or(0);
+    let mut ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if let Some(items) = canvas_items_map(state) {
+        for key in items.keys() {
+            if let Some(id) = asset_id_from_canvas_key(key) {
+                ids.insert(id);
+            }
+        }
+    }
+    for path in canvas_shelf_paths(state) {
+        if let Some(id) = asset_id_from_canvas_key(&path) {
+            ids.insert(id);
+        }
+    }
+    // Prefer unique asset count when paths are asset:; fall back to board+shelf lens.
+    if ids.is_empty() {
+        board + canvas_shelf_paths(state).len()
+    } else {
+        ids.len()
+    }
+}
+
+fn collect_claimed_asset_ids(state: &Value, claimed: &mut std::collections::HashSet<String>) {
+    if let Some(items) = canvas_items_map(state) {
+        for key in items.keys() {
+            if let Some(id) = asset_id_from_canvas_key(key) {
+                claimed.insert(id);
+            }
+        }
+    }
+    for path in canvas_shelf_paths(state) {
+        if let Some(id) = asset_id_from_canvas_key(&path) {
+            claimed.insert(id);
+        }
+    }
+}
+
+fn canvas_json(row: &CanvasRow) -> Value {
+    let state: Value =
+        serde_json::from_str(&row.state_json).unwrap_or_else(|_| default_canvas_state());
+    let item_count = canvas_membership_count(&state);
+    let preview_asset_ids = preview_asset_ids_from_state(&state);
+    json!({
+        "id": row.id,
+        "media": row.media,
+        "title": row.title,
+        "state": state,
+        "item_count": item_count,
+        "preview_asset_ids": preview_asset_ids,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    })
+}
+
+async fn list_canvas(
+    State(state): State<AppState>,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let media = query.media.as_deref().unwrap_or("image");
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let rows = state
+        .scheduler
+        .list_canvas(media, limit)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let items: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            let mut item = canvas_json(row);
+            if let Some(obj) = item.as_object_mut() {
+                obj.remove("state");
+            }
+            item
+        })
+        .collect();
+    Ok(Json(json!({ "items": items })))
+}
+
+fn is_named_default_canvas_title(title: &str) -> bool {
+    let t = title.trim().to_ascii_lowercase();
+    // Include legacy media-specific defaults created before titles were unified.
+    t == "default canvas"
+        || title.trim() == "默认画布"
+        || t == "image canvas"
+        || t == "video canvas"
+        || t == "audio canvas"
+}
+
+/// Adopt gallery assets that are not referenced by any canvas session into the
+/// named default canvas (else oldest). Idempotent.
+///
+/// Also one-shot rehomes shelf-only assets from the previous orphan sink (oldest
+/// non-default canvas) onto the named default when that default is still empty —
+/// so a newly created「默认画布」receives the earlier bulk shelf dump.
+async fn adopt_canvas_orphans(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let media = body
+        .get("media")
+        .and_then(|v| v.as_str())
+        .unwrap_or("image");
+    if media != "image" && media != "video" && media != "audio" {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            "adopt-orphans supports media=image|video|audio",
+        ));
+    }
+
+    let mut rows = state
+        .scheduler
+        .list_canvas(media, 200)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+    if rows.is_empty() {
+        let now = utc_stamp();
+        let row = CanvasRow {
+            id: new_id("cvs_"),
+            media: media.into(),
+            title: "Default canvas".into(),
+            state_json: default_canvas_state().to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        state
+            .scheduler
+            .insert_canvas(&row)
+            .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        rows.push(row);
+    }
+
+    rows.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let named_default = rows
+        .iter()
+        .find(|r| is_named_default_canvas_title(&r.title))
+        .map(|r| r.id.clone());
+    let default_id = named_default.clone().unwrap_or_else(|| rows[0].id.clone());
+
+    // Parse every session state once.
+    let mut states: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut board_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for row in &rows {
+        let state_val: Value =
+            serde_json::from_str(&row.state_json).unwrap_or_else(|_| default_canvas_state());
+        collect_claimed_asset_ids(&state_val, &mut claimed);
+        if let Some(items) = canvas_items_map(&state_val) {
+            for key in items.keys() {
+                if let Some(id) = asset_id_from_canvas_key(key) {
+                    board_ids.insert(id);
+                }
+            }
+        }
+        states.insert(row.id.clone(), state_val);
+    }
+
+    let mut orphan_ids: Vec<String> = Vec::new();
+    let mut orphan_rows: std::collections::HashMap<String, AssetRow> =
+        std::collections::HashMap::new();
+    let mut offset: i64 = 0;
+    const PAGE: i64 = 500;
+    loop {
+        let (page, total) = state
+            .scheduler
+            .list_assets(Some(media), PAGE, offset, true)
+            .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        for asset in &page {
+            if !claimed.contains(&asset.id) {
+                orphan_ids.push(asset.id.clone());
+                orphan_rows.insert(asset.id.clone(), asset.clone());
+            }
+        }
+        offset += page.len() as i64;
+        if page.is_empty() || offset >= total {
+            break;
+        }
+    }
+
+    let session_ids: std::collections::HashSet<String> =
+        rows.iter().map(|r| r.id.clone()).collect();
+
+    // Prefer the canvas tagged on the source task; else named/oldest default.
+    let target_for_orphan = |asset_id: &str| -> String {
+        let Some(asset) = orphan_rows.get(asset_id) else {
+            return default_id.clone();
+        };
+        let Some(tid) = asset.source_task_id.as_deref().filter(|s| !s.is_empty()) else {
+            return default_id.clone();
+        };
+        let Ok(Some(task)) = state.scheduler.get(tid) else {
+            return default_id.clone();
+        };
+        let params: Value = serde_json::from_str(&task.params).unwrap_or(Value::Null);
+        let sid = params
+            .pointer("/request/metadata/canvas_session_id")
+            .or_else(|| params.pointer("/metadata/canvas_session_id"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("");
+        if !sid.is_empty() && session_ids.contains(sid) {
+            sid.to_string()
+        } else {
+            default_id.clone()
+        }
+    };
+
+    let mut by_target: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for asset_id in &orphan_ids {
+        by_target
+            .entry(target_for_orphan(asset_id))
+            .or_default()
+            .push(asset_id.clone());
+    }
+
+    let mut adopted = 0usize;
+    let mut dirty_sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // 1) True gallery orphans → tagged session shelf (else default).
+    for (target_id, ids) in &by_target {
+        let Some(target_state) = states.get_mut(target_id) else {
+            continue;
+        };
+        let mut present: std::collections::HashSet<String> = std::collections::HashSet::new();
+        collect_claimed_asset_ids(target_state, &mut present);
+        let mut path_set: std::collections::HashSet<String> =
+            canvas_shelf_paths(target_state).into_iter().collect();
+        if let Some(items) = canvas_items_map(target_state) {
+            for key in items.keys() {
+                path_set.insert(key.clone());
+            }
+        }
+        let root = target_state
+            .as_object_mut()
+            .ok_or_else(|| fail(StatusCode::INTERNAL_SERVER_ERROR, "invalid canvas state"))?;
+        let shelf_val = root.entry("shelf").or_insert_with(|| json!([]));
+        let shelf_arr = shelf_val
+            .as_array_mut()
+            .ok_or_else(|| fail(StatusCode::INTERNAL_SERVER_ERROR, "invalid canvas shelf"))?;
+        let mut changed = false;
+        for asset_id in ids {
+            if present.contains(asset_id) {
+                continue;
+            }
+            let key = format!("asset:{asset_id}");
+            if path_set.contains(&key) {
+                continue;
+            }
+            shelf_arr.push(Value::String(key.clone()));
+            path_set.insert(key);
+            present.insert(asset_id.clone());
+            adopted += 1;
+            changed = true;
+        }
+        if changed {
+            dirty_sessions.insert(target_id.clone());
+        }
+    }
+
+    let mut default_state = states
+        .remove(&default_id)
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "default canvas session not found"))?;
+    let default_was_empty = canvas_membership_count(&default_state) == 0;
+    let mut present: std::collections::HashSet<String> = std::collections::HashSet::new();
+    collect_claimed_asset_ids(&default_state, &mut present);
+    let mut path_set: std::collections::HashSet<String> =
+        canvas_shelf_paths(&default_state).into_iter().collect();
+    if let Some(items) = canvas_items_map(&default_state) {
+        for key in items.keys() {
+            path_set.insert(key.clone());
+        }
+    }
+
+    // 2) One-shot: if named default is empty, pull shelf-only assets off the
+    //    previous orphan sink (oldest non-default). Board nodes stay put.
+    let mut donor_updates: Vec<(String, String)> = Vec::new();
+    if named_default.is_some() && default_was_empty {
+        if let Some(donor) = rows.iter().find(|r| r.id != default_id) {
+            let donor_id = donor.id.clone();
+            if let Some(mut donor_state) = states.remove(&donor_id) {
+                let donor_shelf = canvas_shelf_paths(&donor_state);
+                let mut keep: Vec<String> = Vec::new();
+                let mut move_paths: Vec<String> = Vec::new();
+                for path in donor_shelf {
+                    let Some(id) = asset_id_from_canvas_key(&path) else {
+                        keep.push(path);
+                        continue;
+                    };
+                    if board_ids.contains(&id) {
+                        keep.push(path);
+                        continue;
+                    }
+                    move_paths.push(path);
+                }
+                if !move_paths.is_empty() {
+                    let root = default_state.as_object_mut().ok_or_else(|| {
+                        fail(StatusCode::INTERNAL_SERVER_ERROR, "invalid canvas state")
+                    })?;
+                    let shelf_val = root.entry("shelf").or_insert_with(|| json!([]));
+                    let shelf_arr = shelf_val.as_array_mut().ok_or_else(|| {
+                        fail(StatusCode::INTERNAL_SERVER_ERROR, "invalid canvas shelf")
+                    })?;
+                    for path in &move_paths {
+                        let Some(id) = asset_id_from_canvas_key(path) else {
+                            continue;
+                        };
+                        if path_set.contains(path) || present.contains(&id) {
+                            continue;
+                        }
+                        shelf_arr.push(Value::String(path.clone()));
+                        path_set.insert(path.clone());
+                        present.insert(id);
+                        adopted += 1;
+                    }
+                    if let Some(root) = donor_state.as_object_mut() {
+                        root.insert(
+                            "shelf".into(),
+                            Value::Array(keep.into_iter().map(Value::String).collect()),
+                        );
+                    }
+                    donor_updates.push((donor_id, donor_state.to_string()));
+                } else {
+                    states.insert(donor_id, donor_state);
+                }
+            }
+        }
+    }
+
+    if dirty_sessions.contains(&default_id) || default_was_empty && !donor_updates.is_empty() {
+        // default_state may have gained shelf entries in step 1 and/or rehome.
+        dirty_sessions.insert(default_id.clone());
+    }
+    states.insert(default_id.clone(), default_state);
+
+    if adopted == 0 && donor_updates.is_empty() && dirty_sessions.is_empty() {
+        return Ok(Json(json!({
+            "default_session_id": default_id,
+            "adopted_count": 0,
+        })));
+    }
+
+    let now = utc_stamp();
+    for sid in &dirty_sessions {
+        let Some(st) = states.get(sid) else {
+            continue;
+        };
+        let ok = state
+            .scheduler
+            .update_canvas(sid, None, Some(&st.to_string()), &now)
+            .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        if !ok {
+            return Err(fail(
+                StatusCode::NOT_FOUND,
+                format!("canvas session not found: {sid}"),
+            ));
+        }
+    }
+    for (donor_id, donor_json) in donor_updates {
+        let ok = state
+            .scheduler
+            .update_canvas(&donor_id, None, Some(&donor_json), &now)
+            .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+        if !ok {
+            return Err(fail(
+                StatusCode::NOT_FOUND,
+                format!("canvas session not found: {donor_id}"),
+            ));
+        }
+    }
+
+    Ok(Json(json!({
+        "default_session_id": default_id,
+        "adopted_count": adopted,
+    })))
+}
+
+async fn create_canvas(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let media = body
+        .get("media")
+        .and_then(|v| v.as_str())
+        .unwrap_or("image");
+    let title = body
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .unwrap_or("Default canvas");
+    let state_json = body
+        .get("state")
+        .cloned()
+        .unwrap_or_else(default_canvas_state);
+    let now = utc_stamp();
+    let row = CanvasRow {
+        id: new_id("cvs_"),
+        media: media.into(),
+        title: title.into(),
+        state_json: state_json.to_string(),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    state
+        .scheduler
+        .insert_canvas(&row)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    Ok(Json(canvas_json(&row)))
+}
+
+async fn get_canvas(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let row = state
+        .scheduler
+        .get_canvas(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "canvas session not found"))?;
+    Ok(Json(canvas_json(&row)))
+}
+
+async fn update_canvas(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let title = body.get("title").and_then(|v| v.as_str());
+    let state_json = body.get("state").map(|v| v.to_string());
+    let updated = state
+        .scheduler
+        .update_canvas(&id, title, state_json.as_deref(), &utc_stamp())
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    if !updated {
+        return Err(fail(StatusCode::NOT_FOUND, "canvas session not found"));
+    }
+    get_canvas(State(state), Path(id)).await
+}
+
+async fn delete_canvas(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let row = state
+        .scheduler
+        .get_canvas(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "canvas session not found"))?;
+    let siblings = state
+        .scheduler
+        .list_canvas(&row.media, 200)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    if siblings.len() <= 1 {
+        return Err(fail(
+            StatusCode::CONFLICT,
+            "cannot delete the last canvas session",
+        ));
+    }
+    let deleted = state
+        .scheduler
+        .delete_canvas(&id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    if !deleted {
+        return Err(fail(StatusCode::NOT_FOUND, "canvas session not found"));
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+fn settings_path(state: &AppState) -> PathBuf {
+    state.workspace.join("config").join(".app_config.json")
+}
+
+fn presets_path(state: &AppState) -> PathBuf {
+    state.workspace.join("config").join("presets.json")
+}
+
+fn default_settings() -> Value {
+    json!({
+        "language": "zh",
+        "theme": "mac",
+        "auto_save_prompts": true,
+        "output_format": "png",
+        "default_model_llm": "",
+        "default_model_vlm": "",
+        "default_model_llm_think": false,
+        "mlx_memory_limit": 0,
+        "model_cache_ttl_minutes": 30,
+        "llm_cache_ttl_minutes": 30,
+        "llm_unload_each_request": false,
+        "llm_inference_provider": "builtin",
+        "llm_inference_base_url": "",
+        "llm_inference_api_key": "",
+        "llm_inference_api_key_hint": "",
+        "llm_inference_cloud_model": "",
+        "queue_image_first": true,
+        "civitai_token": "",
+        "huggingface_token": "",
+        "nsfw_enabled": false,
+        "http_api_key_configured": false,
+        "http_api_key_hint": "",
+        "http_api_key_from_env": false,
+        "mcp_api_key_configured": false,
+        "mcp_api_key_hint": "",
+        "mcp_api_key_from_env": false,
+        "custom_workspace_dir": "",
+    })
+}
+
+fn load_json(path: &FsPath, fallback: Value) -> Value {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(fallback)
+}
+
+fn save_json(path: &FsPath, value: &Value) -> Result<(), ApiError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(value).unwrap_or_default())
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+}
+
+fn current_settings(state: &AppState) -> Value {
+    let mut settings = default_settings();
+    if let Value::Object(defaults) = &mut settings {
+        if let Value::Object(saved) = load_json(&settings_path(state), json!({})) {
+            for (key, value) in saved {
+                defaults.insert(key, value);
+            }
+        }
+    }
+    settings
+}
+
+async fn get_settings(State(state): State<AppState>) -> Json<Value> {
+    Json(current_settings(&state))
+}
+
+async fn put_settings(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let current = get_settings(State(state.clone())).await.0;
+    let mut merged = current;
+    if let (Some(dst), Some(src)) = (merged.as_object_mut(), body.as_object()) {
+        for (key, value) in src {
+            dst.insert(key.clone(), value.clone());
+        }
+    }
+    save_json(&settings_path(&state), &merged)?;
+    Ok(Json(json!({ "success": true, "restart_required": false })))
+}
+
+async fn create_access_key(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let kind = body.get("kind").and_then(|v| v.as_str()).unwrap_or("http");
+    if kind != "http" && kind != "mcp" {
+        return Err(fail(StatusCode::BAD_REQUEST, "kind must be http or mcp"));
+    }
+    let key = Uuid::new_v4().simple().to_string();
+    let hint: String = key
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    let mut settings = get_settings(State(state.clone())).await.0;
+    if let Some(obj) = settings.as_object_mut() {
+        obj.insert(format!("{kind}_api_key_configured"), json!(true));
+        obj.insert(format!("{kind}_api_key_hint"), json!(hint));
+    }
+    save_json(&settings_path(&state), &settings)?;
+    Ok(Json(json!({
+        "success": true,
+        "kind": kind,
+        "key": key,
+        "hint": settings.get(&format!("{kind}_api_key_hint")).cloned().unwrap_or(Value::Null),
+    })))
+}
+
+async fn revoke_access_key(
+    State(state): State<AppState>,
+    Path(kind): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    if kind != "http" && kind != "mcp" {
+        return Err(fail(StatusCode::BAD_REQUEST, "kind must be http or mcp"));
+    }
+    let mut settings = get_settings(State(state.clone())).await.0;
+    if let Some(obj) = settings.as_object_mut() {
+        obj.insert(format!("{kind}_api_key_configured"), json!(false));
+        obj.insert(format!("{kind}_api_key_hint"), json!(""));
+    }
+    save_json(&settings_path(&state), &settings)?;
+    Ok(Json(json!({ "success": true, "kind": kind })))
+}
+
+async fn workspace_paths(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({
+        "workspace": state.workspace.display().to_string(),
+        "models": state.workspace.join("models").display().to_string(),
+        "outputs": state.outputs.display().to_string(),
+        "config": state.workspace.join("config").display().to_string(),
+        "db": state.workspace.join("db").join("studio.db").display().to_string(),
+    }))
+}
+
+async fn workspace_status(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({
+        "configured": true,
+        "effective_root": state.workspace.display().to_string(),
+        "bootstrap_root": state.workspace.display().to_string(),
+        "control_plane": state.workspace.display().to_string(),
+    }))
+}
+
+async fn apply_workspace(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let path = body
+        .get("path")
+        .and_then(|v| v.as_str())
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| fail(StatusCode::BAD_REQUEST, "path is required"))?;
+    let mut settings = get_settings(State(state.clone())).await.0;
+    if let Some(obj) = settings.as_object_mut() {
+        obj.insert("custom_workspace_dir".into(), json!(path));
+    }
+    save_json(&settings_path(&state), &settings)?;
+    Ok(Json(json!({
+        "success": true,
+        "restart_required": true,
+        "workspace": path,
+    })))
+}
+
+async fn pick_workspace() -> Result<Json<Value>, ApiError> {
+    Err(fail(
+        StatusCode::BAD_REQUEST,
+        "directory picker is not available on this server; pass the path to apply-workspace",
+    ))
+}
+
+async fn restore_defaults(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let files = body
+        .get("files")
+        .and_then(|v| v.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| vec![".app_config.json".into(), "presets.json".into()]);
+    let mut restored = Vec::new();
+    for file in files {
+        if file == ".app_config.json" || file == "settings" {
+            save_json(&settings_path(&state), &default_settings())?;
+            restored.push(".app_config.json".to_string());
+        } else if file == "presets.json" {
+            save_json(&presets_path(&state), &json!({}))?;
+            restored.push("presets.json".to_string());
+        }
+    }
+    Ok(Json(json!({
+        "success": true,
+        "restored": restored,
+        "restart_required": false,
+    })))
+}
+
+async fn system_info(State(state): State<AppState>) -> Json<Value> {
+    let (total, avail) = crate::setup::host_memory();
+    Json(json!({
+        "env_ready": true,
+        "platform": std::env::consts::OS,
+        "architecture": std::env::consts::ARCH,
+        "memory_gb": total,
+        "memory_available_gb": avail,
+        "mlx_memory_limit": 0,
+        "controlnet_runtime_available": cfg!(feature = "mlx"),
+        "runtime": if cfg!(feature = "mlx") { "mlx" } else { "unavailable" },
+        "backend": format!("{:?}", state.backend).to_lowercase(),
+    }))
+}
+
+async fn system_monitor(State(state): State<AppState>) -> Json<Value> {
+    let info = system_info(State(state)).await.0;
+    Json(info)
+}
+
+async fn install_runtime() -> Json<Value> {
+    Json(json!({
+        "success": true,
+        "message": if cfg!(feature = "mlx") {
+            "MLX runtime is built into danqing-api"
+        } else {
+            "this danqing-api build has no MLX feature; rebuild with mlx-metal or mlx-cuda"
+        },
+    }))
+}
+
+async fn settings_registry(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let catalog = open_catalog(&state)?;
+    let projected = catalog
+        .public_registry()
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    Ok(Json(projected))
+}
+
+async fn disk_space(State(state): State<AppState>) -> Json<Value> {
+    let models = state.workspace.join("models");
+    let loras = state.workspace.join("models/Lora");
+    let anchor = models.parent().unwrap_or(&state.workspace);
+    let (total, free) = stat_space(if anchor.as_os_str().is_empty() {
+        std::path::Path::new(".")
+    } else {
+        anchor
+    });
+    Json(json!({
+        "models": disk_row(&models, total, free),
+        "loras": disk_row(&loras, total, free),
+    }))
+}
+
+fn disk_row(path: &FsPath, total: u64, free: u64) -> Value {
+    let size = if path.is_dir() { dir_size(path) } else { 0 };
+    json!({
+        "exists": path.exists(),
+        "size": size,
+        "size_human": human_bytes(size),
+        "total": total,
+        "free": free,
+        "free_human": human_bytes(free),
+    })
+}
+
+async fn cache_status() -> Json<Value> {
+    #[cfg(feature = "mlx")]
+    {
+        let result = danmo_engine::runtime::mlx_executor().and_then(|executor| {
+            executor.execute("system cache status", |_, _, cache, _| {
+                Ok(json!({
+                    "models": [],
+                    "llm": null,
+                    "entries": cache.len(),
+                    "used_bytes": cache.used_bytes(),
+                    "budget_bytes": cache.budget_bytes(),
+                }))
+            })
+        });
+        match result {
+            Ok(value) => Json(value),
+            Err(error) => Json(json!({ "error": error.to_string() })),
+        }
+    }
+    #[cfg(not(feature = "mlx"))]
+    {
+        Json(json!({ "models": [], "llm": null }))
+    }
+}
+
+async fn unload_model_cache() -> Result<Json<Value>, ApiError> {
+    #[cfg(feature = "mlx")]
+    {
+        danmo_engine::runtime::mlx_executor()
+            .map_err(|error| fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+            .execute("system cache unload", |_, _, cache, _| {
+                cache.clear();
+                Ok(())
+            })
+            .map_err(|error| fail(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+        Ok(Json(json!({ "ok": true })))
+    }
+    #[cfg(not(feature = "mlx"))]
+    {
+        Err(fail(
+            StatusCode::NOT_IMPLEMENTED,
+            "MLX cache is unavailable in this build",
+        ))
+    }
+}
+
+async fn get_presets(State(state): State<AppState>) -> Json<Value> {
+    Json(load_json(&presets_path(&state), json!({})))
+}
+
+async fn save_preset(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let name = body
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|n| !n.is_empty())
+        .ok_or_else(|| fail(StatusCode::BAD_REQUEST, "name is required"))?;
+    let preset = body.get("preset").cloned().unwrap_or(json!({}));
+    let mut all = load_json(&presets_path(&state), json!({}));
+    if let Some(obj) = all.as_object_mut() {
+        obj.insert(name.to_string(), preset);
+    }
+    save_json(&presets_path(&state), &all)?;
+    Ok(Json(all))
+}
+
+async fn delete_preset(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let mut all = load_json(&presets_path(&state), json!({}));
+    if let Some(obj) = all.as_object_mut() {
+        obj.remove(&name);
+    }
+    save_json(&presets_path(&state), &all)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn list_lora_datasets(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let items = danmo_store::list_datasets(&state.workspace)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({ "items": items })))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateDatasetBody {
+    #[serde(default)]
+    name: String,
+    #[serde(default = "default_concept")]
+    kind: String,
+    #[serde(default)]
+    trigger_word: String,
+}
+
+fn default_concept() -> String {
+    "concept".into()
+}
+
+async fn create_lora_dataset(
+    State(state): State<AppState>,
+    Json(body): Json<CreateDatasetBody>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let meta =
+        danmo_store::create_dataset(&state.workspace, &body.name, &body.kind, &body.trigger_word)
+            .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let detail = danmo_store::get_dataset_detail(&state.workspace, &meta.id)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok((StatusCode::CREATED, Json(detail)))
+}
+
+async fn get_lora_dataset(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let detail = danmo_store::get_dataset_detail(&state.workspace, &id)
+        .map_err(|e| fail(StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(detail))
+}
+
+#[derive(Debug, Deserialize)]
+struct PatchDatasetBody {
+    name: Option<String>,
+    kind: Option<String>,
+    trigger_word: Option<String>,
+    default_prompt: Option<String>,
+    nsfw: Option<bool>,
+    face_crop: Option<String>,
+}
+
+async fn patch_lora_dataset(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PatchDatasetBody>,
+) -> Result<Json<Value>, ApiError> {
+    danmo_store::update_dataset_meta(
+        &state.workspace,
+        &id,
+        body.name.as_deref(),
+        body.kind.as_deref(),
+        body.trigger_word.as_deref(),
+        body.default_prompt.as_deref(),
+        body.nsfw,
+        body.face_crop.as_deref(),
+    )
+    .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let detail = danmo_store::get_dataset_detail(&state.workspace, &id)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(detail))
+}
+
+async fn delete_lora_dataset(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    danmo_store::delete_dataset(&state.workspace, &id)
+        .map_err(|e| fail(StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportCsvBody {
+    csv: String,
+}
+
+async fn import_lora_dataset_csv(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ImportCsvBody>,
+) -> Result<Json<Value>, ApiError> {
+    danmo_store::import_metadata_csv(&state.workspace, &id, &body.csv)
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let detail = danmo_store::get_dataset_detail(&state.workspace, &id)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(detail))
+}
+
+async fn upload_lora_dataset_images(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<Value>, ApiError> {
+    let ct = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let (files, default_prompt) =
+        multipart_files_and_prompt(ct, &body).map_err(|e| fail(StatusCode::BAD_REQUEST, e))?;
+    if files.is_empty() {
+        return Err(fail(StatusCode::BAD_REQUEST, "no image files in upload"));
+    }
+    let mut last = Value::Null;
+    for (filename, bytes) in files {
+        last =
+            danmo_store::add_image_bytes(&state.workspace, &id, &filename, &bytes, &default_prompt)
+                .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    }
+    Ok(Json(last))
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteImageQuery {
+    file: Option<String>,
+}
+
+async fn delete_lora_dataset_image_query(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<DeleteImageQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let file = query
+        .file
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| fail(StatusCode::BAD_REQUEST, "file query required"))?;
+    let detail = danmo_store::delete_dataset_image(&state.workspace, &id, file)
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(detail))
+}
+
+async fn delete_lora_dataset_image(
+    State(state): State<AppState>,
+    Path((id, file)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let detail = danmo_store::delete_dataset_image(&state.workspace, &id, &file)
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(detail))
+}
+
+async fn serve_lora_dataset_file(
+    State(state): State<AppState>,
+    Path((id, file)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    let rel = file.trim().trim_start_matches('/');
+    if rel.is_empty() || rel.contains("..") {
+        return Err(fail(StatusCode::BAD_REQUEST, "invalid image path"));
+    }
+    let path = danmo_store::dataset_dir(&state.workspace, &id).join(rel);
+    if !path.is_file() {
+        return Err(fail(StatusCode::NOT_FOUND, format!("file {rel} not found")));
+    }
+    let bytes =
+        std::fs::read(&path).map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mime = mime_for_stored_path(rel);
+    Ok(([(header::CONTENT_TYPE, mime.to_string())], bytes).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct SkippedImagesBody {
+    #[serde(default)]
+    files: Vec<String>,
+}
+
+async fn put_lora_dataset_skipped(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<SkippedImagesBody>,
+) -> Result<Json<Value>, ApiError> {
+    let detail = danmo_store::set_skipped_images(&state.workspace, &id, &body.files)
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(detail))
+}
+
+#[derive(Debug, Deserialize)]
+struct DatasetHealthQuery {
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+async fn lora_dataset_health(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<DatasetHealthQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let mut report = danmo_store::dataset_health_report(&state.workspace, &id)
+        .map_err(|e| fail(StatusCode::NOT_FOUND, e.to_string()))?;
+    if let (Some(w), Some(h)) = (query.width, query.height) {
+        if let Some(obj) = report.as_object_mut() {
+            obj.insert(
+                "faces".into(),
+                json!({
+                    "available": false,
+                    "resolution": [w, h],
+                    "rows": [],
+                    "detail": "Face detector is not wired in the Rust trainer yet; structural checks only",
+                }),
+            );
+        }
+    }
+    Ok(Json(report))
+}
+
+async fn lora_dataset_health_vlm(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    // Fail loud: VLM audit is not available in the Rust path yet.
+    let mut report = danmo_store::dataset_health_report(&state.workspace, &id)
+        .map_err(|e| fail(StatusCode::NOT_FOUND, e.to_string()))?;
+    if let Some(obj) = report.as_object_mut() {
+        obj.insert("vision_available".into(), json!(false));
+        obj.insert("vlm_audited".into(), json!(false));
+        obj.insert(
+            "vlm_detail".into(),
+            json!("VLM dataset audit is not available yet; use structural health only"),
+        );
+    }
+    Ok(Json(report))
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportAssetsBody {
+    #[serde(default)]
+    asset_ids: Vec<String>,
+    #[serde(default)]
+    default_prompt: String,
+}
+
+async fn import_lora_dataset_assets(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ImportAssetsBody>,
+) -> Result<Json<Value>, ApiError> {
+    if body.asset_ids.is_empty() {
+        return Err(fail(StatusCode::BAD_REQUEST, "asset_ids required"));
+    }
+    let mut sources = Vec::new();
+    for asset_id in &body.asset_ids {
+        let row = state
+            .scheduler
+            .get_asset(asset_id)
+            .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or_else(|| fail(StatusCode::NOT_FOUND, format!("asset {asset_id} not found")))?;
+        if !row.kind.eq_ignore_ascii_case("image") {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                format!("asset {asset_id} is not an image"),
+            ));
+        }
+        let path = resolve_asset_fs_path(&state.outputs, &state.workspace, &row.file_path);
+        let name = FsPath::new(&row.file_path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("asset.jpg")
+            .to_string();
+        sources.push((path, name));
+    }
+    let detail =
+        danmo_store::import_asset_files(&state.workspace, &id, &sources, &body.default_prompt)
+            .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(detail))
+}
+
+fn training_presets_for_model(mid: &str) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    for preset in ["turbo-sft", "turbo-diff", "base-face"] {
+        if let Ok(resolved) = danmo_contracts::resolve_lora_train_preset(preset, mid) {
+            out.insert(resolved.id.clone(), json!(resolved));
+        }
+    }
+    out
+}
+
+async fn list_trainable_models(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let ready = cfg!(feature = "mlx");
+    let catalog = Catalog::open(&state.registry)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let models = catalog
+        .root()
+        .get("models")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut items = Vec::new();
+    let mut presets_by_model = serde_json::Map::new();
+    for (id, node) in &models {
+        let family = node
+            .pointer("/runtime/family")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let trainable = danmo_engine::spec(family).is_some_and(|spec| spec.lora_training);
+        if !trainable {
+            continue;
+        }
+        let presets = training_presets_for_model(id);
+        if presets.is_empty() {
+            continue;
+        }
+        let name = node
+            .pointer("/catalog/name/en")
+            .and_then(Value::as_str)
+            .unwrap_or(id);
+        let default_preset = if presets.contains_key("turbo-sft") {
+            "turbo-sft".to_string()
+        } else {
+            presets.keys().next().cloned().unwrap_or_default()
+        };
+        items.push(json!({
+            "id": id,
+            "name": name,
+            "family": family,
+            "trainable": true,
+            "ready": ready,
+            "presets": presets.keys().cloned().collect::<Vec<_>>(),
+            "default_preset": default_preset,
+        }));
+        presets_by_model.insert(id.clone(), Value::Object(presets));
+    }
+    items.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+    Ok(Json(json!({
+        "items": items,
+        "presets_by_model": presets_by_model,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct TrainingPresetsQuery {
+    model: Option<String>,
+    base_model: Option<String>,
+}
+
+async fn list_training_presets(Query(query): Query<TrainingPresetsQuery>) -> Json<Value> {
+    let mid = query
+        .model
+        .as_deref()
+        .or(query.base_model.as_deref())
+        .unwrap_or("z-image-turbo");
+    Json(json!({
+        "model": mid,
+        "presets": training_presets_for_model(mid),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct TrainingRequirementsQuery {
+    base_model: Option<String>,
+}
+
+async fn training_requirements(
+    State(state): State<AppState>,
+    Query(query): Query<TrainingRequirementsQuery>,
+) -> Json<Value> {
+    let ready = cfg!(feature = "mlx");
+    let mid = query
+        .base_model
+        .as_deref()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .trim();
+    let trainable = Catalog::open(&state.registry)
+        .ok()
+        .and_then(|catalog| catalog.model(mid).ok())
+        .and_then(|entry| danmo_engine::spec(&entry.family).map(|spec| spec.lora_training))
+        .unwrap_or(false);
+    let can_submit = ready && (mid.is_empty() || trainable);
+    let mut blockers: Vec<String> = Vec::new();
+    if !ready {
+        blockers.push(
+            "LoRA training requires an MLX-enabled build (--features mlx-metal or mlx-cuda)".into(),
+        );
+    }
+    if !mid.is_empty() && !trainable {
+        blockers.push(format!("unsupported training base model {mid:?}"));
+    }
+    Json(json!({
+        "ready": ready,
+        "can_submit": can_submit,
+        "backend": if ready { "mlx" } else { "none" },
+        "detail": if ready {
+            "Rust MLX LoRA trainer is available for Z-Image / Z-Image-Turbo (probe-latent path until VAE encode lands)"
+        } else {
+            "LoRA training requires an MLX-enabled build (--features mlx-metal or mlx-cuda)"
+        },
+        "blockers": blockers,
+        "trainable_models": ["z-image-turbo", "z-image"],
+        "default_preset": {
+            "z-image-turbo": "turbo-sft",
+            "z-image": "base-face",
+        },
+        "base_model": mid,
+    }))
+}
+
+async fn submit_training(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    if !cfg!(feature = "mlx") {
+        return Err(fail(
+            StatusCode::NOT_IMPLEMENTED,
+            "LoRA training requires an MLX-enabled build (--features mlx-metal or mlx-cuda)",
+        ));
+    }
+    // Reject leftover UI override keys loudly (fail loud — no silent ignore).
+    if let Some(obj) = body.as_object() {
+        const REMOVED: &[&str] = &[
+            "progress_prompt",
+            "iterations",
+            "lora_rank",
+            "learning_rate",
+            "resolution",
+            "qlora_bits",
+            "grad_checkpoint",
+            "compile_step",
+            "lora_blocks",
+            "lora_alpha",
+            "lora_dropout",
+            "lora_module_keys",
+            "optimizer",
+            "weight_decay",
+            "val_split",
+            "val_every",
+            "train_type",
+            "min_snr_gamma",
+            "class_prompt",
+            "prior_loss_weight",
+            "early_stop_patience",
+            "fuse_adapters",
+            "num_augmentations",
+            "grad_accumulate",
+            "progress_steps",
+            "caption_mode",
+            "train_sigma_shift",
+            "sigma_bias",
+            "caption_dropout",
+            "batch_size",
+            "progress_every",
+            "checkpoint_every",
+            "guidance",
+        ];
+        let stray: Vec<&str> = REMOVED
+            .iter()
+            .copied()
+            .filter(|k| obj.contains_key(*k))
+            .collect();
+        if !stray.is_empty() {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "training request no longer accepts {:?}; use named preset + dataset default_prompt",
+                    stray
+                ),
+            ));
+        }
+    }
+    let request: danmo_contracts::LoraTrainingRequest =
+        serde_json::from_value(body).map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let mid = request
+        .base_model
+        .split(':')
+        .next()
+        .unwrap_or(&request.base_model)
+        .trim();
+    let catalog = Catalog::open(&state.registry)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let family = catalog
+        .model(mid)
+        .map_err(|err| fail(StatusCode::BAD_REQUEST, err.to_string()))?
+        .family;
+    if !danmo_engine::spec(&family).is_some_and(|spec| spec.lora_training) {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!("unsupported training base model {mid:?}"),
+        ));
+    }
+    let meta = danmo_store::load_dataset_meta(&state.workspace, &request.dataset_id)
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let caption = meta.default_prompt.trim();
+    if caption.is_empty() {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            "dataset default_prompt is required (set it on the dataset step)",
+        ));
+    }
+    let (_meta, pairs) =
+        danmo_store::load_training_pairs(&state.workspace, &request.dataset_id, caption)
+            .map_err(|e| fail(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let preset = danmo_contracts::resolve_lora_train_preset(&request.preset, &request.base_model)
+        .and_then(|p| danmo_contracts::merge_lora_train_request(&request, p))
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e))?;
+    if preset.id == "turbo-sft" {
+        // DistillPatch must be installed for matching inference; fail loud if absent.
+        let registry = state.workspace.join("config").join("models_registry.json");
+        let _ = registry; // presence checked at infer time; training records the recipe.
+    }
+
+    let task_id = format!("tsk_{}", Uuid::new_v4());
+    let work_dir = state.workspace.join("tasks").join(&task_id);
+    std::fs::create_dir_all(&work_dir)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let params = json!({
+        "task_id": task_id,
+        "family": family,
+        "request": request,
+        "preset": preset,
+        "training_caption": caption,
+        "n_images": pairs.len(),
+    });
+    let prio = if request.priority == "high" { 10 } else { 100 };
+    // Fail fast at submit: training needs an installed dense bundle.
+    let bundle = resolve_training_bundle(&state, &request.base_model)?;
+    // Training runs on its own thread below; insert as running so the queue
+    // worker never dequeues it (it has no engine dispatch for this kind).
+    state
+        .scheduler
+        .submit_running(&task_id, "lora.training", mid, &params.to_string(), prio)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let scheduler = state.scheduler.clone();
+    let req = request.clone();
+    let wid = task_id.clone();
+    let wdir = work_dir.clone();
+    let workspace = state.workspace.clone();
+    let telemetry = state.telemetry.clone();
+    tokio::task::spawn_blocking(move || {
+        run_training_job(
+            &scheduler, &wid, &wdir, &workspace, &family, &req, &bundle, telemetry,
+        );
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "id": task_id,
+            "status": "queued",
+            "kind": "lora.training",
+        })),
+    ))
+}
+
+fn training_task_result(state: &AppState, task_id: &str) -> Result<(TaskRow, Value), ApiError> {
+    let row = state
+        .scheduler
+        .get(task_id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| fail(StatusCode::NOT_FOUND, "training task not found"))?;
+    if row.kind != "lora.training" {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!("task {task_id} is not a LoRA training run"),
+        ));
+    }
+    let result = row
+        .result
+        .as_deref()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .unwrap_or(Value::Null);
+    Ok((row, result))
+}
+
+fn checkpoint_basename(path: &str) -> String {
+    FsPath::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn resolve_training_checkpoint(
+    work_dir: &FsPath,
+    result: &Value,
+    checkpoint: &str,
+) -> Result<PathBuf, ApiError> {
+    let name = checkpoint.trim();
+    if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err(fail(StatusCode::BAD_REQUEST, "invalid checkpoint name"));
+    }
+    let adapters = work_dir.join("adapters");
+    let candidate = adapters.join(name);
+    if candidate.is_file() {
+        return Ok(candidate);
+    }
+    if let Some(adapter_path) = result.get("adapter_path").and_then(|v| v.as_str()) {
+        let p = PathBuf::from(adapter_path);
+        if checkpoint_basename(adapter_path) == name && p.is_file() {
+            return Ok(p);
+        }
+    }
+    if let Some(list) = result.get("checkpoints").and_then(|v| v.as_array()) {
+        for item in list {
+            if let Some(path) = item.as_str() {
+                if checkpoint_basename(path) == name {
+                    let p = PathBuf::from(path);
+                    if p.is_file() {
+                        return Ok(p);
+                    }
+                }
+            }
+        }
+    }
+    Err(fail(
+        StatusCode::NOT_FOUND,
+        format!("checkpoint {name} not found for this training run"),
+    ))
+}
+
+async fn training_artifacts(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let (row, result) = training_task_result(&state, &id)?;
+    let work_dir = state.workspace.join("tasks").join(&id);
+    let mut checkpoints: Vec<String> = result
+        .get("checkpoints")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(checkpoint_basename))
+        .collect();
+    if checkpoints.is_empty() {
+        if let Some(path) = result.get("adapter_path").and_then(|v| v.as_str()) {
+            checkpoints.push(checkpoint_basename(path));
+        }
+    }
+    // Mid-run: result is empty until finish — also scan adapters/ on disk.
+    let adapters_dir = work_dir.join("adapters");
+    if adapters_dir.is_dir() {
+        let mut on_disk = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&adapters_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let name = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let lower = name.to_ascii_lowercase();
+                if lower.ends_with(".safetensors")
+                    && (lower.starts_with("checkpoint-") || lower.starts_with("final_"))
+                {
+                    on_disk.push(name);
+                }
+            }
+        }
+        on_disk.sort();
+        for name in on_disk {
+            if !checkpoints.iter().any(|c| c == &name) {
+                checkpoints.push(name);
+            }
+        }
+    }
+    let progress_dir = work_dir.join("progress");
+    let mut progress_images = Vec::new();
+    if progress_dir.is_dir() {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(&progress_dir)
+            .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        {
+            let entry =
+                entry.map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            let lower = name.to_ascii_lowercase();
+            if lower.ends_with(".png")
+                || lower.ends_with(".jpg")
+                || lower.ends_with(".jpeg")
+                || lower.ends_with(".webp")
+            {
+                names.push(name);
+            }
+        }
+        names.sort();
+        progress_images = names;
+    }
+    // Prefer incremental jsonl while running; fall back to finished result.
+    let mut loss_history = read_loss_history_jsonl(&work_dir.join("loss_history.jsonl"));
+    if loss_history.is_empty() {
+        loss_history = result
+            .get("loss_history")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+    }
+    let inference = result.get("inference").cloned().unwrap_or_else(|| {
+        serde_json::from_str::<Value>(&row.params)
+            .ok()
+            .and_then(|p| p.get("preset").and_then(|pr| pr.get("inference").cloned()))
+            .unwrap_or(Value::Null)
+    });
+    Ok(Json(json!({
+        "loss_history": loss_history,
+        "checkpoints": checkpoints,
+        "progress_images": progress_images,
+        "inference": inference,
+        "adapter_path": result.get("adapter_path").cloned().unwrap_or(Value::Null),
+        "output_name": result.get("output_name").cloned().unwrap_or(Value::Null),
+        "user_lora_id": result.get("user_lora_id").cloned().unwrap_or_else(|| json!("")),
+        "needs_candidate_evaluation": result
+            .get("needs_candidate_evaluation")
+            .cloned()
+            .unwrap_or(Value::Bool(false)),
+        "vision_available": false,
+        "status": row.status,
+    })))
+}
+
+fn read_loss_history_jsonl(path: &FsPath) -> Vec<Value> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect()
+}
+
+async fn training_artifact_file(
+    State(state): State<AppState>,
+    Path((id, filename)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    let name = filename.trim();
+    if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err(fail(StatusCode::BAD_REQUEST, "invalid artifact filename"));
+    }
+    let _ = training_task_result(&state, &id)?;
+    let path = state
+        .workspace
+        .join("tasks")
+        .join(&id)
+        .join("progress")
+        .join(name);
+    if !path.is_file() {
+        return Err(fail(
+            StatusCode::NOT_FOUND,
+            format!("artifact {name} not found"),
+        ));
+    }
+    let bytes =
+        std::fs::read(&path).map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mime = mime_for_stored_path(name);
+    Ok(([(header::CONTENT_TYPE, mime.to_string())], bytes).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct RegisterTrainingBody {
+    checkpoint: String,
+    #[serde(default)]
+    name: String,
+}
+
+async fn register_training_checkpoint(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<RegisterTrainingBody>,
+) -> Result<Json<Value>, ApiError> {
+    let (row, result) = training_task_result(&state, &id)?;
+    if row.status != "completed" {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "training task is {}, register only after completed",
+                row.status
+            ),
+        ));
+    }
+    let work_dir = state.workspace.join("tasks").join(&id);
+    let src = resolve_training_checkpoint(&work_dir, &result, &body.checkpoint)?;
+    let params: Value = serde_json::from_str(&row.params).unwrap_or_else(|_| json!({}));
+    let request = params.get("request").cloned().unwrap_or(Value::Null);
+    let preset = params.get("preset").cloned().unwrap_or(Value::Null);
+    let base_model = request
+        .get("base_model")
+        .and_then(|v| v.as_str())
+        .or_else(|| params.get("base_model").and_then(|v| v.as_str()))
+        .unwrap_or(row.model_id.as_str())
+        .to_string();
+    let output_name = {
+        let raw = body.name.trim();
+        if !raw.is_empty() {
+            raw.to_string()
+        } else if let Some(n) = result.get("output_name").and_then(|v| v.as_str()) {
+            n.trim().to_string()
+        } else if let Some(n) = request.get("output_name").and_then(|v| v.as_str()) {
+            n.trim().to_string()
+        } else {
+            format!("{base_model}-lora")
+        }
+    };
+    if output_name.is_empty()
+        || output_name.contains("..")
+        || output_name.contains('/')
+        || output_name.contains('\\')
+    {
+        return Err(fail(StatusCode::BAD_REQUEST, "invalid LoRA name"));
+    }
+    let rel_dir = format!("models/Lora/{output_name}");
+    let dest_dir = state.workspace.join(&rel_dir);
+    std::fs::create_dir_all(&dest_dir)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let dest_name = checkpoint_basename(src.to_string_lossy().as_ref());
+    let dest_file = dest_dir.join(&dest_name);
+    std::fs::copy(&src, &dest_file)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Keep the training recipe next to the weight so the install is self-describing.
+    let cfg_src = src
+        .parent()
+        .map(|p| p.join("lora_config.json"))
+        .filter(|p| p.is_file());
+    if let Some(cfg) = cfg_src {
+        let _ = std::fs::copy(&cfg, dest_dir.join("lora_config.json"));
+    }
+    let inference = result
+        .get("inference")
+        .cloned()
+        .or_else(|| preset.get("inference").cloned())
+        .filter(|v| v.is_object())
+        .ok_or_else(|| {
+            fail(
+                StatusCode::BAD_REQUEST,
+                "training result has no inference recipe; cannot register without steps/guidance/extra_adapters",
+            )
+        })?;
+    let extras = danmo_contracts::stacked_adapters_from_value(inference.get("extra_adapters"))
+        .map_err(|detail| {
+            fail(
+                StatusCode::BAD_REQUEST,
+                format!("invalid inference.extra_adapters: {detail}"),
+            )
+        })?;
+    for extra in &extras {
+        // Fail loud: every companion listed on the inference recipe must be installed.
+        ensure_companion_lora_installed(&state, &extra.id)?;
+    }
+    let dataset_id = request
+        .get("dataset_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let trigger_word = if !dataset_id.is_empty() {
+        danmo_store::load_dataset_meta(&state.workspace, dataset_id)
+            .ok()
+            .map(|m| m.trigger_word.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let preset_id = request
+        .get("preset")
+        .and_then(|v| v.as_str())
+        .or_else(|| preset.get("id").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let family = params
+        .get("family")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            Catalog::open(&state.registry)
+                .ok()
+                .and_then(|catalog| catalog.model(&base_model).ok())
+                .map(|entry| entry.family)
+        })
+        .ok_or_else(|| {
+            fail(
+                StatusCode::BAD_REQUEST,
+                format!("cannot resolve runtime family for base model {base_model}"),
+            )
+        })?;
+    let lora_id = format!("user-lora-{}", &Uuid::new_v4().simple().to_string()[..12]);
+    let entry = json!({
+        "id": lora_id,
+        "name": output_name,
+        "base_model": base_model,
+        "local_path": rel_dir,
+        "trigger_word": trigger_word,
+        "lora_rank": preset.get("lora_rank").cloned().unwrap_or(json!(32)),
+        "lora_alpha": preset.get("lora_rank").cloned().unwrap_or(json!(32)),
+        "inference": inference,
+        "preset": preset_id,
+        "family": family,
+        "train_type": "lora",
+        "lora_module_keys": preset.get("lora_module_keys").cloned().unwrap_or(json!([])),
+        "nsfw": false,
+        "source": "user_trained",
+        "task_id": id,
+        "checkpoint": dest_name,
+        "created_at": chrono_like_now(),
+    });
+    let user_path = state.workspace.join("config").join("user_loras.json");
+    let mut root = if user_path.is_file() {
+        let text = std::fs::read_to_string(&user_path)
+            .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        serde_json::from_str::<Value>(&text).map_err(|e| {
+            fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{} is not json: {e}", user_path.display()),
+            )
+        })?
+    } else {
+        json!({ "items": [] })
+    };
+    let items = root
+        .as_object_mut()
+        .ok_or_else(|| {
+            fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "user_loras.json root must be object",
+            )
+        })?
+        .entry("items")
+        .or_insert_with(|| json!([]));
+    let arr = items.as_array_mut().ok_or_else(|| {
+        fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "user_loras.json items must be array",
+        )
+    })?;
+    arr.retain(|item| item.get("id").and_then(|v| v.as_str()) != Some(lora_id.as_str()));
+    arr.push(entry.clone());
+    if let Some(parent) = user_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+    let pretty = serde_json::to_string_pretty(&root)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    std::fs::write(&user_path, pretty)
+        .map_err(|e| fail(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({ "user_lora": entry })))
+}
+
+fn chrono_like_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{secs}")
+}
+
+fn ensure_companion_lora_installed(state: &AppState, id: &str) -> Result<(), ApiError> {
+    if let Some(path) = state
+        .downloads
+        .lora_path(id)
+        .map_err(|detail| fail(StatusCode::BAD_REQUEST, detail))?
+    {
+        if path.is_file() || download::lora_weight_file(&path).is_ok() {
+            return Ok(());
+        }
+    }
+    let (bare, version) = match id.split_once(':') {
+        Some((bare, version)) => (bare, Some(version)),
+        None => (id, None),
+    };
+    let catalog = open_catalog(state)?;
+    let Some(entry) = catalog.root().pointer(&format!("/models/{bare}")) else {
+        return Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "companion LoRA {id} is not installed; required by this training recipe before register"
+            ),
+        ));
+    };
+    match download::registry_lora_weight(&state.workspace, entry, version)
+        .map_err(|detail| fail(StatusCode::BAD_REQUEST, detail))?
+    {
+        Some(_) => Ok(()),
+        None => Err(fail(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "companion LoRA {id} is not installed; required by this training recipe before register"
+            ),
+        )),
+    }
+}
+
+/// Resolve the training base bundle, refusing quantized tiers. Training
+/// keeps F32 LoRA factors on the frozen checkpoint; a packed affine base
+/// would silently train against dequantized-rounded constants, so it fails
+/// here instead. `id:version` pins the tier; a bare id prefers bf16/fp16/fp32.
+fn resolve_training_bundle(state: &AppState, base_model: &str) -> Result<PathBuf, ApiError> {
+    let (bare, pinned) = match base_model.split_once(':') {
+        Some((bare, version)) if !bare.is_empty() && !version.is_empty() => (bare, Some(version)),
+        _ => (base_model, None),
+    };
+    let registry: Value = std::fs::read_to_string(&state.registry)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .ok_or_else(|| {
+            fail(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "registry is not readable",
+            )
+        })?;
+    let versions = registry
+        .pointer(&format!("/models/{bare}/distribution/versions"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            fail(
+                StatusCode::BAD_REQUEST,
+                format!("unknown base model {bare:?}"),
+            )
+        })?;
+    let quantized = |key: &str| key.starts_with("mlx-q") || key.starts_with("int");
+    let installed = |spec: &Value| {
+        spec.get("local_path")
+            .and_then(Value::as_str)
+            .is_some_and(|path| !path.is_empty())
+    };
+    let resolve = |version: &str| -> Result<PathBuf, ApiError> {
+        danmo_resolve::resolve_bundle(
+            &state.workspace,
+            &state.registry,
+            &format!("{bare}:{version}"),
+        )
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, e))
+    };
+    if let Some(version) = pinned {
+        let spec = versions.get(version).ok_or_else(|| {
+            fail(
+                StatusCode::BAD_REQUEST,
+                format!("{base_model:?} is not in the registry"),
+            )
+        })?;
+        if !installed(spec) {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                format!("{base_model:?} is not installed"),
+            ));
+        }
+        if quantized(version) {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "LoRA training needs a dense bundle (bf16/fp16/fp32); {version} is quantized"
+                ),
+            ));
+        }
+        return resolve(version);
+    }
+    for preferred in ["bf16", "fp16", "fp32"] {
+        if versions.get(preferred).is_some_and(|spec| installed(spec)) {
+            return resolve(preferred);
+        }
+    }
+    if let Some((version, _)) = versions
+        .iter()
+        .find(|(key, spec)| !quantized(key) && installed(spec))
+    {
+        return resolve(version);
+    }
+    Err(fail(
+        StatusCode::BAD_REQUEST,
+        format!(
+            "LoRA training needs a dense (bf16/fp16/fp32) install of {bare:?}; only quantized tiers are installed"
+        ),
+    ))
+}
+
+fn run_training_job(
+    scheduler: &danmo_schedule::Scheduler,
+    task_id: &str,
+    work_dir: &FsPath,
+    workspace: &FsPath,
+    family: &str,
+    request: &danmo_contracts::LoraTrainingRequest,
+    bundle: &FsPath,
+    telemetry: Option<danmo_otel::Telemetry>,
+) {
+    let _ = scheduler.log(task_id, "info", "Rust MLX LoRA training started");
+    let trace = telemetry.as_ref().map(|telemetry| {
+        std::sync::Arc::new(telemetry.start_task(
+            task_id,
+            vec![
+                danmo_otel::attribute("task.id", task_id),
+                danmo_otel::attribute("task.kind", "lora.training"),
+                danmo_otel::attribute("gen_ai.request.model", request.base_model.as_str()),
+                danmo_otel::attribute("danmo.family", family),
+                danmo_otel::attribute("danmo.action", "lora.train"),
+                danmo_otel::attribute("danmo.train.preset", request.preset.as_str()),
+                danmo_otel::attribute("danmo.train.dataset_id", request.dataset_id.as_str()),
+            ],
+        ))
+    });
+    if let Some(trace) = trace.as_ref() {
+        trace.phase("prepare");
+        trace.log_event("info", "Rust MLX LoRA training started");
+    }
+    #[cfg(feature = "mlx")]
+    {
+        use danmo_engine::run_family_lora_training;
+        use danmo_engine::train::TrainEvent;
+        let outcome = (|| {
+            let meta = danmo_store::load_dataset_meta(workspace, &request.dataset_id)
+                .map_err(|e| e.to_string())?;
+            let caption = meta.default_prompt.trim().to_string();
+            let (_meta, pairs) =
+                danmo_store::load_training_pairs(workspace, &request.dataset_id, &caption)
+                    .map_err(|e| e.to_string())?;
+            let resume_adapter = resolve_resume_adapter(scheduler, workspace, request)?;
+            let sched = scheduler.clone();
+            let tid = task_id.to_string();
+            let train_trace = trace.clone();
+            // Per-step losses are noisy (fresh image/sigma/noise each step);
+            // log a 25-step moving average so multi-hour runs stay readable.
+            let window = std::cell::RefCell::new(Vec::<f32>::with_capacity(25));
+            let progress: danmo_engine::train::TrainProgress = Box::new(move |event| match event {
+                TrainEvent::Phase(message) => {
+                    let _ = sched.log(&tid, "info", &message);
+                    if let Some(trace) = train_trace.as_ref() {
+                        if let Some(phase) = train_phase_from_message(&message) {
+                            if trace.current_phase().as_deref() != Some(phase) {
+                                trace.phase(phase);
+                            }
+                        }
+                        trace.log_event("info", &message);
+                    }
+                }
+                TrainEvent::Step { step, total, loss } => {
+                    let fraction = step as f64 / total.max(1) as f64;
+                    let _ = sched.set_progress_tip(&tid, fraction, "train", step, total);
+                    if let Some(trace) = train_trace.as_ref() {
+                        if trace.current_phase().as_deref() != Some("train") {
+                            trace.phase("train");
+                        }
+                        trace.progress_with(
+                            "train",
+                            step,
+                            total,
+                            vec![danmo_otel::attribute("train.loss", format!("{loss:.6}"))],
+                        );
+                    }
+                    let mut window = window.borrow_mut();
+                    window.push(loss);
+                    if step == 1 || step == total || step % 25 == 0 {
+                        let avg = window.iter().sum::<f32>() / window.len().max(1) as f32;
+                        window.clear();
+                        let line = format!("step {step}/{total} loss {loss:.4} (avg {avg:.4})");
+                        let _ = sched.log(&tid, "info", &line);
+                        if let Some(trace) = train_trace.as_ref() {
+                            trace.log_event("info", &line);
+                        }
+                    }
+                }
+                TrainEvent::Checkpoint(path) => {
+                    let line = format!("checkpoint written to {path}");
+                    let _ = sched.log(&tid, "success", &line);
+                    if let Some(trace) = train_trace.as_ref() {
+                        if trace.current_phase().as_deref() != Some("export") {
+                            trace.phase("export");
+                        }
+                        trace.log_event("info", &line);
+                        trace.add_event(
+                            "checkpoint",
+                            vec![danmo_otel::attribute("checkpoint.path", path)],
+                        );
+                    }
+                }
+            });
+            run_family_lora_training(
+                family,
+                request,
+                bundle,
+                &pairs,
+                resume_adapter.as_deref(),
+                work_dir,
+                progress,
+            )
+            .map_err(|e| e.to_string())
+        })();
+        match outcome {
+            Ok(out) => {
+                let result = serde_json::to_string(&out).unwrap_or_else(|_| "{}".into());
+                let _ = scheduler.log(
+                    task_id,
+                    "success",
+                    &format!("adapter written to {}", out.adapter_path),
+                );
+                if let Some(trace) = trace.as_ref() {
+                    if trace.current_phase().as_deref() != Some("export") {
+                        trace.phase("export");
+                    }
+                    trace.log_event("info", &format!("adapter written to {}", out.adapter_path));
+                    trace.finish();
+                }
+                if let Some(telemetry) = telemetry.as_ref() {
+                    if let Err(error) = telemetry.flush() {
+                        eprintln!("[otel] {error}");
+                    }
+                }
+                let _ = scheduler.finish_ok(task_id, &result);
+            }
+            Err(e) => {
+                let _ = scheduler.log(task_id, "error", &e);
+                if let Some(trace) = trace.as_ref() {
+                    trace.fail(&e);
+                    trace.finish();
+                }
+                if let Some(telemetry) = telemetry.as_ref() {
+                    if let Err(error) = telemetry.flush() {
+                        eprintln!("[otel] {error}");
+                    }
+                }
+                let _ = scheduler.finish_err(task_id, &e);
+            }
+        }
+    }
+    #[cfg(not(feature = "mlx"))]
+    {
+        let _ = (
+            work_dir, workspace, family, request, bundle, trace, telemetry,
+        );
+        let _ = scheduler.finish_err(task_id, "MLX feature not enabled");
+    }
+}
+
+fn train_phase_from_message(message: &str) -> Option<&'static str> {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("export") || lower.contains("adapter") || lower.contains("checkpoint") {
+        Some("export")
+    } else if lower.contains("encode") || lower.contains("cache") || lower.contains("vae") {
+        Some("encode")
+    } else if lower.contains("load") || lower.contains("bundle") || lower.contains("weight") {
+        Some("load")
+    } else if lower.contains("preprocess")
+        || lower.contains("face")
+        || lower.contains("dataset")
+        || lower.contains("sample")
+    {
+        Some("prepare")
+    } else if lower.contains("train") || lower.contains("optim") || lower.contains("adam") {
+        Some("train")
+    } else {
+        None
+    }
+}
+
+/// `resume_task_id` + `resume_checkpoint` → adapter file, resolved against
+/// the earlier run's recorded checkpoints. Empty request fields mean a fresh
+/// init; a checkpoint without its task id fails loud.
+fn resolve_resume_adapter(
+    scheduler: &danmo_schedule::Scheduler,
+    workspace: &FsPath,
+    request: &danmo_contracts::LoraTrainingRequest,
+) -> Result<Option<PathBuf>, String> {
+    let checkpoint = request.resume_checkpoint.trim();
+    if checkpoint.is_empty() {
+        return Ok(None);
+    }
+    let task = request.resume_task_id.trim();
+    if task.is_empty() {
+        return Err("resume_checkpoint requires resume_task_id".to_string());
+    }
+    let row = scheduler
+        .get(task)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("resume task {task} not found"))?;
+    let result = row
+        .result
+        .as_deref()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .unwrap_or(Value::Null);
+    let work_dir = workspace.join("tasks").join(task);
+    resolve_training_checkpoint(&work_dir, &result, checkpoint)
+        .map(Some)
+        .map_err(|error| error.detail)
+}
+
+async fn reject_merge() -> Result<Json<Value>, ApiError> {
+    Err(fail(
+        StatusCode::BAD_REQUEST,
+        "weight merge was removed. GGUF bundles are downloaded as published",
+    ))
+}
+
+async fn merge_models() -> Json<Value> {
+    Json(json!({ "models": [], "mlx_available": false }))
+}
+
+async fn list_audio_tasks(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    list_tasks(
+        State(state),
+        Query(ListQuery {
+            kind: Some("audio.generation".into()),
+            limit: Some(100),
+            ..ListQuery::default()
+        }),
+    )
+    .await
+}
+
+const DEFAULT_ASSISTANT_MODEL_ID: &str = "qwen3.5-4b";
+
+fn is_thinking_model(model_id: &str) -> bool {
+    let mid = model_id.to_lowercase();
+    if mid.contains("thinking") {
+        return true;
+    }
+    ["qwen3.5", "qwen3-5", "qwen3.6", "qwen3-6"]
+        .iter()
+        .any(|prefix| mid.starts_with(prefix))
+}
+
+fn assistant_model_id(settings: &Value, catalog: &Catalog) -> String {
+    let preferred = settings
+        .get("default_model_llm")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let bare = preferred.split(':').next().unwrap_or("");
+    if !bare.is_empty() && catalog.model(bare).is_ok() {
+        return bare.to_string();
+    }
+    if catalog.model(DEFAULT_ASSISTANT_MODEL_ID).is_ok() {
+        return DEFAULT_ASSISTANT_MODEL_ID.to_string();
+    }
+    if let Some(models) = catalog.root().get("models").and_then(|m| m.as_object()) {
+        let mut llm: Vec<&String> = models
+            .iter()
+            .filter(|(_, m)| m.pointer("/catalog/media").and_then(|v| v.as_str()) == Some("llm"))
+            .map(|(key, _)| key)
+            .collect();
+        llm.sort();
+        if let Some(key) = llm.iter().find(|key| {
+            models
+                .get(**key)
+                .and_then(|m| m.get("actions"))
+                .and_then(|a| a.get("chat"))
+                .is_some()
+        }) {
+            return key.to_string();
+        }
+        if let Some(key) = llm.first() {
+            return key.to_string();
+        }
+    }
+    DEFAULT_ASSISTANT_MODEL_ID.to_string()
+}
+
+fn map_llm_error(err: crate::llm::LlmError) -> ApiError {
+    match err {
+        crate::llm::LlmError::Unavailable(detail) => fail(StatusCode::SERVICE_UNAVAILABLE, detail),
+        crate::llm::LlmError::Upstream(detail) => fail(StatusCode::BAD_GATEWAY, detail),
+    }
+}
+
+async fn llm_model_info(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let settings = current_settings(&state);
+    let catalog = open_catalog(&state)?;
+    let id = assistant_model_id(&settings, &catalog);
+    let think_supported = is_thinking_model(&id);
+    let think_enabled = think_supported
+        && settings
+            .get("default_model_llm_think")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+    Ok(Json(json!({
+        "model_id": id,
+        "name": id,
+        "available": crate::llm::block_reason(&settings).is_none(),
+        "provider": crate::llm::provider_id(&settings),
+        "unload_each_request": settings
+            .get("llm_unload_each_request")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        "llm_cache_ttl_minutes": settings
+            .get("llm_cache_ttl_minutes")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(30),
+        "think_supported": think_supported,
+        "think_enabled": think_enabled,
+    })))
+}
+
+async fn vision_model_info(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let settings = current_settings(&state);
+    let catalog = open_catalog(&state)?;
+    let id = assistant_model_id(&settings, &catalog);
+    Ok(Json(json!({
+        "model_id": id,
+        "name": id,
+        "available": crate::llm::block_reason(&settings).is_none(),
+        "provider": crate::llm::provider_id(&settings),
+    })))
+}
+
+async fn enhance_prompt(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<Value>, ApiError> {
+    let request: Value = serde_json::from_slice(&body).map_err(|err| {
+        fail(
+            StatusCode::BAD_REQUEST,
+            format!("invalid enhance request: {err}"),
+        )
+    })?;
+    let settings = current_settings(&state);
+    if let Some(reason) = crate::llm::block_reason(&settings) {
+        return Err(fail(StatusCode::SERVICE_UNAVAILABLE, reason));
+    }
+    let catalog = open_catalog(&state)?;
+    let prompt = request
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let target_action = request
+        .get("target_action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("image_create");
+    let style = request
+        .get("style_positive")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let catalog_id = assistant_model_id(&settings, &catalog);
+    let model = crate::llm::resolve_model(&settings, &catalog_id);
+    let messages = crate::llm::build_enhance_messages(&prompt, target_action, style);
+    let chat = crate::llm::ChatRequest {
+        model,
+        messages,
+        temperature: 0.65,
+        top_p: 0.9,
+        max_tokens: Some(200),
+    };
+    let provider = crate::llm::from_settings(&settings);
+    let response = tokio::task::spawn_blocking(move || provider.complete(&chat))
+        .await
+        .map_err(|err| fail(StatusCode::BAD_GATEWAY, err.to_string()))?
+        .map_err(map_llm_error)?;
+    let content = crate::llm::content_from_completion(&response);
+    let cleaned = crate::llm::sanitize_enhanced_prompt(&content);
+    let enhanced = if cleaned.is_empty() { prompt } else { cleaned };
+    Ok(Json(json!({ "enhanced_prompt": enhanced })))
+}
+
+/// Product assistant tasks (lyrics / vision caption / analyze / canvas note).
+/// Not an OpenAI-compatible proxy.
+async fn assistant_run(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<Value>, ApiError> {
+    let request: Value = serde_json::from_slice(&body).map_err(|err| {
+        fail(
+            StatusCode::BAD_REQUEST,
+            format!("invalid assistant request: {err}"),
+        )
+    })?;
+    let settings = current_settings(&state);
+    if let Some(reason) = crate::llm::block_reason(&settings) {
+        return Err(fail(StatusCode::SERVICE_UNAVAILABLE, reason));
+    }
+    let kind_raw = request
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let kind = crate::llm::tasks::AssistantKind::parse(kind_raw).ok_or_else(|| {
+        fail(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "unknown assistant kind '{kind_raw}' (expected lyrics, image_to_prompt, analyze_reference, canvas_describe)"
+            ),
+        )
+    })?;
+    let prompt = request
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let style = request
+        .get("style")
+        .or_else(|| request.get("style_positive"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let question = request
+        .get("question")
+        .and_then(|v| v.as_str())
+        .unwrap_or(prompt)
+        .trim();
+    let locale = request
+        .get("locale")
+        .and_then(|v| v.as_str())
+        .unwrap_or("en");
+    let video = request
+        .get("video")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let prefer_vision = request
+        .get("prefer_vision")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let asset_id = request
+        .get("asset_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+
+    let needs_image = matches!(
+        kind,
+        crate::llm::tasks::AssistantKind::ImageToPrompt
+            | crate::llm::tasks::AssistantKind::AnalyzeReference
+    ) || (kind == crate::llm::tasks::AssistantKind::CanvasDescribe
+        && prefer_vision);
+
+    let image_data_url = if needs_image {
+        if asset_id.is_empty() {
+            return Err(fail(
+                StatusCode::BAD_REQUEST,
+                "asset_id is required for this assistant kind",
+            ));
+        }
+        Some(asset_data_url(&state, asset_id, video)?)
+    } else {
+        None
+    };
+
+    let catalog = open_catalog(&state)?;
+    let catalog_id = assistant_model_id(&settings, &catalog);
+    let model = crate::llm::resolve_model(&settings, &catalog_id);
+    let prepared = crate::llm::tasks::prepare(
+        model,
+        &crate::llm::tasks::AssistantTask {
+            kind,
+            prompt,
+            style,
+            question,
+            locale,
+            video,
+            prefer_vision,
+            image_data_url: image_data_url.as_deref(),
+            asset_id,
+        },
+    )
+    .map_err(|err| fail(StatusCode::BAD_REQUEST, err))?;
+
+    let provider = crate::llm::from_settings(&settings);
+    let chat = prepared.request;
+    let response = tokio::task::spawn_blocking(move || provider.complete(&chat))
+        .await
+        .map_err(|err| fail(StatusCode::BAD_GATEWAY, err.to_string()))?
+        .map_err(map_llm_error)?;
+    let text = crate::llm::content_from_completion(&response);
+    let text = crate::llm::sanitize_enhanced_prompt(&text);
+    Ok(Json(json!({
+        "text": text,
+        "vision_used": prepared.vision_used,
+    })))
+}
+
+fn asset_data_url(
+    state: &AppState,
+    asset_id: &str,
+    prefer_thumbnail: bool,
+) -> Result<String, ApiError> {
+    let row = state
+        .scheduler
+        .get_asset(asset_id)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| {
+            fail(
+                StatusCode::NOT_FOUND,
+                format!("asset '{asset_id}' not found"),
+            )
+        })?;
+    let path = if prefer_thumbnail {
+        if let Some(thumb) = row.thumbnail_path.as_deref().filter(|p| !p.is_empty()) {
+            resolve_asset_fs_path(&state.outputs, &state.workspace, thumb)
+        } else {
+            resolve_asset_fs_path(&state.outputs, &state.workspace, &row.file_path)
+        }
+    } else {
+        resolve_asset_fs_path(&state.outputs, &state.workspace, &row.file_path)
+    };
+    let bytes = std::fs::read(&path).map_err(|err| {
+        fail(
+            StatusCode::NOT_FOUND,
+            format!("asset file missing: {}: {err}", path.display()),
+        )
+    })?;
+    if bytes.len() > 12 * 1024 * 1024 {
+        return Err(fail(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "asset image exceeds 12MB for assistant vision",
+        ));
+    }
+    let mime = if !row.mime_type.is_empty() {
+        row.mime_type.clone()
+    } else {
+        mime_from_path(&path)
+    };
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{mime};base64,{b64}"))
+}
+
+fn mime_from_path(path: &FsPath) -> String {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg".into(),
+        "webp" => "image/webp".into(),
+        "gif" => "image/gif".into(),
+        _ => "image/png".into(),
+    }
+}
+
+pub async fn spa(uri: axum::http::Uri) -> Response {
+    let path = uri.path();
+    if path.starts_with("/api/") || path == "/api" {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let Some(root) = frontend_dist() else {
+        return (StatusCode::NOT_FOUND, "frontend dist is not built").into_response();
+    };
+    let rel = path.trim_start_matches('/');
+    let candidate = if rel.is_empty() {
+        root.join("index.html")
+    } else {
+        root.join(rel)
+    };
+    if !candidate.starts_with(&root) {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let file = if candidate.is_file() {
+        candidate
+    } else if !rel.contains('.') {
+        root.join("index.html")
+    } else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    match std::fs::read(&file) {
+        Ok(bytes) => {
+            let mime = mime_for(
+                file.extension()
+                    .and_then(|ext| ext.to_str())
+                    .unwrap_or("html"),
+            );
+            ([(header::CONTENT_TYPE, mime)], bytes).into_response()
+        }
+        Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+fn frontend_dist() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = std::env::var("DANQING_FRONTEND_DIST") {
+        candidates.push(PathBuf::from(path));
+    }
+    candidates.push(PathBuf::from("out/frontend/dist"));
+    candidates.push(PathBuf::from("frontend/dist"));
+    candidates
+        .into_iter()
+        .find(|path| path.join("index.html").is_file())
+}
+
+fn open_catalog(state: &AppState) -> Result<Catalog, ApiError> {
+    Catalog::open(&state.registry)
+        .map_err(|err| fail(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+}
+
+pub fn new_id(prefix: &str) -> String {
+    let raw = Uuid::new_v4().simple().to_string();
+    format!("{prefix}{}", &raw[..20])
+}
+
+fn mime_for(ext: &str) -> &'static str {
+    match ext.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "wav" => "audio/wav",
+        "mp3" => "audio/mpeg",
+        "json" => "application/json",
+        "js" => "text/javascript",
+        "css" => "text/css",
+        "svg" => "image/svg+xml",
+        "html" => "text/html; charset=utf-8",
+        "woff2" => "font/woff2",
+        _ => "application/octet-stream",
+    }
+}
+
+fn kind_for(mime: &str) -> &'static str {
+    if mime.starts_with("image/") {
+        "image"
+    } else if mime.starts_with("video/") {
+        "video"
+    } else if mime.starts_with("audio/") {
+        "audio"
+    } else {
+        "file"
+    }
+}
+
+fn multipart_file(content_type: &str, body: &[u8]) -> Result<(String, Vec<u8>), String> {
+    let (files, _) = multipart_files_and_prompt(content_type, body)?;
+    files
+        .into_iter()
+        .next()
+        .ok_or_else(|| "multipart body has no file field".into())
+}
+
+fn multipart_files_and_prompt(
+    content_type: &str,
+    body: &[u8],
+) -> Result<(Vec<(String, Vec<u8>)>, String), String> {
+    let boundary = content_type
+        .split("boundary=")
+        .nth(1)
+        .ok_or("multipart body has no boundary")?
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches('"');
+    if boundary.is_empty() {
+        return Err("multipart body has no boundary".into());
+    }
+    let marker = format!("--{boundary}").into_bytes();
+    let mut files = Vec::new();
+    let mut default_prompt = String::new();
+    let mut start = 0usize;
+    while let Some(rel) = find_bytes(&body[start..], &marker) {
+        let part = start + rel + marker.len();
+        if body.get(part..part + 2) == Some(b"--") {
+            break;
+        }
+        let header_at = if body.get(part..part + 2) == Some(b"\r\n") {
+            part + 2
+        } else {
+            part
+        };
+        let Some(header_end_rel) = find_bytes(&body[header_at..], b"\r\n\r\n") else {
+            break;
+        };
+        let header_end = header_at + header_end_rel;
+        let headers = String::from_utf8_lossy(&body[header_at..header_end]);
+        let headers_lc = headers.to_ascii_lowercase();
+        let data_start = header_end + 4;
+        let next = find_bytes(&body[data_start..], &marker).unwrap_or(body.len() - data_start);
+        let mut data_end = data_start + next;
+        if data_end >= 2 && &body[data_end - 2..data_end] == b"\r\n" {
+            data_end -= 2;
+        }
+        let is_file = headers_lc.contains("filename=")
+            && (headers_lc.contains("name=\"file\"")
+                || headers_lc.contains("name=file")
+                || headers_lc.contains("name=\"files\"")
+                || headers_lc.contains("name=files"));
+        if is_file {
+            let filename = headers
+                .split("filename=")
+                .nth(1)
+                .map(|rest| {
+                    rest.trim_start_matches('"')
+                        .split('"')
+                        .next()
+                        .unwrap_or("upload.bin")
+                        .to_string()
+                })
+                .unwrap_or_else(|| "upload.bin".into());
+            files.push((filename, body[data_start..data_end].to_vec()));
+        } else if headers_lc.contains("name=\"default_prompt\"")
+            || headers_lc.contains("name=default_prompt")
+        {
+            default_prompt = String::from_utf8_lossy(&body[data_start..data_end])
+                .trim()
+                .to_string();
+        }
+        start = data_start + next;
+    }
+    Ok((files, default_prompt))
+}
+
+fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len())
+        .position(|window| window == needle)
+}
+
+pub(crate) fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
+    fn val(byte: u8) -> Result<u8, String> {
+        match byte {
+            b'A'..=b'Z' => Ok(byte - b'A'),
+            b'a'..=b'z' => Ok(byte - b'a' + 26),
+            b'0'..=b'9' => Ok(byte - b'0' + 52),
+            b'+' => Ok(62),
+            b'/' => Ok(63),
+            _ => Err("data_base64 is not valid".into()),
+        }
+    }
+    let bytes: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if bytes.len() % 4 != 0 {
+        return Err("data_base64 is not valid".into());
+    }
+    let mut out = Vec::new();
+    for chunk in bytes.chunks(4) {
+        let pad = chunk.iter().filter(|b| **b == b'=').count();
+        let a = val(chunk[0])?;
+        let b = val(chunk[1])?;
+        let c = if chunk[2] == b'=' { 0 } else { val(chunk[2])? };
+        let d = if chunk[3] == b'=' { 0 } else { val(chunk[3])? };
+        let triple = ((a as u32) << 18) | ((b as u32) << 12) | ((c as u32) << 6) | d as u32;
+        out.push((triple >> 16) as u8);
+        if pad < 2 {
+            out.push((triple >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(triple as u8);
+        }
+    }
+    Ok(out)
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+fn dir_size(path: &FsPath) -> u64 {
+    let mut total = 0u64;
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            total += entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+        } else if path.is_dir() {
+            total += dir_size(&path);
+        }
+    }
+    total
+}
+
+fn stat_space(path: &FsPath) -> (u64, u64) {
+    #[cfg(unix)]
+    {
+        #[repr(C)]
+        struct Statvfs {
+            f_bsize: u64,
+            f_frsize: u64,
+            f_blocks: u64,
+            f_bfree: u64,
+            f_bavail: u64,
+            _pad: [u64; 8],
+        }
+        extern "C" {
+            fn statvfs(path: *const i8, buf: *mut Statvfs) -> i32;
+        }
+        let c = std::ffi::CString::new(path.display().to_string()).ok();
+        let Some(c) = c else {
+            return (0, 0);
+        };
+        let mut buf = Statvfs {
+            f_bsize: 0,
+            f_frsize: 0,
+            f_blocks: 0,
+            f_bfree: 0,
+            f_bavail: 0,
+            _pad: [0; 8],
+        };
+        let rc = unsafe { statvfs(c.as_ptr(), &mut buf) };
+        if rc != 0 {
+            return (0, 0);
+        }
+        let fr = if buf.f_frsize == 0 {
+            buf.f_bsize
+        } else {
+            buf.f_frsize
+        };
+        (
+            buf.f_blocks.saturating_mul(fr),
+            buf.f_bavail.saturating_mul(fr),
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        (0, 0)
+    }
+}
+
+fn utc_stamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = secs / 86_400;
+    let tod = secs % 86_400;
+    let hour = tod / 3600;
+    let min = (tod % 3600) / 60;
+    let sec = tod % 60;
+    let (year, month, day) = civil_from_days(days as i64);
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{min:02}:{sec:02}")
+}
+
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let year = if month <= 2 { y + 1 } else { y };
+    (year, month, day)
+}
+
+#[cfg(test)]
+mod lora_base_tests {
+    use super::lora_compatible;
+    use serde_json::json;
+
+    #[test]
+    fn xl_loras_stay_inside_the_xl_family() {
+        assert!(lora_compatible("ace-step-xl-turbo", "ace-step-xl-sft"));
+        assert!(lora_compatible(
+            "ace-step-xl-sft:xl-sft",
+            "ace-step-xl-turbo"
+        ));
+        assert!(lora_compatible("ace-step-turbo", "ace-step-turbo"));
+    }
+
+    #[test]
+    fn two_b_lora_stays_off_xl() {
+        assert!(!lora_compatible("ace-step-xl-turbo", "ace-step-turbo"));
+        assert!(!lora_compatible("ace-step-xl-sft", "ace-step-turbo"));
+        assert!(!lora_compatible("ace-step-xl-base", ""));
+    }
+
+    #[test]
+    fn lightning_version_overrides_the_card_steps() {
+        let entry = json!({
+            "runtime": { "overrides": { "compose_overrides": { "steps": 4, "guidance": 1 } } },
+            "distribution": {
+                "versions": {
+                    "v8-bf16": { "compose_overrides": { "steps": 8 } }
+                }
+            }
+        });
+        let version = entry.pointer("/distribution/versions/v8-bf16");
+        let overrides = super::registry_compose_overrides(&entry, version).unwrap();
+        assert_eq!(overrides["steps"], 8);
+        assert_eq!(overrides["guidance"], 1);
+        let card = super::registry_compose_overrides(&entry, None).unwrap();
+        assert_eq!(card["steps"], 4);
+    }
+}
+
+#[cfg(test)]
+mod asset_path_tests {
+    use super::resolve_asset_fs_path;
+    use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn relative_basename_resolves_under_outputs_assets() {
+        let root = std::env::temp_dir().join(format!("danmo-asset-path-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let outputs = root.join("outputs");
+        let assets = outputs.join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        let file = assets.join("ast_demo.png");
+        fs::write(&file, b"png").unwrap();
+
+        let resolved = resolve_asset_fs_path(&outputs, &root, "ast_demo.png");
+        assert_eq!(resolved, file);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn absolute_path_is_kept() {
+        let absolute = PathBuf::from("/tmp/danmo-absolute-asset.bin");
+        let resolved = resolve_asset_fs_path(
+            PathBuf::from("/unused/outputs").as_path(),
+            PathBuf::from("/unused/workspace").as_path(),
+            absolute.to_str().unwrap(),
+        );
+        assert_eq!(resolved, absolute);
+    }
+}
+
+#[cfg(test)]
+mod task_trace_graph_tests {
+    use super::{graph_from_spans, TaskRow};
+    use serde_json::json;
+
+    fn span_row(name: &str, start: i64, duration_ms: f64, status: &str) -> danmo_otel::TraceSpan {
+        danmo_otel::TraceSpan {
+            span_id: format!("span-{name}"),
+            trace_id: "trace".into(),
+            parent_span_id: Some("0000000000000000".into()),
+            task_id: "tsk_graph".into(),
+            name: name.into(),
+            start_unix_nanos: start,
+            end_unix_nanos: start + (duration_ms * 1_000_000.0) as i64,
+            start_ms: start as f64 / 1_000_000.0,
+            duration_ms,
+            status: status.into(),
+            status_message: None,
+            attributes: json!({ "task.id": "tsk_graph" }),
+            events: json!([]),
+        }
+    }
+
+    fn task_row_with_status(status: &str) -> TaskRow {
+        TaskRow {
+            id: "tsk_graph".into(),
+            kind: "image.generation".into(),
+            model_id: "z-image-turbo".into(),
+            status: status.into(),
+            priority: 100,
+            progress: 0.5,
+            params: "{}".into(),
+            result: None,
+            error_message: None,
+            created_at: "2026-01-01 00:00:00".into(),
+            started_at: None,
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn graph_uses_measured_phase_durations_when_spans_exist() {
+        let spans = vec![
+            span_row("engine.execute", 0, 1000.0, "ok"),
+            span_row("phase.load", 10_000_000, 400.0, "ok"),
+            span_row("phase.infer", 500_000_000, 500.0, "ok"),
+        ];
+        let graph = graph_from_spans(&task_row_with_status("completed"), &spans, None);
+        assert_eq!(graph["source"], "otel");
+        assert_eq!(graph["duration_ms"], 1000.0);
+        let nodes = graph["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2, "{nodes:?}");
+        let load = nodes.iter().find(|node| node["id"] == "load").unwrap();
+        assert_eq!(load["duration_ms"], 400.0);
+        assert_eq!(load["status"], "ok");
+        assert!(nodes.iter().all(|node| node["id"] != "encode"), "{nodes:?}");
+        // No phase opened: nothing is marked running for a finished task.
+        assert!(graph["active_node"].is_null(), "{graph}");
+    }
+
+    #[test]
+    fn graph_marks_the_last_phase_running_while_task_runs() {
+        let spans = vec![
+            span_row("engine.execute", 0, 10.0, "unset"),
+            span_row("phase.load", 10_000_000, 5.0, "ok"),
+            span_row("phase.infer", 20_000_000, 30.0, "unset"),
+        ];
+        let graph = graph_from_spans(&task_row_with_status("running"), &spans, None);
+        assert_eq!(graph["active_node"], "infer", "{graph}");
+        let nodes = graph["nodes"].as_array().unwrap();
+        let infer = nodes.iter().find(|node| node["id"] == "infer").unwrap();
+        assert_eq!(infer["status"], "running");
+    }
+
+    #[test]
+    fn failed_phase_is_reported_as_failed() {
+        let spans = vec![
+            span_row("engine.execute", 0, 10.0, "error"),
+            span_row("phase.decode", 10_000_000, 8.0, "error"),
+        ];
+        let graph = graph_from_spans(&task_row_with_status("failed"), &spans, None);
+        let nodes = graph["nodes"].as_array().unwrap();
+        let decode = nodes.iter().find(|node| node["id"] == "decode").unwrap();
+        assert_eq!(decode["status"], "failed");
+        assert!(graph["active_node"].is_null());
+    }
+
+    #[test]
+    fn empty_spans_yield_empty_otel_graph_without_heuristic() {
+        let graph = graph_from_spans(&task_row_with_status("running"), &[], None);
+        assert_eq!(graph["source"], "otel");
+        assert_eq!(graph["nodes"].as_array().unwrap().len(), 0);
+        assert!(graph["step_progress"].is_null());
+    }
+
+    #[test]
+    fn live_tip_wins_over_span_progress_events() {
+        let mut spans = vec![span_row("engine.execute", 0, 10.0, "unset")];
+        spans[0].events = json!([{
+            "name": "progress",
+            "time_unix_nanos": 5,
+            "attributes": {
+                "phase": "denoise",
+                "progress.step": 2,
+                "progress.total": 6
+            }
+        }]);
+        let tip = danmo_schedule::ProgressTip {
+            phase: "denoise".into(),
+            step: 5,
+            total: 6,
+        };
+        let graph = graph_from_spans(&task_row_with_status("running"), &spans, Some(tip));
+        assert_eq!(graph["step_progress"]["step"], 5);
+        assert_eq!(graph["step_progress"]["total"], 6);
+    }
+}
+
+#[cfg(test)]
+mod derived_install_tests {
+    use super::install_spec;
+    use serde_json::{json, Value};
+
+    fn registry() -> Value {
+        json!({
+            "models": {
+                "z-image-turbo": {
+                    "catalog": { "source": "modelscope" },
+                    "distribution": {
+                        "versions": {
+                            "fp16": {
+                                "kind": "dense",
+                                "repo_id": "Tongyi-MAI/Z-Image-Turbo",
+                                "local_path": "models/Image/z-image-turbo-fp16"
+                            },
+                            "q4-mixed": {
+                                "kind": "derived",
+                                "source_type": "derived",
+                                "base": "fp16",
+                                "recipe": "z-image-q4-mixed-v1",
+                                "local_path": "models/Image/z-image-turbo-fp16-q4-mixed"
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn derived_version_inlines_its_dense_base() {
+        let root = registry();
+        let spec = install_spec(&root, "z-image-turbo", "q4-mixed", Some("modelscope")).unwrap();
+        assert_eq!(spec["kind"], "derived");
+        assert_eq!(spec["recipe"], "z-image-q4-mixed-v1");
+        assert_eq!(spec["base"]["kind"], "dense");
+        assert_eq!(
+            spec["base"]["repo_id"], "Tongyi-MAI/Z-Image-Turbo",
+            "the worker needs the dense download without the registry"
+        );
+        assert_eq!(
+            spec["base"]["local_path"],
+            "models/Image/z-image-turbo-fp16"
+        );
+        // The catalog-level source is filled into both records.
+        assert_eq!(spec["source"], "modelscope");
+        assert_eq!(spec["base"]["source"], "modelscope");
+    }
+
+    #[test]
+    fn dense_version_passes_through_unchanged() {
+        let root = registry();
+        let spec = install_spec(&root, "z-image-turbo", "fp16", Some("modelscope")).unwrap();
+        assert_eq!(spec["kind"], "dense");
+        assert!(spec.get("base").is_none());
+        assert_eq!(spec["source"], "modelscope");
+    }
+
+    #[test]
+    fn missing_base_fails_loud() {
+        let mut root = registry();
+        root["models"]["z-image-turbo"]["distribution"]["versions"]["q4-mixed"]["base"] =
+            json!("nope");
+        let error = install_spec(&root, "z-image-turbo", "q4-mixed", None).unwrap_err();
+        assert!(error.contains("missing base nope"), "{error}");
+    }
+
+    #[test]
+    fn nested_derivation_is_rejected() {
+        let mut root = registry();
+        root["models"]["z-image-turbo"]["distribution"]["versions"]["q4-mixed"]["base"] =
+            json!("q4-mixed");
+        let error = install_spec(&root, "z-image-turbo", "q4-mixed", None).unwrap_err();
+        assert!(error.contains("itself derived"), "{error}");
+    }
+
+    #[test]
+    fn base_without_a_download_fails_loud() {
+        let mut root = registry();
+        root["models"]["z-image-turbo"]["distribution"]["versions"]["fp16"]
+            .as_object_mut()
+            .unwrap()
+            .remove("repo_id");
+        let error = install_spec(&root, "z-image-turbo", "q4-mixed", None).unwrap_err();
+        assert!(error.contains("has no published download"), "{error}");
+    }
+
+    #[test]
+    fn derived_version_needs_no_repo_id_of_its_own() {
+        let root = registry();
+        // The registry's `q4-mixed` has no repo_id: it must not need one.
+        assert!(
+            root["models"]["z-image-turbo"]["distribution"]["versions"]["q4-mixed"]
+                .get("repo_id")
+                .is_none()
+        );
+        assert!(install_spec(&root, "z-image-turbo", "q4-mixed", None).is_ok());
+    }
+
+    #[test]
+    fn unknown_version_fails_loud() {
+        let root = registry();
+        let error = install_spec(&root, "z-image-turbo", "q8", None).unwrap_err();
+        assert!(error.contains("has no q8 package"), "{error}");
+    }
+}

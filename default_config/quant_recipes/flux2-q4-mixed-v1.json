@@ -1,0 +1,37 @@
+{
+  "id": "flux2-q4-mixed-v1",
+  "version": 1,
+  "family": "flux2",
+  "components": [
+    "transformer",
+    "text_encoder"
+  ],
+  "keep_dense": [
+    "*embed*",
+    "*embedder*",
+    "*embed_tokens*",
+    "*norm*",
+    "*ada_ln*",
+    "*modulation*",
+    "*adaln*",
+    "*final_layer*",
+    "*img_in*",
+    "*txt_in*",
+    "*time_in*",
+    "*pos_embed*",
+    "*patch_embed*",
+    "*proj_in*",
+    "*proj_out*",
+    "*time_embed*",
+    "*t_embed*",
+    "*cap_embed*",
+    "*guidance*",
+    "*rope*",
+    "*bias"
+  ],
+  "min_elements": 262144,
+  "quantize": {
+    "bits": 4,
+    "group_size": 32
+  }
+}

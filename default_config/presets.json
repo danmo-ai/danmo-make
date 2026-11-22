@@ -649,6 +649,62 @@
     "media_scope": "video",
     "trigger_words": ""
   },
+  "中文流行歌曲": {
+    "positive": "modern Mandarin pop song, memorable melodic hook, warm lead vocal, polished live band production",
+    "applies_to": ["create"],
+    "name": { "zh": "中文流行", "en": "Mandarin Pop" },
+    "media_scope": "audio",
+    "model_matches": { "family": "ace_step" },
+    "trigger_words": ""
+  },
+  "氛围电子音乐": {
+    "positive": "atmospheric electronic music, evolving analog pads, deep restrained bass, spacious reverb, gradual rhythmic development",
+    "applies_to": ["create"],
+    "name": { "zh": "氛围电子", "en": "Atmospheric Electronic" },
+    "media_scope": "audio",
+    "model_matches": { "family": "ace_step" },
+    "trigger_words": ""
+  },
+  "纯器乐钢琴": {
+    "positive": "intimate solo felt piano, expressive dynamics, natural pedal resonance, quiet room, no vocals",
+    "applies_to": ["create"],
+    "name": { "zh": "纯器乐钢琴", "en": "Solo Piano" },
+    "media_scope": "audio",
+    "model_matches": { "family": "ace_step" },
+    "trigger_words": ""
+  },
+  "选区自然重写": {
+    "positive": "regenerate only the selected region with a natural musical transition, matching tempo, harmony, timbre, and surrounding dynamics",
+    "applies_to": ["repaint"],
+    "name": { "zh": "自然重绘", "en": "Seamless Repaint" },
+    "media_scope": "audio",
+    "model_matches": { "family": "ace_step" },
+    "trigger_words": ""
+  },
+  "添加鼓组": {
+    "positive": "add a tight acoustic drums performance that locks to the existing groove, with natural dynamics and balanced transients",
+    "applies_to": ["lego"],
+    "name": { "zh": "添加鼓组", "en": "Add Drums" },
+    "media_scope": "audio",
+    "model_matches": { "family": "ace_step" },
+    "trigger_words": ""
+  },
+  "提取干净人声": {
+    "positive": "isolate the lead vocals clearly while preserving natural phrasing and timbre",
+    "applies_to": ["extract"],
+    "name": { "zh": "提取人声", "en": "Extract Vocals" },
+    "media_scope": "audio",
+    "model_matches": { "family": "ace_step" },
+    "trigger_words": ""
+  },
+  "补全乐队配器": {
+    "positive": "complete the partial arrangement with coherent bass and drums, matching the source harmony, groove, and production style",
+    "applies_to": ["complete"],
+    "name": { "zh": "补全乐队", "en": "Complete Band" },
+    "media_scope": "audio",
+    "model_matches": { "family": "ace_step" },
+    "trigger_words": ""
+  },
   "爵士钢琴翻唱": {
     "positive": "smooth jazz piano arrangement, soft brush drums, walking bass, intimate club atmosphere",
     "applies_to": [

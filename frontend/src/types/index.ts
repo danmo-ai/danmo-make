@@ -66,6 +66,48 @@ export interface QueueState {
   queued: Task[];
 }
 
+/** One exported OTel span as `GET /api/tasks/:id/trace` returns it. */
+export interface TraceSpan {
+  span_id: string;
+  trace_id: string;
+  parent_span_id: string | null;
+  task_id: string;
+  name: string;
+  start_unix_nanos: number;
+  end_unix_nanos: number;
+  start_ms: number;
+  duration_ms: number;
+  status: string;
+  status_message: string | null;
+  attributes: Record<string, unknown>;
+  events: TraceSpanEvent[];
+}
+
+export interface TraceSpanEvent {
+  name: string;
+  time_unix_nanos: number;
+  attributes: Record<string, unknown>;
+}
+
+/** Latest denoise (or other) step tip from live SSE or span `progress` events. */
+export interface TraceStepProgress {
+  phase: string;
+  step: number;
+  total: number;
+}
+
+export interface TaskTrace {
+  task_id: string;
+  status: string;
+  trace_id: string | null;
+  spans: TraceSpan[];
+  /** Why `spans` is empty (queued task, tracing disabled, no spans). */
+  reason: string | null;
+  db: string;
+  step_progress?: TraceStepProgress | null;
+  progress?: number;
+}
+
 export interface ModelConfig {
   name: string | { zh?: string; en?: string };
   description?: string | { zh?: string; en?: string };
@@ -117,6 +159,7 @@ export type PageKey =
   | 'avatar_create'
   | 'audio_create'
   | 'lora_train'
+  | 'task_queue'
   | 'models'
   | 'prompts'
   | 'assistant'
@@ -230,10 +273,12 @@ export interface CanvasComposerSnapshot {
   start_image_path?: string;
   tail_image_path?: string;
   source_video_path?: string;
-  /** Extra reference images: video Bernini R2V / RV2V, or image EditPlus (FireRed / Qwen Edit 2511). */
+  /** Extra reference images (image EditPlus / multi-ref edit paths). */
   reference_image_paths?: string[];
   /** Audio: cover source asset path. */
   cover_source_path?: string;
+  /** Audio: complete composer state as JSON. */
+  audio_params?: string;
   /** Image extend drawer: JSON array of direction strings. */
   extend_directions?: string;
   /** Image extend drawer: pixel padding per side. */
@@ -255,6 +300,11 @@ export interface CanvasComposerSnapshot {
 
 export interface CanvasSessionState {
   items: Record<string, CanvasItemState>;
+  /**
+   * Shelf (架上): asset paths (`asset:…`) that belong to this session but are not
+   * freeform board nodes. Orphans / library membership live here.
+   */
+  shelf?: string[];
   viewport: CanvasViewportState;
   staging: CanvasStagingState;
   active_asset_path: string;
@@ -269,6 +319,8 @@ export interface CanvasSessionSummary {
   media: string;
   title: string;
   item_count: number;
+  /** First N asset ids from session items (list summaries only). */
+  preview_asset_ids?: string[];
   created_at: string;
   updated_at: string;
 }

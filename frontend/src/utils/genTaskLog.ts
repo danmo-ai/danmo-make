@@ -111,7 +111,7 @@ export function parseInferParams(message: string): Record<string, string> | null
 
 const INFERENCE_PLAN_RE = /^\[inference\]\s*(.+)$/;
 
-/** Parse ``[inference] family=flux1 steps=28 teacache=quality …`` task log lines. */
+/** Parse ``[inference] family=z_image steps=28 teacache=quality …`` task log lines. */
 export function parseInferencePlanLog(message: string): Record<string, string> | null {
   const m = String(message || '').trim().match(INFERENCE_PLAN_RE);
   if (!m) return null;

@@ -2,31 +2,78 @@
 
 Language: **English** | [中文](README_zh.md)
 
-Local **image / video / audio** studio on **MLX** (Apple Silicon Metal; Linux **mlx[cuda]**). Split stack: FastAPI + Vue 3 SPA + CLI + SQLite, with bilingual UI and **fail-loud** errors (no silent downgrades). **Windows is temporarily unsupported.**
+Local **image / video / audio** studio — **Rust + MLX** engine, **Vue 3** UI, **one-click** model registry. Not a node editor: open the app, pick a card, create. Production weights are **safetensors** at checkpoint dtype. The registry publishes one dense download per base model (`fp16` / `bf16` / `fp32`) plus a `q4-mixed` tier built on this machine by the shared quantizer. Missing capabilities **fail loud**.
 
-Product name: **Danmo Make**. Runtime / CLI / sidecar ids stay `danqing-*` / `DanQing*Engine` for upgrade compatibility ([AGENTS.md](AGENTS.md) → Naming boundary).
+![Danmo Make — image composer, gallery, infinite canvas, video, models, audio](docs/media/readme/danmo-make-studio-carousel.gif)
+
+Studio screenshots (live UI, 2026-11-19) — composer · gallery · canvas · video · registry · audio
+
+|                                                                            |                                                                   |
+| :------------------------------------------------------------------------: | :---------------------------------------------------------------: |
+| ![Image create + composer](docs/media/readme/readme-01-image-composer.png) | ![Model registry](docs/media/readme/readme-05-model-registry.png) |
+| ![Video gallery (LTX 2.5)](docs/media/readme/readme-04-video-gallery.png)  |                                                                   |
+
+Product name: **Danmo Make**. Runtime ids stay `danqing-`*; CLIs are* `danmo-` ([AGENTS.md](AGENTS.md) → Naming boundary).
+
+---
+
+## Why Rust MLX (vs Python MLX & ComfyUI)
+
+**Rust MLX** stack with a **native Rust** engine (`danqing-api` / `danmo-`* CLI → `danmo-engine` → `danmo-mlx`).  less runtime overhead on Apple Silicon and Linux CUDA.
+
+### Measured vs Python MLX
+
+Apple Silicon Metal unless noted.
+
+|                                            | **Danmo Make（Rust MLX）**                                                                                           | **Python MLX**                                                                                                              |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| **Install / runtime**                      | Single native binary (`danqing-api` **~22 MB** release build); **no** `pip`, **no** `runtime-venv` on first launch | macOS DMG **~318 MB** ([release asset](https://github.com/danmo-ai/danmo-make/releases)); dev `.venv` commonly **~1.2 GB**; |
+| **GPU memory (steady active, same model)** | Z-Image Turbo `mlx-q4` **768×1280**: **5.5 GB**                                                                    | **7.0 GB** (**~79%**)                                                                                                       |
+|                                            | Z-Image `mlx-q8`: **10.0 GB**                                                                                      | **12.4 GB** (**~88%**)                                                                                                      |
+| **Warm latency (p50, observational)**      | Flux2 Klein 4B `mlx-q4` create **1.54s**                                                                           | **2.24s** (**~69%** )                                                                                                       |
+|                                            | LTX 2.5 `mlx-q4` create **15.4s**                                                                                  | **17.7s** (**~87%**)                                                                                                        |
+| **Process model**                          | One long-lived **MLX executor** thread; compiled VAE decode, resident caches where parity allows                   | Python interpreter + per-request context; extra host churn                                                                  |
+| **Training**                               | Rust MLX LoRA trainer                                                                                              |                                                                                                                             |
+
+### Studio product vs ComfyUI
+
+ComfyUI excels at **arbitrary node graphs** and the **custom-node ecosystem**. Danmo Make targets **daily production**: same queue, gallery, canvas, and API for image, video, and audio — without wiring checkpoints by hand.
+
+| | **Danmo Make (Rust MLX)** | **ComfyUI** |
+|---|---|---|
+| **Who it is for** | Creators who want a **finished studio** (desktop + SPA) | Tinkerers building **bespoke workflows** |
+| **UX** | Composer, bilingual registry, global queue, SSE task logs | Node canvas; quality depends on workflow JSON |
+| **Model setup** | Registry cards → download/install → create | Manual folders + often custom nodes per model family |
+| **Multimodal** | Image / video / audio / LoRA tabs in **one** app | Possible, but you assemble and maintain graphs |
+| **Assets** | SQLite gallery, infinite canvas, lineage edges | Typically separate folders / no built-in lineage |
+| **Apple Silicon** | **Native MLX Metal** in-process | Usually **PyTorch** (MPS/CUDA) or remote GPU |
+| **API** | Contract HTTP + `danmo-`* CLI sharing the engine | REST optional; not the default mental model |
+| **Flexibility** | Curated registry actions (`create`, `rewrite`, …); fail loud if unsupported | **Widest** third-party node surface |
+
+**When to pick ComfyUI:** you need a specific community workflow or experimental nodes Danmo has not registered. **When to pick Danmo Make:** you want MLX-native speed, lower runtime footprint, and a product UI that stays in sync with closed-out families (Z-Image, Flux2 Klein, ACE-Step, LTX 2.5 — see [migration matrix](docs/rust_mlx_migration_matrix.json)).
 
 | | |
 |---|---|
 | **Contributors / coding agents** | [AGENTS.md](AGENTS.md) |
 | **Desktop (Tauri 2)** | [desktop/README.md](desktop/README.md) |
 | **Engine architecture** | [docs/engine_architecture.md](docs/engine_architecture.md) |
-| **Image benchmarks** | [tests/benchmark/README.md](tests/benchmark/README.md) |
+| **Migration status (per model)** | [docs/rust_mlx_migration_matrix.json](docs/rust_mlx_migration_matrix.json) · [todo](docs/rust_mlx_migration_todo.md) |
 | **Releases** | [GitHub Releases](https://github.com/danmo-ai/danmo-make/releases) |
 
 ---
 
 ## Features
 
-- **MLX runtime** — single `MLXContext` stack: Metal on Apple Silicon, **mlx[cuda]** on Linux NVIDIA (per-model `backends: ["mlx"]` in the registry).
-- **Plugin models** — New families = registry JSON + `model_configs` + `families/<family>/` + `_transformer_registry`; pipelines stay family-agnostic.
-- **Contract API + CLI** — Routes/CLI only through contracts + `IImageEngine` / `IVideoEngine` / `IAudioEngine`.
+- **MLX runtime** — one long-lived executor thread owns generation; `Array`/`Device`/`Stream` are thread-affine. Metal and CUDA are separate build artifacts (`mlx-metal`, `mlx-cuda`); family math never branches on the chip.
+- **Safetensors weights** — dense tensors keep checkpoint dtype; affine int4/int8 stay packed in `LinearWeight`. LoRA is a shared residual (`y = Wx + scale·BAx`) for dense and packed linears.
+- **Families** — Z-Image (+ ControlNet union) and Flux2 Klein image create/rewrite are closed out on Metal; ACE-Step audio create/cover/repaint/lego/extract/complete runs on MLX; LTX 2.5 two-stage audio-video runs real tasks. Per-model/version/action status: [migration matrix](docs/rust_mlx_migration_matrix.json). Anything unbuilt stays visible and fails before it runs.
+- **Contract API** — Vue talks to `danqing-api` (`POST /api/images/generations` and the sibling routes).
+- **CLI** — `danmo-generate` / `danmo-edit` / `danmo-audio-generate` / `danmo-audio-edit` / `danmo-video-generate` / `danmo-video-edit` run generation without the HTTP server, sharing the same registry resolution and engine path.
+- **LoRA training (in progress)** — Rust MLX trainer with named presets (`turbo-sft` / `turbo-diff` / `base-face`), dataset wizard, and one-command register; currently a probe loop pending the full acceptance gate. There is no Python trainer.
 - **Global queue** — One serial worker for image / video / audio; SSE progress, priority, persistent logs.
 - **Studio UI** — Vue 3 + Vite + TypeScript + `@danqing/dq-ui`; Create / Gallery / Models / Settings; bilingual registry names.
 - **Infinite canvas** — Grid and canvas share one asset library; sessions, lineage edges, staging, composer bindings.
-- **Audio** — ACE-Step music generation (`danqing-audio`, MLX) via `MusicPipeline`.
-- **MCP for agents** — Streamable HTTP at `/mcp/` (tools: `list_models`, `generate_*`, `edit_*`, …). Pair with **Danmo Work** builtin `danmo-make` expert (bound-only).
-- **Desktop apps** — macOS MLX `.dmg`; Linux mlx[cuda] desktop / **server** tar.gz. Windows packs are temporarily unsupported.
+- **Desktop apps** — macOS `.dmg`; Linux desktop / server tar.gz.
 
 ---
 
@@ -34,13 +81,11 @@ Product name: **Danmo Make**. Runtime / CLI / sidecar ids stay `danqing-*` / `Da
 
 | Platform | Notes |
 |----------|--------|
-| **macOS (Apple Silicon)** | Primary; MLX via Metal — `pip install -r requirements-macos.txt` |
-| **Linux + NVIDIA** | MLX via **mlx[cuda]** — `pip install -r requirements-linux.txt` |
-| **Windows** | Temporarily unsupported |
-| **Python** | 3.11+ (repo `.venv/` for web/dev) |
+| **macOS (Apple Silicon)** | MLX Metal (`mlx-metal`) |
+| **Linux** | MLX CUDA (`mlx-cuda`; CUDA toolkit only needed to compile) |
+| **Rust** | stable toolchain (`rustup`) |
 | **RAM** | 32 GB+ recommended for large models |
 | **Node.js** | Frontend + desktop packaging |
-| **ffmpeg / ffprobe** | Recommended for video thumbnails / duration |
 
 Missing backends or unsupported actions **fail loudly** — no silent CLI/model fallback.
 
@@ -63,24 +108,20 @@ More detail: [desktop/README.md](desktop/README.md) → quarantine tip.
 
 ### Linux (x86_64 + NVIDIA) — thin server `.tar.gz`
 
-CI ships **`danmo-make-linux-mlx-x86_64-<version>.tar.gz`** (headless API + built UI). Needs an NVIDIA driver; first start downloads **mlx[cuda]** into `~/.danmo-make/runtime-venv` (console progress). No CPU fallback.
+CI ships `danmo-make-linux-mlx-cuda-x86_64-<version>.tar.gz` (headless `danqing-api` + built UI, `mlx-cuda`). `./run.sh` starts that binary.
 
 ```bash
-tar -xzf danmo-make-linux-mlx-x86_64-*.tar.gz
-cd danmo-make-linux-mlx-x86_64-*
+tar -xzf danmo-make-linux-mlx-cuda-x86_64-*.tar.gz
+cd danmo-make-linux-mlx-cuda-x86_64-*
 
 # optional:
-# export DANQING_USER_DATA_DIR=$HOME/.danmo-make
-# export DANQING_PIP_MIRROR=tuna    # official | tuna | aliyun
 # export DANQING_HTTP_HOST=0.0.0.0
 # export DANQING_HTTP_PORT=7800
 
 ./run.sh
 ```
 
-- UI / API: **http://127.0.0.1:7800** · docs **/docs** · MCP **/mcp/**
-- Repair: `./run.sh --repair-runtime` · reinstall: `./run.sh --reinstall-runtime` · status: `./run.sh --status-runtime`
-- Bundle also includes `README.txt` and `danqing-runtime-setup`
+- UI / API: **http://127.0.0.1:7800** · docs **/docs**
 
 Linux **desktop** (AppImage / `.deb`) is packable locally (`make pack-linux-desktop`) but **not** attached by current CI.
 
@@ -90,30 +131,41 @@ Linux **desktop** (AppImage / `.deb`) is packable locally (`make pack-linux-desk
 
 For contributors / local development. End users: use **Install from release** above.
 
-### Install (web / CLI)
+### Install (web)
 
 ```bash
-git clone https://github.com/danmo-ai/danmo-make.git
+git clone --recurse-submodules https://github.com/danmo-ai/danmo-make.git
 cd danmo-make
-
-python3.11 -m venv .venv
-source .venv/bin/activate
-# macOS Apple Silicon:
-pip install -r requirements-macos.txt
-# Linux (NVIDIA / mlx[cuda]):
-# pip install -r requirements-linux.txt
+# Rust stable: https://rustup.rs/
+# Node.js for the Vue app
 ```
 
 ### Run (web)
 
 ```bash
-make dev      # uvicorn --reload (:7800) + Vite HMR (:5800)
+make dev      # danqing-api (:7800) + Vite HMR (:5800)
 # make start / make stop
 ```
 
 - UI: **http://localhost:5800** (proxies `/api` → :7800)
-- API / Swagger: **http://localhost:7800/docs**
-- MCP: **http://127.0.0.1:7800/mcp/** (trailing slash)
+- API: **http://127.0.0.1:7800/api/system/health**
+
+The API build that serves macOS is `--features metal,mlx-metal`; Linux CUDA is `--features mlx-cuda`.
+
+### Run (CLI)
+
+The `danmo-*` tools create without the HTTP server. Sources are file paths; `--lora` accepts a file path, a user LoRA id from `{workspace}/config/user_loras.json`, or a registry card, with optional `:weight`.
+
+```bash
+cargo run --manifest-path native/Cargo.toml -p danmo-cli --features mlx-metal --bin danmo-generate -- \
+  --model z-image-turbo --prompt "a red apple" --output out.png
+
+cargo run --manifest-path native/Cargo.toml -p danmo-cli --features mlx-metal --bin danmo-edit -- \
+  --model flux2-klein-4b --operation rewrite --source-image in.png \
+  --prompt "make the apple green" --output out.png
+```
+
+Every binary supports `--help`.
 
 ### Dev ports (Danmo line)
 
@@ -128,24 +180,12 @@ Override: `DQ_BACKEND_PORT`, `DQ_FRONTEND_PORT`.
 ### Pack desktop / server (from source)
 
 ```bash
-make pack-macos-desktop    # .app / .dmg (MLX Metal sidecar)
-make pack-linux-desktop    # AppImage / .deb (mlx[cuda]; local)
-make pack-linux-server     # Linux MLX thin server tar.gz
+make pack-macos-desktop    # .app / .dmg
+make pack-linux-desktop    # AppImage / .deb (local)
+make pack-linux-server     # headless danqing-api + UI
 ```
 
-Windows is temporarily unsupported. Details: [desktop/README.md](desktop/README.md).
-
-### CLI
-
-```bash
-bin/danqing-generate --model z-image-turbo --prompt "a cat on a windowsill"
-bin/danqing-edit --model <id> --image input.png --prompt "add a hat" --operation rewrite
-bin/danqing-video-generate --model <id> --prompt "ocean waves at sunset"
-bin/danqing-audio-generate --model ace-step-xl-sft --prompt "lofi beat" --duration 10 --output /tmp/t.wav
-bin/danqing-mcp   # stdio MCP host; discovers port via env / ~/.danmo-make/api.port / 7800
-```
-
-CLI ↔ REST: [AGENTS.md](AGENTS.md#cli-vs-rest-api).
+Windows desktop pack is not wired. Details: [desktop/README.md](desktop/README.md).
 
 ---
 
@@ -153,9 +193,9 @@ CLI ↔ REST: [AGENTS.md](AGENTS.md#cli-vs-rest-api).
 
 | Path | Role |
 |------|------|
-| `~/.danmo-make/` | Control plane: workspace pointer, app config, logs, `api.port`, optional Linux `runtime-venv` |
-| `{workspace}/config/` | Runtime `models_registry.json`, presets (seeded from `default_config/`) |
-| `{workspace}/models/` | Weights / LoRAs |
+| `~/.danmo-make/` | Control plane: workspace pointer, app config, logs, `api.port` |
+| `{workspace}/config/` | Runtime `models_registry.json`, user LoRAs (seeded from `default_config/`) |
+| `{workspace}/models/` | Weights / LoRAs (safetensors bundles) |
 | `{workspace}/outputs/` | Generations |
 | `{workspace}/db/studio.db` | Tasks + assets (SQLite WAL) |
 
@@ -167,19 +207,7 @@ Override control plane: `DANQING_USER_DATA_DIR`.
 
 ## Agent / MCP
 
-With the API up:
-
-| | |
-|---|---|
-| Endpoint | `http://127.0.0.1:7800/mcp/` (streamable HTTP; `/mcp` is normalized to `/mcp/`) |
-| Stdio | `bin/danqing-mcp` |
-| Auth | Loopback free; remote needs `Authorization: Bearer <key>` — **separate** HTTP vs MCP keys (**Settings → Integrations**) |
-
-`list_models` filters by API **action** (`generate` / `edit` / `upscale`; aliases `create`→`generate`). Cards expose `actions` and `type`; LoRA adapters are omitted. Use `action=generate` before `generate_image` / `generate_video`.
-
-Danmo Work: enable builtin connector **danmo-make** + expert (bound-only, not ambient).
-
-Env overrides: `DANQING_HTTP_API_KEY`, `DANQING_MCP_API_KEY`, `DANQING_MCP_BASE_URL`.
+The streamable HTTP route `/mcp/` and `bin/danqing-mcp` are not in this build. Settings can still store a separate MCP key. Agents talk to the HTTP API. Loopback skips auth; a remote client needs `Authorization: Bearer` with the HTTP key from **Settings → Integrations** (`DANQING_HTTP_API_KEY`).
 
 ---
 
@@ -197,7 +225,7 @@ Tabs only list models that declare the required registry action (seeded from `de
 | Outpaint | `extend` | `POST /api/images/edits` |
 | Upscale | `upscale` | `POST /api/images/upscales` |
 
-API / MCP surface maps `create`→`generate`, rewrite/retouch/extend→`edit`.
+Structural guide (ControlNet union) is wired for Z-Image; a guide on a family without the capability fails loud.
 
 ### Video
 
@@ -206,22 +234,18 @@ API / MCP surface maps `create`→`generate`, rewrite/retouch/extend→`edit`.
 | Text-to-video | `create` | `POST /api/videos/generations` |
 | Image-to-video | `animate` | `POST /api/videos/edits` |
 
-**MiniMax H3 (`minimax-h3-fl2va`)** — joint audio+video FL2VA on MLX (Metal / mlx[cuda], **mlx >= 0.32.3**, **mlx-vlm >= 0.7.6**, **transformers >= 5.19**). Correctness aligned with [PipeNetwork/minimax-h3-mlx](https://github.com/PipeNetwork/minimax-h3-mlx) (scheduler `t=1−σ`, aspect-normalized RoPE, keyframe posterior sample). Generation is **compute-bound**; mlx-q4/q8 mainly reduces footprint. `balanced` / `quality` / `oracle` run the full Euler trajectory. `draft` only enables Turbo LoRA (6–8 steps recommended). Non-turbo clips are usually run at 8–16 steps; the registry default stays 30 so the sampling integral does not change silently. Denoiser reuse, fewer DiT layers, and a smaller internal canvas are lossy and are not turned on by presets. Tests: `make test-h3-parity`; smoke benchmark (installed bundle): `make bench-h3-smoke`.
+LTX 2.5 runs real two-stage audio-video tasks; Wan / MiniMax / LongCat Avatar are still migrating — unbuilt actions fail loud.
 
 ### Audio
 
 | Action | API |
 |--------|-----|
 | Text-to-music (`create`) | `POST /api/audios/generations` |
-| Cover | `POST /api/audios/edits` |
+| Cover / repaint / lego / extract / complete | `POST /api/audios/edits` |
 
 ### Infinite canvas (short)
 
 Create → **Canvas** view: import (`I`), generate into staging (`S` snap), lineage edges (`E` / `Y` / `G`). Sessions via `/api/canvas/sessions`. See [AGENTS.md](AGENTS.md) for the full shortcut table.
-
-### ControlNet (FLUX.1)
-
-Structural guide on text-to-image for `flux1*` (Canny / Depth / Redux); Fill model for retouch/extend. MLX stack only. Details in [AGENTS.md](AGENTS.md) → Gotchas.
 
 ---
 
@@ -229,21 +253,11 @@ Structural guide on text-to-image for `flux1*` (Canny / Depth / Redux); Fill mod
 
 ```
 danmo-make/
-├── backend/
-│   ├── api/routes/       # REST
-│   ├── mcp/              # MCP tools + model cards
-│   ├── cli/              # bin/danqing-*
-│   ├── core/             # contracts, interfaces, i18n
-│   ├── engine/           # pipelines, families, runtime, common
-│   ├── persistence/      # SQLite stores
-│   ├── scheduler/        # TaskScheduler
-│   └── main.py
+├── native/               # Rust workspace: danqing-api, engine, danmo-cli, danmo-mlx bindings
 ├── frontend/             # Vue 3 SPA
 ├── desktop/              # Tauri 2 shell
-├── bin/                  # CLI + danqing-mcp
 ├── default_config/       # factory registry / presets / locales
-├── scripts/              # pack, gates, release
-├── tests/benchmark/
+├── scripts/              # pack and dev
 ├── docs/
 └── out/                  # build artifacts (gitignored)
 ```
@@ -253,40 +267,37 @@ danmo-make/
 ## Architecture
 
 ```
-REST / MCP / CLI
-        ↓
-TaskScheduler  (single global queue)
-        ↓
-DanQingImageEngine / DanQingVideoEngine / DanQingAudioEngine
-        ↓
-Pipelines + FamilyPlugin + RuntimeContext (MLX)
-        ↓
-V3TaskStore + SQLiteAssetStore
+Vue / danmo-* CLI
+  ↓ HTTP or direct host
+danqing-api adapters / danmo-cli host
+  ↓ Engine ports (ResolvePort / ArtifactSink / RunObserver)
+Engine → Session → shared DiT / Facade pipeline
+  ↓ one factory in families/mod.rs
+Family session
+  ↓ common components → runtime (MLX executor)
+danmo-mlx → danmo-mlx-sys → mlx-c → MLX C++ → Metal or CUDA
 ```
 
-Add a model: registry → `model_configs` → `families/<family>/` → `weights.py` → `_transformer_registry`. Checklist: [AGENTS.md](AGENTS.md#new-model-checklist).
+One process owns one long-lived MLX executor thread; weights, compiled closures, and the model cache live on it. Standard DiT phases are resolve → load → encode → schedule → infer → decode → persist. `pipeline`, `session`, `common`, `runtime`, and `weights` are family-neutral and guard-tested; families never import each other. A new family is a registry entry, `families/<id>/`, one factory row, and matrix rows — nothing else. Principles: [docs/engine_architecture.md](docs/engine_architecture.md).
 
 ---
 
 ## Release artifacts (CI)
 
-Tag `v*` → [`.github/workflows/release.yml`](.github/workflows/release.yml). **Install steps:** [Install from release](#install-from-release-recommended).
+Tag `v*` → [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
-| Platform | CI artifact |
-|----------|-------------|
-| macOS Apple Silicon | MLX `.dmg` (Metal) |
-| Linux x86_64 | **`danmo-make-linux-mlx-x86_64-*.tar.gz`** (thin server; mlx[cuda] on first `./run.sh`) |
-| Windows | Temporarily unsupported |
-
-Local pack (not all attached by CI):
+| Platform            | CI artifact                                      |
+| ------------------- | ------------------------------------------------ |
+| macOS Apple Silicon | `.dmg`                                           |
+| Linux x86_64        | `danmo-make-linux-mlx-cuda-*.tar.gz`             |
+| Windows             | `make pack-windows-sidecar` (not attached by CI) |
 
 ```bash
-make pack-macos-desktop
-make pack-linux-desktop    # AppImage / .deb — local only for now
-make pack-linux-server
+make pack-macos-desktop      # mlx-metal
+make pack-linux-desktop    # mlx-cuda (local)
+make pack-linux-server     # mlx-cuda headless tar.gz
+make pack-mlx-sidecar      # release danqing-api sidecar (mlx-metal / mlx-cuda)
 ```
-
-Single MLX stack (Metal or mlx[cuda]) — no separate torch CUDA engine.
 
 ---
 
@@ -294,17 +305,16 @@ Single MLX stack (Metal or mlx[cuda]) — no separate torch CUDA engine.
 
 **App settings** — under the control plane / workspace (`~/.danmo-make/…` or `{workspace}/config/.app_config.json`): language, theme, default model, memory limit, queue policy, integration API keys.
 
-**Registry** — `{workspace}/config/models_registry.json` (`schema_version: 3`). Sync factory → workspace: `make sync-models-registry`.
+**Registry** — `default_config/models_registry.json` (`schema_version: 3`). A version is `kind: dense` (`fp16` / `bf16` / `fp32`, the only download) or `kind: derived` (`q4-mixed`, built locally from the dense base by `default_config/quant_recipes/<id>.json`). No pre-quantized package is downloaded, and a registry label is not evidence of tensor dtype (production loads checkpoint dtype).
 
 **Useful env**:
 
 ```bash
-HF_ENDPOINT=https://hf-mirror.com
-MLX_METAL_MEMORY_LIMIT=120
-DANQING_USER_DATA_DIR=~/.danmo-make
-# Prefer Settings → Integrations over plaintext keys:
-# DANQING_HTTP_API_KEY=...
-# DANQING_MCP_API_KEY=...
+DANQING_HTTP_HOST=127.0.0.1
+DANQING_HTTP_PORT=7800
+DANQING_DB=db/studio.db
+DANQING_REGISTRY=default_config/models_registry.json
+DANQING_WORKSPACE=/path/to/workspace
 ```
 
 ---
@@ -313,13 +323,12 @@ DANQING_USER_DATA_DIR=~/.danmo-make
 
 | Command | Purpose |
 |---------|---------|
-| `make dev` / `stop` | API + Vite |
+| `make dev` / `stop` | `danqing-api` + Vite |
 | `make dev-desktop` | Tauri + Vite (`SKIP_BACKEND=1` if API already up) |
 | `make frontend-build` | → `out/frontend/dist/` |
-| `make verify-engine-stack` | Governance + engine unit tests |
-| `make check-consistency` | Registry / routes / i18n / frontend gates |
-| `make bench-eval-smoke` | Image eval smoke |
-| `make clean` | Remove `out/` |
+| `make test` | `cargo test` for the workspace |
+| `cargo test --manifest-path native/Cargo.toml -p danmo-engine --features mlx-metal --lib` | Engine tests (Metal) |
+| `make clean` | `cargo clean` and remove `out/` |
 
 ---
 
@@ -333,7 +342,7 @@ DANQING_USER_DATA_DIR=~/.danmo-make
 | Tasks | `GET/PATCH/DELETE /api/tasks/{id}`, SSE `…/stream`, `…/diagnose` |
 | Assets / canvas | `/api/assets`, `/api/canvas/sessions` |
 | Models | `/api/models`, `/api/registry` |
-| MCP | `/mcp/` |
+| Training | `/api/loras/training/*`, `/api/datasets/*` |
 | System | `/api/system/health`, `/api/settings/*` |
 
 Interactive docs: **http://localhost:7800/docs**

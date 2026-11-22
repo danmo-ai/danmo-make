@@ -1,0 +1,26 @@
+[package]
+name = "danmo-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+cuda = ["danmo-ggml-sys/cuda"]
+vulkan = ["danmo-ggml-sys/vulkan"]
+metal = ["danmo-ggml-sys/metal"]
+mlx = ["dep:danmo-mlx", "dep:tokenizers"]
+mlx-metal = ["mlx", "danmo-mlx/metal"]
+mlx-cuda = ["mlx", "danmo-mlx/cuda"]
+
+[dependencies]
+danmo-ggml-sys = { path = "../danmo-ggml-sys" }
+danmo-mlx = { path = "../danmo-mlx", optional = true }
+danmo-contracts = { path = "../danmo-contracts" }
+regex = "1.13"
+unicode-normalization = "0.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokenizers = { version = "0.22.2", default-features = false, features = ["onig"], optional = true }

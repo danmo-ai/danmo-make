@@ -1,20 +1,10 @@
 <template>
-  <div class="copilot-page">
-    <!-- Left: task navigation (models / settings pattern) -->
-    <div class="copilot-page__sidebar">
-      <DqSurfaceCard class="copilot-page__sidebar-card studio-surface-card">
-        <div class="card-title">
-          <DqIcon><Bot /></DqIcon>
-          {{ $t('assistant.title') }}
-        </div>
-        <p class="copilot-page__sidebar-intro">{{ $t('assistant.pageSubtitle') }}</p>
-
+  <WorkspaceLayout class="copilot-page">
+    <template #sidebar>
+      <WorkspaceSidebar :title="$t('assistant.title')" :description="$t('assistant.pageSubtitle')">
+        <template #icon><DqIcon><Bot /></DqIcon></template>
         <nav class="copilot-page__nav" role="navigation" :aria-label="$t('assistant.title')">
-          <div
-            v-for="section in navSections"
-            :key="section.id"
-            class="copilot-page__nav-section"
-          >
+          <div v-for="section in navSections" :key="section.id" class="copilot-page__nav-section">
             <div class="copilot-page__nav-label">{{ section.label }}</div>
             <button
               v-for="item in section.items"
@@ -22,6 +12,7 @@
               type="button"
               class="dq-download-menu__item"
               :class="{ 'is-active': activeNavKey === item.key }"
+              :aria-current="activeNavKey === item.key ? 'page' : undefined"
               @click="selectNav(item)"
             >
               <DqIcon class="dq-download-menu__icon"><component :is="item.icon" /></DqIcon>
@@ -29,58 +20,45 @@
             </button>
           </div>
         </nav>
+        <template #footer>
+          <div v-if="modelInfo" class="copilot-page__status-panel">
+            <DqTag size="sm" :type="llmReady ? 'success' : 'warning'" effect="plain">
+              {{ llmReady ? $t('assistant.llmReady') : $t('assistant.modelNotReady') }}
+            </DqTag>
+            <span v-if="llmReady" class="copilot-page__status-model">{{ chatModelLabel }}</span>
+            <DqButton v-else type="text" size="sm" @click="goToModels">{{ $t('assistant.installLlm') }}</DqButton>
+            <p v-if="needsVision && visionReady" class="copilot-page__status-vision">
+              {{ $t('assistant.visionUsed') }} · {{ visionModelLabel }}
+            </p>
+            <p v-else-if="needsVision && !visionReady" class="copilot-page__status-vision copilot-page__status-vision--warn">
+              {{ visionWarnText }}
+              <DqButton type="text" size="sm" @click="goToModels">{{ $t('assistant.installVisionModel') }}</DqButton>
+            </p>
+          </div>
+        </template>
+      </WorkspaceSidebar>
+    </template>
 
-        <div v-if="modelInfo" class="copilot-page__status-panel">
-          <DqTag size="sm" :type="llmReady ? 'success' : 'warning'" effect="plain">
-            {{ llmReady ? $t('assistant.llmReady') : $t('assistant.modelNotReady') }}
-          </DqTag>
-          <span v-if="llmReady" class="copilot-page__status-model">{{ chatModelLabel }}</span>
-          <DqButton v-else type="text" size="sm" @click="goToModels">
-            {{ $t('assistant.installLlm') }}
-          </DqButton>
-          <p v-if="needsVision && visionReady" class="copilot-page__status-vision">
-            {{ $t('assistant.visionUsed') }} · {{ visionModelLabel }}
-          </p>
-          <p v-else-if="needsVision && !visionReady" class="copilot-page__status-vision copilot-page__status-vision--warn">
-            {{ visionWarnText }}
-            <DqButton type="text" size="sm" @click="goToModels">{{ $t('assistant.installVisionModel') }}</DqButton>
-          </p>
-        </div>
-      </DqSurfaceCard>
-    </div>
-
-    <!-- Right: workspace + task cards -->
     <div class="copilot-page__main">
-      <header class="page-header copilot-page__page-header">
-        <div class="copilot-page__header-main">
-          <h2 class="page-title copilot-page__page-title">
-            <DqIcon v-if="currentTaskIcon" class="copilot-page__title-icon" aria-hidden="true">
-              <component :is="currentTaskIcon" />
-            </DqIcon>
-            {{ currentTaskTitle }}
-          </h2>
-          <p class="copilot-page__page-desc">{{ currentTaskDesc }}</p>
-        </div>
-        <div class="copilot-page__header-actions">
-          <DqButton size="sm" type="default" @click="openComposer">
-            {{ openComposerLabel }}
-          </DqButton>
-          <DqCountBadge
-            :value="pendingCount"
-            :hidden="!cardsPaneCollapsed || pendingCount === 0"
-          >
+      <WorkspaceHeader :title="currentTaskTitle" :description="currentTaskDesc">
+        <template v-if="currentTaskIcon" #icon>
+          <DqIcon><component :is="currentTaskIcon" /></DqIcon>
+        </template>
+        <template #actions>
+          <DqButton size="sm" @click="openComposer">{{ openComposerLabel }}</DqButton>
+          <DqCountBadge :value="pendingCount" :hidden="!cardsPaneCollapsed || pendingCount === 0">
             <DqIconButton
               type="text"
               size="sm"
               :label="cardsPaneCollapsed ? $t('assistant.expandCards') : $t('assistant.collapseCards')"
-              class="copilot-page__collapse-btn"
+              :aria-expanded="!cardsPaneCollapsed"
               @click="toggleCardsPane"
             >
               <DqIcon :size="16"><Menu /></DqIcon>
             </DqIconButton>
           </DqCountBadge>
-        </div>
-      </header>
+        </template>
+      </WorkspaceHeader>
 
       <div v-if="!llmReady" class="copilot-page__banner">
         <p>{{ $t('assistant.llmRequiredHint') }}</p>
@@ -235,6 +213,7 @@
             tabindex="0"
             @click="focusTaskCard(task)"
             @keydown.enter.prevent="focusTaskCard(task)"
+            @keydown.space.prevent="focusTaskCard(task)"
           >
             <div class="copilot-page__card-main">
               <span class="copilot-page__card-title">{{ task.title }}</span>
@@ -299,7 +278,7 @@
       </aside>
       </div>
     </div>
-  </div>
+  </WorkspaceLayout>
 </template>
 
 <script setup lang="ts">
@@ -319,6 +298,9 @@ import {
   VideoPlay,
 } from '@danqing/dq-shell';
 import AssetPicker from '@/components/asset/AssetPicker.vue';
+import WorkspaceLayout from '@/components/workspace/WorkspaceLayout.vue';
+import WorkspaceHeader from '@/components/workspace/WorkspaceHeader.vue';
+import WorkspaceSidebar from '@/components/workspace/WorkspaceSidebar.vue';
 import {
   parseAssetId,
   useCreativeAssistant,

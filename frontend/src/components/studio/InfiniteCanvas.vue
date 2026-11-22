@@ -1,5 +1,6 @@
 <template>
   <div class="infinite-canvas">
+    <div class="infinite-canvas__stage">
     <CanvasViewport
       ref="viewportComp"
       :items="store.items"
@@ -24,7 +25,6 @@
       @item-drag-move="onItemDragMove"
       @item-drag-end="onItemDragEnd"
       @toolbar-action="onToolbarAction"
-      @open-import-picker="showGalleryPicker = true"
       @scale-item="onScaleItem"
       @staging-move="onStagingMove"
       @staging-resize="onStagingResize"
@@ -50,9 +50,9 @@
       :graph-open="showGraph"
       :edges-open="showEdges"
       :guides-open="showRegionGuides"
+      :hide-composer="hideComposerEntry"
       @update:zoom="(z: number, cx?: number, cy?: number) => store.setZoom(z, cx, cy)"
       @fit-all="fitAll"
-      @reset-view="store.resetView()"
       @toggle-layers="showLayers = true"
       @toggle-graph="showGraph = !showGraph"
       @toggle-edges="showEdges = !showEdges"
@@ -128,6 +128,20 @@
       @import-works="showGalleryPicker = true"
       @snap-staging="onSnapStagingToPrimary"
     />
+    </div>
+
+    <CanvasShelfDock
+      v-if="showShelfDock"
+      :media="media"
+      :paths="dockAssetPaths"
+      :board-paths="dockBoardPaths"
+      :gallery-items="items"
+      :selected-path="shelfSelectedPath"
+      @select="onShelfSelect"
+      @preview="onShelfPreview"
+      @promote="onShelfPromote"
+      @focus="onFocusNode"
+    />
   </div>
 </template>
 
@@ -138,6 +152,7 @@ import { toast } from '@/utils/feedback';
 import { $tt } from '@/utils/i18n';
 import CanvasViewport from '@/components/studio/CanvasViewport.vue';
 import CanvasToolbar from '@/components/studio/CanvasToolbar.vue';
+import CanvasShelfDock from '@/components/studio/CanvasShelfDock.vue';
 import CanvasLayerPanel from '@/components/studio/CanvasLayerPanel.vue';
 import CanvasLineageSidebar from '@/components/studio/CanvasLineageSidebar.vue';
 import CanvasSessionGraph from '@/components/studio/CanvasSessionGraph.vue';
@@ -169,7 +184,11 @@ import { DQ_STORAGE, getItem, setItem } from '@/utils/storage';
 
 const router = useRouter();
 import { api } from '@/utils/api';
-import { previewUrlForGalleryItem, isImageGalleryItem } from '@/utils/canvasAssets';
+import {
+  galleryStubForAssetPath,
+  previewUrlForGalleryItem,
+  isImageGalleryItem,
+} from '@/utils/canvasAssets';
 import { rectIntersects, itemBounds, type AlignMode, type DistributeMode } from '@/utils/canvasGeometry';
 import type {
   GalleryItem,
@@ -184,6 +203,10 @@ const props = defineProps<{
   editingPath?: string;
   maskPreview?: import('@/types').CanvasMaskPreviewState | null;
   extendPreview?: import('@/types').CanvasExtendPreviewState | null;
+  /** Hide the in-canvas composer button (page header provides the entry). */
+  hideComposerEntry?: boolean;
+  /** When false, skip orphan prune (paginated gallery is incomplete). */
+  galleryComplete?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -198,12 +221,13 @@ const emit = defineEmits<{
   (e: 'download', item: GalleryItem): void;
   (e: 'delete', item: GalleryItem): void;
   (e: 'toggle-grid-view'): void;
+  (e: 'shelf-preview', item: GalleryItem): void;
   (e: 'node-selected', item: GalleryItem | null): void;
   (e: 'session-ready', payload: { sessionId: string }): void;
   (e: 'open-preview', item: GalleryItem): void;
   (e: 'composer-restore', snapshot: import('@/types').CanvasComposerSnapshot): void;
   (e: 'overlay-cleared', kind: CanvasOverlayKind): void;
-  (e: 'open-composer'): void;
+  (e: 'open-composer', payload?: { intent?: 'generate' | 'edit' | 'cover' | 'repaint' | 'lego' | 'extract' | 'complete' }): void;
   (e: 'request-close-composer'): void;
 }>();
 
@@ -391,7 +415,9 @@ async function onToolbarRename() {
 }
 
 function onRemoveItem(path: string) {
-  store.removeItem(path);
+  // Leave session membership on the bottom dock; only leave the freeform board.
+  store.demoteToShelf([path]);
+  toast.success($tt('canvas.shelfDemoted'));
   selectedPaths.value = selectedPaths.value.filter((p) => p !== path);
   if (selectedPaths.value.length === 0) onClearSelection();
   else emitPrimarySelection();
@@ -400,10 +426,55 @@ function onRemoveItem(path: string) {
 
 function onRemoveSelected() {
   const paths = [...selectedPaths.value];
-  store.removeItems(paths);
+  store.demoteToShelf(paths);
+  toast.success($tt('canvas.shelfDemoted'));
   selectedPaths.value = [];
   onClearSelection();
   store.refreshEdges(props.items);
+}
+
+const showShelfDock = computed(() => true);
+const dockBoardPaths = computed(() =>
+  Object.keys(store.items).filter((p) => p.startsWith('asset:')),
+);
+const dockAssetPaths = computed(() => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of dockBoardPaths.value) {
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  for (const p of unref(store.shelf) || []) {
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+});
+const shelfSelectedPath = ref('');
+
+function onShelfSelect(item: GalleryItem) {
+  shelfSelectedPath.value = item.path;
+  if (store.hasItem(item.path)) {
+    selectedPaths.value = [item.path];
+    emitPrimarySelection();
+  }
+}
+
+function onShelfPreview(item: GalleryItem) {
+  shelfSelectedPath.value = item.path;
+  emit('shelf-preview', item);
+  emit('open-preview', item);
+}
+
+function onShelfPromote(path: string) {
+  const added = store.promoteToBoard([path], props.items, { placement: 'staging' });
+  if (added.length) {
+    selectedPaths.value = [added[added.length - 1]];
+    emitPrimarySelection();
+    toast.success($tt('canvas.shelfPromoted'));
+  }
 }
 
 function onSnapStagingToPrimary() {
@@ -450,12 +521,13 @@ function toggleRegionGuides() {
 
 function onGalleryPickerImport(paths: string[]) {
   if (paths.length === 0) return;
-  const added = addPathsToCanvas(paths, { placement: 'center', focusLast: false, fit: true });
+  // Imports land on the shelf; board stays freeform (上画布 promotes).
+  const added = store.addToShelf(paths);
   if (added.length === 0) {
     toast.info($tt('canvas.importNothingNew'));
     return;
   }
-  toast.success($tt('canvas.batchAdded', { n: added.length }));
+  toast.success($tt('canvas.shelfImported', { n: added.length }));
 }
 
 function onOpenPreview(path: string) {
@@ -504,7 +576,13 @@ function onTrainLoraSelected() {
 
 function onToolbarAction(action: string) {
   const path = primaryPath.value;
-  const item = galleryItem(path);
+  if (!path) return;
+  // Remove must work even when the paged gallery catalog lags (board stub only).
+  if (action === 'remove') {
+    onRemoveItem(path);
+    return;
+  }
+  const item = galleryItem(path) ?? galleryStubForAssetPath(path);
   if (!item) return;
 
   switch (action) {
@@ -543,7 +621,7 @@ function onToolbarAction(action: string) {
         const payload = bindPayload(path, item);
         emit('use-as-start-frame', { ...payload, quiet: true });
         toast.success($tt('canvas.animateBranchHint'));
-        emit('open-composer');
+        emit('open-composer', { intent: 'generate' });
       }
       break;
     case 'use-start-frame': {
@@ -562,7 +640,7 @@ function onToolbarAction(action: string) {
         const payload = bindPayload(path, item);
         emit('use-as-animate-source', { ...payload, quiet: true });
         toast.success($tt('canvas.animateVideoBranchHint'));
-        emit('open-composer');
+        emit('open-composer', { intent: 'edit' });
       }
       break;
     case 'use-animate-source': {
@@ -576,18 +654,28 @@ function onToolbarAction(action: string) {
       break;
     }
     case 'quick-cover':
-      store.placeStagingBeside(path, props.items);
       {
         const payload = bindPayload(path, item);
+        // Cover binds into the composer only — no canvas overlay / staging (unlike image refs).
         emit('use-as-cover-source', { ...payload, quiet: true });
-        store.setOverlay('cover_source', path, item);
-        toast.success($tt('canvas.coverBranchHint'));
+        emit('open-composer', { intent: 'cover' });
       }
       break;
+    case 'quick-audio-edit':
+    case 'audio-cover':
+    case 'audio-repaint':
+    case 'audio-lego':
+    case 'audio-extract':
+    case 'audio-complete': {
+      const payload = bindPayload(path, item);
+      emit('use-as-cover-source', { ...payload, quiet: true });
+      const intent = action === 'quick-audio-edit' ? 'cover' : action.slice('audio-'.length);
+      emit('open-composer', { intent: intent as 'cover' | 'repaint' | 'lego' | 'extract' | 'complete' });
+      break;
+    }
     case 'use-cover-source': {
       const payload = bindPayload(path, item);
       emit('use-as-cover-source', payload);
-      store.setOverlay('cover_source', path, item);
       break;
     }
     case 'snap-staging':
@@ -598,7 +686,7 @@ function onToolbarAction(action: string) {
     case 'branch':
       store.placeStagingBeside(path, props.items);
       toast.info($tt('canvas.branchHint'));
-      emit('open-composer');
+      emit('open-composer', { intent: 'generate' });
       break;
     case 'remove':
       onRemoveItem(path);
@@ -933,10 +1021,17 @@ function pathsHaveLineageOnCanvas(paths: string[]): boolean {
 
 function addPathsToCanvas(
   paths: string[],
-  opts?: { fit?: boolean; placement?: 'staging' | 'center'; focusLast?: boolean }
+  opts?: {
+    fit?: boolean;
+    placement?: 'staging' | 'center';
+    focusLast?: boolean;
+    /** Prefer caller-fresh gallery rows; props.items can lag one tick after loadGallery. */
+    galleryItems?: GalleryItem[];
+  }
 ): string[] {
   const placement = opts?.placement ?? (store.staging.visible ? 'staging' : 'center');
-  const added = store.addPathsFromGallery(paths, props.items, {
+  const catalog = opts?.galleryItems?.length ? opts.galleryItems : props.items;
+  const added = store.addPathsFromGallery(paths, catalog, {
     placement,
     selectLast: true,
   });
@@ -944,11 +1039,18 @@ function addPathsToCanvas(
     const last = added[added.length - 1];
     nextTick(() => {
       onSelectItem({ path: last, shiftKey: false });
-      if (pathsHaveLineageOnCanvas(added)) {
+      const lineageItems = opts?.galleryItems?.length ? opts.galleryItems : props.items;
+      const hasLineage = added.some((path) => {
+        const gi = lineageItems.find((i) => i.path === path);
+        const parentId = String(gi?.metadata?.parent_asset_id || '').trim();
+        return !!parentId && store.hasItem(`asset:${parentId}`);
+      });
+      if (hasLineage) {
         if (!showEdges.value) {
           showEdges.value = true;
           toast.info($tt('canvas.lineageEdgesShown'));
         }
+        store.refreshEdges(lineageItems);
       }
       if (placement === 'staging' && added.length > 0) {
         toast.success($tt('canvas.resultInStaging', { n: added.length }));
@@ -974,10 +1076,11 @@ function syncControlOverlay(path: string | null) {
 }
 
 function pruneOrphans() {
-  // Gallery may still be loading; avoid wiping persisted canvas nodes on empty gallery.
+  // Paginated gallery is not an authoritative membership set — never prune against a page.
+  if (!props.galleryComplete) return;
   if (props.items.length === 0) return;
   const valid = new Set(props.items.map((i) => i.path));
-  store.pruneOrphans(valid);
+  store.pruneOrphans(valid, { authoritative: true });
   store.refreshEdges(props.items);
 }
 
@@ -1197,6 +1300,16 @@ defineExpose({
 .infinite-canvas {
   position: absolute;
   inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.infinite-canvas__stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: hidden;
 }
 

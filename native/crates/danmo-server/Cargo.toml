@@ -1,0 +1,46 @@
+[package]
+name = "danmo-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "danqing-api"
+path = "src/main.rs"
+
+[features]
+default = []
+cuda = ["danmo-engine/cuda"]
+vulkan = ["danmo-engine/vulkan"]
+metal = ["danmo-engine/metal"]
+mlx = ["danmo-engine/mlx", "danmo-resolve/mlx", "dep:danmo-mlx"]
+mlx-metal = ["mlx", "metal", "danmo-engine/mlx-metal", "danmo-mlx/metal"]
+mlx-cuda = ["mlx", "cuda", "danmo-engine/mlx-cuda", "danmo-mlx/cuda"]
+
+[dependencies]
+danmo-engine = { path = "../danmo-engine" }
+danmo-contracts = { path = "../danmo-contracts" }
+danmo-catalog = { path = "../danmo-catalog" }
+danmo-resolve = { path = "../danmo-resolve" }
+danmo-schedule = { path = "../danmo-schedule" }
+danmo-store = { path = "../danmo-store" }
+danmo-otel = { path = "../danmo-otel" }
+danmo-mlx = { path = "../danmo-mlx", optional = true }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+base64 = "0.22"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Host memory probe (`hw.memsize`) for Quick Setup recommendations.
+libc = "0.2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

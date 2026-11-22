@@ -13,7 +13,7 @@
       ref="audioEl"
       class="dq-music-player__audio"
       :src="src"
-      preload="auto"
+      preload="metadata"
       playsinline
       @loadedmetadata="onLoadedMetadata"
       @durationchange="onDurationChange"
@@ -67,6 +67,40 @@
         </p>
       </div>
 
+      <AudioWaveform
+        v-if="showWaveform"
+        :src="src"
+        :current-time="currentTime"
+        :duration="duration"
+        @seek="seek"
+      />
+
+      <div class="dq-music-player__transport dq-music-player__transport--secondary">
+        <DqIconButton type="text" size="sm" :label="$t('audio.skipBack')" @click="seekBy(-5)">
+          <DqIcon><ArrowLeft /></DqIcon>
+        </DqIconButton>
+        <DqSelect
+          v-model="playbackRate"
+          class="dq-music-player__rate"
+          size="sm"
+          variant="ghost"
+          :aria-label="$t('audio.playbackRate')"
+        >
+          <DqOption v-for="rate in [0.5, 0.75, 1, 1.25, 1.5, 2]" :key="rate" :label="`${rate}×`" :value="rate" />
+        </DqSelect>
+        <DqSlider
+          v-model="volume"
+          class="dq-music-player__volume"
+          :min="0"
+          :max="1"
+          :step="0.05"
+          :aria-label="$t('audio.volume')"
+        />
+        <DqIconButton type="text" size="sm" :label="$t('audio.skipForward')" @click="seekBy(5)">
+          <DqIcon><ArrowRight /></DqIcon>
+        </DqIconButton>
+      </div>
+
       <div class="dq-music-player__scrub dq-music-player__scrub--featured">
         <div
           class="dq-music-player__progress"
@@ -75,7 +109,9 @@
           aria-valuemin="0"
           aria-valuemax="100"
           :aria-label="$t('audio.seek')"
+          tabindex="0"
           @click="onSeek"
+          @keydown="onSeekKeydown"
         >
           <div class="dq-music-player__progress-track">
             <div class="dq-music-player__progress-buffer" :style="{ width: bufferPct + '%' }" />
@@ -166,7 +202,9 @@
           aria-valuemin="0"
           aria-valuemax="100"
           :aria-label="$t('audio.seek')"
+          tabindex="0"
           @click="onSeek"
+          @keydown="onSeekKeydown"
         >
           <div class="dq-music-player__progress-track">
             <div class="dq-music-player__progress-buffer" :style="{ width: bufferPct + '%' }" />
@@ -187,11 +225,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { Download, Headset, Pause, Play } from '@danqing/dq-shell';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { ArrowLeft, ArrowRight, Download, Headset, Pause, Play } from '@danqing/dq-shell';
 import { toast } from '@/utils/feedback';
 import { $tt } from '@/utils/i18n';
 import { useMediaTimeline } from '@/composables/useMediaTimeline';
+import AudioWaveform from '@/components/audio/AudioWaveform.vue';
+import { claimExclusiveAudioPlayback, registerAudioPlayback } from '@/utils/audioPlayback';
 
 const props = defineProps({
   src: { type: String, default: '' },
@@ -203,6 +243,9 @@ const props = defineProps({
   autoplay: { type: Boolean, default: false },
   durationSeconds: { type: Number, default: 0 },
   hue: { type: Number, default: 0 },
+  showWaveform: { type: Boolean, default: true },
+  loopStart: { type: Number, default: null },
+  loopEnd: { type: Number, default: null },
 });
 
 const emit = defineEmits(['download', 'play', 'pause', 'duration', 'error', 'timeupdate']);
@@ -215,6 +258,9 @@ const isLoading = ref(false);
 const pendingPlay = ref(false);
 const mediaReady = ref(false);
 const loadingToastShown = ref(false);
+const playbackRate = ref(1);
+const volume = ref(1);
+let unregisterPlayback = () => {};
 
 const {
   currentTime,
@@ -281,6 +327,7 @@ function onEnded() {
 }
 
 function onPlay() {
+  claimExclusiveAudioPlayback(pause);
   isPlaying.value = true;
   isLoading.value = false;
   pendingPlay.value = false;
@@ -301,6 +348,20 @@ function onSeek(ev: MouseEvent) {
   const rect = track.getBoundingClientRect();
   const ratio = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
   el.currentTime = ratio * duration.value;
+  syncFromElement();
+}
+
+function onSeekKeydown(ev: KeyboardEvent) {
+  const el = audioEl.value;
+  if (!el || !duration.value) return;
+  let next = currentTime.value;
+  if (ev.key === 'ArrowLeft' || ev.key === 'ArrowDown') next -= 5;
+  else if (ev.key === 'ArrowRight' || ev.key === 'ArrowUp') next += 5;
+  else if (ev.key === 'Home') next = 0;
+  else if (ev.key === 'End') next = duration.value;
+  else return;
+  ev.preventDefault();
+  el.currentTime = Math.min(duration.value, Math.max(0, next));
   syncFromElement();
 }
 
@@ -440,7 +501,23 @@ watch(
   () => syncFromElement(),
 );
 
-watch(currentTime, (t) => emit('timeupdate', t));
+watch(currentTime, (t) => {
+  emit('timeupdate', t);
+  if (props.loopEnd != null && props.loopStart != null && props.loopEnd > props.loopStart && t >= props.loopEnd) {
+    seek(props.loopStart);
+  }
+});
+
+watch(playbackRate, (rate) => {
+  if (audioEl.value) audioEl.value.playbackRate = rate;
+});
+watch(volume, (value) => {
+  if (audioEl.value) audioEl.value.volume = value;
+});
+
+function seekBy(offset: number) {
+  seek(currentTime.value + offset);
+}
 
 function seek(seconds: number) {
   const el = audioEl.value;
@@ -450,5 +527,42 @@ function seek(seconds: number) {
   syncFromElement();
 }
 
+onMounted(() => {
+  unregisterPlayback = registerAudioPlayback(pause);
+});
+
+onBeforeUnmount(() => {
+  unregisterPlayback();
+  audioEl.value?.pause();
+});
+
 defineExpose({ pause, load, togglePlay, playWhenReady, seek, isPlaying });
 </script>
+
+<style scoped>
+.dq-music-player__transport--secondary {
+  justify-content: center;
+  gap: 8px;
+}
+
+.dq-music-player__rate {
+  flex: 0 0 auto;
+  width: auto;
+}
+
+.dq-music-player__rate :deep(.dq-select__trigger) {
+  width: auto;
+  padding-inline: 6px;
+}
+
+.dq-music-player__rate :deep(.dq-select__value) {
+  flex: 0 0 auto;
+}
+
+.dq-music-player__volume {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 120px;
+  max-width: none;
+}
+</style>

@@ -1,0 +1,69 @@
+{
+  "date": "2026-11-19",
+  "build": "release",
+  "prompt": "a red apple on a white table",
+  "results": {
+    "flux2-klein-4b:fp16": {
+      "warm_p50_s": 1.4195561408996582,
+      "samples": [
+        1.415647029876709,
+        1.4182729721069336,
+        1.4195561408996582,
+        1.4197280406951904
+      ],
+      "asset": "ast_59d42d5cf75c4a218d2b",
+      "png": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-warm-flux2-klein-4b-fp16.png",
+      "main_cli_warm_p50_s": 3.9795258045196533,
+      "main_cli_samples": [
+        3.9276468753814697,
+        3.975451946258545,
+        3.9795258045196533,
+        3.9832260608673096
+      ],
+      "ratio_vs_main_cli": 0.35671489786231075,
+      "metal_performance_gate": "passed"
+    },
+    "flux2-klein-base-4b:fp16": {
+      "warm_p50_s": 2.480170965194702,
+      "samples": [
+        2.479024887084961,
+        2.4797840118408203,
+        2.480170965194702,
+        2.4821839332580566
+      ],
+      "asset": "ast_d1ccf73483014a72ae28",
+      "png": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-warm-flux2-klein-base-4b-fp16.png",
+      "main_cli_warm_p50_s": 5.659101963043213,
+      "main_cli_samples": [
+        5.449290037155151,
+        5.527717113494873,
+        5.659101963043213,
+        5.775453805923462
+      ],
+      "ratio_vs_main_cli": 0.43826228638244513,
+      "metal_performance_gate": "passed"
+    },
+    "1024_4b_q4": {
+      "wall_s": 14.184920072555542,
+      "asset": "ast_f70ab9ed94a14deda132",
+      "png": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-create-4b-q4-1024.png",
+      "task": "a9c9193f-6baf-4c38-ac99-7bb78bfb7709"
+    },
+    "object_remove_4b_fp16": {
+      "wall_s": 45.69611406326294,
+      "asset": "ast_fe37f2bcdba04bde8e0c",
+      "png": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-object-remove-4b-fp16.png",
+      "task": "cc8e0e5f-acc7-44f5-a9e7-e31c9d2f6e1a"
+    }
+  },
+  "regressions": {
+    "create_1024_4b_q4": "studio-workspace/out/flux2-cli/rust-release-create-4b-q4-1024.png",
+    "object_remove_4b_fp16": "studio-workspace/out/flux2-cli/rust-release-object-remove-4b-fp16-clean.png",
+    "note_object_remove_fp16": "removal succeeds (empty table) but softer/blurrier than mlx-q4; q4 remains preferred for object-remove LoRA",
+    "pixel_mse": {
+      "4b_fp16_vs_main_cli": 4.3899,
+      "base4b_fp16_vs_main_cli": 6.3562,
+      "4b_q4_vs_main_resident": 9.6659
+    }
+  }
+}

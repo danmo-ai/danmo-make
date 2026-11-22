@@ -27,8 +27,10 @@
           class="asset-picker__thumb"
           role="button"
           tabindex="0"
+          :aria-label="String(item.name || item.path)"
           @click.stop="emitPickFromRecent(item)"
           @keydown.enter.prevent="emitPickFromRecent(item)"
+          @keydown.space.prevent="emitPickFromRecent(item)"
         >
           <img
             v-if="!thumbFailed[String(item.path)]"
@@ -376,6 +378,7 @@ async function fetchLibraryPage(reset: boolean) {
 
 function openLibrary() {
   libraryOpen.value = true;
+  void fetchLibraryPage(true);
 }
 
 function onLibraryOpened() {

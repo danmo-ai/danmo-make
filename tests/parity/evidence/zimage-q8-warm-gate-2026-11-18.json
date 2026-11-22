@@ -1,0 +1,108 @@
+{
+  "date": "2026-11-18",
+  "model": "z-image-turbo",
+  "version": "mlx-q8",
+  "geometry": "768x1280",
+  "steps": 9,
+  "teacache": "default (9 compute / 0 skip)",
+  "path": "checkpoint-Native packed QMM, Rust CompiledCompute + eager gate, mflux conv kernels kept NHWC, resident VAE is shape-specialized CompiledDecoder",
+  "clocks": "encode, denoise, and VAE stop at mx.eval / Array::eval. Host readbacks are outside every phase. total is the sum of the three phase clocks.",
+  "bit_exact": "10 resident Rust passes matched the main fixture on caption, every velocity, every recurrent latent, and every RGB channel. The adjacent main rerun matches that fixture on caption, step-0 velocity, and the denoised latent.",
+  "thermal_note": "The in-test ratio against the first main window (encode 114.4%, denoise 107.1%, total 106.9%) is the cooler prefix and is not the gate. The gate reading is Rust 5 warmup + 5 measured, then main 5 warmup + 5 measured immediately on a saturated M5 Max.",
+  "adjacent_window": {
+    "rust_p50": {
+      "encode": 0.047823667,
+      "denoise": 26.32548,
+      "vae": 0.486318959,
+      "total": 26.858743292
+    },
+    "main_p50": {
+      "encode": 0.045968,
+      "denoise": 28.5243675,
+      "vae": 0.4616745,
+      "total": 29.03201
+    },
+    "rust_to_main": {
+      "encode": 1.0404,
+      "denoise": 0.9229,
+      "vae": 1.0534,
+      "total": 0.9251
+    },
+    "gate_105": {
+      "encode": "pass",
+      "denoise": "pass",
+      "vae": "miss",
+      "total": "pass"
+    }
+  },
+  "steady_active_bytes": {
+    "rust": 10989620472,
+    "main": 12364812491,
+    "ratio": 0.8888
+  },
+  "compiled_decoder_window": {
+    "rust_p50": {
+      "encode": 0.048916,
+      "denoise": 25.286278,
+      "vae": 0.382474,
+      "total": 25.715113
+    },
+    "main_p50": {
+      "encode": 0.046371,
+      "denoise": 27.602923,
+      "vae": 0.444032,
+      "total": 28.098972
+    },
+    "rust_to_main": {
+      "encode": 1.0549,
+      "denoise": 0.9161,
+      "vae": 0.8614,
+      "total": 0.9152
+    },
+    "gate_105": {
+      "encode": "miss",
+      "denoise": "pass",
+      "vae": "pass",
+      "total": "pass"
+    },
+    "steady_active_bytes": {
+      "rust": 10914480902,
+      "main": 12364812491,
+      "ratio": 0.8827
+    }
+  },
+  "resident_embedding_window": {
+    "change": "Same one-time GPU dequant of model.embed_tokens.weight as q4. Tower stays eager.",
+    "rust_p50": {
+      "encode": 0.052067,
+      "denoise": 30.045198,
+      "vae": 0.419210,
+      "total": 30.513338
+    },
+    "main_p50": {
+      "encode": 0.046621,
+      "denoise": 29.735771,
+      "vae": 0.468290,
+      "total": 30.251226
+    },
+    "rust_to_main": {
+      "encode": 1.1168,
+      "denoise": 1.0104,
+      "vae": 0.8952,
+      "total": 1.0087
+    },
+    "gate_105": {
+      "encode": "miss",
+      "denoise": "pass",
+      "vae": "pass",
+      "total": "pass"
+    },
+    "steady_active_bytes": {
+      "rust": 11278993158,
+      "main": 12364812491,
+      "ratio": 0.9122
+    },
+    "note": "Saturated adjacent window immediately after the q4 resident-embedding window. Denoise on both sides sat near 30s. Encode is still over 105%. Reports: out/parity-zimage-q8-768x1280-warm-rust-embed-hot.json and out/parity-zimage-q8-768x1280-warm-main-embed-hot.json."
+  },
+  "metal_performance": "pending"
+}

@@ -56,6 +56,13 @@
       </div>
     </div>
 
+    <div v-if="paramSchema.use_pe" class="composer-advanced-fields__row">
+      <div class="composer-advanced-fields__field">
+        <label>{{ $t('create.promptEnhance') }}</label>
+        <DqSwitch v-model="params.use_pe" />
+      </div>
+    </div>
+
     <div v-if="schedulerOptions.length" class="composer-advanced-fields__row">
       <div class="composer-advanced-fields__field composer-advanced-fields__field--full">
         <label>{{ schedulerLabel }}</label>
@@ -70,7 +77,7 @@
       </div>
     </div>
 
-    <div v-if="loraSupported && compatibleLoras?.length" class="composer-advanced-fields__row">
+    <div v-if="loraSupported" class="composer-advanced-fields__row">
       <div class="composer-advanced-fields__field composer-advanced-fields__field--full composer-advanced-fields__field--stack">
         <div class="composer-advanced-fields__inline">
           <label>{{ $t('studio.loraLabel') }}</label>
@@ -86,9 +93,11 @@
               :key="String(l.id)"
               :label="loraOptionLabel(l)"
               :value="l.id"
+              :disabled="l.ready === false"
             />
           </DqSelect>
         </div>
+        <p v-if="!installedLoraCount" class="composer-advanced-fields__hint">{{ $t('studio.loraNoneReady') }}</p>
         <div v-if="params.lora" class="composer-advanced-fields__inline">
           <label>{{ $t('create.loraScale') }}</label>
           <DqSlider v-model="params.lora_scale" :min="0" :max="2" :step="0.05" class="composer-advanced-fields__slider-grow" />
@@ -96,6 +105,9 @@
         </div>
         <p v-if="params.lora && selectedLoraHintKey" class="composer-advanced-fields__hint">
           {{ $t(selectedLoraHintKey) }}
+        </p>
+        <p v-if="params.lora && stackedAdapterNames" class="composer-advanced-fields__hint">
+          {{ $t('studio.loraStack', { names: stackedAdapterNames }) }}
         </p>
         <p
           v-if="params.lora && selectedLoraScaleRange"
@@ -141,58 +153,25 @@
           </DqSelect>
         </div>
         <p v-if="params.controlnet" class="composer-advanced-fields__hint">{{ controlNetGuideHint }}</p>
-        <p
-          v-if="params.controlnet && showCompanionLoraHint"
-          class="composer-advanced-fields__hint composer-advanced-fields__hint--sub"
-        >
-          {{ $t('studio.controlnetCompanionLoraHint') }}
-        </p>
         <div v-if="params.controlnet" class="composer-advanced-fields__inline">
-          <label>{{ controlNetStrengthLabel }}</label>
+          <label>{{ $t('create.controlNetStrengthLabel') }}</label>
           <DqSlider v-model="params.controlnet_strength" :min="0" :max="2" :step="0.05" class="composer-advanced-fields__slider-grow" />
           <span class="composer-advanced-fields__val">{{ params.controlnet_strength }}</span>
         </div>
-        <div v-if="params.controlnet" class="composer-advanced-fields__asset-row">
+        <div v-if="params.controlnet" class="composer-advanced-fields__inline">
           <label>{{ $t('canvas.controlImage') }}</label>
-          <div v-if="controlImage" class="composer-advanced-fields__thumb">
-            <img :src="controlImage.previewUrl" alt="control" />
-            <DqIconButton type="text" size="sm" :label="$t('common.delete')" @click="$emit('remove-control')">
-              <DqIcon :size="10"><Close /></DqIcon>
-            </DqIconButton>
+          <div class="composer-advanced-fields__control-asset">
+            <div v-if="controlImage" class="composer-advanced-fields__thumb">
+              <img :src="controlImage.previewUrl" alt="control" />
+              <DqIconButton type="text" size="sm" :label="$t('common.delete')" @click="$emit('remove-control')">
+                <DqIcon :size="10"><Close /></DqIcon>
+              </DqIconButton>
+            </div>
+            <DqButton v-else size="sm" type="secondary" @click="$emit('pick-control')">
+              {{ $t('canvas.pickControlImage') }}
+            </DqButton>
           </div>
-          <DqButton v-else size="sm" type="secondary" @click="$emit('pick-control')">
-            {{ $t('canvas.pickControlImage') }}
-          </DqButton>
         </div>
-        <template v-if="showZImageInpaintExtras">
-          <p class="composer-advanced-fields__hint composer-advanced-fields__hint--sub">
-            {{ $t('create.controlInpaintHint') }}
-          </p>
-          <div class="composer-advanced-fields__asset-row">
-            <label>{{ $t('create.inpaintSource') }}</label>
-            <div v-if="inpaintSourceImage" class="composer-advanced-fields__thumb">
-              <img :src="inpaintSourceImage.previewUrl" alt="inpaint source" />
-              <DqIconButton type="text" size="sm" :label="$t('common.delete')" @click="$emit('remove-inpaint-source')">
-                <DqIcon :size="10"><Close /></DqIcon>
-              </DqIconButton>
-            </div>
-            <DqButton v-else size="sm" type="secondary" @click="$emit('pick-inpaint-source')">
-              {{ $t('create.pickInpaintSource') }}
-            </DqButton>
-          </div>
-          <div class="composer-advanced-fields__asset-row">
-            <label>{{ $t('create.inpaintMask') }}</label>
-            <div v-if="inpaintMaskImage" class="composer-advanced-fields__thumb">
-              <img :src="inpaintMaskImage.previewUrl" alt="inpaint mask" />
-              <DqIconButton type="text" size="sm" :label="$t('common.delete')" @click="$emit('remove-inpaint-mask')">
-                <DqIcon :size="10"><Close /></DqIcon>
-              </DqIconButton>
-            </div>
-            <DqButton v-else size="sm" type="secondary" @click="$emit('pick-inpaint-mask')">
-              {{ $t('create.pickInpaintMask') }}
-            </DqButton>
-          </div>
-        </template>
       </div>
     </div>
 
@@ -272,17 +251,15 @@ import { Close, Refresh } from '@danqing/dq-shell';
 import {
   applyControlNetRegistryDefaults,
   controlNetDisplayName,
+  controlNetGuideType,
   controlNetReady,
-  isCannyOrDepthControlNet,
-  isReduxControlNet,
-  isZImageStructuralBaseModel,
-  isZImageUnionControlNet,
 } from '@/composables/useStructuralGuide';
 import {
   type CompatibleLoraRow,
   findCompatibleLora,
   loraHintKey,
   loraRecommendedScale,
+  stackedAdapterToken,
 } from '@/utils/loraAdapterMeta';
 import {
   COMPOSER_INFERENCE_ENUM_KEYS,
@@ -300,6 +277,7 @@ export type ComposerAdvancedParams = {
   seed: string;
   strength: number;
   negative_prompt: string;
+  use_pe?: boolean;
   scheduler?: string;
   lora?: string;
   lora_scale?: number;
@@ -321,8 +299,6 @@ const props = withDefaults(defineProps<{
   compatibleControlNets?: Record<string, unknown>[];
   controlNetRuntimeAvailable?: boolean;
   controlImage?: { previewUrl: string; path: string } | null;
-  inpaintSourceImage?: { previewUrl: string; path: string } | null;
-  inpaintMaskImage?: { previewUrl: string; path: string } | null;
   showNegativePrompt?: boolean;
   stacked?: boolean;
 }>(), {
@@ -335,10 +311,6 @@ const props = withDefaults(defineProps<{
 defineEmits<{
   (e: 'pick-control'): void;
   (e: 'remove-control'): void;
-  (e: 'pick-inpaint-source'): void;
-  (e: 'remove-inpaint-source'): void;
-  (e: 'pick-inpaint-mask'): void;
-  (e: 'remove-inpaint-mask'): void;
 }>();
 
 const { t: $t } = useI18n();
@@ -347,9 +319,7 @@ const paramSchema = computed(() =>
   normalizeParamsDef(props.currentModelConfig?.parameters as Record<string, unknown> | undefined),
 );
 
-const isImg2imgMode = computed(
-  () => props.mode === 'img2img' || props.referenceImage != null,
-);
+const isImg2imgMode = computed(() => props.mode === 'img2img');
 
 const showStrengthSlider = computed(
   () => isImg2imgMode.value && img2imgUsesStrength(props.currentModelConfig?.parameters as Record<string, unknown> | undefined),
@@ -378,6 +348,10 @@ const loraSupported = computed(() =>
   Boolean((props.currentModelConfig?.parameters as { lora_support?: boolean } | undefined)?.lora_support),
 );
 
+const installedLoraCount = computed(
+  () => ((props.compatibleLoras || []) as CompatibleLoraRow[]).filter((lora) => lora.ready !== false).length,
+);
+
 const selectedLoraRow = computed<CompatibleLoraRow | undefined>(() => {
   const id = String(props.params.lora || '');
   if (!id) return undefined;
@@ -385,6 +359,11 @@ const selectedLoraRow = computed<CompatibleLoraRow | undefined>(() => {
 });
 
 const selectedLoraHintKey = computed(() => loraHintKey(selectedLoraRow.value));
+
+const stackedAdapterNames = computed(() => {
+  const extras = selectedLoraRow.value?.extra_adapters || [];
+  return extras.map((item) => stackedAdapterToken(item)).filter(Boolean).join(', ');
+});
 
 const selectedLoraScaleRange = computed(() => loraRecommendedScale(selectedLoraRow.value));
 
@@ -400,38 +379,23 @@ const inferenceEnumKeys = computed(() =>
   COMPOSER_INFERENCE_ENUM_KEYS.filter((key) => Boolean(paramSchema.value[key])),
 );
 
-const showZImageInpaintExtras = computed(() => {
+const selectedControlNetRow = computed(() => {
   const key = String(props.params.controlnet || '');
-  return Boolean(key) && isZImageUnionControlNet(key);
-});
-
-const controlNetStrengthLabel = computed(() => {
-  if (isReduxControlNet(String(props.params.controlnet || ''))) {
-    return $t('create.reduxStrengthLabel');
-  }
-  return $t('create.controlNetStrengthLabel');
-});
-
-const showCompanionLoraHint = computed(() => {
-  const key = String(props.params.controlnet || '');
-  return isCannyOrDepthControlNet(key) && !isZImageStructuralBaseModel(String(props.model || ''));
+  if (!key) return undefined;
+  return props.compatibleControlNets?.find((n) => String(n.key) === key);
 });
 
 const controlNetGuideHint = computed(() => {
-  const key = String(props.params.controlnet || '').toLowerCase();
-  if (key.includes('z-image') && key.includes('union')) return $t('studio.controlnetZImageUnionHint');
-  if (key.includes('fill')) return $t('studio.controlnetFillHint');
-  if (key.includes('depth')) return $t('studio.controlnetDepthHint');
-  if (key.includes('redux')) return $t('studio.controlnetReduxHint');
+  const guide = controlNetGuideType(selectedControlNetRow.value);
+  if (guide === 'auto') return $t('studio.controlnetZImageUnionHint');
   return $t('studio.controlnetBundleHint');
 });
 
 function loraOptionLabel(l: Record<string, unknown>): string {
   const base = String(l.name || l.id || '');
-  if (l.source === 'user_trained') {
-    return `${base} (${$t('studio.myLoraTag')})`;
-  }
-  return base;
+  const tagged = l.source === 'user_trained' ? `${base} (${$t('studio.myLoraTag')})` : base;
+  if (l.ready === false) return `${tagged} (${$t('studio.loraNotInstalled')})`;
+  return tagged;
 }
 
 function controlNetOptionLabel(n: Record<string, unknown>): string {
@@ -492,8 +456,31 @@ watch(
   min-width: 220px;
 }
 
-.composer-advanced-fields--stacked .composer-advanced-fields__field {
+.composer-advanced-fields--stacked {
+  --composer-field-label: 8.75rem;
+  --composer-field-value: 2.5rem;
   min-width: 0;
+  max-width: 100%;
+}
+
+.composer-advanced-fields--stacked .composer-advanced-fields__row {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  min-width: 0;
+  width: 100%;
+}
+
+.composer-advanced-fields--stacked .composer-advanced-fields__field,
+.composer-advanced-fields--stacked .composer-advanced-fields__inline {
+  display: grid;
+  grid-template-columns: var(--composer-field-label) minmax(0, 1fr) var(--composer-field-value);
+  align-items: center;
+  column-gap: 10px;
+  min-width: 0;
+  width: 100%;
+}
+
+.composer-advanced-fields--stacked .composer-advanced-fields__field {
   flex: 1 1 100%;
 }
 
@@ -507,6 +494,13 @@ watch(
   gap: 8px;
 }
 
+.composer-advanced-fields--stacked .composer-advanced-fields__field--stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  grid-template-columns: none;
+}
+
 .composer-advanced-fields__field label {
   font-size: var(--dq-font-size-caption);
   font-weight: 500;
@@ -516,8 +510,12 @@ watch(
   flex-shrink: 0;
 }
 
-.composer-advanced-fields--stacked .composer-advanced-fields__field label {
+.composer-advanced-fields--stacked .composer-advanced-fields__field label,
+.composer-advanced-fields--stacked .composer-advanced-fields__inline label {
   width: auto;
+  min-width: 0;
+  white-space: normal;
+  line-height: 1.35;
 }
 
 .composer-advanced-fields__field--stack > label {
@@ -549,8 +547,32 @@ watch(
   min-width: 0;
 }
 
-.composer-advanced-fields--stacked .composer-advanced-fields__select {
+.composer-advanced-fields--stacked .composer-advanced-fields__select,
+.composer-advanced-fields--stacked .composer-advanced-fields__seed,
+.composer-advanced-fields--stacked .composer-advanced-fields__control-asset {
+  grid-column: 2 / -1;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.composer-advanced-fields__control-asset {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.composer-advanced-fields--stacked .composer-advanced-fields__field :deep(.dq-slider),
+.composer-advanced-fields--stacked .composer-advanced-fields__inline :deep(.dq-slider),
+.composer-advanced-fields--stacked .composer-advanced-fields__field :deep(.dq-select),
+.composer-advanced-fields--stacked .composer-advanced-fields__inline :deep(.dq-select) {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.composer-advanced-fields--stacked .composer-advanced-fields__hint {
+  padding-left: calc(var(--composer-field-label) + 10px);
 }
 
 .composer-advanced-fields__slider-grow {

@@ -8,10 +8,14 @@
     }"
     :style="layoutStyle"
   >
-    <!-- Filter bar -->
-    <header class="studio-filter-bar dq-glass--bar">
+    <header class="studio-filter-bar">
       <div class="studio-filter-bar__inner">
-        <slot name="filters" />
+        <div class="studio-filter-bar__heading">
+          <h1>{{ pageTitle }}</h1>
+        </div>
+        <div class="studio-filter-bar__filters">
+          <slot name="filters" />
+        </div>
       </div>
     </header>
 
@@ -49,6 +53,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { useRoute } from 'vue-router';
 import {
   COMPOSER_RESERVE_CSS_DRAWER_MODE,
   COMPOSER_SCRIM_CSS_DRAWER_MODE,
@@ -74,6 +79,10 @@ const emit = defineEmits<{
 }>();
 
 const { t: $t } = useI18n();
+const route = useRoute();
+const pageTitle = computed(() =>
+  route.name ? $t(`nav.${String(route.name)}`) : $t('gallery.title'),
+);
 
 const canvasRef = ref<HTMLElement | null>(null);
 const layoutRef = ref<HTMLElement | null>(null);
@@ -142,32 +151,45 @@ defineExpose({ scrollToTop, canvasRef, layoutRef });
   width: 100%;
   position: relative;
   overflow: hidden;
-  background-color: var(--dq-bg-page);
-  background-image:
-    radial-gradient(ellipse 120% 420px at 50% -8%, rgba(10, 132, 255, 0.07) 0%, transparent 55%),
-    var(--dq-bg-page-glow);
+  background: var(--dq-bg-page);
 }
 
 .studio-filter-bar {
   flex-shrink: 0;
   z-index: 10;
+  border-bottom: 1px solid var(--dq-border-subtle);
+  background: var(--dq-bg-base);
 }
 
 .studio-filter-bar__inner {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 12px 20px;
   width: 100%;
   min-width: 0;
-  padding: 10px 12px;
+  min-height: 64px;
+  padding: 12px 24px;
   box-sizing: border-box;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
 }
 
-.studio-filter-bar__inner::-webkit-scrollbar {
-  display: none;
+.studio-filter-bar__heading {
+  flex-shrink: 0;
+}
+
+.studio-filter-bar__heading h1 {
+  margin: 0;
+  color: var(--dq-label-primary);
+  font-size: var(--dq-font-size-title);
+  font-weight: 650;
+  letter-spacing: var(--dq-tracking-tight);
+}
+
+.studio-filter-bar__filters {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
 }
 
 .studio-canvas-area {
@@ -177,7 +199,7 @@ defineExpose({ scrollToTop, canvasRef, layoutRef });
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  padding: 16px 12px 220px;
+  padding: 20px 24px 120px;
   scroll-behavior: smooth;
 }
 
@@ -274,6 +296,31 @@ defineExpose({ scrollToTop, canvasRef, layoutRef });
 
 .studio-canvas-area::-webkit-scrollbar-thumb:hover {
   background: var(--dq-scrollbar-thumb-hover);
+}
+
+@media (max-width: 1100px) {
+  .studio-filter-bar__inner {
+    align-items: flex-start;
+  }
+
+  .studio-filter-bar__heading {
+    padding-top: 7px;
+  }
+}
+
+@media (max-width: 640px) {
+  .studio-filter-bar__inner {
+    padding: 12px 16px;
+  }
+
+  .studio-filter-bar__filters {
+    flex-basis: 100%;
+  }
+
+  .studio-canvas-area {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
 }
 
 @media (prefers-reduced-transparency: reduce) {

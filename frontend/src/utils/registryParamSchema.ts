@@ -1,6 +1,6 @@
 /**
  * models_registry.json parameters — inference and utilities aligned with
- * backend/core/registry_format.typed_parameters.
+ * registry typed_parameters (default_config/models_registry.json).
  */
 
 export type InferredParamType = 'int' | 'float' | 'enum' | 'bool' | 'object' | 'skip';
@@ -54,7 +54,6 @@ const PREFERRED_ORDER = [
   'cfg_renorm_min',
   'strength',
   'controlnet_strength',
-  'redux_strength',
 ];
 
 export function sortParamKeys(keys: string[]): string[] {
@@ -334,6 +333,22 @@ export function applyDefaults(parameters: Record<string, unknown> | undefined | 
   if (typeof target.lora_scale !== 'undefined') {
     target.lora_scale = ls && 'default' in ls ? (ls as NormalizedParamSpec).default : 0.8;
   }
+}
+
+/** Scheduler value the current model actually accepts. A leftover from the previous model is dropped. */
+export function schedulerForModel(
+  parameters: Record<string, unknown> | undefined | null,
+  current: unknown,
+): string | undefined {
+  const spec = normalizeParamsDef(parameters || {}).scheduler;
+  if (!spec) return undefined;
+  const options = Array.isArray(spec.options) ? spec.options.map((item) => String(item)) : [];
+  const value = typeof current === 'string' ? current : '';
+  if (options.includes(value)) return value;
+  if (typeof spec.default === 'string' && (options.length === 0 || options.includes(spec.default))) {
+    return spec.default;
+  }
+  return options[0];
 }
 
 export function strengthDefaultFromRegistry(

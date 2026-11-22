@@ -50,13 +50,19 @@ export function linesFromSegments(segments: unknown, duration = 0): LyricLine[] 
 
 export function parseLrc(lrc: string, duration = 0): LyricLine[] {
   const lines: LyricLine[] = [];
+  let offset = 0;
   for (const row of String(lrc || '').split(/\r?\n/)) {
+    const metadata = /^\s*\[offset:\s*([+-]?\d+(?:\.\d+)?)\s*\]\s*$/i.exec(row);
+    if (metadata) {
+      offset = Number(metadata[1]) / 1000;
+      continue;
+    }
     const stamps: number[] = [];
     let m: RegExpExecArray | null;
     LRC_TIME_RE.lastIndex = 0;
     let lastIdx = 0;
     while ((m = LRC_TIME_RE.exec(row))) {
-      stamps.push(Number(m[1]) * 60 + Number(m[2]));
+      stamps.push(Math.max(0, Number(m[1]) * 60 + Number(m[2]) + offset));
       lastIdx = LRC_TIME_RE.lastIndex;
     }
     if (!stamps.length) continue;
@@ -65,6 +71,35 @@ export function parseLrc(lrc: string, duration = 0): LyricLine[] {
     for (const start of stamps) lines.push({ start, end: start, text });
   }
   return normalize(lines, duration);
+}
+
+export function lyricsToPlainText(input: string): string {
+  return String(input || '')
+    .split(/\r?\n/)
+    .map((line) => {
+      const match = /^\s*(?:\[\d{1,3}:\d{1,2}(?:\.\d{1,3})?\]\s*)+/.exec(line);
+      return match ? line.slice(match[0].length) : line;
+    })
+    .filter((line) => !/^\s*\[(?:ti|ar|al|offset|by|re|ve):/i.test(line))
+    .join('\n')
+    .trim();
+}
+
+export function shiftLyricLines(lines: LyricLine[], offset: number, duration = 0): LyricLine[] {
+  const safeOffset = Number.isFinite(offset) ? offset : 0;
+  return normalize(
+    lines.map((line) => ({
+      ...line,
+      start: Math.max(0, line.start + safeOffset),
+      end: Math.max(0, line.end + safeOffset),
+    })),
+    duration,
+  );
+}
+
+export function updateLyricLine(lines: LyricLine[], index: number, patch: Partial<LyricLine>, duration = 0): LyricLine[] {
+  if (index < 0 || index >= lines.length) return lines;
+  return normalize(lines.map((line, at) => at === index ? { ...line, ...patch } : line), duration);
 }
 
 /** Index of the line playing at ``t`` (last line with ``start <= t``); -1 before the first. */
@@ -101,4 +136,27 @@ function lrcStamp(sec: number): string {
 
 export function linesToLrc(lines: LyricLine[]): string {
   return lines.map((l) => `${lrcStamp(l.start)}${l.text}`).join('\n') + (lines.length ? '\n' : '');
+}
+
+/**
+ * Compact lyric lines for strip / dock tiles.
+ * Prefer ``lyrics_effective``; else concatenate timed segment texts.
+ */
+export function lyricsSnippetLines(
+  source: {
+    lyrics_effective?: unknown;
+    lyrics_segments?: unknown;
+  } | null | undefined,
+  maxLines = 3,
+): string[] {
+  const eff = String(source?.lyrics_effective || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !SECTION_ONLY_RE.test(l));
+  if (eff.length) return eff.slice(0, maxLines);
+
+  const fromSegs = linesFromSegments(source?.lyrics_segments, 0)
+    .map((l) => l.text.trim())
+    .filter(Boolean);
+  return fromSegs.slice(0, maxLines);
 }

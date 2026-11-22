@@ -8,6 +8,9 @@ import {
   linesFromSegments,
   linesToLrc,
   parseLrc,
+  lyricsToPlainText,
+  shiftLyricLines,
+  updateLyricLine,
 } from './lyricsTimeline';
 
 function assert(cond: boolean, msg: string) {
@@ -47,5 +50,10 @@ assert(lineProgress(undefined, 3) === 0, 'no line');
 const out = linesToLrc([{ start: 62.25, end: 63, text: 'hey' }]);
 assert(out === '[01:02.25]hey\n', `lrc format: ${out}`);
 assert(parseLrc(out)[0].start === 62.25, 'round trip');
+const offset = parseLrc('[offset:+500]\n[00:01.00]hello', 10);
+assert(offset[0].start === 1.5, 'LRC offset in milliseconds');
+assert(lyricsToPlainText('[ti:Demo]\n[00:01.00]hello') === 'hello', 'LRC to conditioning text');
+assert(shiftLyricLines(lrc, 1, 90)[0].start === 2.5, 'shift timeline');
+assert(updateLyricLine(lrc, 0, { text: 'edited' }, 90)[0].text === 'edited', 'edit lyric body');
 
 console.log('lyricsTimeline.unit: ok');

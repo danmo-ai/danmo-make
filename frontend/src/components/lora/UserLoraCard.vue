@@ -49,7 +49,7 @@ export interface UserLoraInference {
   guidance?: number;
   lora_weight?: number;
   scheduler?: string;
-  extra_adapters?: string[];
+  extra_adapters?: Array<string | { id?: string; weight?: number }>;
 }
 
 export interface UserLoraItem {
@@ -109,7 +109,9 @@ const formattedDate = computed(() => {
 
 const schemeLabel = computed(() => {
   const scheme = String(props.lora.inference?.scheme || '').trim();
-  if (scheme === 'sft') return t('loraTrain.preset.sft');
+  if (scheme === 'sft' || scheme === 'turbo-sft') return t('loraTrain.preset.turbo-sft');
+  if (scheme === 'turbo' || scheme === 'turbo-diff') return t('loraTrain.preset.turbo-diff');
+  if (scheme === 'base' || scheme === 'base-face' || scheme === 'scheme4') return t('loraTrain.preset.base-face');
   return '';
 });
 

@@ -1,0 +1,742 @@
+//! ACE-Step 1.5 music DiT (GenerationFacade).
+//!
+//! Full text2music create (acestep.cpp `pipeline-synth`): text encode → cond
+//! (lyric ‖ timbre[0] ‖ text) → silence/codes context → DiT Euler (APG CFG) →
+//! VAE → WAV. Cover / cover-nofsq / repaint / lego / extract / complete on
+//! audio.edit. 5Hz LM: ChatML prompts + set_rows KV greedy for inspire/format;
+//! generate phase-2 constrained audio codes when metas are complete.
+
+mod apg;
+mod audio_codec;
+mod cover;
+mod create;
+mod dcw;
+mod facade;
+mod fsq_quant;
+mod lm;
+mod lm_codes;
+mod lm_expand;
+mod lm_format;
+mod lm_fsm;
+mod lm_prompt;
+mod lm_sample;
+mod lyrics;
+mod lyrics_dtw;
+mod mlx;
+mod quality;
+mod repaint;
+mod schedule;
+mod text;
+mod token_decode;
+mod vocal;
+pub(crate) mod wav;
+mod weights;
+
+use crate::runtime::{BackendKind, GgmlContext};
+use crate::weights::{GgufWeights, WeightError};
+#[allow(unused_imports)]
+pub use cover::{CoverMode, CoverRequest};
+#[allow(unused_imports)]
+pub use create::{duration_to_latent_frames, snap_latent_frames, CreateOutput, CreateRequest};
+pub use dcw::{DcwMode, DcwSettings};
+pub(crate) use facade::AceStepFamily;
+#[allow(unused_imports)]
+pub use quality::QualityAssessment;
+#[allow(unused_imports)]
+pub use schedule::{
+    sft_schedule, shift_schedule, turbo_schedule, SFT_DEFAULT_SHIFT, SFT_DEFAULT_STEPS,
+    TURBO_SHIFT, TURBO_TIMESTEPS,
+};
+use std::path::{Path, PathBuf};
+pub use weights::{
+    check_layout, config_from_weights, layout_matches, weight_layout, AceStepConfig, TIME_FREQ_DIM,
+};
+
+/// Find the DiT GGUF and confirm the XL / smoke layout.
+pub fn probe_layout(bundle: &Path) -> Result<AceStepConfig, WeightError> {
+    let path = dit_gguf(bundle)?;
+    let loaded = GgufWeights::open(&path)?;
+    let config = config_from_weights(&loaded)?;
+    check_layout(&loaded, config)?;
+    Ok(config)
+}
+
+/// Prefer [`run_cover_edit`] with an explicit [`CoverRequest`].
+pub fn run_cover(_bundle: &Path) -> Result<(), WeightError> {
+    Err(WeightError::NotBuilt(
+        "ACE-Step cover needs CoverRequest via audio.edit (task=cover, cover-nofsq, or repaint)"
+            .into(),
+    ))
+}
+
+/// Cover / cover-nofsq / repaint: encode → optional FSQ → context → DiT → VAE.
+pub fn run_cover_edit(
+    bundle: &Path,
+    request: &CoverRequest<'_>,
+    backend: BackendKind,
+) -> Result<CreateOutput, WeightError> {
+    let ctx = GgmlContext::new(backend).map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    run_cover_edit_with_context(bundle, request, &ctx, |_, _| {})
+}
+
+pub fn run_cover_edit_with_context(
+    bundle: &Path,
+    request: &CoverRequest<'_>,
+    ctx: &GgmlContext,
+    on_step: impl FnMut(u32, u32),
+) -> Result<CreateOutput, WeightError> {
+    cover::run_full_cover_with_context(bundle, request, ctx, on_step)
+}
+
+/// Alias kept for call sites that only want the no-FSQ path name.
+#[allow(dead_code)]
+pub fn run_cover_nofsq(
+    bundle: &Path,
+    request: &CoverRequest<'_>,
+    backend: BackendKind,
+) -> Result<CreateOutput, WeightError> {
+    run_cover_edit(bundle, request, backend)
+}
+
+#[cfg(test)]
+pub use lm::write_smoke_lm;
+pub use lm::AceLmConfig;
+#[cfg(test)]
+pub use lm_expand::maybe_expand_for_create;
+pub use lm_expand::{
+    maybe_expand_for_create_with_context, resolve_lm_bundle_for_create, LmExpandOutput,
+    LmExpandRequest,
+};
+pub use lm_prompt::{AcePrompt, LmMode};
+
+/// 5Hz LM request (acestep.cpp `ace_lm_generate`).
+pub struct LmRequest<'a> {
+    pub mode: LmMode,
+    pub caption: &'a str,
+    pub lyrics: &'a str,
+    pub duration: f32,
+    pub bpm: i32,
+    pub keyscale: &'a str,
+    pub timesignature: &'a str,
+    pub vocal_language: &'a str,
+    /// Max newly sampled tokens (inspire/format phase-1).
+    pub max_new_tokens: usize,
+    /// Optional tokenizer.json contents; when set, prompts are BPE-encoded.
+    pub tokenizer_json: Option<&'a str>,
+    /// Sampling temperature (`0` = greedy). Default 0.
+    pub temperature: f32,
+    /// Nucleus top-p in (0, 1]. Default 1.0.
+    pub top_p: f32,
+    /// Top-k (`0` = disabled, `1` = greedy). Default 0.
+    pub top_k: i32,
+    /// RNG seed for non-greedy sampling.
+    pub seed: u64,
+    /// Apply MetadataFSM numeric early-block during phase-1 (needs tokenizer).
+    pub use_fsm: bool,
+    /// Phase-2 CFG scale (`<= 1` disables). Default 1.0.
+    pub cfg_scale: f32,
+    /// Negative caption for uncond CFG prompt (empty → lyrics-only uncond).
+    pub negative_prompt: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct LmOutput {
+    pub mode: String,
+    pub prompt_tokens: usize,
+    pub generated_ids: Vec<i32>,
+    pub text: String,
+    pub caption: String,
+    pub lyrics: String,
+    pub bpm: Option<i32>,
+    pub duration: Option<i32>,
+    pub keyscale: String,
+    pub timesignature: String,
+    pub language: String,
+    pub audio_code_indices: Vec<i32>,
+    pub pmi: Option<quality::PmiAssessment>,
+}
+
+/// Run inspire / format (phase-1 greedy) or generate (CoT + phase-2 codes).
+pub fn run_lm(
+    bundle: &Path,
+    request: &LmRequest<'_>,
+    backend: BackendKind,
+    on_token: &mut dyn FnMut(usize, usize),
+) -> Result<LmOutput, WeightError> {
+    let ctx = GgmlContext::new(backend).map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    run_lm_with_context(bundle, request, &ctx, on_token)
+}
+
+pub fn run_lm_with_context(
+    bundle: &Path,
+    request: &LmRequest<'_>,
+    ctx: &GgmlContext,
+    on_token: &mut dyn FnMut(usize, usize),
+) -> Result<LmOutput, WeightError> {
+    let _ = ctx;
+    #[cfg(feature = "mlx")]
+    {
+        let mut progress = |step, total| on_token(step, total);
+        return mlx::run_lm_mlx(bundle, request, &mut progress);
+    }
+    #[cfg(not(feature = "mlx"))]
+    {
+        let _ = (bundle, request, on_token);
+        Err(WeightError::NotBuilt(
+            "ACE-Step 5Hz LM requires an MLX build.".into(),
+        ))
+    }
+}
+
+/// Back-compat alias: inspire expand on an LM bundle.
+pub fn run_lm_expand(bundle: &Path) -> Result<LmOutput, WeightError> {
+    run_lm(
+        bundle,
+        &LmRequest {
+            mode: LmMode::Inspire,
+            caption: "test",
+            lyrics: "",
+            duration: 0.0,
+            bpm: 0,
+            keyscale: "",
+            timesignature: "",
+            vocal_language: "",
+            max_new_tokens: 8,
+            tokenizer_json: None,
+            temperature: 0.0,
+            top_p: 1.0,
+            top_k: 0,
+            seed: 0,
+            use_fsm: false,
+            cfg_scale: 1.0,
+            negative_prompt: "",
+        },
+        BackendKind::Cpu,
+        &mut |_, _| (),
+    )
+}
+
+/// Product create. A full `bundle.manifest.json` (DiT + text + VAE + tokenizer)
+/// runs the acestep.cpp text2music path. A DiT-only smoke card proves Euler
+/// then refuses until companions are installed.
+pub fn run_create(
+    bundle: &Path,
+    request: &CreateRequest<'_>,
+    backend: BackendKind,
+    on_step: impl FnMut(u32, u32),
+) -> Result<CreateOutput, WeightError> {
+    let ctx = GgmlContext::new(backend).map_err(|err| WeightError::NotBuilt(err.to_string()))?;
+    run_create_with_context(bundle, request, &ctx, on_step)
+}
+
+pub fn run_create_with_context(
+    bundle: &Path,
+    request: &CreateRequest<'_>,
+    ctx: &GgmlContext,
+    on_step: impl FnMut(u32, u32),
+) -> Result<CreateOutput, WeightError> {
+    let _ = ctx;
+    create::run_full_create_with_context(bundle, request, ctx, on_step)
+}
+
+pub(crate) fn dit_gguf(bundle: &Path) -> Result<PathBuf, WeightError> {
+    if !bundle.is_dir() {
+        return Err(WeightError::Bundle {
+            path: bundle.display().to_string(),
+            detail: "directory is missing".into(),
+        });
+    }
+    let mut matches = Vec::new();
+    let entries = std::fs::read_dir(bundle).map_err(|err| WeightError::Bundle {
+        path: bundle.display().to_string(),
+        detail: err.to_string(),
+    })?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("gguf") {
+            continue;
+        }
+        let Ok(weights) = GgufWeights::open(&path) else {
+            continue;
+        };
+        if weights.contains("decoder.proj_in.1.weight") {
+            matches.push(path);
+        }
+    }
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        0 => Err(WeightError::NotBuilt(
+            "ACE-Step DiT GGUF with decoder.proj_in.1.weight is missing".into(),
+        )),
+        _ => Err(WeightError::NotBuilt(format!(
+            "ACE-Step bundle has {} DiT GGUF files; keep one",
+            matches.len()
+        ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn open_real_0_6b_q8_lm_gguf() {
+        let p = std::path::Path::new("/workspace/models/Audio/ace-step-5hz-lm-0.6b/q8_0");
+        if !p.join("acestep-5Hz-lm-0.6B-Q8_0.gguf").is_file() {
+            eprintln!("skip: real LM GGUF missing");
+            return;
+        }
+        let (_w, c) = super::lm::open_lm_gguf(p).expect("open lm");
+        assert!(c.vocab > 150_000, "vocab {}", c.vocab);
+        assert!(c.layers >= 8, "layers {}", c.layers);
+        eprintln!(
+            "lm config vocab={} hidden={} layers={}",
+            c.vocab, c.hidden, c.layers
+        );
+    }
+
+    use super::{
+        config_from_weights, dit_gguf, layout_matches, probe_layout, run_cover, run_create,
+        weight_layout, AceStepConfig, CreateRequest, TIME_FREQ_DIM,
+    };
+    use crate::runtime::BackendKind;
+    use crate::weights::{write_f32_nd, F32Nd, GgufWeights};
+    use std::path::Path;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "danmo-ace-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_dit(dir: &Path, config: AceStepConfig) {
+        let owned: Vec<(String, [i64; 4], Vec<f32>)> = weight_layout(config)
+            .into_iter()
+            .map(|row| {
+                let n = row.ne.iter().product::<i64>() as usize;
+                (row.name, row.ne, vec![0f32; n])
+            })
+            .collect();
+        let tensors: Vec<F32Nd<'_>> = owned
+            .iter()
+            .map(|(name, ne, data)| F32Nd {
+                name,
+                ne: *ne,
+                data,
+            })
+            .collect();
+        write_f32_nd(&dir.join("acestep-v15-smoke.gguf"), &tensors).unwrap();
+    }
+
+    #[test]
+    fn xl_layout_has_thirty_two_layers_and_the_acestep_names() {
+        let config = AceStepConfig::xl(false);
+        assert_eq!(config.hidden, 2560);
+        assert_eq!(config.layers, 32);
+        assert_eq!(config.intermediate, 9728);
+        assert_eq!(config.heads, 32);
+        assert_eq!(config.kv_heads, 8);
+        assert_eq!(config.head_dim, 128);
+        assert_eq!(config.in_channels, 192);
+        assert_eq!(config.out_channels, 64);
+        assert_eq!(config.patch, 2);
+        assert_eq!(config.sliding_window, 128);
+        assert_eq!(config.condition_dim, 2048);
+        assert_eq!(TIME_FREQ_DIM, 256);
+        let names: Vec<_> = weight_layout(config)
+            .into_iter()
+            .map(|row| row.name)
+            .collect();
+        assert!(names
+            .iter()
+            .any(|name| name == "decoder.layers.0.self_attn.q_proj.weight"));
+        assert!(names
+            .iter()
+            .any(|name| name == "decoder.layers.31.mlp.down_proj.weight"));
+        assert!(names.iter().any(|name| name == "decoder.proj_in.1.weight"));
+        assert!(names
+            .iter()
+            .any(|name| name == "decoder.time_embed_r.time_proj.weight"));
+        assert!(names.iter().all(|name| !name.starts_with("layers.")));
+        assert!(!names.iter().any(|name| name.contains("null_condition")));
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| name.contains("self_attn.q_proj.weight"))
+                .count(),
+            32
+        );
+    }
+
+    #[test]
+    fn smoke_probe_accepts_the_layout() {
+        let dir = scratch("smoke");
+        write_dit(&dir, AceStepConfig::smoke());
+        let path = dit_gguf(&dir).unwrap();
+        let loaded = GgufWeights::open(&path).unwrap();
+        let config = config_from_weights(&loaded).unwrap();
+        assert_eq!(config, AceStepConfig::smoke());
+        assert!(layout_matches(&loaded, config));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn base_2b_layout_is_refused() {
+        let dir = scratch("2b");
+        write_dit(&dir, AceStepConfig::base_2b());
+        let err = probe_layout(&dir).unwrap_err();
+        assert!(
+            err.to_string().contains("2B") && err.to_string().contains("XL"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_proj_in_fails_loud() {
+        let dir = scratch("empty");
+        let err = probe_layout(&dir).unwrap_err();
+        assert!(
+            err.to_string().contains("decoder.proj_in.1.weight"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audio_create_runs_smoke_denoise_then_refuses_companions() {
+        let dir = scratch("create");
+        write_dit(&dir, AceStepConfig::smoke());
+        let err = crate::pipeline::legacy::audio_create(
+            "ace_step",
+            &dir,
+            &crate::pipeline::legacy::AudioCreateRequest {
+                prompt: "test",
+                lyrics: "[inst]",
+                duration_sec: 5.0,
+                seed: Some(0),
+                guidance: 1.0,
+                steps: None,
+                vocal_language: "en",
+                bpm: None,
+                keyscale: "",
+                timesignature: "",
+                lm_expansion: "off",
+                lm_bundle: None,
+                audio_code_indices: None,
+                timbre_latents: None,
+            },
+            BackendKind::Cpu,
+            |_, _, _| (),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("safetensors")
+                || err.to_string().contains("MLX")
+                || err.to_string().contains("mlx"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audio_create_auto_lm_fails_loud_when_lm_missing() {
+        let dir = scratch("create-auto-lm");
+        write_dit(&dir, AceStepConfig::smoke());
+        let err = crate::pipeline::legacy::audio_create(
+            "ace_step",
+            &dir,
+            &crate::pipeline::legacy::AudioCreateRequest {
+                prompt: "lofi",
+                lyrics: "[inst]",
+                duration_sec: 5.0,
+                seed: Some(0),
+                guidance: 1.0,
+                steps: None,
+                vocal_language: "en",
+                bpm: Some(90),
+                keyscale: "C major",
+                timesignature: "4",
+                lm_expansion: "auto",
+                lm_bundle: None,
+                audio_code_indices: None,
+                timbre_latents: None,
+            },
+            BackendKind::Cpu,
+            |_, _, _| (),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("5Hz LM") || err.to_string().contains("lm_expansion"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cover_and_lm_fail_loud_with_acestep_pointers() {
+        let err = run_cover(Path::new("/tmp")).unwrap_err();
+        assert!(
+            err.to_string().contains("CoverRequest") || err.to_string().contains("audio.edit"),
+            "{err}"
+        );
+        let err = super::run_lm_expand(Path::new("/tmp/no-such-ace-lm")).unwrap_err();
+        assert!(
+            err.to_string().contains("LM") || err.to_string().contains("missing"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn lm_inspire_smoke_runs_greedy_prefill() {
+        let dir = scratch("lm-inspire");
+        super::write_smoke_lm(&dir, super::AceLmConfig::smoke()).unwrap();
+        let err = super::run_lm(
+            &dir,
+            &super::LmRequest {
+                mode: super::LmMode::Inspire,
+                caption: "lofi",
+                lyrics: "",
+                duration: 0.0,
+                bpm: 0,
+                keyscale: "",
+                timesignature: "",
+                vocal_language: "en",
+                max_new_tokens: 3,
+                tokenizer_json: None,
+                temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
+                seed: 0,
+                use_fsm: false,
+                cfg_scale: 1.0,
+                negative_prompt: "",
+            },
+            BackendKind::Cpu,
+            &mut |_, _| (),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("MLX") || err.to_string().contains("5Hz LM"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lm_generate_phase2_fails_loud_on_smoke_vocab() {
+        let dir = scratch("lm-phase2");
+        super::write_smoke_lm(&dir, super::AceLmConfig::smoke()).unwrap();
+        let err = super::run_lm(
+            &dir,
+            &super::LmRequest {
+                mode: super::LmMode::Generate,
+                caption: "lofi beat",
+                lyrics: "la la",
+                duration: 10.0,
+                bpm: 90,
+                keyscale: "C major",
+                timesignature: "4/4",
+                vocal_language: "en",
+                max_new_tokens: 8,
+                tokenizer_json: None,
+                temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
+                seed: 0,
+                use_fsm: false,
+                cfg_scale: 1.0,
+                negative_prompt: "",
+            },
+            BackendKind::Cpu,
+            &mut |_, _| (),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("MLX") || err.to_string().contains("5Hz LM"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_create_on_smoke_proves_denoise_then_refuses() {
+        let dir = scratch("prove");
+        write_dit(&dir, AceStepConfig::smoke());
+        let err = run_create(
+            &dir,
+            &CreateRequest {
+                prompt: "test",
+                lyrics: "[inst]",
+                duration_sec: 5.0,
+                seed: Some(0),
+                guidance: 1.0,
+                steps: None,
+                vocal_language: "en",
+                bpm: None,
+                keyscale: "",
+                timesignature: "",
+                audio_code_indices: None,
+                timbre_latents: None,
+                loras: &[],
+                dcw: Default::default(),
+                lm_expanded: false,
+                pmi_bonus: 0.0,
+            },
+            BackendKind::Cpu,
+            |_, _| (),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("safetensors")
+                || err.to_string().contains("MLX")
+                || err.to_string().contains("mlx"),
+            "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod e2e_real_turbo {
+    use crate::pipeline::legacy::{audio_create, AudioCreateRequest};
+    use crate::runtime::BackendKind;
+    use std::path::Path;
+
+    fn turbo_bundle() -> Option<&'static Path> {
+        let bundle = Path::new("/workspace/models/Audio/ace-step-xl-turbo/q4_k");
+        if bundle.join("acestep-v15-xl-turbo-Q4_K_M.gguf").is_file() {
+            Some(bundle)
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn create_off_short_smoke() {
+        let Some(bundle) = turbo_bundle() else {
+            eprintln!("skip: turbo bundle missing");
+            return;
+        };
+        let out = audio_create(
+            "ace_step",
+            bundle,
+            &AudioCreateRequest {
+                prompt: "lofi chill",
+                lyrics: "[inst]",
+                duration_sec: 10.0,
+                seed: Some(42),
+                guidance: 1.0,
+                steps: Some(1),
+                vocal_language: "en",
+                bpm: Some(90),
+                keyscale: "C major",
+                timesignature: "4",
+                lm_expansion: "off",
+                lm_bundle: None,
+                audio_code_indices: None,
+                timbre_latents: None,
+            },
+            BackendKind::Cpu,
+            |_, _, _| (),
+        )
+        .expect("create off");
+        println!(
+            "off ok wav={} steps={} frames={}",
+            out.wav.len(),
+            out.steps,
+            out.frames
+        );
+        assert!(out.wav.len() > 44);
+    }
+
+    #[test]
+    fn create_auto_short_smoke() {
+        let Some(bundle) = turbo_bundle() else {
+            eprintln!("skip: turbo bundle missing");
+            return;
+        };
+        let lm = Path::new("/workspace/models/Audio/ace-step-5hz-lm-0.6b/q8_0");
+        if !lm.join("acestep-5Hz-lm-0.6B-Q8_0.gguf").is_file() {
+            eprintln!("skip: 5Hz LM bundle missing");
+            return;
+        }
+        let out = audio_create(
+            "ace_step",
+            bundle,
+            &AudioCreateRequest {
+                prompt: "lofi chill beat",
+                lyrics: "[inst]",
+                duration_sec: 10.0,
+                seed: Some(7),
+                guidance: 1.0,
+                steps: Some(1),
+                vocal_language: "en",
+                bpm: Some(90),
+                keyscale: "C major",
+                timesignature: "4",
+                lm_expansion: "auto",
+                lm_bundle: Some(lm),
+                audio_code_indices: None,
+                timbre_latents: None,
+            },
+            BackendKind::Cpu,
+            |_, _, _| (),
+        )
+        .expect("create auto");
+        println!(
+            "auto ok wav={} steps={} frames={}",
+            out.wav.len(),
+            out.steps,
+            out.frames
+        );
+        assert!(out.wav.len() > 44);
+    }
+
+    #[test]
+    #[ignore = "loads the XL turbo safetensors bundle and denoises"]
+    fn lyric_alignment_times_sung_lines() {
+        let bundle = std::path::Path::new(
+            "/Users/nil.luo/Workspace/studio-workspace/models/Audio/acestep-v15-xl-turbo",
+        );
+        if !bundle.join("acestep-v15-xl-turbo/config.json").is_file() {
+            eprintln!("skip: XL turbo safetensors missing");
+            return;
+        }
+        let out = crate::pipeline::legacy::audio_create(
+            "ace_step",
+            bundle,
+            &crate::pipeline::legacy::AudioCreateRequest {
+                prompt: "quiet piano",
+                lyrics: "你好\n世界",
+                duration_sec: 10.0,
+                seed: Some(7),
+                guidance: 1.0,
+                steps: Some(2),
+                vocal_language: "zh",
+                bpm: Some(90),
+                keyscale: "C major",
+                timesignature: "4",
+                lm_expansion: "off",
+                lm_bundle: None,
+                audio_code_indices: None,
+                timbre_latents: None,
+            },
+            BackendKind::Cpu,
+            |_, _, _| (),
+        )
+        .expect("aligned create");
+        println!("{}", out.lyrics_alignment_json);
+        println!("{}", out.lyrics_lrc.as_deref().unwrap_or(""));
+        assert!(out.lyrics_alignment_json.contains("dit_cross_attention"));
+        assert!(out.lyrics_lrc.is_some());
+        assert!(out.wav.len() > 44);
+    }
+}

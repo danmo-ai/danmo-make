@@ -1,0 +1,55 @@
+{
+  "kind": "z_image_rewrite_parity_e2e",
+  "date": "2026-11-19",
+  "platform": "macos-arm64",
+  "backend": "mlx-metal",
+  "model": "z-image-turbo",
+  "version": "fp16",
+  "action": "rewrite",
+  "parity": {
+    "test": "families::z_image::mlx::model::tests::real_zimage_rewrite_matches_main_latents_and_pixels",
+    "command": "cargo test --manifest-path native/Cargo.toml -p danmo-engine --features mlx-metal --lib families::z_image::mlx::model::tests::real_zimage_rewrite_matches_main_latents_and_pixels -- --ignored --nocapture",
+    "fixtures": {
+      "16x16": {
+        "path": "out/parity-zimage-rewrite-16x16.json",
+        "sha256": "c7d706ddb83e592d5c34bcaa00f7326ea8de45bc45b2c4c4df686881f1d295a3",
+        "steps": 8,
+        "source_fidelity": 0.6,
+        "init_timestep": 4,
+        "seed": 42,
+        "result": "blend/velocities/step_latents/denoised/RGB bit-exact vs danmo-make main; encode max abs error 0.006 on 16x16 (gate 0.02)"
+      },
+      "256x256": {
+        "path": "out/parity-zimage-rewrite-256x256.json",
+        "sha256": "3d85530c86778c4ea4975ec84920caa71ecbd63b584c060c1c201c9dfb99dcef",
+        "steps": 8,
+        "source_fidelity": 0.6,
+        "init_timestep": 4,
+        "seed": 42,
+        "result": "blend/velocities/step_latents/denoised/RGB bit-exact vs danmo-make main; VAE encode observational only (Metal BF16 encode not bit-stable main-vs-main)"
+      }
+    },
+    "baseline": "danmo-make local main via out/zimage_rewrite_dump_main.py (not product Python)",
+    "metal_performance": "pending"
+  },
+  "e2e": {
+    "task_id": "17481890-1e62-40e8-b7e5-4020fffcb95c",
+    "source_asset_id": "ast_83a2065f9f9c4c46a6c4",
+    "asset_id": "ast_05d7a07ed2f940d794ab",
+    "output": "tests/parity/evidence/zimage-rewrite-turbo-fp16-p4-2026-11-19.png",
+    "prompt": "soft natural light portrait rewrite",
+    "steps": 8,
+    "source_fidelity": 0.6000000238418579,
+    "init_timestep": 4,
+    "graph_computes": 4,
+    "seed": 42,
+    "width": 256,
+    "height": 256,
+    "status": "completed"
+  },
+  "notes": [
+    "Production rewrite path: center-crop align 16 → VAE encode → blend at sigma[init] → denoise sliced schedule → decode.",
+    "Parity injects fixture encoded latent into DiT (create-style); noise/blend/velocities/RGB matched main bit-exactly on Metal.",
+    "metal_performance not claimed (no warm multipass rewrite gate)."
+  ]
+}

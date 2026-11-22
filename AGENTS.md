@@ -1,442 +1,124 @@
-# AGENTS.md — Danmo Make v4
+# AGENTS.md — Danmo Make
 
-Operational guide for contributors and coding agents. User-facing overview: [README.md](README.md) (English default, bilingual).
+Operational guide for people and coding agents working in this repo. Product overview: [README.md](README.md).
 
----
+Architecture: [docs/engine_architecture.md](docs/engine_architecture.md). Migration status and remaining work: [docs/rust_mlx_migration_todo.md](docs/rust_mlx_migration_todo.md). Parity and acceptance evidence: `tests/parity/evidence/`.
 
-## What this is
+The server is the Rust binary `danqing-api`. Use `make dev` (or `scripts/start.sh`) for the web app; there is no Python API server.
 
-Danmo Make — plugin-style **image / video** generation on **MLX** (Apple Silicon Metal; Linux **mlx[cuda]**). Split stack: FastAPI + Vue 3 SPA + CLI + SQLite. Models are declared in JSON and implemented under `backend/engine/families/`. **Windows is temporarily unsupported.**
+## Naming
 
-**Naming boundary:** product / UI / release artifacts use **Danmo Make** / `danmo-make-*`. Runtime and code identifiers stay **`danqing-*`** for upgrade compatibility — e.g. Bundle ID `com.danqing.studio.desktop`, env `DANQING_*`, sidecar `danqing-api`, registry engines `danqing-image|video|audio`, CLI `bin/danqing-*`, classes `DanQing*Engine`, frontend storage `dq-studio.*.v4`, design packages `@danqing/dq-*`. Do not rename those without a migration plan.
+Product / UI / release artifacts: **Danmo Make** / `danmo-make-*`. Runtime identifiers stay `danqing-*` (binary `danqing-api`, bundle id `com.danqing.studio.desktop`, env `DANQING_*`). The command-line creation tools are product surface and use the `danmo-*` prefix (`danmo-generate`, `danmo-edit`, `danmo-audio-generate`, `danmo-audio-edit`, `danmo-video-generate`, `danmo-video-edit`).
 
----
-
-## Quick reference
+## Layout
 
 | Item | Location |
 |------|----------|
-| API entry | `backend/main.py` |
-| Frontend entry | `frontend/index.html` → Vite → `frontend/src/` |
-| Infinite canvas | `frontend/src/components/studio/InfiniteCanvas.vue` + `useCanvasStore.ts` |
-| Canvas sessions API | `backend/api/routes/canvas.py` → `/api/canvas/sessions` |
-| Canvas edge/staging utils | `frontend/src/utils/canvasEdges.ts` (`make frontend-canvas-unit`) |
-| Production UI build | `out/frontend/dist/` (`frontend/vite.config.ts`) |
-| Launch / stop | `make dev` / `make start` / `make stop` → `scripts/start.sh`, `scripts/stop.sh` |
-| Dev ports | Backend **7800**, frontend **5800** (`78xx`/`58xx`, suffix `00` = Studio) |
-| Model registry (git / factory) | `default_config/models_registry.json` |
-| Control plane (app home) | `~/.danmo-make/` (`DANQING_USER_DATA_DIR` override) — pointer, `.app_config.json`, logs, runtime-venv |
-| Workspace pointer | `~/.danmo-make/workspace.pointer.json` (legacy: `default_config/workspace.pointer.json`) |
-| Model registry (runtime) | `{workspace}/config/models_registry.json` — sync via `make sync-models-registry` |
-| Family configs | `backend/engine/config/model_configs.py` |
-| Transformer registry | `backend/engine/_transformer_registry.py` |
-| API contracts | `backend/core/contracts.py` |
-| Media interfaces | `backend/core/media_interfaces.py` (`IImageEngine`, `IVideoEngine`) |
-| Pipeline runtime contracts | `backend/engine/contracts/` |
-| Engine dispatch | `backend/engine/sessions/engine_dispatch.py` |
-| Engine sessions | `backend/engine/sessions/` (`ImageSession`, `VideoSession`, …) |
-| Catalog loader + DTO | `backend/catalog/` |
-| Task observability | `backend/observability/` — SSE `trace`, `GET /graph`, `POST /diagnose`; dev `GET /diagnostic` |
-| Model cache | `backend/engine/cache.py` |
-| LLM assistant (engine) | `backend/engine/llm/` — sanitize / vision; not generation inference |
-| Catalog `families` → FamilySpec | `backend/catalog/family_spec_loader.py` |
-| Asset lineage | `backend/engine/lineage.py` |
-| Runtime | `backend/engine/runtime/` (`MLXContext`, `mlx_runtime`, `mlx_dtype`) |
-| Task kinds | `backend/core/task_kinds.py` (do not hardcode kind strings) |
-| Cursor rules | `.cursor/rules/model-migration.mdc`, `.cursor/rules/no-silent-degrade.mdc`, `.cursor/rules/models-registry-maintain.mdc` |
-| Engine architecture (single doc) | `docs/engine_architecture.md` |
-| Bundle layout (T5 paths, ready assert) | `backend/engine/common/bundle/layout.py` |
-| Pipeline progress + graph step logs | `backend/engine/pipelines/pipeline_progress.py` |
-| Registry profiles (expand / shrink) | `backend/core/registry_profiles.py` |
-| Bundle manifest + family contracts | `backend/core/bundle_manifest.py` |
-| Desktop | `desktop/`, `make dev-desktop`, `make pack-macos-desktop` / `pack-linux-desktop` / `pack-linux-server` |
-| MCP (Agent) | `backend/mcp/` — streamable-http at `/mcp`; stdio `bin/danqing-mcp` / `python -m backend.mcp` (proxies REST; port via `DANQING_MCP_BASE_URL` / `api.port`) |
-| Remote auth | Loopback skips auth; non-loopback needs separate HTTP/MCP API keys (`backend/api/access_auth.py`). Stored as salted HMAC `v1:<salt>:<hmac>`; plaintext shown once at create. Env: `DANQING_HTTP_API_KEY` / `DANQING_MCP_API_KEY` |
+| Rust workspace | `native/Cargo.toml` (the root `Cargo.toml` has no workspace members) |
+| API binary | `native/crates/danmo-server` (`danqing-api`) |
+| Engine | `native/crates/danmo-engine` |
+| Contracts / catalog | `native/crates/danmo-contracts`, `native/crates/danmo-catalog` |
+| Bundle / LoRA resolution | `native/crates/danmo-resolve` (shared by server and CLI) |
+| Persistence / queue | `native/crates/danmo-store`, `native/crates/danmo-schedule` |
+| MLX | `native/crates/danmo-mlx-sys` + `native/crates/danmo-mlx` (`native/third_party/mlx-c`, `native/third_party/mlx`) |
+| ggml (vendor, retiring) | `native/crates/danmo-ggml-sys` (`native/third_party/ggml`) — not a product runtime |
+| CLI | `native/crates/danmo-cli` (six `danmo-*` binaries) |
+| Frontend | `frontend/` (Vue 3, TypeScript, Vite, Pinia; port 5800) |
+| Desktop | `desktop/` (Tauri 2; starts the `danqing-api` sidecar) |
+| Factory configuration | `default_config/` (registry, presets, locales, LoRA examples) |
+| Development / packaging | `scripts/`, `Makefile` |
+| Generated artifacts | `out/` (frontend, sidecar, desktop, logs, run state) |
+| Benchmarks / parity evidence | `tests/benchmark/`, `tests/parity/` |
 
-### Hardcoded paths
+Frontend UI dependencies `@danqing/dq-shell`, `@danqing/dq-tokens`, and `@danqing/dq-ui` are local `file:` packages from the sibling `dq-ui` checkout; see `frontend/package.json`.
 
-- Control plane: `~/.danmo-make/` (pointer, `config/.app_config.json`, logs, `api.pid`, optional Linux `runtime-venv` for mlx[cuda])
-- Media workspace (default = control plane; or user-chosen via Settings): `config/` (registry/presets/user_loras), `db/`, `models/`, `outputs/`
-- Dev (`make dev`, no pointer): media root stays the repo (`./models`, `./outputs`, …); control plane still `~/.danmo-make`
-- Factory templates: `default_config/` (`models_registry.json`, `presets.json`, locales) — read-only seed into workspace `config/`
-- DB: `{workspace}/db/studio.db` (WAL; no runtime `ALTER` — reset DB + `outputs/` if schema drifts)
+## Development
 
-### Environment
-
-- **Python** 3.11+, venv at `.venv/`
-- **Install**: macOS → `pip install -r requirements-macos.txt`; Linux → `pip install -r requirements-linux.txt` (common deps via `requirements.txt`; Windows unsupported)
-- **Key packages**: `fastapi`, `uvicorn`, `mlx` (Metal or `mlx[cuda]`), `Pillow`, `transformers`, `safetensors`
-- **Benchmark venv**: `tests/benchmark/venv/` via `make bench-setup` (isolated from app venv)
-- **Platform detect**: `backend/engine/platform/` — `["mlx"]` on **darwin arm64** (Metal) or **linux** with mlx / mlx[cuda]; **fail loud** if a model’s `backends` entry is not satisfied
-- **Remote API keys** (optional plaintext env): `DANQING_HTTP_API_KEY`, `DANQING_MCP_API_KEY` — see Quick reference → Remote auth; Settings UI preferred for durable salted hashes
-
----
-
-## Governance anchors (must follow)
-
-Three product-level constraints (also in `.cursor/rules/*.mdc`):
-
-1. **Layering / plugin model** — Reuse `backend/engine/common/`; new models = registry + `model_configs` + `families/<family>/` + `_transformer_registry`. **No** `family == …` branches in `ImagePipeline` / `VideoPipeline` for business logic.
-2. **Contract API + CLI** — Routes/CLI only through contracts + `IImageEngine` / `IVideoEngine`. Per-model behavior via registry `actions` / `parameters` and Transformer polymorphism + Hooks — **not** `model_id` switches in `backend/api/routes/` or `backend/cli/`.
-3. **RuntimeContext** — Hot paths use `ctx.*` (`MLXContext` only). Literal `import mlx` only in `backend/engine/runtime/` or `*_mlx.py`. **`import torch` is forbidden under `backend/engine/`** (`make check-engine-governance --rule imports` / `--rule mlx-torch`). Same MLX API on Metal (macOS) and mlx[cuda] (Linux). Missing backend → **explicit error**, no silent fallback.
-
-| Dimension | Acceptance |
-|-----------|------------|
-| Plugin | New image family: JSON + `model_configs` + `families/<family>/` + registry; no new Pipeline `family` branches |
-| Family size | `families/<family>/` ≤ **8 logical units**; `stem.py` + `stem_mlx.py` = **1** unit (do not add `stem_cuda.py`) |
-| API/CLI | Extend contracts + route/CLI first; REST and CLI stay aligned |
-| MLX stack | Declared `backends: ["mlx"]` must run on Metal or mlx[cuda], or fail loud; no torch under engine |
-| Engine LOC | Refactors under `backend/engine/` should be **net delete or neutral** (bugfix exceptions documented in PR); no new `vae_codecs/` / `video_codecs/` wrapper trees — use `vae_codec_registry.py` / `video_codec_registry.py` only |
-
-### Fail loud (default)
-
-No silent degradation on generation, load, or registry parse failures. Use `RuntimeError` / clear HTTP errors + `t(key, locale)` + task logs/SSE. Documented user-consent toggles are the **only** allowed fallback (off by default). See `.cursor/rules/no-silent-degrade.mdc`.
-
----
-
-## Architecture
-
-### Layering
-
-```
-REST API / CLI
-    ↓  contracts + interfaces only
-TaskScheduler (global single queue, serial worker)
-    ↓  IImageEngine / IVideoEngine / IAudioEngine
-DanQingImageEngine / DanQingVideoEngine / DanQingAudioEngine
-    ↓  engine_dispatch → Session (fail loud if no FamilyPlugin route)
-ImageSession / VideoSession / AudioSession / UpscaleSession
-    ↓  phased helpers + FamilyPlugin backbone
-    ↓  RuntimeContext + TransformerBase + common/
-V3TaskStore + SQLiteAssetStore
-```
-
-### Modular directories
-
-| Path | Role |
-|------|------|
-| `backend/api/routes/` | REST by media (`images`, `videos`, `tasks`, `assets`, `registry`, …) |
-| `backend/cli/` | `bin/danqing-*`, mirrors REST |
-| `backend/scheduler/` | `TaskScheduler` |
-| `backend/catalog/` | Registry schema v3 loader, `CatalogResponse`, migrate script |
-| `backend/observability/` | RunTrace, SSE trace, graph/diagnose API; dev diagnostic bundle |
-| `backend/engine/sessions/` | Orchestration + `engine_dispatch.py` |
-| `backend/engine/pipelines/` | Phased helpers + pipeline helper objects (ctx/registry bundle) |
-| `backend/engine/families/<family>/` | Per-family transformer, weights, `plugin.py` |
-| `backend/engine/runtime/` | `MLXContext` |
-| `backend/engine/common/` | Subpackages: ops, model, bundle, codecs (root = facade only) |
-| `backend/engine/cache.py` | ModelCache (LRU + TTL) |
-| `backend/engine/lineage.py` | Asset lineage helpers |
-| `backend/persistence/` | SQLite stores |
-| `backend/core/` | Interfaces, contracts, container, i18n |
-| `backend/services/` | Settings, download |
-
-### Replaceable components
-
-- **RuntimeContext** — `MLXContext`
-- **Scheduler** — `FlowMatchEulerScheduler`, `LinearScheduler`, …
-- **VAEDecoder** — `scaling_factor`, `shift_factor`, `pytorch_compatible`
-- **TextEncoder** — T5, Qwen3, CLIP, … (by `config.encoder_type`)
-- **ModelCache** — LRU in engine layer
-
-### Model as plugin
-
-Every DiT on `ImagePipeline` / `VideoPipeline` **extends `TransformerBase`** (`backend/engine/common/model/base.py`): unified `forward` / `load_weights` / `parameters`, optional Hooks, default `refine_cfg_noise`.
-
-**Pipeline.run()** (registry-driven, no family branches):
-
-1. Resolve model → family + `ModelConfig`
-2. Text encoder from `config.encoder_type`
-3. Scheduler from registry `parameters.scheduler`
-4. Initial latents from `config.vae_scale`
-5. Denoise loop: `model(latents, t, txt_embeds=…, sigmas=…)`; CFG + optional `refine_cfg_noise`
-6. VAE decode (flags from weights/config, not `family` string)
-7. `asset_store.create_from_file`
-
-**Invariant**: Prefer changing registry, config, transformer, remap, registry wiring only. Pipeline changes = new **registry-driven** switches or polymorphic call sites only.
-
-### Transformer hooks
-
-| Hook | When | Typical use |
-|------|------|-------------|
-| `after_load_weights(bundle_root)` | After `load_weights` | LoRA merge |
-| `prepare_conditioning(request, bundle)` | After text encode | ControlNet cond dict |
-| `before_denoise(latents, timesteps, sigmas, **cond)` | Before denoise loop | Inject control signal |
-| `step_callback(step_idx, latents, noise_pred)` | Each step | Dynamic strength / logging |
-
-`refine_cfg_noise` is **polymorphic** (not a hook), called when registry `enable_cfg_renorm` and CFG apply.
-
-### Pipeline rules
-
-- Scalars/enums in **registry + `model_configs`**, not `if family` in Pipeline.
-- Shape/operator math in **Transformer** methods.
-- Hooks for **optional cross-cutting** features only.
-- Do not register `actions` the model cannot serve; `IImageEngine.supports` rejects at entry.
-- Weight-key / config flags for variants (e.g. flux2-style VAE prep), not `family` strings.
-
-### Family layout (migration)
-
-Default per family: `transformer.py`, `text_encoder.py` (if needed), `weights.py`. Go-style: `stem.py` / `stem_mlx.py` (one logical unit; same MLX API on Metal and mlx[cuda]). Do **not** add `stem_cuda.py` / torch CUDA. See `.cursor/rules/model-migration.mdc`.
-
-**Weights**: Implement `remap_<family>_weights` in `weights.py` and override `sanitize()` on the DiT (stem or inner impl) to call it before `load_weights` applies tensors. VAE may use long tables. MLX nested `parameters()` → explicit flat `_param_map` matching remap keys.
-
-### Implemented families (indicative)
-
-`flux1`, `flux2`, `z_image`, `fibo`, `qwen` (`qwen_image` in registry), `seedvr2`, `ltx`, `ltx25`, `wan`, `ace_step`, … — source of truth is `_transformer_registry.py` + `models_registry.json`.
-
----
-
-## New model checklist
-
-Extended execution checklist: `docs/engine_architecture.md` §5–§6.
-
-1. **`default_config/models_registry.json`** — then `make sync-models-registry` to `{workspace}/config/models_registry.json`. Fields: `family`, `engine`, `actions`, `parameters`, `versions`, `backends`, bilingual `name`/`description`. First workspace setup copies from `default_config/` if missing; reset via settings only (no startup merge). See `.cursor/rules/models-registry-maintain.mdc`.
-2. **`backend/engine/config/model_configs.py`** — dataclass + `FAMILY_CONFIG_MAP`
-3. **`backend/engine/families/<family>/transformer.py`** — registry-facing stem (`DelegatingDiTStem` or `TransformerBase`); hooks here, math in `transformer_mlx.py`
-4. **`backend/engine/families/<family>/weights.py`** — `remap_<family>_weights` (if needed); wire via DiT `sanitize()`
-5. **`backend/engine/_transformer_registry.py`** — `_TRANSFORMER`, `_TEXT_ENCODER`, optional `_IMAGE_LORA_MERGE` (image/video DiT)
-
-**Audio (ACE-Step)** — no `ImagePipeline` / `_TRANSFORMER` row: use `MusicPipeline` + `backend/engine/families/ace_step/generation.py` (public entry; MLX dispatch inside family). Register `AceStepConfig` in `model_configs.py`; map registry `actions.create` → `task_kinds.AUDIO_GENERATION` via `task_kind_for_registry_action()`.
-
-**Verify**
+Dev ports: backend **7800**, frontend **5800**. Override them with `DQ_BACKEND_PORT` and `DQ_FRONTEND_PORT`.
 
 ```bash
-python -m py_compile <touched files>
-bin/danqing-generate --model <id> --prompt "test"    # image
-bin/danqing-audio-generate --model ace-step-xl-sft --prompt "test" --duration 10 --output /tmp/t.wav
-make bench-eval-smoke     # image eval L1+L2 (smoke profile)
-make bench-eval           # image eval full prompt matrix
-make verify-engine-stack
+make dev                 # scripts/start.sh: danqing-api + Vite HMR
+make stop
+make dev-desktop         # Tauri + Vite + API
+SKIP_BACKEND=1 make dev-desktop  # use an API that is already running
 ```
 
----
-
-## Configuration
-
-### Registry (`schema_version: 3`)
-
-- Top-level `engines`: `danqing-image`, `danqing-video`, `danqing-audio`
-- Per model: `media` (`image` \| `video` \| `audio`), **`actions`** (not legacy `capabilities`)
-- Image actions: `create`, `rewrite`, `retouch`, `extend`, `upscale`
-- Video actions: `create`, `animate`
-- `parameters`: typed (`int`, `float`, `enum`, `bool`, `object`)
-- `name` / `description`: `{ "zh", "en" }`
-
-### Presets
-
-`{workspace}/config/presets.json` (seeded from `default_config/presets.json`) — each preset needs **`applies_to`** and **`media_scope`** (`image` \| `video`). UI filters by tab + scope.
-
-### App settings
-
-`{workspace}/config/.app_config.json` — `language`, `theme`, `default_model`, `mlx_memory_limit`, `queue_image_first`, …
-
----
-
-## CLI vs REST API
-
-| CLI | REST | Engine |
-|-----|------|--------|
-| `bin/danqing-generate` | `POST /api/images/generations` | `IImageEngine.generate()` |
-| `bin/danqing-edit` | `POST /api/images/edits` | `IImageEngine.edit()` |
-| `bin/danqing-upscale` | `POST /api/images/upscales` | `IImageEngine.upscale()` |
-| `bin/danqing-video-generate` | `POST /api/videos/generations` | `IVideoEngine.generate()` |
-| `bin/danqing-video-edit` | `POST /api/videos/edits` | `IVideoEngine.edit()` |
-| `bin/danqing-video-upscale` | `POST /api/videos/upscales` | `IVideoEngine.upscale()` |
-
-Engines: `ModelRegistry` + `EngineRegistry` → `DanQingImageEngine` / `DanQingVideoEngine`; runtime from registry `backends` via `_resolve_runtime`.
-
----
-
-## API endpoints (catalog)
-
-### Images / video
-
-- `POST /api/images/generations` | `edits` | `upscales`
-- `POST /api/videos/generations` | `edits` | `upscales`
-
-### Tasks / queue
-
-- `GET /api/tasks` (= `/api/tasks/list`) — `limit`, `offset`, `kind`, `status`, `since`
-- `GET /api/tasks/{id}` — `queue_position`, `estimated_*`, `model`, `error`, …
-- `GET /api/tasks/{id}/logs` — paginated logs
-- `PATCH /api/tasks/{id}` — **`queued` only**: `{ "priority": "normal" \| "high" }`
-- `DELETE /api/tasks/{id}` — cancel
-- `GET /api/tasks/{id}/stream` — SSE: `log`, `progress`, `trace`, `status`, `result`, `done`
-- `GET /api/tasks/{id}/graph` — pipeline DAG snapshot (product UI)
-- `POST /api/tasks/{id}/diagnose` — LLM task diagnosis (local LLM required)
-- `GET /api/tasks/{id}/diagnostic` — dev/agent diagnostic bundle
-- `GET /api/queue` — snapshot; `estimated_wait_seconds` on queued items
-
-`queue_image_first` in settings: image tasks dequeue before video.
-
-### Assets / gallery
-
-- `POST /api/assets` | `GET /api/assets` | `GET /api/assets/{id}/file` | `…/thumbnail`
-- `POST /api/assets/reconcile` — `{ "dry_run": true }` default
-- `GET /api/gallery/images` | `POST /api/gallery/upload` | `DELETE /api/gallery/image?path=asset:{id}`
-- Task metadata: steps, guidance, seed, width/height; video `duration_seconds` (ffprobe or `num_frames/fps`)
-- Lineage fields on assets: `parent_asset_id`, `relation_type` (canvas edges + gallery lineage)
-
-### Canvas sessions
-
-- `GET /api/canvas/sessions?media=image|video|audio` — list sessions
-- `GET /api/canvas/sessions/{id}` — session row (`state`: items, viewport, staging, overlays, edges, `composer_snapshot`)
-- `POST /api/canvas/sessions` — create (`media`, `title`, optional `state`)
-- `PUT /api/canvas/sessions/{id}` — update title/state
-- `DELETE /api/canvas/sessions/{id}` — delete
-- `POST /api/chat/describe-node` — AI node note (vision when available)
-
-### Registry / models / system
-
-- `GET /api/registry` — full registry + `_index`
-- `GET /api/models` — filter `media`, `action`, `installed`
-- `GET /api/models/{id}` | `POST …/install` | `POST /api/models/install-batch` | `DELETE …/versions/{version_key}`
-- `GET /api/presets` (read); writes via `/api/settings/presets`
-- `GET /api/adapters` — LoRA index; `for_model` filter
-- `GET /api/system/health` — `mlx` probe (Metal / mlx[cuda]), GPU memory
-- `GET /api/system/metrics` | `GET /api/settings/system`
-
-### Audio
-
-- `POST /api/audios/generations` — `AUDIO_GENERATION` → `DanQingAudioEngine` → `MusicPipeline` (ACE-Step `ace-step-xl-sft` / `ace-step-xl-turbo`, DiffRhythm `diffrhythm-v2`, MLX)
-- `POST /api/audios/edits` — `AUDIO_EDIT` (registry action `cover` → API action `edit`; ACE-Step only today; `repaint` is reserved, not implemented)
-
-Route sources: `backend/api/routes/*.py`. Live docs: `http://localhost:7800/docs`.
-
----
-
-## Running
+A source build needs Rust, Node.js/npm, CMake, and the native submodules. If MLX sources are missing:
 
 ```bash
-make dev                 # uvicorn --reload + Vite HMR
-make start / make stop   # same as dev / stop scripts
-
-make frontend-dev        # :5800 → proxy /api to :7800 (if running backend separately)
-make frontend-build      # → out/frontend/dist/
-
-make dev-desktop         # Tauri + Vite HMR (SKIP_BACKEND=1 for external API)
-make pack-macos-desktop  # macOS MLX .app/.dmg (Metal)
-make pack-linux-desktop  # Linux MLX (mlx[cuda]) AppImage/.deb
-make pack-linux-server   # Linux MLX thin server tar.gz (headless)
+git submodule update --init --recursive native/third_party/mlx native/third_party/mlx-c
 ```
 
-Windows desktop/server packs are **temporarily unsupported**.
+`make dev` uses `metal,mlx-metal` on macOS. The API and Vite logs are under `out/run/`; use `make stop` rather than leaving orphaned processes. When replacing a running `danqing-api`, wait until port 7800 is free before starting the new process. Exit 143 is the previous process receiving SIGTERM. Do not restart while a task is actually running.
 
----
+Workspace selection is handled by `scripts/workspace_env.sh`: explicit `DANQING_WORKSPACE`, then the pointer under `DANQING_USER_DATA_DIR` (default `~/.danmo-make`), then the repo root. The script also supplies defaults for `DANQING_DB`, `DANQING_OUTPUT`, and `DANQING_REGISTRY`.
 
-## Makefile targets
+## Verification
 
-| Target | Purpose |
-|--------|---------|
-| `bench-setup` | Benchmark venv (PickScore judge) |
-| `bench-eval` / `bench-eval-smoke` / `bench-eval-case ID=` | image L1+L2 eval |
-| `bench-eval-calibrate` | write golden PickScore baselines |
-| `test-engine-unit` | `scripts/test_engine_unit.py` |
-| `check-consistency` | registry/routes/i18n |
-| `check-engine-rules` | unified engine governance (`check_engine_governance.py`) |
-| `check-engine-imports` | alias: `--rule imports` |
-| `check-engine-mlx-torch` | alias: `--rule mlx-torch` — no torch / leftover `*_cuda` under `backend/engine/` |
-| `check-models-registry-contracts` | alias: `--rule registry` |
-| `check-engine-governance` | engine rules + consistency |
-| `verify-engine-stack` | governance + unit tests |
-| `check-engine-family-layout` | alias: `--rule layout` |
-| `lint` | Python syntax |
-| `frontend-install` / `frontend-dev` / `frontend-build` / `frontend-typecheck` / `frontend-canvas-unit` | frontend |
-| `dev-desktop` | Tauri desktop dev (FastAPI + Vite HMR; aligned with danmo-work/inbox) |
-| `pack-macos-desktop` | macOS Tauri `.app` / `.dmg` (MLX Metal sidecar) |
-| `pack-linux-desktop` | Linux Tauri AppImage / `.deb` (mlx[cuda]; thin runtime preferred) |
-| `pack-linux-server` | Linux MLX thin `danmo-make-linux-mlx-*.tar.gz` (console bootstrap on first `run.sh`) |
-| `clean` | `scripts/clean_build.py` |
+```bash
+make test                # cargo test --manifest-path native/Cargo.toml
+make lint                # cargo fmt --all -- --check
+make frontend-typecheck
+make frontend-build      # writes out/frontend/dist/
+make frontend-canvas-unit
+```
 
-Makefile pattern: `pack-<platform>-desktop` (Tauri) or `pack-<platform>-server` (archives). Steps: `venv` \| `sidecar` \| `shell` \| `archive`. Windows pack targets are not supported product paths for now.
+`cargo test` takes one Cargo package filter. Extra names after `--` are libtest filters. `--exact` needs the full test path. From the repo root, pass `--manifest-path native/Cargo.toml`; the root manifest is not the Rust workspace. `danmo-server` has no lib target.
 
----
+Engine and family code must not import `danmo-mlx-sys`. MLX is opt-in: `mlx`, `mlx-metal`, `mlx-cuda`. The API build that serves macOS is `--features metal,mlx-metal`; Linux CUDA uses `--features mlx-cuda`.
 
-## Frontend (Vue 3 + Vite + TypeScript)
+```bash
+cargo test --manifest-path native/Cargo.toml -p danmo-mlx
+cargo test --manifest-path native/Cargo.toml -p danmo-engine --features mlx-metal --lib
+cargo test --manifest-path native/Cargo.toml -p danmo-mlx --features metal
+cargo test --manifest-path native/Cargo.toml -p danmo-mlx --features cuda
+```
 
-- Locales: `frontend/src/locales/zh.json`, `en.json`
-- Vue I18n 9, `legacy: false`; use `useI18n()` in script setup
-- Template: `$t('key')`; script: `$tt` from `@/utils/i18n`
-- Model/preset names: `$mn`, `$md`, `$mvn`, `$pn` on `globalProperties`
-- Storage keys: `@/utils/storage` → `DQ_STORAGE` (`dq-studio.*.v4`)
-- API: `@/utils/api` (`export const api`)
-- Stores: `@/stores/registry`, `@/stores/tasks` (queue poll + SSE)
-- Memory soft warning: `@/composables/memoryHint` (`warnIfRiskyMemory`)
-- Navigation: Vue Router `router.push({ name: '…' })` — no `window.DQStudioNav`
-- Global task queue: `App.vue` + `TopNav.vue` + `useTasksStore`; `openGlobalTaskQueue()` from `@/utils/appEvents`
+Switching between a prebuilt MLX and the source build needs `cargo clean -p danmo-mlx-sys` first. A stale `@rpath/libmlx.dylib` looks like a numeric failure. `mlx-c` is pinned at 0.8.0 and MLX at 0.32.4. Host-reference F32 probes on NAX set `MLX_ENABLE_TF32=0`. Leave the default on for real model runs.
 
-### Frontend UI (`@danqing/dq-ui`)
+## CLI
 
-- No Element Plus: templates use `Dq*` only; tokens from `@danqing/dq-tokens` (`--dq-*`).
-- Shell layout: `App.vue` → `.dq-app-header` + `.dq-app-main`; `TopNav` is native `<nav class="dq-top-nav-menu">`.
-- Governance: `make check-frontend-governance` (or `check-ep-boundary` / `check-theme-legacy` aliases). See `frontend/DQ-UI.md`.
+The CLI binaries run generation without the HTTP server. Registry and workspace resolution are shared with the server via `danmo-resolve`; task mapping uses `danmo_engine::engine_request`; execution uses the same `Engine::execute` path.
 
-### App.vue routing
+```bash
+cargo run --manifest-path native/Cargo.toml -p danmo-cli --features mlx-metal --bin danmo-generate -- \
+  --model z-image-turbo --prompt "a red apple" --output out.png
+```
 
-`activePage` is a **local `ref`** synced from `route.name` via `watch` — do not bind cross-module route refs directly.
-
-### Infinite canvas (Studio Canvas)
-
-Gallery **grid** vs **canvas** toggle on image/video/audio create views (`StudioGalleryFilters`). Canvas is not a separate asset store — nodes reference gallery `asset:` paths; layout and composer bindings live in per-media canvas sessions (SQLite via `CanvasSessionStore`).
-
-| Piece | Path |
-|-------|------|
-| Orchestrator | `InfiniteCanvas.vue` |
-| Per-media store | `composables/useCanvasStore.ts` (singleton per `image` \| `video` \| `audio`) |
-| Viewport / items / edges | `CanvasViewport.vue`, `CanvasItem.vue`, `CanvasEdges.vue` |
-| Toolbars / panels | `CanvasToolbar.vue`, `CanvasLayerPanel.vue`, `CanvasSessionGraph.vue`, `CanvasLineageSidebar.vue` |
-| Staging / edges math | `utils/canvasStaging.ts`, `utils/canvasEdges.ts` |
-| Import/export | `utils/canvasImport.ts`, `utils/canvasExport.ts` |
-| Create views | `ImageCreateView.vue`, `VideoCreateView.vue`, `AudioCreateView.vue` |
-
-Workflow: import → select node → Composer fills params → generate lands in **staging** → lineage edges from `parent_asset_id` / `relation_type`. User-facing shortcuts: [README.md](README.md) → Infinite canvas workflow.
-
----
-
-## Backend i18n
-
-- `backend/core/i18n.py` — `t(key, locale, **params)`, `resolve_locale(Accept-Language)`
-- Messages: `default_config/locales/zh.json`, `en.json`
-- Registry/presets: bilingual objects in JSON (not legacy `name_en` fields)
-
----
-
-## Desktop packaging
-
-- Dev: `make dev-desktop` (`scripts/start_desktop.sh`; Vite via Tauri `beforeDevCommand`)
-- Release: `make pack-macos-desktop` \| `pack-linux-desktop` \| `pack-linux-server`  
-  (scripts: `pack_desktop_macos.sh` / `pack_desktop_linux.sh`)
-- Artifacts: `out/frontend/dist/`, `out/sidecar/danqing-api/`, `out/desktop/bundle/`, `out/dist/*.tar.gz` (Linux server)
-- macOS / Linux: single **MLX** PyInstaller profile (`DANQING_PYINSTALLER_PROFILE=mlx`); no torch / `*_cuda`
-- Headless Linux thin archives: `make pack-linux-server` → `out/dist/danmo-make-*-mlx-*` (first start may bootstrap via `scripts/runtime_bootstrap.py`)
-- **Windows**: temporarily unsupported (no product pack / torch CUDA thin)
-- Repair/reinstall: desktop Settings → Runtime; server `./run.sh --repair-runtime` / `bin/danqing-runtime-setup`
-- CI: `.github/workflows/release.yml` (macOS dmg + Linux mlx packs; Windows omitted)
-- Sidecar env: `DANQING_HTTP_HOST`, `DANQING_HTTP_PORT`, `DANQING_USER_DATA_DIR`
-- New engine modules must be reachable from `scripts/build_sidecar.py` / PyInstaller hooks
-
----
+CLI sources are absolute or workspace-relative file paths, not asset ids. `--lora` accepts a file path, a user LoRA id from `{workspace}/config/user_loras.json`, or a registry card, with optional `:weight`. Every binary supports `--help`.
 
 ## Gotchas
 
-- **First run is slow** — model load into GPU memory
-- **DB schema** — no migrations; delete `db/studio.db` (+ outputs) to reset
-- **`scripts/start.sh`** — browser dev: venv + uvicorn --reload + Vite; **`scripts/start_desktop.sh`** — Tauri + Vite HMR; release UI path is `out/frontend/dist/` (see `backend/main.py::_resolve_frontend_static_dir`)
-- **Add model** — full 5-step checklist above, not registry-only
-- **OpenAI-compatible API** (if added later) — separate `/v1/...` adapter; must delegate to same contracts/engines; do not replace resource-style `/api/images/*` routes
-- **Contributors** — run `make verify-engine-stack` before PR
-- **Structural guide (FLUX.1 create)** — `ImageGenerationRequest.structural_guide` only on `flux1*` + text-to-image; Canny/Depth/Redux preprocess in pipeline; companion LoRA auto-injected for Canny/Depth. UI: `useStructuralGuide.ts` + Composer advanced; not combinable with reference img2img.
-- **FLUX Fill (retouch/extend)** — `flux-fill-controlnet` only; `ImagePipeline._run_flux1_fill_edit` (384-dim patch concat). Retouch needs `mask_asset_id`; extend uses `ExtendSpec`. CLI: `danqing-edit --operation retouch|extend` with `--mask-image` / `--extend-directions`.
-- **ControlNet / Fill** — structural guide + Fill are **MLX-only** (`backend/engine/families/flux1/structural.py`; registry `backends: ["mlx"]`). Fail loud if unsupported; do not silent-fallback.
-- **MiniMax H3 (FL2VA)** — `video_pipeline_shape=family_generator` under `backend/engine/families/minimax_h3/`. **PipeNetwork/minimax-h3-mlx** is the parity reference for **DiT module tree, weights, scheduler, RoPE, and keyframe conditioning**. Default installs: **PipeNetwork** sharded DiT (`pipenetwork/MiniMax-H3-MLX-{4,8}bit`) + **MiniMaxAI/MiniMax-H3** `FL2VA/` aux (VAE / text encoder / tokenizer). **Compute-bound**: mlx-q4/q8 saves RAM more than wall time. Requires **MLX >= 0.32.3** (quantized matmul past 32K packed rows) and **mlx-vlm >= 0.7.6** with **transformers >= 5.19** for the Qwen3-VL text tower. Turbo: install LoRA **`minimax-h3-turbo-lora:v4-ema`** (larryvrh v4-600 EMA) or set **`h3_quality_preset=draft`** / **`h3_turbo=true`**; 4–8 steps (6–8 recommended). `balanced` / `quality` / `oracle` keep a full Euler trajectory (no velocity reuse, no layer drop, no internal-canvas downscale). Non-turbo runs are commonly 8–16 steps; the registry default remains 30. `h3_turbo` conflicts with TeaCache; `h3_block_streaming` / `h3_token_reduction` fail loud until implemented. Fast checks: `make test-h3-parity`; E2E smoke: `make bench-h3-smoke` (installed bundle). Minimum clip ~5s (`num_frames` ≥ 125 @24fps, 17n+5 rule).
-- **Audio / music** — shipping models: **ACE-Step 1.5 XL SFT** (`ace-step-xl-sft`, recommended) and **XL Turbo** (`ace-step-xl-turbo`, 8-step distilled); plus **DiffRhythm 2** (`diffrhythm-v2`, create-only). Cover uses API action `edit` (registry `cover`). **YuE2** and similar CC BY-NC weight releases stay out of the commercial catalog; do not add them without an explicit non-commercial product mode.
-- **Assistant LLM memory** — separate **`backend_llm`** sidecar (`mlx_vlm.server`), one multimodal model at a time. Settings → **Assistant model cache (minutes)** (`llm_cache_ttl_minutes`, default 30) idle-unloads via `POST /unload`. **Unload after each request** (`llm_unload_each_request`, default off) overrides TTL. **Generation model cache TTL** (`model_cache_ttl_minutes`) applies only to DiT `ModelCache` in danqing-api, not the sidecar.
+- **No product Python.** Serving, engine, and training do not use a Python runtime. Desktop starts `danqing-api` only (no thin uvicorn / venv). Vendor Python under `native/third_party/` stays for MLX/ggml builds; development shell helpers may still use system `python3` for JSON parsing.
+- **LoRA training runs the full Rust MLX pipeline** (VAE latent cache → Qwen3 TE → differentiable 30-block DiT with per-block `mx.checkpoint` → AdamW → DiffSynth-keyed adapter export). Z-Image / Z-Image-Turbo only; non-MLX builds return an error; quantized base tiers are rejected at submit (training needs a dense bundle). Remaining gates before "done": face detection for `face_crop=on`, per-tensor gradient evidence, checkpoint-resume E2E, a full-length 2500-step run, and the CUDA gate — see `docs/rust_mlx_migration_todo.md`. Do not revive a Python trainer. Downloaded LoRA inference remains supported.
+- **Fail loud.** A missing capability, tensor, or backend is an error. Do not add a second runtime, a weaker path, or a silent default. CPU is a real device only when it was selected for the process.
+- Families do not import each other. Family-id dispatch belongs in `families/mod.rs`. `pipeline`, `session`, `common`, `runtime`, `weights`, and server adapters do not branch on family ids.
+- Do not invent Hugging Face repo ids. An unpublished version key is absent and generation fails.
+- Do not return MLX `Array` values off the executor thread, and do not call `Executor::execute` from inside an executor job.
+- Do not mark migration status done until that model/version/action has parity, performance, and E2E evidence. Metal and CUDA are separate gates. Do not mark quant `metal_performance` passed.
 
----
+## Weights
 
-## Reference
+MLX bundles are **safetensors**. Production loading keeps each dense tensor at its checkpoint dtype. A registry version is either `kind: "dense"` (the only download: `fp16` / `bf16` / `fp32`) or `kind: "derived"` (a dense `base` plus a recipe, converted on this machine). There is no pre-quantized download tier; the registry publishes one `q4-mixed` version per base model and it is a local build product.
 
-- [README.md](README.md) — user documentation (EN + 中文)
-- [default_config/models_registry.json](default_config/models_registry.json)
-- [backend/core/interfaces.py](backend/core/interfaces.py)
-- [tests/benchmark/README.md](tests/benchmark/README.md)
+`default_config/quant_recipes/<recipe>.json` holds the layer policy: `keep_dense` globs for embeddings, norms, modulations, and final projections, a `min_elements` floor, and one `{bits, group_size}` pair. The converter in `weights/quantize.rs` (driven by `derive.rs`) writes the published MLX affine layout — packed `{base}.weight` plus `{base}.scales` / `{base}.biases` — and stamps `bundle.manifest.json` with the recipe id, a hash of the recipe file, and a layout digest of the dense source. A changed recipe or re-published base fails the load with a re-convert instruction.
+
+Packed affine weights stay packed inside `LinearWeight`; the loader rejects a bundle whose packed layers disagree on bits/group size. An install that lists `components` writes `bundle.manifest.json` after the last file lands.
+
+LoRA files are resolved to adapter paths by the server or CLI and applied by the shared weight layer. A target that is not a parameter fails the task.
+
+Layout, cache keys, and the dtype policy: [docs/engine_architecture.md](docs/engine_architecture.md).
+
+## Backend selection and packaging
+
+The product generation path is **MLX only**: build `danqing-api` with `metal,mlx-metal` (macOS) or `mlx-cuda` (Linux). There is no runtime Python stack and no GGUF product path. `DANQING_MLX_DEVICE` is not implemented; do not document it as a working switch. `GET /api/system/health` returns the selected backend, the reason, and the probe summary. Task logs carry a `[backend]` prefix.
+
+`scripts/build_mlx_sidecar.sh` builds the release sidecar into `out/sidecar/danqing-api/` with `metal,mlx-metal` on macOS and `mlx-cuda` on Linux when `nvcc` is present (CUDA toolkit only; no GPU needed to compile). Override with `DANQING_SIDECAR_FEATURES`. CI uses the NVIDIA CUDA devel container and `scripts/ci_install_cuda_ubuntu.sh` for env only.
+
+```bash
+make pack-mlx-sidecar
+make pack-macos-desktop
+make pack-linux-desktop
+make pack-linux-server
+make pack-windows-sidecar  # sidecar only; Windows desktop packaging is not wired
+```

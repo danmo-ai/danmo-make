@@ -1,0 +1,177 @@
+{
+  "date": "2026-11-19",
+  "platform": "metal",
+  "build": "release",
+  "create_4b_mlx_q4_warm": {
+    "prompt": "a red apple on a white table",
+    "main_p50_s": 2.239749917003792,
+    "rust_p50_s": 1.5397050380706787,
+    "ratio": 0.6874450698185123,
+    "gate": "<=1.05 vs main resident CLI",
+    "passed": true,
+    "pixel_mse_vs_main_seed1": 9.665874481201172,
+    "note": "Prompt-aligned release create; observational MSE ~9.67 (not bit-exact). Warm ratio 68.7%."
+  },
+  "rewrite_4b_mlx_q4_warm_p50_s": 3.0128650665283203,
+  "base4b_fp16_create_warm_p50_s": 3.0125670433044434,
+  "tasks": [
+    {
+      "asset_id": "ast_ed0c18e5a024479c9d0b",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-rewrite-4b-q4-w0.png",
+      "task_id": "bb88bb9f-fba3-4d52-918e-4aafe8ab9509",
+      "wall_s": 3.015411138534546,
+      "model": "flux2-klein-4b:mlx-q4",
+      "action": "rewrite",
+      "steps": 4,
+      "seed": 10,
+      "prompt": "make the apple green"
+    },
+    {
+      "asset_id": "ast_6d8c213d2aeb41f48e7a",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-rewrite-4b-q4-w1.png",
+      "task_id": "14578c60-651c-4c95-bed1-2ba4977a5a8e",
+      "wall_s": 3.0133490562438965,
+      "model": "flux2-klein-4b:mlx-q4",
+      "action": "rewrite",
+      "steps": 4,
+      "seed": 11,
+      "prompt": "make the apple green"
+    },
+    {
+      "asset_id": "ast_d581d564dc3c4abf9fc7",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-rewrite-4b-q4-w2.png",
+      "task_id": "20af7852-1af1-4ad8-83ff-5aa19022e8de",
+      "wall_s": 3.0128650665283203,
+      "model": "flux2-klein-4b:mlx-q4",
+      "action": "rewrite",
+      "steps": 4,
+      "seed": 12,
+      "prompt": "make the apple green"
+    },
+    {
+      "asset_id": "ast_d77a2abc109b4aa488ee",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-rewrite-4b-q4-w3.png",
+      "task_id": "a484ca7a-c8cf-4ad1-991b-56a3e2fe73be",
+      "wall_s": 3.012315273284912,
+      "model": "flux2-klein-4b:mlx-q4",
+      "action": "rewrite",
+      "steps": 4,
+      "seed": 13,
+      "prompt": "make the apple green"
+    },
+    {
+      "asset_id": "ast_29229de634854739ad29",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-object-remove-4b-q4.png",
+      "task_id": "c0485806-6b1b-45ff-a996-0a95bec534c2",
+      "wall_s": 4.019012928009033,
+      "model": "flux2-klein-4b:mlx-q4",
+      "action": "rewrite",
+      "steps": 4,
+      "seed": 42,
+      "prompt": "Remove the highlighted object from the scene"
+    },
+    {
+      "asset_id": "ast_60716c2536074207a6d7",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-create-9b-q4.png",
+      "task_id": "d1b0abb1-3068-4fbd-82d9-a6158fd93b33",
+      "wall_s": 3.0140180587768555,
+      "model": "flux2-klein-9b:mlx-q4",
+      "action": "create",
+      "steps": 4,
+      "seed": 1
+    },
+    {
+      "asset_id": "ast_d8fdf3074d7345838f4e",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-rewrite-9b-q4.png",
+      "task_id": "d5968491-6eec-4a55-887b-f452401908ca",
+      "wall_s": 5.024978876113892,
+      "model": "flux2-klein-9b:mlx-q4",
+      "action": "rewrite",
+      "steps": 4,
+      "seed": 1,
+      "prompt": "make the apple green"
+    },
+    {
+      "asset_id": "ast_d75b5a5452ba4a9c9f0e",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-create-base4b-fp16.png",
+      "task_id": "be4c5095-9c7d-4981-a56b-2c28c681e255",
+      "wall_s": 3.0113728046417236,
+      "model": "flux2-klein-base-4b:fp16",
+      "action": "create",
+      "steps": 8,
+      "seed": 1
+    },
+    {
+      "asset_id": "ast_a18111ea65ab41d5bfd2",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-rewrite-base4b-fp16.png",
+      "task_id": "19370453-27fb-4e43-a019-18d39a5fd6fd",
+      "wall_s": 5.02505087852478,
+      "model": "flux2-klein-base-4b:fp16",
+      "action": "rewrite",
+      "steps": 8,
+      "seed": 1,
+      "prompt": "make the apple green"
+    },
+    {
+      "asset_id": "ast_65d8faba583249f1b20f",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-create-base9b-fp16.png",
+      "task_id": "689756c9-ea18-4773-b5e9-b99bb32b7be1",
+      "wall_s": 8.201580047607422,
+      "model": "flux2-klein-base-9b:fp16",
+      "action": "create",
+      "steps": 8,
+      "seed": 1
+    },
+    {
+      "asset_id": "ast_e0780a9872654c10af33",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-rewrite-base9b-fp16.png",
+      "task_id": "8bebdcf2-89d8-4a5d-9426-85ffe6e8ca47",
+      "wall_s": 13.133682012557983,
+      "model": "flux2-klein-base-9b:fp16",
+      "action": "rewrite",
+      "steps": 8,
+      "seed": 1,
+      "prompt": "make the apple green"
+    },
+    {
+      "asset_id": "ast_158ab7c9d8484baf9a9c",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-base4b-warm0.png",
+      "task_id": "528da325-eea3-4890-a9a1-a5c769e0ea0d",
+      "wall_s": 3.0153229236602783,
+      "model": "flux2-klein-base-4b:fp16",
+      "action": "create",
+      "steps": 8,
+      "seed": 20
+    },
+    {
+      "asset_id": "ast_f78416044f084ea3a39e",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-base4b-warm1.png",
+      "task_id": "0ca84de6-52de-454a-995b-23bfadc964fc",
+      "wall_s": 3.0178112983703613,
+      "model": "flux2-klein-base-4b:fp16",
+      "action": "create",
+      "steps": 8,
+      "seed": 21
+    },
+    {
+      "asset_id": "ast_49ac70e2da7a40aa8331",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-base4b-warm2.png",
+      "task_id": "951095ac-80e4-4ba7-9f30-6d4bf4188cde",
+      "wall_s": 3.012274980545044,
+      "model": "flux2-klein-base-4b:fp16",
+      "action": "create",
+      "steps": 8,
+      "seed": 22
+    },
+    {
+      "asset_id": "ast_29481967d33c48b382a9",
+      "path": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-release-base4b-warm3.png",
+      "task_id": "d2e0b6b4-12e7-417a-b58f-18dd9841707a",
+      "wall_s": 3.0125670433044434,
+      "model": "flux2-klein-base-4b:fp16",
+      "action": "create",
+      "steps": 8,
+      "seed": 23
+    }
+  ]
+}

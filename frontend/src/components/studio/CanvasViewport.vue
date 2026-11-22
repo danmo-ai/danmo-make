@@ -102,28 +102,6 @@
       @action="(action) => $emit('toolbar-action', action)"
     />
 
-    <div v-if="visibleEntries.length === 0" class="canvas-viewport__empty">
-      <div class="canvas-viewport__empty-card dq-glass--popover">
-        <p class="canvas-viewport__empty-title">{{ $t('canvas.emptyTitle') }}</p>
-        <p class="canvas-viewport__empty-hint">{{ $t('canvas.emptyHint') }}</p>
-        <ol class="canvas-viewport__empty-steps">
-          <li>{{ $t('canvas.emptyStep1') }}</li>
-          <li>{{ $t('canvas.emptyStep2') }}</li>
-          <li>{{ $t('canvas.emptyStep3') }}</li>
-          <li>{{ $t('canvas.emptyStep4') }}</li>
-        </ol>
-        <ul class="canvas-viewport__empty-shortcuts">
-          <li>{{ $t('canvas.shortcutLayers') }}</li>
-          <li>{{ $t('canvas.shortcutRename') }}</li>
-          <li>{{ $t('canvas.shortcutPan') }}</li>
-          <li>{{ $t('canvas.shortcutRemove') }}</li>
-          <li>{{ $t('canvas.scaleHint') }}</li>
-        </ul>
-        <DqButton type="primary" @click="$emit('open-import-picker')">
-          {{ $t('canvas.importWorks') }}
-        </DqButton>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -150,6 +128,7 @@ import type {
   CanvasEdge,
 } from '@/types';
 import { OVERLAY_KINDS_BY_MEDIA } from '@/utils/canvasOverlays';
+import { galleryStubForAssetPath } from '@/utils/canvasAssets';
 
 const props = defineProps<{
   items: Record<string, CanvasItemState>;
@@ -178,7 +157,6 @@ const emit = defineEmits<{
   (e: 'item-drag-end', payload: { path: string; x: number; y: number }): void;
   (e: 'toolbar-action', action: string): void;
   (e: 'scale-item', payload: { path: string; scale: number }): void;
-  (e: 'open-import-picker'): void;
   (e: 'open-preview', path: string): void;
   (e: 'staging-move', payload: { x: number; y: number }): void;
   (e: 'staging-resize', payload: { width: number; height: number }): void;
@@ -217,6 +195,10 @@ const itemMap = computed(() => {
   for (const gi of props.galleryItems) {
     map[gi.path] = gi;
   }
+  // Board membership is authoritative — stub missing catalog rows so results still show.
+  for (const path of Object.keys(props.items)) {
+    if (!map[path]) map[path] = galleryStubForAssetPath(path);
+  }
   return map;
 });
 
@@ -243,16 +225,29 @@ const toolbarPos = computed(() => {
   const h = (gi.height || 512) * state.scale;
   const zoom = props.viewport.zoom;
   const nodeHeight = h * zoom;
-  const left = props.viewport.panX + (state.x + w / 2) * zoom;
-  const top = props.viewport.panY + state.y * zoom;
+  const vw = viewportRef.value.clientWidth;
   const vh = viewportRef.value.clientHeight;
+  const rawLeft = props.viewport.panX + (state.x + w / 2) * zoom;
+  const top = props.viewport.panY + state.y * zoom;
   const layoutEl = viewportRef.value.closest('.studio-layout') as HTMLElement | null;
   const reserve = readComposerReservePx(layoutEl, vh);
-  const toolbarBand = 52;
-  const tooHigh = top < toolbarBand;
-  const nearComposer = top + nodeHeight * 0.35 > vh - reserve;
-  const placement: 'above' | 'below' =
-    tooHigh || nearComposer ? 'below' : 'above';
+  const toolbarH = 48;
+  const gap = 10;
+  const edge = 8;
+  const spaceAbove = top - edge;
+  const spaceBelow = vh - (top + nodeHeight) - edge;
+  const aboveFits = spaceAbove >= toolbarH + gap;
+  const belowFits = spaceBelow >= toolbarH + gap;
+  const preferBelow =
+    top < toolbarH + gap || top + nodeHeight * 0.35 > vh - reserve;
+  let placement: 'above' | 'below' = 'above';
+  if (preferBelow && belowFits) placement = 'below';
+  else if (!aboveFits && belowFits) placement = 'below';
+  else if (!aboveFits && !belowFits) {
+    // Both clipped — keep above and let the bar sit as high as possible in-view.
+    placement = spaceBelow > spaceAbove ? 'below' : 'above';
+  }
+  const left = Math.min(vw - edge, Math.max(edge, rawLeft));
   return { left, top, nodeHeight, placement };
 });
 
@@ -329,17 +324,20 @@ function onViewportMouseDown(e: MouseEvent) {
   const cx = e.clientX - rect.left;
   const cy = e.clientY - rect.top;
 
+  // Empty left-drag pans. Shift+left-drag marquees.
+  // Middle-button / Space / ⌘·Ctrl also pan (Space/⌘ still needed over nodes).
+  const wantMarquee = e.button === 0 && e.shiftKey && !spaceHeld.value;
   const panGesture =
     e.button === 1 ||
-    (e.button === 0 && (e.ctrlKey || e.metaKey)) ||
-    (e.button === 0 && spaceHeld.value);
+    (e.button === 0 && (spaceHeld.value || e.ctrlKey || e.metaKey || !wantMarquee));
 
-  if (panGesture) {
+  if (panGesture && !wantMarquee) {
     isPanning.value = true;
     panStartX = e.clientX;
     panStartY = e.clientY;
     panStartPanX = props.viewport.panX;
     panStartPanY = props.viewport.panY;
+    e.preventDefault();
 
     const onMove = (ev: MouseEvent) => {
       if (!isPanning.value) return;
@@ -359,7 +357,7 @@ function onViewportMouseDown(e: MouseEvent) {
     return;
   }
 
-  if (e.button === 0) {
+  if (wantMarquee) {
     isMarquee = true;
     marqueeStartX = cx;
     marqueeStartY = cy;
@@ -466,7 +464,7 @@ defineExpose({ viewportRef });
   inset: 0;
   overflow: hidden;
   background: var(--dq-fill-dim);
-  cursor: default;
+  cursor: grab;
 }
 
 .canvas-viewport--space-pan {
@@ -483,7 +481,7 @@ defineExpose({ viewportRef });
   z-index: 0;
   pointer-events: none;
   background-color: var(--dq-fill-dim);
-  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.16) 1px, transparent 1px);
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--dq-label-tertiary) 24%, transparent) 1px, transparent 1px);
   background-repeat: repeat;
 }
 
@@ -503,61 +501,4 @@ defineExpose({ viewportRef });
   z-index: 20;
 }
 
-.canvas-viewport__empty {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  z-index: 5;
-  padding-bottom: min(180px, 32vh);
-}
-
-.canvas-viewport__empty-card {
-  pointer-events: auto;
-  max-width: 420px;
-  padding: 20px 22px;
-  border-radius: 14px;
-  text-align: center;
-}
-
-.canvas-viewport__empty-title {
-  margin: 0 0 8px;
-  font-size: var(--dq-font-size-title);
-  font-weight: 600;
-  color: var(--dq-label-primary);
-}
-
-.canvas-viewport__empty-hint {
-  margin: 0 0 12px;
-  font-size: var(--dq-font-size-body);
-  color: var(--dq-label-secondary);
-  line-height: 1.5;
-}
-
-.canvas-viewport__empty-steps {
-  margin: 0 0 12px;
-  padding-left: 1.2rem;
-  text-align: left;
-  font-size: var(--dq-font-size-caption);
-  color: var(--dq-label-secondary);
-  line-height: 1.6;
-}
-
-.canvas-viewport__empty-shortcuts {
-  margin: 0 0 16px;
-  padding: 10px 12px;
-  list-style: none;
-  text-align: left;
-  font-size: var(--dq-font-size-caption);
-  color: var(--dq-label-secondary);
-  line-height: 1.55;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--dq-fill-secondary) 65%, transparent);
-}
-
-.canvas-viewport__empty-shortcuts li + li {
-  margin-top: 4px;
-}
 </style>

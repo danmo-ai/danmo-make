@@ -157,7 +157,15 @@ export function useStudioGallery(
   }
 
   async function loadGallery(reset = false) {
-    if (galleryLoading.value) return;
+    if (galleryLoading.value) {
+      // Reset must not no-op: wait out the in-flight fetch so canvas auto-add
+      // can see the new asset rows.
+      if (!reset) return;
+      for (let i = 0; i < 40 && galleryLoading.value; i += 1) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      if (galleryLoading.value) return;
+    }
     if (reset) {
       galleryItems.value = [];
       galleryGroups.value = [];

@@ -1,16 +1,9 @@
 <!-- @ts-nocheck -->
 <template>
-  <div class="settings-page settings-page--v2 settings-page--macos">
-    <!-- Left sidebar navigation -->
-    <div class="settings-sidebar-wrapper">
-      <DqSurfaceCard class="settings-sidebar-card">
-        <div class="card-title">
-          <DqIcon><Setting /></DqIcon>
-          {{ $t('settings.title') }}
-        </div>
-        <div class="settings-sidebar-desc">
-          {{ $t('settings.desc') }}
-        </div>
+  <WorkspaceLayout class="settings-page settings-page--v2 settings-page--macos">
+    <template #sidebar>
+      <WorkspaceSidebar :title="$t('settings.title')" :description="$t('settings.desc')">
+        <template #icon><DqIcon><Setting /></DqIcon></template>
         <nav class="dq-download-menu" role="navigation" :aria-label="$t('settings.title')">
           <button
             v-for="item in navItems"
@@ -18,17 +11,16 @@
             type="button"
             class="dq-download-menu__item"
             :class="{ 'is-active': activeSection === item.id }"
+            :aria-current="activeSection === item.id ? 'page' : undefined"
             @click="activeSection = item.id"
           >
             <DqIcon class="dq-download-menu__icon"><component :is="item.icon" /></DqIcon>
             <span class="dq-download-menu__label">{{ $t(item.labelKey) }}</span>
           </button>
         </nav>
+      </WorkspaceSidebar>
+    </template>
 
-      </DqSurfaceCard>
-    </div>
-
-    <!-- Main content area -->
     <div class="settings-content-area">
       <DqSurfaceCard class="settings-tab-panel">
         <SystemSettingsSidebar
@@ -55,7 +47,7 @@
         />
       </DqSurfaceCard>
     </div>
-  </div>
+  </WorkspaceLayout>
 </template>
 
 <script setup lang="ts">
@@ -73,6 +65,8 @@ import type { SystemInfo } from '@/types';
 import SystemSettingsForm from '@/components/settings/SystemSettingsForm.vue';
 import SystemSettingsSidebar from '@/components/settings/SystemSettingsSidebar.vue';
 import RuntimeSetupView from '@/views/RuntimeSetupView.vue';
+import WorkspaceLayout from '@/components/workspace/WorkspaceLayout.vue';
+import WorkspaceSidebar from '@/components/workspace/WorkspaceSidebar.vue';
 import {
   Monitor,
   FolderChecked,
@@ -156,13 +150,17 @@ const settings = reactive<Record<string, unknown>>({
   theme: 'mac',
   auto_save_prompts: true,
   output_format: 'png',
-  default_model_llm: 'qwen3-vl-4b-instruct',
+  default_model_llm: 'qwen3.5-4b',
   default_model_vlm: 'qwen3-vl-4b-instruct',
   default_model_llm_think: false,
   mlx_memory_limit: 120,
   model_cache_ttl_minutes: 30,
   llm_cache_ttl_minutes: 30,
   llm_unload_each_request: false,
+  llm_inference_provider: 'builtin',
+  llm_inference_base_url: '',
+  llm_inference_api_key: '',
+  llm_inference_cloud_model: '',
   queue_image_first: false,
   civitai_token: '',
   huggingface_token: '',
@@ -364,6 +362,10 @@ const saveSettings = async () => {
       model_cache_ttl_minutes: settings.model_cache_ttl_minutes,
       llm_cache_ttl_minutes: settings.llm_cache_ttl_minutes,
       llm_unload_each_request: settings.llm_unload_each_request,
+      llm_inference_provider: settings.llm_inference_provider || 'builtin',
+      llm_inference_base_url: settings.llm_inference_base_url || '',
+      llm_inference_api_key: settings.llm_inference_api_key || '',
+      llm_inference_cloud_model: settings.llm_inference_cloud_model || '',
       queue_image_first: settings.queue_image_first,
       auto_save_prompts: settings.auto_save_prompts,
       civitai_token: settings.civitai_token || '',

@@ -5,6 +5,7 @@ export const DQ_STORAGE = Object.freeze({
   LANG: 'dq-studio.lang.v4',
   THEME: 'dq-studio.theme.v4',
   ACTIVE_PAGE: 'dq-studio.activePage.v4',
+  NAV_COLLAPSED: 'dq-studio.navCollapsed.v4',
   SETTINGS_TAB: 'dq-studio.settingsTab.v4',
   IMG2IMG_REF: 'dq-studio.img2imgRef.v4',
   IMPORTED_MODELS: 'dq-studio.importedModels.v4',
@@ -37,6 +38,10 @@ export const DQ_STORAGE = Object.freeze({
   VIDEO_MODEL_UPSCALE: 'dq-studio.videoModel.upscale.v4',
   AUDIO_MODEL_CREATE: 'dq-studio.audioModel.create.v4',
   AUDIO_MODEL_COVER: 'dq-studio.audioModel.cover.v4',
+  AUDIO_MODEL_REPAINT: 'dq-studio.audioModel.repaint.v4',
+  AUDIO_MODEL_LEGO: 'dq-studio.audioModel.lego.v4',
+  AUDIO_MODEL_EXTRACT: 'dq-studio.audioModel.extract.v4',
+  AUDIO_MODEL_COMPLETE: 'dq-studio.audioModel.complete.v4',
   CANVAS_IMAGE: 'dq-studio.canvas.image.v4',
   CANVAS_VIDEO: 'dq-studio.canvas.video.v4',
   CANVAS_AUDIO: 'dq-studio.canvas.audio.v4',
@@ -60,9 +65,10 @@ export const DQ_STORAGE = Object.freeze({
   CANVAS_WORKSPACE_HINT: 'dq-studio.canvas.workspaceHint.v4',
   CANVAS_REGION_GUIDES: 'dq-studio.canvas.regionGuides.v4',
   LORA_TRAIN_DRAFT: 'dq-studio.lora-train-draft.v4',
-  SETUP_HINT_DISMISSED: 'dq-studio.setupHintDismissed.v4',
   /** Browser copy of server ``http_api_key`` for non-loopback /api (and SSE query). */
   HTTP_API_KEY: 'dq-studio.httpApiKey.v4',
+  /** First-run onboarding wizard finished (or intentionally skipped). */
+  ONBOARDED: 'dq-studio.onboarded.v5',
 } as const);
 
 export type StorageKey = (typeof DQ_STORAGE)[keyof typeof DQ_STORAGE];

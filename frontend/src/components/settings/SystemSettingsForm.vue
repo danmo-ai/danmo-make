@@ -171,9 +171,29 @@ function closeRevealDialog() {
   revealOpen.value = false;
 }
 
+type BackendHealth = {
+  backend: string;
+  backend_selection: string;
+  backend_probe?: string | null;
+};
+
+const backendHealth = ref<BackendHealth | null>(null);
+
+async function loadBackendHealth() {
+  backendHealth.value = (await api.system.health()) as BackendHealth;
+}
+
 onMounted(() => {
   void registryStore.load();
+  if (props.activeSection === 'systeminfo') void loadBackendHealth();
 });
+
+watch(
+  () => props.activeSection,
+  (section) => {
+    if (section === 'systeminfo') void loadBackendHealth();
+  },
+);
 
 function hasLlmChatAction(actions: unknown): boolean {
   if (!actions || typeof actions !== 'object') return false;
@@ -474,6 +494,61 @@ watch(
         <h2 class="settings-section-title">{{ $t('settings.integrations') }}</h2>
         <p class="settings-section-desc">{{ $t('settings.integrationsDesc') }}</p>
         <DqPrefPane class="settings-grouped-form settings-pref-pane-form settings-pref-pane-form--system">
+          <DqPrefRow :label="$t('settings.llmInferenceProvider')" stacked>
+            <div class="settings-stacked-control">
+              <DqSelect
+                v-model="settings.llm_inference_provider"
+                class="settings-mac-value-control"
+              >
+                <DqOption :label="$t('settings.llmProviderBuiltin')" value="builtin" />
+                <DqOption
+                  :label="$t('settings.llmProviderOpenAiCompatible')"
+                  value="openai_compatible"
+                />
+              </DqSelect>
+              <p class="settings-form-hint settings-form-hint--below-control">
+                {{ $t('settings.llmInferenceProviderDesc') }}
+              </p>
+            </div>
+          </DqPrefRow>
+
+          <template v-if="settings.llm_inference_provider === 'openai_compatible'">
+            <DqPrefRow :label="$t('settings.llmInferenceBaseUrl')" stacked>
+              <div class="settings-stacked-control">
+                <DqInput
+                  v-model="settings.llm_inference_base_url"
+                  :placeholder="$t('settings.llmInferenceBaseUrlPlaceholder')"
+                />
+                <p class="settings-form-hint settings-form-hint--below-control">
+                  {{ $t('settings.llmInferenceBaseUrlDesc') }}
+                </p>
+              </div>
+            </DqPrefRow>
+
+            <DqPrefRow :label="$t('settings.llmInferenceApiKey')" stacked>
+              <div class="settings-stacked-control">
+                <DqInput
+                  v-model="settings.llm_inference_api_key"
+                  type="password"
+                  show-password
+                  :placeholder="$t('settings.llmInferenceApiKeyPlaceholder')"
+                />
+              </div>
+            </DqPrefRow>
+
+            <DqPrefRow :label="$t('settings.llmInferenceCloudModel')" stacked>
+              <div class="settings-stacked-control">
+                <DqInput
+                  v-model="settings.llm_inference_cloud_model"
+                  :placeholder="$t('settings.llmInferenceCloudModelPlaceholder')"
+                />
+                <p class="settings-form-hint settings-form-hint--below-control">
+                  {{ $t('settings.llmInferenceCloudModelDesc') }}
+                </p>
+              </div>
+            </DqPrefRow>
+          </template>
+
           <DqPrefRow :label="$t('settings.huggingfaceToken')" stacked>
             <div class="settings-stacked-control">
               <DqInput
@@ -624,6 +699,24 @@ watch(
           <DqButton type="primary" @click="closeRevealDialog">{{ $t('settings.accessKeyDone') }}</DqButton>
         </template>
       </DqDialog>
+    </template>
+
+    <!-- System info -->
+    <template v-if="props.activeSection === 'systeminfo'">
+      <section class="settings-group-block">
+        <h2 class="settings-section-title">{{ $t('settings.systeminfo') }}</h2>
+        <DqPrefPane class="settings-grouped-form settings-pref-pane-form settings-pref-pane-form--system">
+          <DqPrefRow :label="$t('settings.backend')">
+            <DqText>{{ backendHealth?.backend || '—' }}</DqText>
+          </DqPrefRow>
+          <DqPrefRow :label="$t('settings.backendSelection')">
+            <DqText>{{ backendHealth?.backend_selection || '—' }}</DqText>
+          </DqPrefRow>
+          <DqPrefRow v-if="backendHealth?.backend_probe" :label="$t('settings.backendProbe')">
+            <DqText>{{ backendHealth.backend_probe }}</DqText>
+          </DqPrefRow>
+        </DqPrefPane>
+      </section>
     </template>
 
     <!-- Maintenance -->

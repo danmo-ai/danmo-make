@@ -1,9 +1,0 @@
-# Image eval benchmark venv (isolated from project .venv)
-# Generation uses project .venv; judge (PickScore) runs in this venv.
-torch>=2.14.1
-torchvision>=0.29.1
-transformers>=5.19.0
-huggingface-hub>=1.33.0,<2
-modelscope>=1.40.1
-Pillow>=12.3.0
-numpy>=2.5.3

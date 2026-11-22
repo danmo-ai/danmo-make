@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "model_id": "ltx-2.5-distilled",
+  "family": "ltx25",
+  "action": "create",
+  "size": "640x640",
+  "num_frames": 25,
+  "fps": 24,
+  "seed": 7,
+  "prompt": "Acceptance cube: a red cube rotates slowly on a white desk, soft daylight.",
+  "cli": "danmo-video-generate --features mlx-metal release",
+  "date": "2026-11-19",
+  "runs": [
+    {
+      "version": "mlx-q8",
+      "tag": "cold",
+      "real_s": 15.7,
+      "mp4_bytes": 88946,
+      "ok": true
+    },
+    {
+      "version": "mlx-q8",
+      "tag": "warm1",
+      "real_s": 15.83,
+      "mp4_bytes": 88946,
+      "ok": true
+    },
+    {
+      "version": "mlx-q8",
+      "tag": "warm2",
+      "real_s": 16.62,
+      "mp4_bytes": 88946,
+      "ok": true
+    },
+    {
+      "version": "mlx-q8",
+      "tag": "warm3",
+      "real_s": 16.38,
+      "mp4_bytes": 88946,
+      "ok": true
+    },
+    {
+      "version": "mlx-q4",
+      "tag": "cold",
+      "real_s": 15.63,
+      "mp4_bytes": 146717,
+      "ok": true
+    },
+    {
+      "version": "mlx-q4",
+      "tag": "warm1",
+      "real_s": 15.36,
+      "mp4_bytes": 146717,
+      "ok": true
+    },
+    {
+      "version": "mlx-q4",
+      "tag": "warm2",
+      "real_s": 15.41,
+      "mp4_bytes": 146717,
+      "ok": true
+    },
+    {
+      "version": "mlx-q4",
+      "tag": "warm3",
+      "real_s": 15.46,
+      "mp4_bytes": 146717,
+      "ok": true
+    }
+  ],
+  "warm_p50_s": {
+    "mlx-q8": 16.38,
+    "mlx-q4": 15.41
+  },
+  "notes": [
+    "q8 create E2E via CLI after hook relayout of upsampler + audio_vae/vocoder (incl. ConvTranspose1d ups.*).",
+    "Quant metal_performance not marked per AGENTS policy; timings observational for q4 vs q8.",
+    "danmo-make main baseline not run in this pass."
+  ]
+}

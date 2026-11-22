@@ -1,0 +1,9 @@
+[submodule "native/third_party/ggml"]
+	path = native/third_party/ggml
+	url = https://github.com/ggerganov/ggml.git
+[submodule "native/third_party/mlx-c"]
+	path = native/third_party/mlx-c
+	url = https://github.com/ml-explore/mlx-c.git
+[submodule "native/third_party/mlx"]
+	path = native/third_party/mlx
+	url = https://github.com/ml-explore/mlx.git

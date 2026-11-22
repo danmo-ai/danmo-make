@@ -1,1 +1,0 @@
-"""Long-video generation strategies."""

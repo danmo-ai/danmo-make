@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "family": "ltx25",
+  "model_id": "ltx-2.5-distilled",
+  "version": "mlx-q4",
+  "action": "create",
+  "size": "640x640",
+  "num_frames": 25,
+  "fps": 24,
+  "seed": 7,
+  "rust_warm_p50_s": 15.41,
+  "main_warm_p50_s": 17.7,
+  "rust_to_main_ratio": 0.8706214689265537,
+  "main_warm_s": [
+    17.2,
+    17.7,
+    18.4
+  ],
+  "rust_warm_s": [
+    15.36,
+    15.41,
+    15.46
+  ],
+  "mid_frame_mse_observational": 1788.32275390625,
+  "notes": [
+    "Quality-first metal_parity: both rust and danmo-make main produce coherent red-cube create under same prompt/seed/size.",
+    "Quant metal_performance not_applicable per AGENTS despite rust/main warm ratio.",
+    "Peak memory left pending (no formal MLX peak harness for LTX; capacity.managed_bytes incomplete)."
+  ]
+}

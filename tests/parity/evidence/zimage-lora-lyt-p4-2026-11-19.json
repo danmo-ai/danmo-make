@@ -1,0 +1,51 @@
+{
+  "kind": "z_image_lora_e2e",
+  "date": "2026-11-19",
+  "platform": "macos-arm64",
+  "backend": "mlx-metal",
+  "model": "z-image-turbo",
+  "version": "fp16",
+  "action": "image.create",
+  "task_id": "8afd0b5f-f9aa-4795-bbcf-9e62b88f5b04",
+  "dataset": {
+    "id": "ds_f5cf344d9e3f9702",
+    "name": "lyt",
+    "trigger": "Lyt"
+  },
+  "lora": {
+    "id": "user-lora-a97835981f18",
+    "name": "李雪01",
+    "source_task": "tsk_aa0ce54848f9e4dd060317f7",
+    "weight": 0.9,
+    "path": "models/Lora/李雪01/final_adapters.safetensors",
+    "compose_overrides": {
+      "steps": 9,
+      "guidance": 0.0,
+      "scheduler": "linear",
+      "lora_scale": 0.9
+    },
+    "extra_adapters": []
+  },
+  "request": {
+    "prompt": "Lyt, portrait photo, natural light",
+    "size": "768x1280",
+    "steps": 9,
+    "guidance": 0.0,
+    "seed": 42,
+    "scheduler": "linear"
+  },
+  "result": {
+    "status": "completed",
+    "asset_id": "ast_7960961d643d4268b96e",
+    "output": "tests/parity/evidence/zimage-lora-lyt-p4-2026-11-19.png",
+    "width": 768,
+    "height": 1280,
+    "managed_bytes": 317575611
+  },
+  "notes": [
+    "User LoRA restored from prior real train outputs/work/tsk_aa0ce54848f9e4dd060317f7 (lyt / Lyt).",
+    "API bound adapter path + weight via bind_installed_loras; no client-side companion injection.",
+    "turbo scheme LoRA has empty extra_adapters; DistillPatch companion E2E still pending (registry DistillPatch not installed).",
+    "Not a numerical parity claim; E2E proof that MLX create loads a real trained LoRA and persists an image."
+  ]
+}

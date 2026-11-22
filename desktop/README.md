@@ -2,114 +2,118 @@
 
 Language: 中文 below · English summary first.
 
-Native **Tauri 2** window; business logic stays on the local **FastAPI** API.
+Native **Tauri 2** window. The API is the Rust binary `danqing-api` built with **MLX** (`mlx-metal` on macOS, `mlx-cuda` on Linux). Engine rules: [docs/engine_architecture.md](../docs/engine_architecture.md).
 
 | Platform | Runtime | Artifact |
 |----------|---------|----------|
-| **macOS** (Apple Silicon) | PyInstaller `danqing-api` (MLX Metal) | `.app` / `.dmg` |
-| **Linux x64 desktop** | MLX sidecar or thin `runtime/` (mlx[cuda]) | AppImage / `.deb` (local pack; CI may omit) |
-| **Linux server** | MLX thin + `run.sh` (first-run mlx[cuda]) | `out/dist/danmo-make-linux-mlx-*` |
-| **Windows** | Temporarily unsupported | — |
+| **macOS** (Apple Silicon) | MLX Metal | `.app` / `.dmg` |
+| **Linux x64 desktop** | MLX CUDA sidecar | AppImage / `.deb` (local pack; CI may omit) |
+| **Linux server** | MLX `danqing-api` + built UI | `danmo-make-linux-mlx-cuda-*.tar.gz` |
+| **Windows desktop** | not wired (`pack_desktop_windows.sh` exits) | sidecar only: `make pack-windows-sidecar` |
 
 Product name: Danmo Make. Technical ids remain `danqing-*` ([AGENTS.md](../AGENTS.md)).
-
-Makefile / script names align with **Danmo Work** / **Danmo Inbox**.
 
 ---
 
 # Danmo Make — Tauri 2 桌面壳
 
-本目录提供 **Tauri 2** 原生窗口；业务由本地 **FastAPI REST** 提供。
+本目录是 **Tauri 2** 窗口。API 为 Rust 二进制 `danqing-api`（**MLX**：macOS `mlx-metal`，Linux `mlx-cuda`）。引擎原则见 [docs/engine_architecture.md](../docs/engine_architecture.md)。
 
-- **macOS**：PyInstaller `danqing-api` sidecar（MLX Metal）
-- **Linux**：MLX（mlx[cuda]）；桌面可走 sidecar 或轻量 `runtime/`（首跑引导安装依赖）
-- **Windows**：暂时不支持
+- **macOS**：MLX Metal sidecar
+- **Linux 桌面**：MLX CUDA sidecar（AppImage / `.deb`，本地打包）
+- **Linux 服务端**：`danqing-api` + 已构建界面，`./run.sh` 直接启动二进制
+- **Windows 桌面**：未接线。sidecar 用 `make pack-windows-sidecar`
 
-产品名为 Danmo Make；技术 id 仍为 `danqing-*`（见仓库根 [AGENTS.md](../AGENTS.md) → Naming boundary）。
-
-Makefile / 脚本命名与 **Danmo Work** / **Danmo Inbox** 对齐（本地 sibling 目录名可能仍是 `DanQing-Teams` / `DanQing-Mail`）。
+产品名为 Danmo Make；技术 id 仍为 `danqing-*`（见仓库根 [AGENTS.md](../AGENTS.md)）。
 
 ## 构建产物目录
 
-所有打包产物在仓库根目录 **`out/`** 下（见 `scripts/out_paths.py`）：
+打包产物在仓库根 **`out/`** 下（`scripts/out_paths.sh`）：
 
 | 路径 | 内容 |
 |------|------|
 | `out/frontend/dist/` | Vite 生产构建 |
-| `out/sidecar/danqing-api/` | PyInstaller sidecar（macOS / Linux MLX） |
-| `out/runtime/` | Linux thin：便携 Python + `app/`（无 mlx 轮子；首跑安装） |
-| `out/desktop/bundle/` | 平台安装包（`.dmg` / AppImage / `.deb`） |
-| `out/desktop/cargo/` | Cargo 中间产物（可清理） |
-
-清理：`make clean` 或 `python scripts/clean_build.py`
+| `out/sidecar/danqing-api/` | 发布用 `danqing-api`（MLX features） |
+| `out/desktop/bundle/` | `.dmg` / AppImage / `.deb` |
+| `out/desktop/cargo/` | Cargo 中间产物 |
 
 ## 前置
 
 - **Rust**（`cargo` 在 PATH）
-- 仓库根 **Python 3.11 + `.venv`**，已安装 **PyInstaller**
 - **Node.js**（`npm`）
-- Linux 桌面另需 WebKitGTK 等（本地 `make pack-linux-desktop`；CI 暂未构建 Linux 桌面）
+- Linux 桌面另需 WebKitGTK 等（本地 `make pack-linux-desktop`；CI 视 workflow 而定）
 
 ## 开发（`make dev-desktop`）
-
-与 Danmo Work / Danmo Inbox 相同：
 
 ```bash
 make dev-desktop
 # 已有 API 时：SKIP_BACKEND=1 make dev-desktop
 ```
 
-- 启动 FastAPI（`:7800`，`--reload`）
+- `cargo run -p danmo-server` 启动 `danqing-api`（`:7800`，需 `mlx-metal` / `mlx-cuda` feature）
 - Tauri `beforeDevCommand` 启动 Vite HMR（`:5800`）
 - 原生窗口加载 Vite；`Ctrl+C` / `make stop` 清理
 
 ## 发布构建
 
 ```bash
-make pack-macos-desktop      # Darwin arm64 · MLX Metal · .app/.dmg
-make pack-linux-desktop      # Linux x86_64 · MLX (mlx[cuda]) · AppImage/.deb（本地）
-make pack-linux-server       # Linux thin server · danmo-make-linux-mlx-*.tar.gz
-# pack-windows-*             # Windows temporarily unsupported
+make pack-macos-desktop      # Darwin arm64 · mlx-metal · .app/.dmg
+make pack-linux-desktop      # Linux x86_64 · mlx-cuda · AppImage/.deb（本地）
+make pack-linux-server       # 无头 mlx-cuda API + 界面
+make pack-windows-sidecar    # 仅 sidecar；桌面包未接线
 ```
-
-等价脚本（与 work/inbox 同名）：
 
 | 脚本 | Make 目标 |
 |------|-----------|
 | `scripts/pack_desktop_macos.sh` | `pack-macos-desktop` |
 | `scripts/pack_desktop_linux.sh` | `pack-linux-desktop` |
-| `scripts/pack_desktop_windows.sh` | （立即失败：Windows temporarily unsupported） |
+| `scripts/package_mlx_server.sh` | `pack-linux-server` |
+| `scripts/pack_desktop_windows.sh` | 立即退出，并提示改打 sidecar |
 
-顺序：
+顺序：`out/frontend/dist` → `scripts/build_mlx_sidecar.sh` → Tauri → `out/desktop/bundle/`。服务端包不走 Tauri，`./run.sh` 执行 `danqing-api`。
 
-- macOS：`out/frontend/dist` → PyInstaller sidecar → Tauri → `out/desktop/bundle/`
-- Linux desktop：`out/frontend/dist` → PyInstaller MLX sidecar → Tauri
-- Linux server：`out/frontend/dist` → `out/runtime/` → thin tar.gz
+### macOS Developer ID 签名与公证
 
-| 平台 | 运行时 | 产物 |
-|------|--------|------|
-| macOS Apple Silicon | **MLX** sidecar（无 torch） | `.app` / `.dmg` |
-| Linux x86_64 desktop | **MLX**（mlx[cuda]） | AppImage / `.deb`（本地） |
-| Linux server | **MLX thin**（首跑装 mlx[cuda]） | `out/dist/danmo-make-linux-mlx-*` |
-| Windows | 暂时不支持 | — |
+与 [danmo-novel](https://github.com/danmo-ai/danmo-novel) 相同：`scripts/tauri_build_macos.sh` 在 **Tauri 打包前**对 `desktop/src-tauri/danqing-api` 内 Mach-O 做 Developer ID 签名；设齐公证变量后对自制 DMG 走 `notarytool`。
 
-修复/重装：桌面 Settings → 运行时环境；server：`./run.sh --repair-runtime` / `bin/danqing-runtime-setup`。
+**本机有证书时：**
 
-镜像：`DANQING_PIP_MIRROR=official|tuna|aliyun`（PyPI 镜像；不再使用 torch index）。
+```bash
+export APPLE_SIGNING_IDENTITY='Developer ID Application: …'
+export APPLE_ID=…
+export APPLE_PASSWORD=…   # App 专用密码
+export APPLE_TEAM_ID=…
+make pack-macos-desktop
+```
 
-`DANQING_PYINSTALLER_PROFILE=mlx`（darwin / linux）。`cuda` / `full` profile 已移除。
+**写入 GitHub Actions secrets（从钥匙串导出 p12，无需手搓 base64）：**
 
-CI（`.github/workflows/release.yml`）在打 `v*` tag 时并行构建：macOS `.dmg`、Linux MLX thin server。
+```bash
+make set-release-secrets
+# 或 scripts/gh_set_release_secrets.sh
+```
+
+| Secret | 用途 |
+|--------|------|
+| `APPLE_CERTIFICATE` | Developer ID Application `.p12`（单行 base64） |
+| `APPLE_CERTIFICATE_PASSWORD` | 导出/导入 p12 的密码 |
+| `APPLE_SIGNING_IDENTITY` | 与证书 CN 完全一致 |
+| `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | 公证（可选；缺则只签名不公证） |
+
+CI：`.github/workflows/release.yml` 在 macOS job 中调用 `scripts/ci_import_apple_cert.sh`；未配置 secrets 时仍 ad-hoc 打包。
+
+后端在 **编译期** 由 Cargo feature 决定（`mlx-metal` / `mlx-cuda`）。`GET /api/system/health` 返回当前 backend 与探针摘要。
 
 ## 运行时环境变量
 
 | 变量 | 说明 |
 |------|------|
-| `DANQING_HTTP_HOST` | 默认 `0.0.0.0`；Tauri 设为 `127.0.0.1` |
-| `DANQING_HTTP_PORT` | Tauri 选空闲端口并注入 |
-| `DANQING_USER_DATA_DIR` | 控制面根目录，默认 `~/.danmo-make`（pointer、`.app_config.json`、logs、runtime-venv；未自定义工作区时也是媒体根） |
-| `DANQING_PIP_MIRROR` | Linux thin：`official` / `tuna` / `aliyun` |
-| `DANQING_RUNTIME_SKIP_AUTO_SETUP` | server：设为 `1` 时未就绪则拒绝启动 |
+| `DANQING_HTTP_HOST` | 服务端包默认 `127.0.0.1` |
+| `DANQING_HTTP_PORT` | 默认 `7800`；Tauri 开发时注入空闲端口 |
+| `DANQING_REGISTRY` | 注册表路径 |
+| `DANQING_DB` | SQLite 路径 |
+| `DANQING_WORKSPACE` | 工作区根（模型 / 输出） |
+| `DANQING_USER_DATA_DIR` | 控制面根目录，默认 `~/.danmo-make` |
 
 ## 安装后提示「已损坏，无法打开」
 

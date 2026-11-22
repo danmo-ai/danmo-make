@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-19",
+  "model": "flux2-klein-4b:mlx-q4",
+  "family": "flux2",
+  "gate": "visual_quality_authoritative",
+  "matrix_checked": false,
+  "edit_mode": "reference_conditioning",
+  "reference": "diffusers Flux2KleinPipeline / BFL: concat clean source tokens at T=10; denoise target from noise; slice pred to target seq",
+  "object_remove": {
+    "task_id": "02273e20-c4db-40e8-83ef-e3ec7abdc787",
+    "asset_id": "ast_dc576284e6a248a8a177",
+    "source_asset_id": "ast_45729300f51b4ef790dc",
+    "lora": "flux2-klein-4b-object-remove-lora:fp16",
+    "lora_weight": 1.1,
+    "prompt": "Remove the highlighted object from the scene",
+    "steps": 4,
+    "guidance": 1.0,
+    "seed": 42,
+    "size": "512x512",
+    "result": "highlighted apple removed; empty white table",
+    "artifact": "/Users/nil.luo/Workspace/studio-workspace/out/flux2-cli/rust-object-remove-refcond-s1.1.png"
+  },
+  "controls": {
+    "no_lora_same_prompt": {
+      "task_id": "700719e1-285e-40ac-8e44-5dbfe9726c46",
+      "result": "magenta apple retained (LoRA required for removal)"
+    },
+    "green_rewrite_no_lora": {
+      "task_id": "541310c8-7ee7-4c68-a10c-6213e8c83d53",
+      "prompt": "make the apple green",
+      "result": "green apple"
+    }
+  },
+  "rewrite_warm_api_debug": {
+    "size": "512x512",
+    "steps": 4,
+    "prompt": "make the apple green",
+    "samples_s": [3.542880058288574, 3.549921989440918, 3.5515289306640625],
+    "p50_s": 3.549921989440918,
+    "note": "API wall clock after one discard; includes VAE encode + doubled img seq. No main CLI edit warm baseline yet."
+  },
+  "notes": [
+    "Prior fidelity-blend img2img path produced OOD garbage on object-remove; not used for Flux2 Klein edit anymore.",
+    "source_fidelity is logged as ignored when set.",
+    "Warm create was ~2.55s p50 earlier; rewrite refcond ~3.55s p50 on debug API. Matrix still unchecked."
+  ]
+}
+

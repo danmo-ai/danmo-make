@@ -34,15 +34,6 @@
               {{ activeProgressHint }}
             </span>
           </div>
-          <DqButton
-            v-if="logTaskId"
-            type="text"
-            size="sm"
-            class="studio-canvas__logs-btn"
-            @click="openTaskLogs"
-          >
-            {{ $t('studio.viewLogs') }}
-          </DqButton>
         </div>
         <div class="studio-canvas__active-cards">
           <ActiveTaskCard
@@ -53,16 +44,6 @@
           />
         </div>
       </div>
-    </div>
-
-    <!-- Recent task logs (after completion / failure) -->
-    <div
-      v-if="activeTasks.length === 0 && logTaskId && hasPersistedLogs"
-      class="studio-canvas__section studio-canvas__section--log-recall"
-    >
-      <DqButton type="text" size="sm" class="studio-canvas__logs-btn" @click="openTaskLogs">
-        {{ $t('studio.viewLogs') }}
-      </DqButton>
     </div>
 
     <GenTaskLogDialog
@@ -101,8 +82,21 @@
       </div>
     </div>
 
+    <div
+      v-if="loading && displayItems.length === 0"
+      class="studio-canvas__grid studio-canvas__skeleton-grid"
+      aria-busy="true"
+      :aria-label="$t('common.loading')"
+    >
+      <div v-for="i in 8" :key="i" class="studio-canvas__skeleton">
+        <span class="studio-canvas__skeleton-media" />
+        <span class="studio-canvas__skeleton-line" />
+        <span class="studio-canvas__skeleton-line studio-canvas__skeleton-line--short" />
+      </div>
+    </div>
+
     <!-- Loading indicator -->
-    <div v-if="loading" class="studio-canvas__loading">
+    <div v-else-if="loading" class="studio-canvas__loading">
       <DqIcon class="is-loading" size="24"><Loading /></DqIcon>
     </div>
 
@@ -131,6 +125,7 @@ import {
   latestProgressItem,
 } from '@/utils/genTaskLog';
 import type { GalleryGroup, GalleryItem, Task } from '@/types';
+import { parseGalleryTimestamp } from '@/utils/galleryAssetMeta';
 import StudioCard from './StudioCard.vue';
 import StudioGroupCard from './StudioGroupCard.vue';
 import ActiveTaskCard from './ActiveTaskCard.vue';
@@ -181,12 +176,6 @@ const primaryRunningTaskId = computed(() => {
   return first?.id || null;
 });
 
-const hasPersistedLogs = computed(() => {
-  const id = logTaskId.value;
-  if (!id) return false;
-  return (tasksStore.taskLogs[id]?.length ?? 0) > 0;
-});
-
 watch(primaryRunningTaskId, (id) => {
   if (id) {
     logTaskId.value = id;
@@ -213,13 +202,6 @@ watch(
     }
   },
 );
-
-function openTaskLogs() {
-  const id = primaryRunningTaskId.value || logTaskId.value;
-  if (!id) return;
-  logTaskId.value = id;
-  showTaskLogs.value = true;
-}
 
 const activeProgressHint = computed(() => {
   const id = primaryRunningTaskId.value;
@@ -259,8 +241,7 @@ interface CanvasTimeSection {
 }
 
 function parseSortTime(iso: string | undefined): number {
-  if (!iso) return 0;
-  const t = new Date(iso).getTime();
+  const t = parseGalleryTimestamp(iso);
   return Number.isFinite(t) ? t : 0;
 }
 
@@ -401,16 +382,10 @@ function handleCardClick(item: GalleryItem, event: MouseEvent) {
   height: 6px;
   border-radius: 50%;
   background: var(--dq-accent);
-  animation: studio-pulse 2s ease-in-out infinite;
 }
 
 .studio-canvas__section-dot--active {
   background: var(--dq-accent);
-}
-
-@keyframes studio-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
 }
 
 .studio-canvas__active-layout {
@@ -452,22 +427,10 @@ function handleCardClick(item: GalleryItem, event: MouseEvent) {
   white-space: nowrap;
 }
 
-.studio-canvas__logs-btn {
-  flex-shrink: 0;
-  font-size: var(--dq-font-size-caption);
-}
-
-.studio-canvas__section--log-recall {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 12px;
-}
-
 .studio-canvas__active-cards {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  max-width: 200px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 220px));
+  gap: 16px;
 }
 
 .studio-canvas__grid {
@@ -487,6 +450,40 @@ function handleCardClick(item: GalleryItem, event: MouseEvent) {
   .studio-canvas__grid {
     grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   }
+}
+
+.studio-canvas__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.studio-canvas__skeleton-media,
+.studio-canvas__skeleton-line {
+  display: block;
+  border-radius: var(--dq-radius-control-sm);
+  background: var(--dq-fill-secondary);
+  animation: studio-skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+.studio-canvas__skeleton-media {
+  aspect-ratio: 1;
+  border: 1px solid var(--dq-border-subtle);
+}
+
+.studio-canvas__skeleton-line {
+  width: 82%;
+  height: 12px;
+}
+
+.studio-canvas__skeleton-line--short {
+  width: 54%;
+  height: 10px;
+}
+
+@keyframes studio-skeleton-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
 }
 
 .studio-canvas__loading,

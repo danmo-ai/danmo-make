@@ -1,7 +1,25 @@
 import type { CanvasItemState, CanvasStagingState, GalleryItem } from '@/types';
 
-const STAGING_MAX = 768;
-const STAGING_MIN = 384;
+/** Long-edge cap so the landing box stays a guide, not a near-fullscreen frame. */
+export const STAGING_MAX = 420;
+export const STAGING_MIN = 240;
+const STAGING_EDGE_MIN = 160;
+
+/** Clamp persisted / resized staging so legacy 768-tall boxes shrink on load. */
+export function clampStagingSize(width: number, height: number): {
+  width: number;
+  height: number;
+} {
+  let w = Math.max(STAGING_EDGE_MIN, Number(width) || STAGING_MIN);
+  let h = Math.max(STAGING_EDGE_MIN, Number(height) || STAGING_MIN);
+  const long = Math.max(w, h);
+  if (long > STAGING_MAX) {
+    const s = STAGING_MAX / long;
+    w = Math.max(STAGING_EDGE_MIN, Math.round(w * s));
+    h = Math.max(STAGING_EDGE_MIN, Math.round(h * s));
+  }
+  return { width: w, height: h };
+}
 
 /** Staging box size preserving source aspect ratio. */
 export function computeStagingDimensions(gi?: GalleryItem | null): {
@@ -15,18 +33,12 @@ export function computeStagingDimensions(gi?: GalleryItem | null): {
   if (aspect >= 1) {
     const width = Math.min(STAGING_MAX, Math.max(STAGING_MIN, refW));
     const height = Math.round(width / aspect);
-    return {
-      width,
-      height: Math.min(STAGING_MAX, Math.max(160, height)),
-    };
+    return clampStagingSize(width, Math.max(STAGING_EDGE_MIN, height));
   }
 
   const height = Math.min(STAGING_MAX, Math.max(STAGING_MIN, refH));
   const width = Math.round(height * aspect);
-  return {
-    width: Math.min(STAGING_MAX, Math.max(160, width)),
-    height,
-  };
+  return clampStagingSize(Math.max(STAGING_EDGE_MIN, width), height);
 }
 
 export function layoutInStaging(

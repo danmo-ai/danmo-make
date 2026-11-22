@@ -7,8 +7,17 @@ import {
   COMPOSER_INFERENCE_ENUM_KEYS,
 } from '@/utils/registryParamSchema';
 
-export type StructuralGuideType = 'canny' | 'depth' | 'pose' | 'hed' | 'mlsd' | 'scribble' | 'gray' | 'auto' | 'redux';
+export type StructuralGuideType =
+  | 'canny'
+  | 'depth'
+  | 'pose'
+  | 'hed'
+  | 'mlsd'
+  | 'scribble'
+  | 'gray'
+  | 'auto';
 export type ControlNetScope = 'create' | 'retouch' | 'extend';
+export type ControlBinding = 'structural' | 'standalone_edit';
 
 /** Mirrors backend ``CONTROLNET_DECLARED_BACKENDS`` until CUDA batch lands. */
 export const CONTROLNET_DECLARED_BACKENDS = ['mlx'] as const;
@@ -51,48 +60,84 @@ export type ControlImageRef = {
   assetId?: string;
 } | null;
 
-export function inferStructuralGuideType(controlnetKey: string): StructuralGuideType {
-  const k = String(controlnetKey || '').toLowerCase();
-  if (k.includes('depth')) return 'depth';
-  if (k.includes('pose')) return 'pose';
-  if (k.includes('hed')) return 'hed';
-  if (k.includes('mlsd')) return 'mlsd';
-  if (k.includes('scribble')) return 'scribble';
-  if (k.includes('gray')) return 'gray';
-  if (k.includes('redux')) return 'redux';
-  if (k.includes('z-image') && k.includes('union')) return 'auto';
-  return 'canny';
+function findControlNetRow(
+  key: string,
+  rows?: Record<string, unknown>[],
+): Record<string, unknown> | undefined {
+  if (!key || !rows?.length) return undefined;
+  return rows.find((n) => String(n.key) === key);
 }
 
-export function isFillControlNet(controlnetKey: string): boolean {
-  return String(controlnetKey || '').toLowerCase().includes('fill');
+/** Registry / compatible-row binding (`structural` | `standalone_edit`). */
+export function controlNetBinding(
+  row: Record<string, unknown> | undefined | null,
+): ControlBinding | '' {
+  const b = String(row?.binding || '').trim();
+  if (b === 'structural' || b === 'standalone_edit') return b;
+  return '';
 }
 
-export function isReduxControlNet(controlnetKey: string): boolean {
-  return String(controlnetKey || '').toLowerCase().includes('redux');
+export function controlNetGuideType(
+  row: Record<string, unknown> | undefined | null,
+  fallback: StructuralGuideType = 'canny',
+): StructuralGuideType {
+  const t = String(row?.guide_type || '').trim();
+  if (
+    t === 'canny' ||
+    t === 'depth' ||
+    t === 'pose' ||
+    t === 'hed' ||
+    t === 'mlsd' ||
+    t === 'scribble' ||
+    t === 'gray' ||
+    t === 'auto'
+  ) {
+    return t;
+  }
+  return fallback;
 }
 
-export function isCannyOrDepthControlNet(controlnetKey: string): boolean {
-  const k = String(controlnetKey || '').toLowerCase();
-  return k.includes('canny') || k.includes('depth');
+export function controlNetSupportsInpaint(row: Record<string, unknown> | undefined | null): boolean {
+  return row?.supports_inpaint === true;
 }
 
-export function isFluxStructuralBaseModel(modelKey: string): boolean {
-  return String(modelKey || '').toLowerCase().startsWith('flux1');
+export function controlNetAllowsWithReference(
+  row: Record<string, unknown> | undefined | null,
+): boolean {
+  return row?.allows_with_reference === true;
 }
 
-export function isZImageUnionControlNet(controlnetKey: string): boolean {
-  const k = String(controlnetKey || '').toLowerCase();
-  return k.includes('z-image') && k.includes('union');
+export function isStandaloneEditControlNet(
+  keyOrRow: string | Record<string, unknown> | undefined | null,
+  rows?: Record<string, unknown>[],
+  registry?: Record<string, Record<string, unknown>>,
+): boolean {
+  if (keyOrRow && typeof keyOrRow === 'object') {
+    return controlNetBinding(keyOrRow) === 'standalone_edit';
+  }
+  const key = String(keyOrRow || '');
+  const fromRows = findControlNetRow(key, rows);
+  if (fromRows) return controlNetBinding(fromRows) === 'standalone_edit';
+  if (registry?.[key]) return controlNetBinding(registry[key]) === 'standalone_edit';
+  return false;
 }
 
-export function isZImageStructuralBaseModel(modelKey: string): boolean {
-  const k = String(modelKey || '').toLowerCase();
-  return k === 'z-image' || k === 'z-image-turbo' || k.startsWith('z-image');
+export function isStructuralRetouchControlNet(
+  row: Record<string, unknown> | undefined | null,
+): boolean {
+  return controlNetBinding(row) === 'structural' && controlNetSupportsInpaint(row);
 }
 
-export function supportsStructuralGuideBaseModel(modelKey: string): boolean {
-  return isFluxStructuralBaseModel(modelKey) || isZImageStructuralBaseModel(modelKey);
+/** @deprecated Prefer controlNetGuideType from registry/compatible rows. */
+export function inferStructuralGuideType(
+  controlnetKey: string,
+  compatibleControlNets?: Record<string, unknown>[],
+  registry?: Record<string, Record<string, unknown>>,
+): StructuralGuideType {
+  const row =
+    findControlNetRow(controlnetKey, compatibleControlNets) ||
+    (registry?.[controlnetKey] as Record<string, unknown> | undefined);
+  return controlNetGuideType(row, 'canny');
 }
 
 export function controlNetDisplayName(n: Record<string, unknown>): string {
@@ -109,16 +154,58 @@ export function controlNetReady(n: Record<string, unknown>): boolean {
   return false;
 }
 
+/** Prefer `key:readyVersion` so safetensors ControlNets resolve (e.g. `:8steps`). */
+export function resolveControlNetModelId(
+  controlnetKey: string,
+  opts?: {
+    compatibleControlNets?: Record<string, unknown>[];
+    registry?: Record<string, Record<string, unknown>>;
+    versionKey?: string;
+  },
+): string {
+  const key = String(controlnetKey || '').trim();
+  if (!key) return '';
+  if (key.includes(':')) return key;
+  if (opts?.versionKey) return `${key}:${opts.versionKey}`;
+  const row =
+    findControlNetRow(key, opts?.compatibleControlNets) ||
+    (opts?.registry?.[key] as Record<string, unknown> | undefined);
+  const vr = row?.versions_ready as Record<string, boolean> | undefined;
+  if (vr) {
+    const ready = Object.entries(vr).find(([, ok]) => ok);
+    if (ready?.[0]) return `${key}:${ready[0]}`;
+  }
+  const versions = (row?.versions || opts?.registry?.[key]?.versions) as
+    | Record<string, { default?: boolean }>
+    | undefined;
+  if (versions) {
+    const def = Object.entries(versions).find(([, cfg]) => cfg?.default === true);
+    if (def?.[0]) return `${key}:${def[0]}`;
+    const first = Object.keys(versions)[0];
+    if (first) return `${key}:${first}`;
+  }
+  return key;
+}
+
 export function buildStructuralGuidePayload(
   controlnetKey: string,
   assetId: string,
   strength: number,
   inpaint?: { sourceAssetId?: string; maskAssetId?: string },
+  opts?: {
+    compatibleControlNets?: Record<string, unknown>[];
+    registry?: Record<string, Record<string, unknown>>;
+    versionKey?: string;
+  },
 ): Record<string, unknown> {
+  const bare = String(controlnetKey || '').split(':')[0] || '';
+  const row =
+    findControlNetRow(bare, opts?.compatibleControlNets) ||
+    (opts?.registry?.[bare] as Record<string, unknown> | undefined);
   const payload: Record<string, unknown> = {
     asset_id: assetId,
-    model_id: controlnetKey,
-    type: inferStructuralGuideType(controlnetKey),
+    model_id: resolveControlNetModelId(controlnetKey, opts),
+    type: controlNetGuideType(row, 'canny'),
     weight: Number(strength) || 0.8,
   };
   const src = String(inpaint?.sourceAssetId || '').trim();
@@ -141,6 +228,8 @@ export function appendZImageEnhancementFields(
     controlnetStrength?: number;
     inpaintSourceId?: string;
     inpaintMaskId?: string;
+    compatibleControlNets?: Record<string, unknown>[];
+    registry?: Record<string, Record<string, unknown>>;
   },
 ): { ok: true } | { ok: false; code: 'inpaint_pair_required' } {
   const controlnet = String(opts.controlnet || '');
@@ -156,6 +245,10 @@ export function appendZImageEnhancementFields(
       controlAssetId,
       Number(opts.controlnetStrength) || 0.8,
       inpSrc && inpMsk ? { sourceAssetId: inpSrc, maskAssetId: inpMsk } : undefined,
+      {
+        compatibleControlNets: opts.compatibleControlNets,
+        registry: opts.registry,
+      },
     );
   }
   const composerParams = opts.params || {};
@@ -178,8 +271,9 @@ export function fillModelRegistryDefaultsPatch(
   modelKey: string,
   registry: Record<string, Record<string, unknown>>,
 ): Partial<{ guidance: number; steps: number }> {
-  if (!isFillControlNet(modelKey)) return {};
-  const raw = registry[modelKey]?.parameters as Record<string, { default?: number }> | undefined;
+  const row = registry[modelKey];
+  if (!row || controlNetBinding(row) !== 'standalone_edit') return {};
+  const raw = row.parameters as Record<string, { default?: number }> | undefined;
   if (!raw) return {};
   const patch: Partial<{ guidance: number; steps: number }> = {};
   if (typeof raw.guidance?.default === 'number') patch.guidance = raw.guidance.default;
@@ -197,13 +291,9 @@ export function controlNetRegistryDefaultsPatch(
   const patch: Partial<{ guidance: number; steps: number; controlnet_strength: number }> = {};
   if (typeof raw.guidance?.default === 'number') patch.guidance = raw.guidance.default;
   if (typeof raw.steps?.default === 'number') patch.steps = raw.steps.default;
-  const strength =
-    typeof raw.controlnet_strength?.default === 'number'
-      ? raw.controlnet_strength.default
-      : typeof raw.redux_strength?.default === 'number'
-        ? raw.redux_strength.default
-        : undefined;
-  if (typeof strength === 'number') patch.controlnet_strength = strength;
+  if (typeof raw.controlnet_strength?.default === 'number') {
+    patch.controlnet_strength = raw.controlnet_strength.default;
+  }
   return patch;
 }
 
@@ -221,22 +311,21 @@ export function resolveControlAssetId(
 
 export type StructuralGuideValidationCode =
   | 'fill_edit_only'
-  | 'flux_only'
   | 'no_img2img'
   | 'missing_control_image'
   | 'controlnet_not_ready'
   | 'runtime_unavailable';
 
-/** First installed structural guide controlnet (excludes Fill). */
+/** First ready structural ControlNet (excludes standalone_edit). */
 export function pickDefaultStructuralControlNet(
   nets: Record<string, unknown>[] | undefined,
 ): string {
   if (!nets?.length) return '';
   const ready = nets.find(
-    (n) => controlNetReady(n) && !isFillControlNet(String(n.key || '')),
+    (n) => controlNetReady(n) && controlNetBinding(n) !== 'standalone_edit',
   );
   if (ready) return String(ready.key || '');
-  const any = nets.find((n) => !isFillControlNet(String(n.key || '')));
+  const any = nets.find((n) => controlNetBinding(n) !== 'standalone_edit');
   return any ? String(any.key || '') : '';
 }
 
@@ -279,18 +368,16 @@ export function validateStructuralGuideForCreate(opts: {
   ) {
     return { ok: false, code: 'runtime_unavailable' };
   }
-  if (isFillControlNet(key)) return { ok: false, code: 'fill_edit_only' };
-  if (!supportsStructuralGuideBaseModel(opts.baseModel)) return { ok: false, code: 'flux_only' };
-  if (opts.hasReferenceImage) {
-    const zImg = isZImageStructuralBaseModel(opts.baseModel);
-    const zUnion = isZImageUnionControlNet(key);
-    if (!(zImg && zUnion)) {
-      return { ok: false, code: 'no_img2img' };
-    }
+  const entry = opts.compatibleControlNets?.find((n) => String(n.key) === key);
+  if (!entry) return { ok: false, code: 'controlnet_not_ready' };
+  if (controlNetBinding(entry) === 'standalone_edit') {
+    return { ok: false, code: 'fill_edit_only' };
+  }
+  if (opts.hasReferenceImage && !controlNetAllowsWithReference(entry)) {
+    return { ok: false, code: 'no_img2img' };
   }
   if (!opts.hasControlImage) return { ok: false, code: 'missing_control_image' };
-  const entry = opts.compatibleControlNets?.find((n) => String(n.key) === key);
-  if (entry && !controlNetReady(entry)) return { ok: false, code: 'controlnet_not_ready' };
+  if (!controlNetReady(entry)) return { ok: false, code: 'controlnet_not_ready' };
   return { ok: true };
 }
 

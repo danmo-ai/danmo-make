@@ -5,12 +5,6 @@ export type VideoEditSourceMode = 'first_frame' | 'image_only' | 'source_video';
 
 export type AnimateReferenceAcceptKind = 'image' | 'video' | 'image_or_video';
 
-const BERNINI_MAX_REFERENCE_IMAGES = 5;
-
-export function berniniMaxReferenceImages(): number {
-  return BERNINI_MAX_REFERENCE_IMAGES;
-}
-
 export function resolveVideoEditSourceMode(
   parameters: Record<string, unknown> | undefined | null,
 ): VideoEditSourceMode {
@@ -18,18 +12,6 @@ export function resolveVideoEditSourceMode(
   if (raw === 'source_video') return 'source_video';
   if (raw === 'first_frame') return 'first_frame';
   return 'image_only';
-}
-
-export function isBerniniRenderer(
-  parameters: Record<string, unknown> | undefined | null,
-): boolean {
-  return Boolean(parameters?.bernini_renderer);
-}
-
-export function supportsBerniniReferenceImages(
-  parameters: Record<string, unknown> | undefined | null,
-): boolean {
-  return isBerniniRenderer(parameters);
 }
 
 export type Ref2VAKind = 'image' | 'video' | 'audio';
@@ -44,6 +26,8 @@ export type Ref2VASpec = {
   pairedAudio: boolean;
   backgroundIsLastImage: boolean;
   hintKey: string;
+  /** Registry id that must be installed and sent with Ref2VA (e.g. ltx25-msr-lora). */
+  requiresAdapter: string;
 };
 
 const REF2VA_KINDS: ReadonlySet<string> = new Set(['image', 'video', 'audio']);
@@ -81,6 +65,7 @@ export function ref2vaSpec(
     pairedAudio: false,
     backgroundIsLastImage: false,
     hintKey: 'create.ref2vaHintPacked',
+    requiresAdapter: '',
   };
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return empty;
   const cfg = raw as Record<string, unknown>;
@@ -93,6 +78,7 @@ export function ref2vaSpec(
   const sum = maxImages + maxVideos + maxAudios;
   const maxTotal = Math.max(1, asNonNegInt(cfg.max_total, sum || 1));
   const hintKey = String(cfg.hint_key || '').trim() || 'create.ref2vaHintPacked';
+  const requiresAdapter = String(cfg.requires_adapter || '').trim();
   return {
     enabled: true,
     maxTotal,
@@ -103,6 +89,7 @@ export function ref2vaSpec(
     pairedAudio: Boolean(cfg.paired_audio),
     backgroundIsLastImage: Boolean(cfg.background_is_last_image),
     hintKey,
+    requiresAdapter,
   };
 }
 

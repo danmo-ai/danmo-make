@@ -17,33 +17,38 @@
       />
     </DqSelect>
 
-    <DqIconButton
-      type="text"
-      size="sm"
-      :label="$t('canvas.newSession')"
-      @click="onCreateSession"
-    >
-      <DqIcon :size="14"><Plus /></DqIcon>
-    </DqIconButton>
+    <ComposerIconTip :content="$t('canvas.newSession')">
+      <DqIconButton
+        type="text"
+        size="sm"
+        :label="$t('canvas.newSession')"
+        @click="onCreateSession"
+      >
+        <DqIcon :size="14"><Plus /></DqIcon>
+      </DqIconButton>
+    </ComposerIconTip>
 
-    <DqIconButton
-      type="text"
-      size="sm"
-      :label="$t('canvas.renameSession')"
-      @click="startRename"
-    >
-      <DqIcon :size="14"><Document /></DqIcon>
-    </DqIconButton>
+    <ComposerIconTip :content="$t('canvas.renameSession')">
+      <DqIconButton
+        type="text"
+        size="sm"
+        :label="$t('canvas.renameSession')"
+        @click="startRename"
+      >
+        <DqIcon :size="14"><Pencil /></DqIcon>
+      </DqIconButton>
+    </ComposerIconTip>
 
-    <DqIconButton
-      v-if="sessions.length > 1"
-      type="text"
-      size="sm"
-      :label="$t('canvas.deleteSession')"
-      @click="onDeleteSession(sessionId)"
-    >
-      <DqIcon :size="14"><Delete /></DqIcon>
-    </DqIconButton>
+    <ComposerIconTip v-if="sessions.length > 1" :content="$t('canvas.deleteSession')">
+      <DqIconButton
+        type="text"
+        size="sm"
+        :label="$t('canvas.deleteSession')"
+        @click="onDeleteSession(sessionId)"
+      >
+        <DqIcon :size="14"><Delete /></DqIcon>
+      </DqIconButton>
+    </ComposerIconTip>
 
     <span v-if="syncing" class="studio-canvas-session-controls__sync">{{ $t('canvas.syncing') }}</span>
     </template>
@@ -70,10 +75,11 @@
 
 <script setup lang="ts">
 import { ref, computed, unref } from 'vue';
-import { Plus, Delete, Document } from '@danqing/dq-shell';
+import { Plus, Delete, Pencil } from '@danqing/dq-shell';
 import { toast } from '@/utils/feedback';
 import { $tt } from '@/utils/i18n';
 import { useCanvasStore, type CanvasMedia } from '@/composables/useCanvasStore';
+import ComposerIconTip from '@/components/studio/ComposerIconTip.vue';
 import type { CanvasSessionSummary } from '@/types';
 
 const props = defineProps<{
@@ -111,10 +117,19 @@ async function onCreateSession() {
 }
 
 async function onDeleteSession(id: string) {
-  const ok = await store.deleteSession(id);
-  if (ok) {
-    emit('composer-restore', { ...store.composerSnapshot });
-    toast.success($tt('canvas.sessionDeleted'));
+  try {
+    const ok = await store.deleteSession(id);
+    if (ok) {
+      emit('composer-restore', { ...store.composerSnapshot });
+      toast.success($tt('canvas.sessionDeleted'));
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('cannot_delete_last_canvas') || msg.includes('last canvas')) {
+      toast.error($tt('canvas.sessionCannotDeleteLast'));
+      return;
+    }
+    throw e;
   }
 }
 

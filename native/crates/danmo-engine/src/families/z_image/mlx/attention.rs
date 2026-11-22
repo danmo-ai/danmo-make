@@ -1,0 +1,297 @@
+use danmo_mlx::{Array, Error, LinearWeight, Result, Stream};
+
+pub struct AttentionWeights<'a> {
+    pub to_q: &'a LinearWeight,
+    pub to_k: &'a LinearWeight,
+    pub to_v: &'a LinearWeight,
+    pub to_out: &'a LinearWeight,
+    pub norm_q: &'a Array,
+    pub norm_k: &'a Array,
+}
+
+pub fn forward(
+    input: &Array,
+    weights: AttentionWeights<'_>,
+    heads: i32,
+    ids: &[[i32; 3]],
+    axes: [i32; 3],
+    theta: f32,
+    eps: f32,
+    mask: Option<&Array>,
+    stream: &Stream,
+) -> Result<Array> {
+    let table = rope_table(ids, axes, theta, stream)?;
+    forward_with_table(
+        input,
+        weights,
+        heads,
+        ids.len(),
+        axes,
+        &table,
+        eps,
+        mask,
+        stream,
+    )
+}
+
+pub fn forward_with_table(
+    input: &Array,
+    weights: AttentionWeights<'_>,
+    heads: i32,
+    sequence_positions: usize,
+    axes: [i32; 3],
+    table: &Array,
+    eps: f32,
+    mask: Option<&Array>,
+    stream: &Stream,
+) -> Result<Array> {
+    let shape = input.shape();
+    if shape.len() != 3 {
+        return Err(Error::new("Z-Image attention", "expected [B, S, D] input"));
+    }
+    let (batch, sequence, dim) = (shape[0], shape[1], shape[2]);
+    if heads <= 0 || dim % heads != 0 || sequence_positions != sequence as usize {
+        return Err(Error::new(
+            "Z-Image attention",
+            "invalid heads or position count",
+        ));
+    }
+    let head_dim = dim / heads;
+    if axes.iter().sum::<i32>() != head_dim
+        || axes.iter().any(|width| *width <= 0 || width % 2 != 0)
+    {
+        return Err(Error::new(
+            "Z-Image attention",
+            "RoPE axes do not partition head dim",
+        ));
+    }
+
+    let mut q = weights
+        .to_q
+        .apply(input, None, stream)?
+        .reshape(&[batch, sequence, heads, head_dim], stream)?;
+    let mut k = weights
+        .to_k
+        .apply(input, None, stream)?
+        .reshape(&[batch, sequence, heads, head_dim], stream)?;
+    let v = weights
+        .to_v
+        .apply(input, None, stream)?
+        .reshape(&[batch, sequence, heads, head_dim], stream)?;
+    q = q.rms_norm(Some(weights.norm_q), eps, stream)?;
+    k = k.rms_norm(Some(weights.norm_k), eps, stream)?;
+    q = apply_rope(&q, table, stream)?;
+    k = apply_rope(&k, table, stream)?;
+
+    let q = q.transpose_axes(&[0, 2, 1, 3], stream)?;
+    let k = k.transpose_axes(&[0, 2, 1, 3], stream)?;
+    let v = v.transpose_axes(&[0, 2, 1, 3], stream)?;
+    let scale = 1.0 / (head_dim as f32).sqrt();
+    let output = Array::scaled_dot_product_attention(&q, &k, &v, scale, "", mask, stream)?
+        .transpose_axes(&[0, 2, 1, 3], stream)?
+        .reshape(&[batch, sequence, dim], stream)?;
+    weights.to_out.apply(&output, None, stream)
+}
+
+fn apply_rope(input: &Array, table: &Array, stream: &Stream) -> Result<Array> {
+    let shape = input.shape();
+    let (batch, sequence, heads, dim) = (shape[0], shape[1], shape[2], shape[3]);
+    let pairs = dim / 2;
+    let table = table.reshape(&[1, sequence, 1, pairs, 2], stream)?;
+    let input = input.reshape(&[batch, sequence, heads, pairs, 2], stream)?;
+    let input_real = component(&input, 0, stream)?;
+    let input_imag = component(&input, 1, stream)?;
+    let real = component(&table, 0, stream)?;
+    let imag = component(&table, 1, stream)?;
+    let output_real = Array::subtract(
+        &Array::multiply(&input_real, &real, stream)?,
+        &Array::multiply(&input_imag, &imag, stream)?,
+        stream,
+    )?;
+    let output_imag = Array::add(
+        &Array::multiply(&input_real, &imag, stream)?,
+        &Array::multiply(&input_imag, &real, stream)?,
+        stream,
+    )?;
+    Array::stack(&[output_real, output_imag], -1, stream)?
+        .reshape(&[batch, sequence, heads, dim], stream)
+}
+
+fn component(input: &Array, index: i32, stream: &Stream) -> Result<Array> {
+    let mut start = vec![0; input.shape().len()];
+    let mut stop = input.shape();
+    let strides = vec![1; input.shape().len()];
+    let axis = start.len() - 1;
+    start[axis] = index;
+    stop[axis] = index + 1;
+    input
+        .slice(&start, &stop, &strides, stream)?
+        .squeeze_axis(axis as i32, stream)
+}
+
+pub(super) fn rope_table(
+    ids: &[[i32; 3]],
+    axes: [i32; 3],
+    theta: f32,
+    stream: &Stream,
+) -> Result<Array> {
+    let theta = Array::from_f32_slice(&[theta], &[])?;
+    let one = Array::from_f32_slice(&[1.0], &[])?;
+    let mut tables = Vec::new();
+    for (axis, width) in axes.iter().enumerate() {
+        let positions: Vec<i32> = ids.iter().map(|id| id[axis]).collect();
+        let positions = Array::from_i32_slice(&positions, &[ids.len() as i32])?
+            .astype(danmo_mlx::Dtype::Float32, stream)?
+            .expand_dims(1, stream)?;
+        let width_scalar = Array::from_f32_slice(&[*width as f32], &[])?;
+        let exponents = Array::arange(0.0, *width as f64, 2.0, danmo_mlx::Dtype::Float32, stream)?;
+        let exponents = Array::divide(&exponents, &width_scalar, stream)?;
+        let frequencies = Array::power(&theta, &exponents, stream)?;
+        let frequencies = Array::divide(&one, &frequencies, stream)?.expand_dims(0, stream)?;
+        let angles = Array::multiply(&positions, &frequencies, stream)?;
+        tables.push(Array::stack(
+            &[angles.cos(stream)?, angles.sin(stream)?],
+            -1,
+            stream,
+        )?);
+    }
+    Array::concatenate_axis(&tables, 1, stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{forward, AttentionWeights};
+    use crate::families::z_image::weights::ZImageConfig;
+    use danmo_mlx::{Array, DeviceType, LinearWeight, Result, Stream};
+    use std::collections::HashMap;
+
+    fn values(count: usize, modulus: usize, scale: f32, offset: f32) -> Vec<f32> {
+        (0..count)
+            .map(|index| (index % modulus) as f32 * scale - offset)
+            .collect()
+    }
+
+    fn probe(device_type: DeviceType) -> Result<()> {
+        let stream = match device_type {
+            DeviceType::Cpu => Stream::cpu()?,
+            DeviceType::Gpu => Stream::gpu()?,
+        };
+        let input_values = values(12, 11, 0.1, 0.4);
+        let input = Array::from_f32_slice(&input_values, &[1, 2, 6])?;
+        let q_values = values(36, 11, 0.03, 0.1);
+        let k_values = values(36, 9, 0.025, -0.05);
+        let v_values = values(36, 7, 0.04, 0.08);
+        let out_values = values(36, 13, 0.02, -0.07);
+        let norm_q_values = values(6, 5, 0.2, -0.2);
+        let norm_k_values = values(6, 7, 0.1, -0.1);
+        let q = LinearWeight::dense(Array::from_f32_slice(&q_values, &[6, 6])?);
+        let k = LinearWeight::dense(Array::from_f32_slice(&k_values, &[6, 6])?);
+        let v = LinearWeight::dense(Array::from_f32_slice(&v_values, &[6, 6])?);
+        let out = LinearWeight::dense(Array::from_f32_slice(&out_values, &[6, 6])?);
+        let norm_q = Array::from_f32_slice(&norm_q_values, &[6])?;
+        let norm_k = Array::from_f32_slice(&norm_k_values, &[6])?;
+        let ids = [[1, 0, 0], [2, 1, 1]];
+        let actual = forward(
+            &input,
+            AttentionWeights {
+                to_q: &q,
+                to_k: &k,
+                to_v: &v,
+                to_out: &out,
+                norm_q: &norm_q,
+                norm_k: &norm_k,
+            },
+            1,
+            &ids,
+            [2, 2, 2],
+            256.0,
+            1e-5,
+            None,
+            &stream,
+        )?
+        .to_vec_f32(&stream)?;
+
+        let mut fused = q_values.clone();
+        fused.extend(&k_values);
+        fused.extend(&v_values);
+        let mut host_weights = HashMap::new();
+        host_weights.insert("layers.0.attention.qkv.weight".to_string(), fused);
+        host_weights.insert("layers.0.attention.out.weight".to_string(), out_values);
+        host_weights.insert(
+            "layers.0.attention.q_norm.weight".to_string(),
+            norm_q_values,
+        );
+        host_weights.insert(
+            "layers.0.attention.k_norm.weight".to_string(),
+            norm_k_values,
+        );
+        let config = ZImageConfig {
+            dim: 6,
+            heads: 1,
+            head_dim: 6,
+            axes: [2, 2, 2],
+            rope_theta: 256.0,
+            ..ZImageConfig::smoke()
+        };
+        let expected = crate::families::z_image::reference::attention(
+            &host_weights,
+            "layers.0",
+            &input_values,
+            &ids,
+            config,
+        );
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!((actual - expected).abs() < 8e-5, "{actual} != {expected}");
+        }
+        Ok(())
+    }
+
+    fn mask_probe(device_type: DeviceType) -> Result<()> {
+        let stream = match device_type {
+            DeviceType::Cpu => Stream::cpu()?,
+            DeviceType::Gpu => Stream::gpu()?,
+        };
+        let queries = Array::from_f32_slice(&[1.0, 0.0, 0.0, 1.0], &[1, 1, 2, 2])?;
+        let keys = Array::from_f32_slice(&[1.0, 0.0, 0.0, 1.0], &[1, 1, 2, 2])?;
+        let values = Array::from_f32_slice(&[1.0, 2.0, 3.0, 4.0], &[1, 1, 2, 2])?;
+        let mask = Array::from_f32_slice(
+            &[0.0, f32::NEG_INFINITY, 0.0, f32::NEG_INFINITY],
+            &[1, 1, 2, 2],
+        )?;
+        let output = Array::scaled_dot_product_attention(
+            &queries,
+            &keys,
+            &values,
+            std::f32::consts::FRAC_1_SQRT_2,
+            "",
+            Some(&mask),
+            &stream,
+        )?
+        .to_vec_f32(&stream)?;
+        assert_eq!(output, vec![1.0, 2.0, 1.0, 2.0]);
+        Ok(())
+    }
+
+    #[test]
+    fn cpu_additive_mask_excludes_invalid_keys() {
+        mask_probe(DeviceType::Cpu).unwrap();
+    }
+
+    #[cfg(feature = "mlx-metal")]
+    #[test]
+    fn metal_additive_mask_excludes_invalid_keys() {
+        mask_probe(DeviceType::Gpu).unwrap();
+    }
+
+    #[test]
+    fn cpu_attention_matches_host_reference() {
+        probe(DeviceType::Cpu).unwrap();
+    }
+
+    #[cfg(feature = "mlx-metal")]
+    #[test]
+    fn metal_attention_matches_host_reference() {
+        probe(DeviceType::Gpu).unwrap();
+    }
+}

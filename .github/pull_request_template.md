@@ -16,24 +16,24 @@
 
 Reference: `docs/engine_architecture.md` §6
 
-- [ ] Updated `default_config/models_registry.json` (+ synced runtime registry when required)
-- [ ] Added/updated `backend/engine/config/model_configs.py`
-- [ ] Added/updated family implementation under `backend/engine/families/<family>/`
-- [ ] Registered transformer/remap/text-encoder in `backend/engine/_transformer_registry.py`
-- [ ] Pipeline behavior remains registry-driven (no long-term `if family == ...` branch)
-- [ ] Fail-loud behavior preserved (no silent fallback on load/inference errors)
+- [ ] Updated `default_config/models_registry.json` (real GGUF version rows only; no invented URL)
+- [ ] Added a `FamilySpec` row and wired `execute` only from `native/crates/danmo-engine/src/families/mod.rs`
+- [ ] Added the family under `native/crates/danmo-engine/src/families/<family>/` without importing another family
+- [ ] Reused `common/qwen3`, `common/vae`, `common/png`, or `common/ops` with parameters, or kept a divergent denoise / VAE in the family
+- [ ] Shared modules still have no family id
+- [ ] Fail-loud behavior preserved (no silent fallback on load or inference errors)
 
 ## Reuse / Architecture Notes
 
-- Reused `backend/engine/common/*` modules:
+- Reused `native/crates/danmo-engine/src/common/*`:
 - Family-specific logic intentionally kept local:
-- Any backend-specific hook (`*_mlx.py` / `*_cuda.py`) added and why:
+- Device backend (`cpu` / `cuda` / `vulkan` / `metal`), if the change touches `GgmlContext`:
 
 ## Validation
 
-- [ ] `python -m py_compile <touched files>`
-- [ ] `make verify-engine-stack` (includes governance gates + `test-engine-unit`)
-- [ ] Minimal inference path validated (CLI/bench or equivalent)
+- [ ] `cargo test --manifest-path native/Cargo.toml --offline -p danmo-engine --lib`
+- [ ] Server tests when the API contract changed
+- [ ] Minimal inference path validated (engine test or API smoke)
 
 Commands/results:
 

@@ -6,67 +6,79 @@
     @scroll="onCanvasScroll"
   >
     <template #filters>
-      <StudioGalleryFilters
-        :filter-time="filterTime"
-        :filter-models="filterModels"
-        :search-text="searchText"
-        :time-options="timeOptions"
-        :model-options="allModelOptions"
-        :selection-mode="selectionMode"
-        :selected-count="selectedPaths.size"
-        :all-selected="allLoadedSelected"
-        :view-mode="viewMode"
-        :supports-canvas="true"
-        canvas-media="image"
-        :composer-busy="composerBusy"
-        @update:filter-time="filterTime = $event"
-        @update:filter-models="filterModels = $event"
-        @update:search-text="searchText = $event"
-        @refresh="refreshGallery"
-        @toggle-selection-mode="toggleSelectionMode"
-        @select-all="selectAllLoaded"
-        @batch-delete="batchDeleteSelected"
-        @batch-train-lora="batchTrainLoraSelected"
-        @clear-selection="clearSelection"
-        @update:view-mode="onViewModeChange"
-        @composer-restore="onCanvasComposerRestore"
-        @open-composer="openComposerDrawer()"
-      />
+      <!-- List: search canvases + new / refresh -->
+      <div v-if="viewMode === 'grid'" class="image-create-filters image-create-filters--list">
+        <DqInput
+          v-model="stripSearchText"
+          size="sm"
+          class="image-create-filters__search"
+          :placeholder="$t('canvas.stripSearchPlaceholder')"
+          clearable
+        >
+          <template #prefix><DqIcon><Search /></DqIcon></template>
+        </DqInput>
+        <div class="image-create-filters__spacer" aria-hidden="true" />
+        <div class="image-create-filters__actions">
+          <DqButton size="sm" @click="onNewCanvas">{{ $t('canvas.newCanvas') }}</DqButton>
+          <DqIconButton
+            type="text"
+            size="sm"
+            :label="$t('common.refresh')"
+            @click="refreshStripList"
+          >
+            <DqIcon><Refresh /></DqIcon>
+          </DqIconButton>
+        </div>
+      </div>
+      <!-- Detail: back + title + refresh + text-to-image composer -->
+      <div v-else class="image-create-filters image-create-filters--detail">
+        <DqButton size="sm" type="text" @click="onBackToStripList">
+          ← {{ $t('canvas.backToCanvasList') }}
+        </DqButton>
+        <span class="image-create-filters__session-title" :title="canvasSessionTitle">
+          {{ canvasSessionTitle }}
+        </span>
+        <div class="image-create-filters__spacer" />
+        <DqIconButton
+          type="text"
+          size="sm"
+          :label="$t('common.refresh')"
+          @click="refreshGallery"
+        >
+          <DqIcon><Refresh /></DqIcon>
+        </DqIconButton>
+        <DqButton
+          type="primary"
+          size="sm"
+          :class="{ 'is-busy': composerBusy }"
+          @click="openTextGenComposer"
+        >
+          {{ $t('studio.openComposer') }}
+        </DqButton>
+      </div>
     </template>
 
     <template #canvas>
-      <StudioCanvas
+      <StudioCanvasStripList
         v-if="viewMode === 'grid'"
-        :items="galleryItems"
-        :groups="galleryGroups"
+        :sessions="canvasSessions"
+        :search-text="stripSearchText"
+        :session-asset-ids="sessionAssetIdsBySession"
+        :loading="!canvasReady"
         :active-tasks="activeImageTasks"
-        :loading="galleryLoading"
-        :has-more="galleryHasMore"
-        media="image"
-        :group-mode="groupMode"
-        :selected-group-id="selectedGroupId"
-        :has-active-filters="hasActiveFilters"
-        :selection-mode="selectionMode"
-        :selected-paths="selectedPaths"
-        :all-selected="allLoadedSelected"
-        @select="onGallerySelect"
-        @enter-group="enterGroup"
-        @exit-group="exitGroup"
-        @card-action="onCardAction"
-        @reset-filters="resetGalleryFilters"
-        @load-more="loadGallery(false)"
-        @toggle-select="toggleSelect"
-        @select-all="selectAllLoaded"
-        @batch-delete="batchDeleteSelected"
-        @batch-train-lora="batchTrainLoraSelected"
-        @clear-selection="clearSelection"
-        @open-composer="openComposerDrawer()"
+        :gallery-by-asset-id="galleryByAssetId"
+        @open="onStripOpen"
+        @preview="onStripPreview"
+        @create="onStripCreate"
+        @rename="onStripRename"
+        @delete="onStripDelete"
       />
       <InfiniteCanvas
         v-else
         ref="infiniteCanvasRef"
         :items="galleryItems"
         media="image"
+        hide-composer-entry
         :editing-path="showEditorDrawer && editDrawerItem ? editDrawerItem.path : ''"
         :mask-preview="canvasMaskPreview"
         :extend-preview="canvasExtendPreview"
@@ -74,28 +86,22 @@
         @use-as-control="onCanvasUseAsControl"
         @card-action="onCardAction"
         @download="downloadItem"
-        @toggle-grid-view="() => onViewModeChange('grid')"
+        @toggle-grid-view="onBackToStripList"
         @node-selected="onCanvasNodeSelected"
         @session-ready="onCanvasSessionReady"
         @open-preview="onCanvasOpenPreview"
         @composer-restore="onCanvasComposerRestore"
         @overlay-cleared="onCanvasOverlayCleared"
-        @open-composer="onCanvasOpenComposer()"
+        @open-composer="onCanvasOpenComposer"
         @request-close-composer="closeComposerDrawer()"
       />
     </template>
   </StudioLayout>
 
-  <StudioComposeFab
-    v-if="!composerDrawerOpen"
-    media="image"
-    :busy="composerBusy"
-    @open="openComposerDrawer()"
-  />
-
   <StudioComposerHost
+    v-if="viewMode === 'canvas' || composerDrawerOpen"
     v-model:open="composerDrawerOpen"
-    :drawer-title="$t('studio.composerDrawerTitle')"
+    :drawer-title="composerDrawerTitle"
   >
     <ImageComposer
         v-model="params.prompt"
@@ -115,13 +121,9 @@
         :show-negative-prompt="!!currentModelConfig?.parameters?.negative_prompt_support"
         :reference-image="referenceImage"
         :extra-reference-images="extraReferenceImages"
-        :references-blocked="referencesBlocked"
-        :generate-block-reason="generateBlockReason"
         :control-image="controlImage"
-        :inpaint-source-image="inpaintSourceImage"
-        :inpaint-mask-image="inpaintMaskImage"
         :mode="imageMode"
-        :mode-options="imageModeOptions"
+        :mode-options="[]"
         :current-model-config="currentModelConfig"
         :compatible-loras="compatibleLoras"
         :compatible-control-nets="compatibleControlNets"
@@ -134,10 +136,6 @@
         @remove-extra-reference="removeExtraReferenceImage"
         @pick-control="openAssetPicker('control')"
         @remove-control="removeControlImage"
-        @pick-inpaint-source="openAssetPicker('inpaint_source')"
-        @remove-inpaint-source="removeInpaintSourceImage"
-        @pick-inpaint-mask="openAssetPicker('inpaint_mask')"
-        @remove-inpaint-mask="removeInpaintMaskImage"
         @model-change="onModelVersionChange"
         @reset-defaults="resetToDefaults"
         @enhance="onEnhancePrompt"
@@ -163,13 +161,32 @@
     />
   </DqDialog>
 
-  <!-- Preview dialog -->
+  <!-- Preview dialog: canvas detail uses session node order -->
   <GalleryPreviewDialog
     v-model:open="previewVisible"
     v-model:index="selectedImageIndex"
-    :items="galleryItems"
+    :items="previewItems"
     media="image"
+    :transfer-targets="previewTransferTargets"
+    @transfer="onPreviewTransfer"
   />
+
+  <DqDialog
+    v-model:open="stripRenameOpen"
+    :title="$t('canvas.renameSession')"
+    width="360px"
+  >
+    <DqInput
+      v-model="stripRenameDraft"
+      size="sm"
+      :placeholder="$t('canvas.sessionSelect')"
+      @keydown.enter="commitStripRename"
+    />
+    <template #footer>
+      <DqButton size="sm" @click="stripRenameOpen = false">{{ $t('common.cancel') }}</DqButton>
+      <DqButton type="primary" @click="commitStripRename">{{ $t('common.confirm') }}</DqButton>
+    </template>
+  </DqDialog>
 
   <!-- Unified Editor Drawer: retouch / extend / upscale -->
   <DqDrawer
@@ -191,7 +208,17 @@
           </DqPrefRow>
         </DqPrefPane>
 
-        <p class="studio-retouch-fill-hint">{{ $t('studio.retouchFillHint') }}</p>
+        <p class="studio-retouch-fill-hint">{{ retouchHintText }}</p>
+        <DqPrefPane class="studio-create-pref-pane studio-editor-drawer-pref-pane">
+          <DqPrefRow :label="$t('studio.retouchPromptLabel')">
+            <DqInput
+              v-model="params.prompt"
+              type="textarea"
+              :rows="3"
+              :placeholder="$t('studio.retouchPromptPlaceholder')"
+            />
+          </DqPrefRow>
+        </DqPrefPane>
         <CreateFillEditParams :params="fillEditParams" />
         <div class="studio-retouch-editor-wrap">
           <ImageEditor
@@ -255,7 +282,7 @@ import { usePromptApplyOffer } from '@/composables/usePromptApplyOffer';
 import { useTasksStore } from '@/stores/tasks';
 import { useRegistryStore } from '@/stores/registry';
 import type { SystemInfo, GalleryItem, Task } from '@/types';
-import { applyDefaults, buildResolutionSizeOptions, extraReferenceSlotCap, hasDeviation, parseSizeValue, pickResolutionForModel, referenceImageSlotCap, strengthDefaultFromRegistry, strengthToSourceFidelity } from '@/utils/registryParamSchema';
+import { applyDefaults, buildResolutionSizeOptions, extraReferenceSlotCap, hasDeviation, hasRegistryParam, parseSizeValue, pickResolutionForModel, referenceImageSlotCap, schedulerForModel, strengthDefaultFromRegistry, strengthToSourceFidelity } from '@/utils/registryParamSchema';
 import { getImageSizeForModel, migrateLegacyImageLastSize, setImageSizeForModel } from '@/utils/imageSizeStorage';
 
 import { warnIfRiskyMemory } from '@/composables/memoryHint';
@@ -268,22 +295,24 @@ import {
 import {
   applyLoraComposeOverrides,
   findCompatibleLora,
+  withRegistryLoraMeta,
   type CompatibleLoraRow,
 } from '@/utils/loraAdapterMeta';
 import { reconcileVersionPickerSelection } from '@/composables/useModelRegistryFilters';
 import { applyModelVersionFilters } from '@/utils/modelPickerFilters';
+import { compareModelPickerRows } from '@/utils/modelPickerSort';
 import { pickDefaultVersionKey } from '@/utils/defaultModelSettings';
 import { dismissSuccessorHint, isSuccessorHintDismissed } from '@/utils/modelSuccessor';
 import { ACTIVE_COMPOSER_TASK_STATUSES, splitComposerPromptLines } from '@/utils/composerQueue';
+import { seedForSubmit } from '@/utils/seed';
 // Studio components
+import { Refresh, Search } from '@danqing/dq-shell';
 import StudioLayout from '@/components/studio/StudioLayout.vue';
-import StudioCanvas from '@/components/studio/StudioCanvas.vue';
-import StudioGalleryFilters from '@/components/studio/StudioGalleryFilters.vue';
+import StudioCanvasStripList from '@/components/studio/StudioCanvasStripList.vue';
 import ImageComposer from '@/components/studio/ImageComposer.vue';
 import ModelSelect from '@/components/model/ModelSelect.vue';
 import { modelSelectOption } from '@/utils/modelSelectOption';
 import StudioComposerHost from '@/components/studio/StudioComposerHost.vue';
-import StudioComposeFab from '@/components/studio/StudioComposeFab.vue';
 import AssetPicker from '@/components/asset/AssetPicker.vue';
 import ImageEditor from '@/components/image/ImageEditor.vue';
 import CreateExtendParams from '@/components/create/CreateExtendParams.vue';
@@ -298,13 +327,17 @@ import {
   activateCanvasViewForResults,
   maybeShowCanvasWorkspaceHint,
 } from '@/utils/canvasWorkspaceHint';
-import { previewUrlForGalleryItem } from '@/utils/canvasAssets';
+import { galleryStubForAssetPath, previewUrlForGalleryItem } from '@/utils/canvasAssets';
+import { CANVAS_OVERLAY_KINDS } from '@/utils/canvasOverlays';
 import { useStudioGallery } from '@/composables/useStudioGallery';
+import { isStructuralComposerControlNet } from '@/utils/composerModelFilter';
 import {
   appendZImageEnhancementFields,
   applyControlNetRegistryDefaults,
+  buildStructuralGuidePayload,
   fillModelRegistryDefaultsPatch,
-  isFillControlNet,
+  isStandaloneEditControlNet,
+  isStructuralRetouchControlNet,
   isControlNetHostRuntimeAvailable,
   pickDefaultStructuralControlNet,
   resolveControlAssetId,
@@ -351,12 +384,13 @@ function imageModelRow(config: Record<string, unknown>): boolean {
 /*  Params                                                             */
 /* ------------------------------------------------------------------ */
 
-const verificationExtraAdapters = ref<Array<{ id: string; weight: number }>>([]);
+/** When true, skip model-default / size-memory writes so an exported recipe stays intact. */
 const verificationRecipeActive = ref(false);
 const params = reactive<Record<string, unknown>>({
   title: '',
   prompt: '',
   negative_prompt: '',
+  use_pe: true,
   model: '',
   version: '',
   steps: 4,
@@ -386,7 +420,15 @@ const queueSubmitting = ref(false);
 const infiniteCanvasRef = ref<InstanceType<typeof InfiniteCanvas> | null>(null);
 const pendingCanvasAssetIds = ref<string[]>([]);
 const imageCanvas = useCanvasStore('image');
+const canvasSessions = computed(() => unref(imageCanvas.sessions));
+const canvasSessionId = computed(() => unref(imageCanvas.sessionId));
+const canvasSessionTitle = computed(() => unref(imageCanvas.sessionTitle));
+const canvasReady = computed(() => unref(imageCanvas.ready));
 const canvasSelectedItem = ref<GalleryItem | null>(null);
+const stripSearchText = ref('');
+const stripRenameOpen = ref(false);
+const stripRenameDraft = ref('');
+const stripRenameId = ref('');
 
 const showEditorDrawer = ref(false);
 const {
@@ -396,12 +438,14 @@ const {
 } = useComposerDrawer('image', { editorDrawerOpen: showEditorDrawer });
 
 const savedViewMode = getItem(DQ_STORAGE.IMAGE_VIEW_MODE);
+/** grid = canvas strip list; canvas = infinite canvas detail */
 const viewMode = ref<'grid' | 'canvas'>(
   savedViewMode === 'canvas' || savedViewMode === 'grid' ? savedViewMode : 'grid'
 );
 
 watch(viewMode, (mode) => {
   setItem(DQ_STORAGE.IMAGE_VIEW_MODE, mode);
+  if (mode === 'grid') closeComposerDrawer();
 });
 
 function onViewModeChange(mode: 'grid' | 'canvas') {
@@ -409,31 +453,411 @@ function onViewModeChange(mode: 'grid' | 'canvas') {
   if (mode === 'canvas' && selectedGroupId.value) {
     exitGroup();
   }
-  const batchPaths =
-    mode === 'canvas' && selectedPaths.value.size > 0
-      ? Array.from(selectedPaths.value)
-      : [];
   viewMode.value = mode;
   if (mode === 'canvas') {
     clearSelection();
     maybeShowCanvasWorkspaceHint();
-    const batchCount = batchPaths.length;
     nextTick(() => {
       syncCompositorOverlaysOnCanvasEnter();
       persistComposerSnapshot();
-      if (batchCount > 0) {
-        addAssetPathsToCanvas(batchPaths, {
-          fit: true,
-          placement: 'center',
-          focusLast: false,
-        });
-        toast.success($tt('canvas.batchAdded', { n: batchCount }));
-      } else if (Object.keys(imageCanvas.items).length > 0) {
+      if (Object.keys(imageCanvas.items).length > 0) {
         infiniteCanvasRef.value?.fitAll();
       }
     });
   } else {
     clearSelection();
+    closeComposerDrawer();
+  }
+}
+
+function openTextGenComposer() {
+  // List/detail 「创作」and top-bar open are text-to-image only; asset ops enter via toolbar.
+  imageMode.value = 'text2img';
+  referenceImage.value = null;
+  extraReferenceImages.value = [];
+  controlImage.value = null;
+  imageCanvas.setControlOverlay(null);
+  imageCanvas.clearOverlay('reference');
+  openComposerDrawer();
+}
+
+async function enterCanvasDetail(sessionId: string, opts?: { openComposer?: boolean }) {
+  if (sessionId && sessionId !== canvasSessionId.value) {
+    await imageCanvas.switchSession(sessionId);
+    onCanvasComposerRestore({ ...imageCanvas.composerSnapshot });
+  }
+  onViewModeChange('canvas');
+  if (opts?.openComposer) {
+    nextTick(() => openTextGenComposer());
+  }
+}
+
+async function onStripOpen(sessionId: string) {
+  await enterCanvasDetail(sessionId, { openComposer: false });
+}
+
+async function onStripPreview(payload: { sessionId: string; assetId: string }) {
+  const sessionId = String(payload?.sessionId || '').trim();
+  const assetId = String(payload?.assetId || '').trim();
+  if (!sessionId || !assetId) return;
+
+  const byPath = new Map(galleryItems.value.map((g) => [g.path, g]));
+  const resolveItem = (path: string): GalleryItem =>
+    byPath.get(path) || galleryStubForAssetPath(path);
+
+  let paths: string[] = [];
+  try {
+    const detail = await api.canvas.getSession(sessionId);
+    const items = detail?.state?.items || {};
+    const board = Object.entries(items)
+      .sort((a, b) => (Number(a[1]?.zIndex) || 0) - (Number(b[1]?.zIndex) || 0))
+      .map(([path]) => path)
+      .filter((p) => p.startsWith('asset:'));
+    const boardSet = new Set(board);
+    const shelf = (detail?.state?.shelf || []).filter(
+      (p) => typeof p === 'string' && p.startsWith('asset:') && !boardSet.has(p),
+    );
+    paths = [...board, ...shelf];
+  } catch (e) {
+    toast.error($tt('studio.error', { msg: String(e) }));
+    return;
+  }
+
+  if (!paths.length) {
+    paths = [`asset:${assetId}`];
+  }
+
+  let list = sortGalleryItemsByTime(paths.map(resolveItem));
+  const q = stripSearchText.value.trim().toLowerCase();
+  if (q) {
+    const matched = list.filter((g) => {
+      const hay = [g.title, g.prompt, g.model, g.name]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return hay.includes(q);
+    });
+    if (matched.length) list = matched;
+  }
+  let idx = list.findIndex((g) => assetIdFromGalleryPath(g.path) === assetId);
+  if (idx < 0) {
+    list = [resolveItem(`asset:${assetId}`), ...list];
+    idx = 0;
+  }
+
+  stripPreviewOverride.value = list;
+  previewSourceSessionId.value = sessionId;
+  selectedImageIndex.value = idx;
+  previewVisible.value = true;
+}
+
+async function onStripCreate(sessionId: string) {
+  // Stay on strip list — only bind the target session and open the composer.
+  if (sessionId && sessionId !== canvasSessionId.value) {
+    await imageCanvas.switchSession(sessionId);
+    onCanvasComposerRestore({ ...imageCanvas.composerSnapshot });
+  }
+  openTextGenComposer();
+}
+
+function onBackToStripList() {
+  onViewModeChange('grid');
+  void imageCanvas.refreshSessions().then(() => rebuildSessionAssetIndex());
+}
+
+async function onNewCanvas() {
+  try {
+    const created = await imageCanvas.createSession();
+    toast.success($tt('canvas.sessionCreated'));
+    await rebuildSessionAssetIndex();
+    await enterCanvasDetail(created.id, { openComposer: true });
+  } catch (e) {
+    toast.error($tt('studio.error', { msg: String(e) }));
+  }
+}
+
+async function refreshStripList() {
+  try {
+    if (!unref(imageCanvas.ready) || !unref(imageCanvas.sessionId)) {
+      await imageCanvas.ensureDefaultAndAdoptOrphans();
+    } else {
+      await imageCanvas.refreshSessions();
+    }
+    await loadGallery(true);
+    await rebuildSessionAssetIndex();
+  } catch (e) {
+    toast.error($tt('studio.error', { msg: String(e) }));
+  }
+}
+
+/** Full membership index so strip search can match any asset on a canvas. */
+const sessionAssetIdsBySession = ref<Record<string, string[]>>({});
+
+async function rebuildSessionAssetIndex() {
+  const sessions = canvasSessions.value || [];
+  if (!sessions.length) {
+    sessionAssetIdsBySession.value = {};
+    return;
+  }
+  const entries = await Promise.all(
+    sessions.map(async (s) => {
+      try {
+        const detail = await api.canvas.getSession(s.id);
+        const ids: string[] = [];
+        const seen = new Set<string>();
+        for (const p of Object.keys(detail?.state?.items || {})) {
+          if (!p.startsWith('asset:')) continue;
+          const id = p.slice('asset:'.length);
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          ids.push(id);
+        }
+        for (const p of detail?.state?.shelf || []) {
+          if (typeof p !== 'string' || !p.startsWith('asset:')) continue;
+          const id = p.slice('asset:'.length);
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          ids.push(id);
+        }
+        return [s.id, ids] as const;
+      } catch {
+        return [s.id, s.preview_asset_ids || []] as const;
+      }
+    }),
+  );
+  sessionAssetIdsBySession.value = Object.fromEntries(entries);
+}
+
+function onStripRename(sessionId: string) {
+  const s = canvasSessions.value.find((x) => x.id === sessionId);
+  stripRenameId.value = sessionId;
+  stripRenameDraft.value = s?.title || '';
+  stripRenameOpen.value = true;
+}
+
+async function commitStripRename() {
+  stripRenameOpen.value = false;
+  const id = stripRenameId.value;
+  const t = stripRenameDraft.value.trim();
+  if (!id || !t) return;
+  const prev = canvasSessionId.value;
+  try {
+    if (id !== prev) await imageCanvas.switchSession(id);
+    await imageCanvas.renameSession(t);
+    if (prev && prev !== id) await imageCanvas.switchSession(prev);
+    await imageCanvas.refreshSessions();
+    toast.success($tt('canvas.sessionRenamed'));
+  } catch (e) {
+    toast.error($tt('studio.error', { msg: String(e) }));
+  }
+}
+
+async function onStripDelete(sessionId: string) {
+  try {
+    await imageCanvas.deleteSession(sessionId);
+    toast.success($tt('canvas.sessionDeleted'));
+    await rebuildSessionAssetIndex();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('cannot_delete_last_canvas') || msg.includes('last canvas')) {
+      toast.error($tt('canvas.sessionCannotDeleteLast'));
+      return;
+    }
+    toast.error($tt('studio.error', { msg }));
+  }
+}
+
+const galleryByAssetId = computed(() => {
+  const map: Record<
+    string,
+    { prompt?: string; model?: string; title?: string; name?: string; created_at?: string }
+  > = {};
+  for (const item of galleryItems.value) {
+    const id = assetIdFromGalleryPath(item.path);
+    if (!id) continue;
+    map[id] = {
+      prompt: item.prompt,
+      model: item.model,
+      title: item.title,
+      name: item.name,
+      created_at: item.created_at,
+    };
+  }
+  return map;
+});
+
+function sortGalleryItemsByTime(items: GalleryItem[]): GalleryItem[] {
+  return [...items].sort((a, b) => {
+    const c = String(b.created_at || '').localeCompare(String(a.created_at || ''));
+    if (c !== 0) return c;
+    return String(b.path || '').localeCompare(String(a.path || ''));
+  });
+}
+
+/** One-shot strip-list preview when asset is not yet in galleryItems. */
+const stripPreviewOverride = ref<GalleryItem[] | null>(null);
+/** Canvas that owns the asset currently shown in the lightbox (for transfer). */
+const previewSourceSessionId = ref('');
+
+/** Preview sequence: board + shelf members when in detail, else gallery. */
+const previewItems = computed(() => {
+  if (stripPreviewOverride.value?.length) return stripPreviewOverride.value;
+  if (viewMode.value !== 'canvas') return galleryItems.value;
+  const byPath = new Map(galleryItems.value.map((g) => [g.path, g]));
+  const paths = new Set<string>([
+    ...Object.keys(imageCanvas.items),
+    ...unref(imageCanvas.shelf),
+  ]);
+  const items = [...paths]
+    .filter((p) => p.startsWith('asset:'))
+    .map((path) => byPath.get(path) || galleryStubForAssetPath(path));
+  return sortGalleryItemsByTime(items);
+});
+
+function canvasTitleLabel(title: string): string {
+  const t = (title || '').trim().toLowerCase();
+  if (
+    t === 'default canvas' ||
+    t === '默认画布' ||
+    t === 'image canvas' ||
+    t === 'video canvas' ||
+    t === 'audio canvas'
+  ) {
+    return $tt('canvas.defaultCanvasTitle');
+  }
+  return title || $tt('canvas.untitledSession');
+}
+
+const previewTransferTargets = computed(() => {
+  const source = resolvePreviewSourceSessionId();
+  return (canvasSessions.value || [])
+    .filter((s) => s.id && s.id !== source)
+    .map((s) => ({ id: s.id, title: canvasTitleLabel(s.title || '') }));
+});
+
+function resolvePreviewSourceSessionId(path?: string): string {
+  if (previewSourceSessionId.value) return previewSourceSessionId.value;
+  if (viewMode.value === 'canvas' && canvasSessionId.value) return canvasSessionId.value;
+  const p = path || previewItems.value[selectedImageIndex.value]?.path || '';
+  if (p) {
+    const assetId = assetIdFromGalleryPath(p);
+    for (const [sid, ids] of Object.entries(sessionAssetIdsBySession.value || {})) {
+      if (assetId && ids.includes(assetId)) return sid;
+    }
+  }
+  return canvasSessionId.value || '';
+}
+
+function sessionHasAssetPath(
+  state: { items?: Record<string, unknown>; shelf?: string[] } | null | undefined,
+  path: string,
+): boolean {
+  if (!state || !path) return false;
+  if (state.items && path in state.items) return true;
+  return (state.shelf || []).includes(path);
+}
+
+function stripAssetFromSessionState(
+  state: import('@/types').CanvasSessionState,
+  path: string,
+): import('@/types').CanvasSessionState {
+  const items = { ...(state.items || {}) };
+  delete items[path];
+  const shelf = (state.shelf || []).filter((p) => p !== path);
+  const overlays = { ...(state.overlays || {}) };
+  for (const kind of CANVAS_OVERLAY_KINDS) {
+    if (overlays[kind]?.path === path) overlays[kind] = null;
+  }
+  const active =
+    state.active_asset_path === path ? '' : state.active_asset_path || '';
+  const edges = (state.edges || []).filter(
+    (e) => e?.from !== path && e?.to !== path,
+  );
+  return {
+    ...state,
+    items,
+    shelf,
+    overlays,
+    active_asset_path: active,
+    edges,
+  };
+}
+
+async function onPreviewTransfer(payload: {
+  item: GalleryItem;
+  targetSessionId: string;
+}) {
+  const path = String(payload?.item?.path || '').trim();
+  const toId = String(payload?.targetSessionId || '').trim();
+  if (!path.startsWith('asset:') || !toId) return;
+
+  const fromId = resolvePreviewSourceSessionId(path);
+  if (!fromId) {
+    toast.error($tt('studio.error', { msg: $tt('canvas.transferNeedSource') }));
+    return;
+  }
+  if (fromId === toId) return;
+
+  try {
+    // Stop local debounce / wait out in-flight writes so they cannot resurrect the asset.
+    await imageCanvas.flushPersistBarrier();
+
+    const [fromDetail, toDetail] = await Promise.all([
+      api.canvas.getSession(fromId),
+      api.canvas.getSession(toId),
+    ]);
+
+    const fromState = stripAssetFromSessionState(fromDetail.state, path);
+    const toItems = { ...(toDetail.state?.items || {}) };
+    const toShelf = [...(toDetail.state?.shelf || [])].filter((p) => p !== path);
+    if (!(path in toItems) && !toShelf.includes(path)) toShelf.push(path);
+    const toState = {
+      ...toDetail.state,
+      items: toItems,
+      shelf: toShelf,
+    };
+
+    await api.canvas.updateSession(fromId, { state: fromState });
+    await api.canvas.updateSession(toId, { state: toState });
+
+    // If a stale persist raced us, source may still list the asset — fix once more.
+    const verifyFrom = await api.canvas.getSession(fromId);
+    if (sessionHasAssetPath(verifyFrom.state, path)) {
+      await api.canvas.updateSession(fromId, {
+        state: stripAssetFromSessionState(verifyFrom.state, path),
+      });
+    }
+
+    const liveId = unref(imageCanvas.sessionId);
+    if (liveId === fromId || liveId === toId) {
+      imageCanvas.cancelPendingPersist();
+      const live = await api.canvas.getSession(liveId);
+      imageCanvas.applyState(live.state);
+    }
+
+    if (stripPreviewOverride.value?.length) {
+      const next = stripPreviewOverride.value.filter((g) => g.path !== path);
+      stripPreviewOverride.value = next.length ? next : null;
+      if (!next.length) {
+        previewVisible.value = false;
+      } else {
+        selectedImageIndex.value = Math.min(
+          selectedImageIndex.value,
+          next.length - 1,
+        );
+      }
+    }
+
+    await imageCanvas.refreshSessions();
+    await rebuildSessionAssetIndex();
+
+    const targetTitle =
+      canvasTitleLabel(
+        (canvasSessions.value || []).find((s) => s.id === toId)?.title || '',
+      ) || toId;
+    toast.success($tt('canvas.transferToCanvasDone', { title: targetTitle }));
+  } catch (e) {
+    toast.error($tt('studio.error', { msg: String(e) }));
   }
 }
 
@@ -444,17 +868,20 @@ function addAssetPathsToCanvas(
     placement?: 'staging' | 'center';
     focusLast?: boolean;
   }
-) {
-  if (!paths.length) return;
+): string[] {
+  if (!paths.length) return [];
+  const catalog = galleryItems.value;
   if (viewMode.value === 'canvas' && infiniteCanvasRef.value) {
-    infiniteCanvasRef.value.addPathsToCanvas(paths, {
-      fit: opts?.fit,
-      placement: opts?.placement ?? 'staging',
-      focusLast: opts?.focusLast ?? true,
-    });
-    return;
+    return (
+      infiniteCanvasRef.value.addPathsToCanvas(paths, {
+        fit: opts?.fit,
+        placement: opts?.placement ?? 'staging',
+        focusLast: opts?.focusLast ?? true,
+        galleryItems: catalog,
+      }) || []
+    );
   }
-  imageCanvas.addPathsFromGallery(paths, galleryItems.value, {
+  return imageCanvas.addPathsFromGallery(paths, catalog, {
     placement: opts?.placement ?? 'center',
   });
 }
@@ -485,6 +912,7 @@ function fillComposerFromGalleryItem(item: GalleryItem) {
 }
 
 function onCanvasOpenComposer() {
+  // Asset-driven open (toolbar) may already set img2img; bare open stays text-gen.
   if (canvasSelectedItem.value) {
     fillComposerFromGalleryItem(canvasSelectedItem.value);
   }
@@ -503,6 +931,7 @@ function persistComposerSnapshot() {
     model: String(params.model || ''),
     version: String(params.version || ''),
     negative_prompt: String(params.negative_prompt || ''),
+    use_pe: String(params.use_pe !== false),
     seed: params.seed != null ? String(params.seed) : undefined,
     mode: imageMode.value,
     reference_path: referenceImage.value?.path || undefined,
@@ -611,6 +1040,7 @@ function onCanvasComposerRestore(snapshot: {
   model?: string;
   version?: string;
   negative_prompt?: string;
+  use_pe?: string;
   seed?: string;
   mode?: string;
   reference_path?: string;
@@ -634,6 +1064,7 @@ function onCanvasComposerRestore(snapshot: {
   if (snapshot.prompt != null) params.prompt = snapshot.prompt;
   if (snapshot.title != null) params.title = snapshot.title;
   if (snapshot.negative_prompt != null) params.negative_prompt = snapshot.negative_prompt;
+  if (snapshot.use_pe != null) params.use_pe = snapshot.use_pe !== 'false';
   if (snapshot.seed != null) params.seed = snapshot.seed;
   if (snapshot.mode === 'img2img' || snapshot.mode === 'text2img') {
     imageMode.value = snapshot.mode;
@@ -688,14 +1119,26 @@ function buildCanvasMeta(extra: Record<string, unknown> = {}): Record<string, un
   const meta: Record<string, unknown> = { ...extra };
   const sid = imageCanvas.sessionId.value;
   if (sid) meta.canvas_session_id = sid;
-  const parentPath =
-    (showEditorDrawer.value && editDrawerItem.value?.path) ||
-    canvasSelectedItem.value?.path ||
-    imageCanvas.activeAssetPath.value ||
-    '';
+  const relation = canvasImageRelationType();
+  // Pure text-to-image has no parent — never inherit canvas selection as lineage
+  // (that previously stamped relation_type=create and broke edges + meta labels).
+  if (relation === 'create') {
+    return meta;
+  }
+  let parentPath = '';
+  if (showEditorDrawer.value && editDrawerItem.value?.path) {
+    parentPath = String(editDrawerItem.value.path || '');
+  } else if (relation === 'img2img' && referenceImage.value?.path) {
+    parentPath = String(referenceImage.value.path || '');
+  } else if (relation === 'controlnet' && controlImage.value?.path) {
+    parentPath = String(controlImage.value.path || '');
+  } else {
+    parentPath =
+      canvasSelectedItem.value?.path || imageCanvas.activeAssetPath.value || '';
+  }
   if (parentPath.startsWith('asset:')) {
     meta.parent_asset_id = parentPath.slice('asset:'.length);
-    meta.relation_type = canvasImageRelationType();
+    meta.relation_type = relation;
   }
   return meta;
 }
@@ -711,12 +1154,15 @@ function shouldAutoAddToCanvas(): boolean {
 const referenceImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
 const extraReferenceImages = ref<Array<{ previewUrl: string; path: string; assetId?: string }>>([]);
 const controlImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
-const inpaintSourceImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
-const inpaintMaskImage = ref<{ previewUrl: string; path: string; assetId?: string } | null>(null);
-const showAssetPicker = ref(false);
-const assetPickerMode = ref<'reference' | 'extra_reference' | 'control' | 'inpaint_source' | 'inpaint_mask'>('reference');
 
-function openAssetPicker(mode: 'reference' | 'extra_reference' | 'control' | 'inpaint_source' | 'inpaint_mask') {
+/** Drawer title: instruction-edit when a reference image is bound. */
+const composerDrawerTitle = computed(() =>
+  referenceImage.value ? $tt('action.image.rewrite') : $tt('studio.composerDrawerTitle'),
+);
+const showAssetPicker = ref(false);
+const assetPickerMode = ref<'reference' | 'extra_reference' | 'control'>('reference');
+
+function openAssetPicker(mode: 'reference' | 'extra_reference' | 'control') {
   assetPickerMode.value = mode;
   showAssetPicker.value = true;
 }
@@ -725,21 +1171,7 @@ function assetIdFromPickPath(path: string): string | undefined {
   return path.startsWith('asset:') ? path.slice('asset:'.length) : undefined;
 }
 
-function resolveInpaintAssetId(
-  ref: { path: string; assetId?: string } | null,
-): string {
-  if (!ref) return '';
-  if (ref.assetId) return ref.assetId;
-  if (ref.path.startsWith('asset:')) return ref.path.slice('asset:'.length);
-  return '';
-}
-
 function onReferencePick({ path, previewUrl }: { path: string; previewUrl: string }) {
-  if (versionDisallowsReferences()) {
-    toast.warning($tt('create.quantizedNoReference'));
-    showAssetPicker.value = false;
-    return;
-  }
   referenceImage.value = { path, previewUrl, assetId: assetIdFromPickPath(path) };
   showAssetPicker.value = false;
   imageMode.value = 'img2img';
@@ -749,27 +1181,7 @@ function modelReferenceParameters(): Record<string, unknown> | undefined {
   return currentModelConfig.value?.parameters as Record<string, unknown> | undefined;
 }
 
-function versionDisallowsReferences(): boolean {
-  const versions = currentModelConfig.value?.versions as
-    | Record<string, { overrides?: Record<string, unknown> }>
-    | undefined;
-  const block = versions?.[String(params.version || '')];
-  return Boolean(block?.overrides?.hidream_quantized_no_edit);
-}
-
-const referencesBlocked = computed(() => versionDisallowsReferences());
-
-const generateBlockReason = computed(() => {
-  if (!referencesBlocked.value) return '';
-  return $tt('create.quantizedNoReference');
-});
-
 function onExtraReferencePick({ path, previewUrl }: { path: string; previewUrl: string }) {
-  if (versionDisallowsReferences()) {
-    toast.warning($tt('create.quantizedNoReference'));
-    showAssetPicker.value = false;
-    return;
-  }
   if (!path.startsWith('asset:')) {
     toast.warning($tt('canvas.controlImageAssetRequired'));
     return;
@@ -809,29 +1221,9 @@ function onControlPick({ path, previewUrl }: { path: string; previewUrl: string 
   syncCanvasControlOverlay(path);
 }
 
-function onInpaintSourcePick({ path, previewUrl }: { path: string; previewUrl: string }) {
-  if (!path.startsWith('asset:')) {
-    toast.warning($tt('canvas.controlImageAssetRequired'));
-    return;
-  }
-  inpaintSourceImage.value = { path, previewUrl, assetId: assetIdFromPickPath(path) };
-  showAssetPicker.value = false;
-}
-
-function onInpaintMaskPick({ path, previewUrl }: { path: string; previewUrl: string }) {
-  if (!path.startsWith('asset:')) {
-    toast.warning($tt('canvas.controlImageAssetRequired'));
-    return;
-  }
-  inpaintMaskImage.value = { path, previewUrl, assetId: assetIdFromPickPath(path) };
-  showAssetPicker.value = false;
-}
-
 function onAssetPickerPick(payload: { path: string; previewUrl: string }) {
   if (assetPickerMode.value === 'control') onControlPick(payload);
   else if (assetPickerMode.value === 'extra_reference') onExtraReferencePick(payload);
-  else if (assetPickerMode.value === 'inpaint_source') onInpaintSourcePick(payload);
-  else if (assetPickerMode.value === 'inpaint_mask') onInpaintMaskPick(payload);
   else onReferencePick(payload);
 }
 
@@ -840,20 +1232,8 @@ function removeControlImage() {
   syncCanvasControlOverlay(null);
 }
 
-function removeInpaintSourceImage() {
-  inpaintSourceImage.value = null;
-}
-
-function removeInpaintMaskImage() {
-  inpaintMaskImage.value = null;
-}
-
 function onCanvasUseAsRef(payload: { path: string; previewUrl: string; quiet?: boolean }) {
   const { path, previewUrl } = payload;
-  if (versionDisallowsReferences()) {
-    toast.warning($tt('create.quantizedNoReference'));
-    return;
-  }
   if (payload.quiet) {
     const item = galleryItems.value.find((g) => g.path === path);
     if (item) fillComposerFromGalleryItem(item);
@@ -1007,9 +1387,18 @@ watch(
 );
 
 function onCanvasOpenPreview(item: GalleryItem) {
-  const idx = galleryItems.value.findIndex((g) => g.path === item.path);
+  previewSourceSessionId.value = canvasSessionId.value || '';
+  const list = previewItems.value;
+  const idx = list.findIndex((g) => g.path === item.path);
   if (idx >= 0) {
     selectedImageIndex.value = idx;
+    previewVisible.value = true;
+    return;
+  }
+  // Node not yet in gallery catalog — fall back to full gallery list.
+  const gIdx = galleryItems.value.findIndex((g) => g.path === item.path);
+  if (gIdx >= 0) {
+    selectedImageIndex.value = gIdx;
     previewVisible.value = true;
   }
 }
@@ -1076,11 +1465,16 @@ const controlNetHostRuntimeAvailable = computed(() =>
 function syncImageLoraSelection() {
   if (!params.lora) return;
   const row = findCompatibleLora(compatibleLoras.value, params.lora);
-  if (!row) {
+  if (!row || row.ready === false) {
     params.lora = '';
     return;
   }
-  applyLoraComposeOverrides(params as Record<string, unknown>, row);
+  const bare = String(row.id || params.lora).split(':')[0];
+  applyLoraComposeOverrides(
+    params as Record<string, unknown>,
+    row,
+    modelRegistry.value[bare] as Record<string, unknown> | undefined,
+  );
 }
 
 async function loadCompatibleAdapters(modelKey: string) {
@@ -1093,7 +1487,13 @@ async function loadCompatibleAdapters(modelKey: string) {
   try {
     const loras = await api.settings.getCompatibleLoras(modelKey);
     if (String(params.model || '') !== modelKey) return;
-    compatibleLoras.value = (loras as CompatibleLoraRow[]) || [];
+    compatibleLoras.value = ((loras as CompatibleLoraRow[]) || []).map((row) => {
+      const bare = String(row.id || '').split(':')[0];
+      return withRegistryLoraMeta(
+        row,
+        modelRegistry.value[bare] as Record<string, unknown> | undefined,
+      );
+    });
     syncImageLoraSelection();
     await loadCompatibleControlNets(modelKey);
     clearControlNetIfIncompatible(params, () => {
@@ -1176,11 +1576,6 @@ async function addGalleryItemToCanvas(
 
 watch(() => params.model, (modelKey) => {
   if (modelKey) loadCompatibleAdapters(String(modelKey));
-  if (params.controlnet && !supportsStructuralGuideBaseModel(String(modelKey || ''))) {
-    params.controlnet = '';
-    controlImage.value = null;
-    syncCanvasControlOverlay(null);
-  }
 });
 
 watch(() => params.lora, () => {
@@ -1275,7 +1670,9 @@ const allVersions = computed(() => {
         size,
         status: status.status,
         ready: status.ready,
-        recommended: config.recommended && (versionConfig as Record<string, unknown>).default,
+        // Model-level catalog.recommended — not gated on version.default, so an
+        // installed non-default tier of a recommended model still sorts first.
+        recommended: config.recommended === true,
         commercialUseAllowed: config.commercial_use_allowed === true,
         actions,
       });
@@ -1286,6 +1683,8 @@ const allVersions = computed(() => {
 
 const filteredAllVersions = computed(() => {
   return allVersions.value.filter((v) => {
+    const row = modelRegistry.value[String(v.modelKey || '')];
+    if (isStructuralComposerControlNet(row)) return false;
     const acts = v.actions as Record<string, unknown> || {};
     if (imageMode.value === 'img2img') {
       return hasAction(acts, 'rewrite') || hasAction(acts, 'retouch');
@@ -1299,18 +1698,7 @@ const filteredModelPickerVersions = computed(() => {
     installedOnly: true,
     commercialOnly: false, // show all; badge indicates commercial status
   });
-  rows.sort((a, b) => {
-    const ar = a.recommended ? 1 : 0;
-    const br = b.recommended ? 1 : 0;
-    if (ar !== br) return br - ar;
-    const an = String(a.name || '');
-    const bn = String(b.name || '');
-    try {
-      return an.localeCompare(bn, 'zh');
-    } catch {
-      return an < bn ? -1 : an > bn ? 1 : 0;
-    }
-  });
+  rows.sort(compareModelPickerRows);
   return rows;
 });
 
@@ -1393,7 +1781,6 @@ function structuralGuideValidation():
 const canGenerate = computed(() => {
   if (selectedModelNotReady.value) return false;
   if (!String(params.prompt || '').trim()) return false;
-  if (referencesBlocked.value && referenceImage.value) return false;
   if (imageMode.value === 'img2img' && !referenceImage.value) return false;
   if (String(params.controlnet || '') && !structuralGuideValidation().ok) return false;
   return true;
@@ -1571,11 +1958,6 @@ function syncResolutionForModel(modelId?: string) {
 
 const imageMode = ref('text2img');
 
-const imageModeOptions = computed(() => [
-  { label: $tt('action.image.text2img'), value: 'text2img' },
-  { label: $tt('action.image.rewrite'), value: 'img2img' },
-]);
-
 function onModeChange(mode: string) {
   imageMode.value = mode;
   if (mode === 'text2img') {
@@ -1707,12 +2089,72 @@ function closeGenStream() {
   }
 }
 
+function assetIdsFromResultPayload(data: unknown): string[] {
+  if (!data || typeof data !== 'object') return [];
+  const rec = data as Record<string, unknown>;
+  const nested =
+    rec.result && typeof rec.result === 'object'
+      ? (rec.result as Record<string, unknown>)
+      : null;
+  const raw = rec.asset_ids ?? nested?.asset_ids;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((id) => String(id || '').trim()).filter(Boolean);
+}
+
+async function resolveCompletedAssetIds(taskId: string, seeded: string[]): Promise<string[]> {
+  if (seeded.length > 0) return seeded;
+  try {
+    const task = (await api.gen.getMediaTask(taskId)) as {
+      result?: { asset_ids?: unknown; primary_asset_id?: unknown };
+    };
+    const fromResult = assetIdsFromResultPayload(task?.result);
+    if (fromResult.length) return fromResult;
+    const primary = String(task?.result?.primary_asset_id || '').trim();
+    return primary ? [primary] : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Ensure gallery has rows for canvas placement (group filters can miss a fresh asset). */
+async function ensureGalleryItemsForCanvas(assetIds: string[]): Promise<void> {
+  const missing = () =>
+    assetIds.filter((id) => !galleryItems.value.some((g) => g.path === `asset:${id}`));
+  if (!missing().length) return;
+  // Ungrouped / group-root filters may omit the new row; pull a plain first page.
+  try {
+    const rows = await api.gallery.listImages(Math.max(40, assetIds.length), 0, {
+      kind: 'image',
+      exclude_upload_refs: true,
+    });
+    const byPath = new Map(galleryItems.value.map((g) => [g.path, g]));
+    for (const row of rows) {
+      byPath.set(row.path, row);
+    }
+    galleryItems.value = Array.from(byPath.values());
+  } catch {
+    /* staging add still attempts with whatever gallery has */
+  }
+  // Still missing → stub so board placement / render never depends on pagination.
+  if (missing().length) {
+    const byPath = new Map(galleryItems.value.map((g) => [g.path, g]));
+    for (const id of missing()) {
+      const path = `asset:${id}`;
+      byPath.set(path, galleryStubForAssetPath(path));
+    }
+    galleryItems.value = Array.from(byPath.values());
+  }
+}
+
 function attachStreamFromSubmit(submitRes: unknown) {
   const tid = taskIdFromSubmitResponse(submitRes);
   if (!tid) {
     generating.value = false;
     return;
   }
+  closeGenStream();
+  pendingCanvasAssetIds.value = [];
+  generating.value = true;
   tasksStore.clearTaskLogs(tid);
   tasksStore.appendTaskLog(tid, $tt('studio.startingGen'), 'info');
   tasksStore.registerPageOwnedStream(tid);
@@ -1733,9 +2175,13 @@ function attachStreamFromSubmit(submitRes: unknown) {
       tasksStore.ingestTaskPipelineTrace(tid, traceData);
     },
     onStatus: (statusData: any) => {
-      if (currentTask.value) {
-        currentTask.value = { ...currentTask.value, ...statusData };
-      }
+      const cur = currentTask.value;
+      if (!cur) return;
+      const nextStatus = statusData.status ?? cur.status;
+      const nextProgress =
+        typeof statusData.progress === 'number' ? statusData.progress : cur.progress;
+      if (cur.status === nextStatus && cur.progress === nextProgress) return;
+      currentTask.value = { ...cur, ...statusData };
     },
     onProgress: (progressData: any) => {
       tasksStore.ingestTaskProgressLog(tid, progressData);
@@ -1746,17 +2192,28 @@ function attachStreamFromSubmit(submitRes: unknown) {
         eta_seconds: progressData.eta_seconds,
         progressMessage: progressData.message ?? progressData.phase,
       });
-      if (currentTask.value) {
-        currentTask.value = {
-          ...currentTask.value,
-          progress: progressData.progress ?? currentTask.value.progress,
-          step: progressData.step ?? currentTask.value.step,
-          total: progressData.total ?? currentTask.value.total,
-        };
+      const cur = currentTask.value;
+      if (!cur) return;
+      const nextProgress =
+        progressData.progress != null ? progressData.progress : cur.progress;
+      const nextStep = progressData.step ?? cur.step;
+      const nextTotal = progressData.total ?? cur.total;
+      if (
+        cur.progress === nextProgress &&
+        cur.step === nextStep &&
+        cur.total === nextTotal
+      ) {
+        return;
       }
+      currentTask.value = {
+        ...cur,
+        progress: nextProgress,
+        step: nextStep,
+        total: nextTotal,
+      };
     },
     onResult: (resultData: any) => {
-      const ids = (resultData?.asset_ids as string[] | undefined) || [];
+      const ids = assetIdsFromResultPayload(resultData);
       if (ids.length > 0) pendingCanvasAssetIds.value = ids;
     },
     onDone: async (doneData: any) => {
@@ -1764,19 +2221,84 @@ function attachStreamFromSubmit(submitRes: unknown) {
       tasksStore.unregisterPageOwnedStream(tid);
       if (doneData.status === 'completed') {
         tasksStore.appendTaskLog(tid, $tt('studio.genComplete'), 'success');
-        const ids = [...pendingCanvasAssetIds.value];
-        const willAutoAdd = shouldAutoAddToCanvas() && ids.length > 0;
-        if (!willAutoAdd) {
+        const ids = await resolveCompletedAssetIds(tid, [...pendingCanvasAssetIds.value]);
+        pendingCanvasAssetIds.value = [];
+        // Session-tagged results always get membership on that canvas (shelf/board),
+        // even if the user already returned to the strip list.
+        const willPlace = ids.length > 0;
+        const willRevealCanvas = willPlace && shouldAutoAddToCanvas();
+        if (!willRevealCanvas) {
           toast.success($tt('studio.genComplete'));
         }
-        pendingCanvasAssetIds.value = [];
-        setTimeout(async () => {
+        void (async () => {
+          // Let SSE close / DB commit settle, then add with a fresh gallery catalog
+          // (do not rely on InfiniteCanvas props.items — they lag loadGallery reset).
+          await new Promise((r) => setTimeout(r, 400));
           await loadGallery(true);
-          if (willAutoAdd) {
-            await activateCanvasViewForResults(viewMode, syncCompositorOverlaysOnCanvasEnter);
-            addAssetPathsToCanvas(ids.map((id) => `asset:${id}`), { placement: 'staging' });
+          await nextTick();
+          if (!willPlace) return;
+          // Land on the session that submitted the task (user may have switched strips).
+          let sid = '';
+          try {
+            const task = (await api.gen.getMediaTask(tid)) as {
+              params?: {
+                request?: { metadata?: { canvas_session_id?: string } };
+                metadata?: { canvas_session_id?: string };
+              };
+            };
+            const params = task?.params || {};
+            sid = String(
+              params.request?.metadata?.canvas_session_id ||
+                params.metadata?.canvas_session_id ||
+                '',
+            ).trim();
+            if (sid && sid !== unref(imageCanvas.sessionId)) {
+              await imageCanvas.switchSession(sid);
+            }
+          } catch {
+            /* keep current session */
           }
-        }, 1000);
+          await ensureGalleryItemsForCanvas(ids);
+          await nextTick();
+          if (willRevealCanvas) {
+            await activateCanvasViewForResults(viewMode, syncCompositorOverlaysOnCanvasEnter);
+            await nextTick();
+          }
+          const paths = ids.map((id) => `asset:${id}`);
+          // Prefer store placement (works even when InfiniteCanvas is unmounted in grid mode).
+          let added = imageCanvas.addPathsFromGallery(paths, galleryItems.value, {
+            placement: 'staging',
+            selectLast: true,
+          });
+          if (!added.length && viewMode.value === 'canvas') {
+            added = addAssetPathsToCanvas(paths, { placement: 'staging', focusLast: true, fit: true });
+          }
+          if (!added.length) {
+            await ensureGalleryItemsForCanvas(ids);
+            await nextTick();
+            added = imageCanvas.addPathsFromGallery(paths, galleryItems.value, {
+              placement: 'staging',
+              selectLast: true,
+            });
+          }
+          if (added.length) {
+            imageCanvas.refreshEdges(galleryItems.value);
+            await imageCanvas.persist();
+            await nextTick();
+            if (viewMode.value === 'canvas') {
+              infiniteCanvasRef.value?.fitAll?.();
+            }
+          } else {
+            // Fail loud: tagged session must receive the asset; last resort shelf.
+            if (sid || unref(imageCanvas.sessionId)) {
+              imageCanvas.addToShelf(paths);
+              await imageCanvas.persist();
+              toast.warning($tt('canvas.autoAddMissed'));
+            } else {
+              toast.warning($tt('canvas.autoAddMissed'));
+            }
+          }
+        })();
       } else if (doneData.status === 'failed') {
         const updated = await api.gen.getMediaTask(tid) as any;
         tasksStore.appendTaskLog(
@@ -1831,16 +2353,10 @@ function validateGenerationPreconditions(): boolean {
     $tt,
   });
 
-  if (versionDisallowsReferences() && referenceImage.value) {
-    toast.warning($tt('create.quantizedNoReference'));
-    return false;
-  }
-
   const guideValidation = structuralGuideValidation();
   if (!guideValidation.ok) {
     const guideToastKeys = {
       fill_edit_only: 'studio.controlnetFillEditOnly',
-      flux_only: 'studio.controlnetFluxOnly',
       no_img2img: 'studio.controlnetNoImg2img',
       missing_control_image: 'canvas.controlImageRequired',
       controlnet_not_ready: 'studio.controlnetNotReady',
@@ -1858,12 +2374,17 @@ async function prepareGenerationContext(): Promise<GenerationPrepared | null> {
   if (!validateGenerationPreconditions()) return null;
 
   const modelStr = params.version ? `${params.model}:${params.version}` : params.model;
+  // Primary LoRA only. Companion adapters come from the LoRA's inference metadata
+  // on the server (bind_installed_loras → inference_stack) — keep the client neutral.
   const adapters: Array<{ id: string; weight: number }> = [];
   if (params.lora) adapters.push({ id: String(params.lora), weight: Number(params.lora_scale) || 0.8 });
-  if (verificationRecipeActive.value) adapters.push(...verificationExtraAdapters.value);
   persistComposerSnapshot();
   const meta = buildCanvasMeta();
-  if (params.scheduler) meta.scheduler = params.scheduler;
+  const scheduler = schedulerForModel(
+    currentModelConfig.value?.parameters as Record<string, unknown> | undefined,
+    params.scheduler,
+  );
+  if (scheduler) meta.scheduler = scheduler;
 
   let control_asset_id: string | null = null;
   if (params.controlnet) {
@@ -1899,7 +2420,6 @@ async function prepareGenerationContext(): Promise<GenerationPrepared | null> {
 }
 
 function collectExtraReferenceAssetIds(sourceAssetId: string | null): string[] {
-  if (versionDisallowsReferences()) return [];
   const cap = extraReferenceSlotCap(modelReferenceParameters());
   if (cap <= 0) return [];
   const ids: string[] = [];
@@ -1923,16 +2443,14 @@ async function submitImageGenerationTask(
   ctx: GenerationPrepared,
   opts: { prompt: string; title: string; seed: number | null; n: number },
 ): Promise<unknown> {
-  const inpSrc = resolveInpaintAssetId(inpaintSourceImage.value);
-  const inpMsk = resolveInpaintAssetId(inpaintMaskImage.value);
   const enhCommon = {
     parameters: currentModelConfig.value?.parameters as Record<string, unknown> | undefined,
     params,
     controlnet: String(params.controlnet || ''),
     controlAssetId: ctx.control_asset_id,
     controlnetStrength: Number(params.controlnet_strength) || 0.8,
-    inpaintSourceId: inpSrc,
-    inpaintMaskId: inpMsk,
+    compatibleControlNets: compatibleControlNets.value,
+    registry: modelRegistry.value,
   };
 
   if (ctx.hasRef) {
@@ -1947,6 +2465,12 @@ async function submitImageGenerationTask(
       steps: params.steps,
       guidance: params.guidance,
       seed: opts.seed,
+      scheduler: schedulerForModel(
+        currentModelConfig.value?.parameters as Record<string, unknown> | undefined,
+        params.scheduler,
+      ),
+      scheduler_shift: params.scheduler_shift,
+      use_empirical_mu: params.use_empirical_mu === true,
       adapters: ctx.adapters,
       source_fidelity: strengthToSourceFidelity(
         params.strength,
@@ -1977,10 +2501,19 @@ async function submitImageGenerationTask(
     steps: params.steps,
     guidance: params.guidance,
     seed: opts.seed,
+    scheduler: schedulerForModel(
+      currentModelConfig.value?.parameters as Record<string, unknown> | undefined,
+      params.scheduler,
+    ),
+    scheduler_shift: params.scheduler_shift,
+    use_empirical_mu: params.use_empirical_mu === true,
     adapters: ctx.adapters,
     metadata: { ...ctx.meta },
     priority: 'normal',
   };
+  if (hasRegistryParam(currentModelConfig.value?.parameters as Record<string, unknown>, 'use_pe')) {
+    genBody.use_pe = params.use_pe !== false;
+  }
   const genEnh = appendZImageEnhancementFields(genBody, enhCommon);
   if (!genEnh.ok) {
     throw new Error($tt('create.inpaintPairRequired'));
@@ -1997,7 +2530,7 @@ async function queuePromptsToServer() {
   if (queueSubmitting.value) return;
 
   queueSubmitting.value = true;
-  const baseSeed = params.seed ? parseInt(String(params.seed), 10) : null;
+  const baseSeed = seedForSubmit(params.seed);
   const title = String(params.title || '').trim();
 
   try {
@@ -2055,7 +2588,7 @@ const startGeneration = async () => {
       return;
     }
 
-    const seedNum = params.seed ? parseInt(String(params.seed), 10) : null;
+    const seedNum = seedForSubmit(params.seed);
     const submitRes = await submitImageGenerationTask(ctx, {
       prompt: params.prompt,
       title: String(params.title || '').trim(),
@@ -2134,6 +2667,7 @@ function restoreSavedSize() {
 const resetToDefaults = () => {
   loadModelDefaults();
   syncResolutionForModel(String(params.model || ''));
+  syncImageLoraSelection();
   toast.success($tt('studio.restoredDefaults'));
 };
 
@@ -2144,11 +2678,19 @@ const resetToDefaults = () => {
 const previewVisible = ref(false);
 const selectedImageIndex = ref(0);
 
+watch(previewVisible, (open) => {
+  if (!open) {
+    stripPreviewOverride.value = null;
+    previewSourceSessionId.value = '';
+  }
+});
+
 function getImageUrl(item: GalleryItem) {
   return api.gallery.getImageUrl(item.path);
 }
 
 function onGallerySelect(item: GalleryItem) {
+  previewSourceSessionId.value = canvasSessionId.value || '';
   const idx = galleryItems.value.findIndex((it) => it.path === item.path);
   selectedImageIndex.value = idx >= 0 ? idx : 0;
   previewVisible.value = true;
@@ -2177,14 +2719,15 @@ const extendModelOptions = computed(() => {
   const rows = allVersions.value
     .filter((v) => {
       const acts = (v.actions as Record<string, unknown>) || {};
-      return imageSupportsExtend(acts);
+      if (!imageSupportsExtend(acts)) return false;
+      const row = modelRegistry.value[String(v.modelKey || '')];
+      return isStandaloneEditControlNet(row);
     })
     .map((v) => ({
       ...modelSelectOption(v, { unreadySuffix: $tt('common.notReady') }),
-      isFill: isFillControlNet(String(v.modelKey || '')),
+      isStandalone: true,
     }));
   rows.sort((a, b) => {
-    if (a.isFill !== b.isFill) return a.isFill ? -1 : 1;
     if (a.disabled !== b.disabled) return a.disabled ? 1 : -1;
     return a.label.localeCompare(b.label);
   });
@@ -2199,9 +2742,52 @@ const fillEditParams = reactive({
 function applyFillEditDefaults(modelVersion: string) {
   const [modelKey] = String(modelVersion || '').split('|');
   if (!modelKey) return;
-  const patch = fillModelRegistryDefaultsPatch(modelKey, modelRegistry.value);
-  if (patch.guidance != null) fillEditParams.guidance = patch.guidance;
-  if (patch.steps != null) fillEditParams.steps = patch.steps;
+  const row = modelRegistry.value[modelKey];
+  if (isStandaloneEditControlNet(row)) {
+    const patch = fillModelRegistryDefaultsPatch(modelKey, modelRegistry.value);
+    if (patch.guidance != null) fillEditParams.guidance = patch.guidance;
+    if (patch.steps != null) fillEditParams.steps = patch.steps;
+    return;
+  }
+  if (isStructuralRetouchControlNet(row)) {
+    const raw =
+      (row.parameters as Record<string, { default?: number }> | undefined) ||
+      (row.ui as { parameters?: Record<string, { default?: number }> } | undefined)?.parameters;
+    if (typeof raw?.guidance?.default === 'number') fillEditParams.guidance = raw.guidance.default;
+    if (typeof raw?.steps?.default === 'number') fillEditParams.steps = raw.steps.default;
+  }
+}
+
+function retouchProviderKind(modelKey: string): 'standalone' | 'companion' | '' {
+  const row = modelRegistry.value[modelKey];
+  if (isStandaloneEditControlNet(row)) return 'standalone';
+  if (isStructuralRetouchControlNet(row)) return 'companion';
+  return '';
+}
+
+const retouchHintText = computed(() => {
+  const [modelKey] = String(retouchModelVersion.value || '').split('|');
+  const kind = retouchProviderKind(modelKey || '');
+  if (kind === 'companion') return $tt('studio.retouchCompanionHint');
+  if (kind === 'standalone') return $tt('studio.retouchStandaloneHint');
+  return $tt('studio.retouchSelectHint');
+});
+
+function defaultBaseVersionForControlNet(controlnetKey: string): string {
+  const row = modelRegistry.value[controlnetKey];
+  const base = String(row?.base_model || '').trim();
+  if (!base) return '';
+  const candidates = allVersions.value.filter((v) => String(v.modelKey) === base);
+  const ready = candidates.find((v) => v.ready);
+  const pick = ready || candidates[0];
+  return pick ? `${pick.modelKey}|${pick.versionKey}` : '';
+}
+
+function retouchSizeFromItem(item: GalleryItem): string {
+  const w = Number(item.width) || 0;
+  const h = Number(item.height) || 0;
+  if (w > 0 && h > 0) return `${w}x${h}`;
+  return `${params.width}x${params.height}`;
 }
 
 function isEditModelVersionReady(modelVersion: string): boolean {
@@ -2227,15 +2813,22 @@ const retouchModelOptions = computed(() => {
   const rows = allVersions.value
     .filter((v) => {
       const acts = (v.actions as Record<string, unknown>) || {};
-      return imageSupportsRetouch(acts);
+      if (!imageSupportsRetouch(acts)) return false;
+      const row = modelRegistry.value[String(v.modelKey || '')];
+      return (
+        isStandaloneEditControlNet(row) || isStructuralRetouchControlNet(row)
+      );
     })
-    .map((v) => ({
-      ...modelSelectOption(v, { unreadySuffix: $tt('common.notReady') }),
-      modelKey: String(v.modelKey || ''),
-      isFill: isFillControlNet(String(v.modelKey || '')),
-    }));
+    .map((v) => {
+      const row = modelRegistry.value[String(v.modelKey || '')];
+      return {
+        ...modelSelectOption(v, { unreadySuffix: $tt('common.notReady') }),
+        modelKey: String(v.modelKey || ''),
+        isStandalone: isStandaloneEditControlNet(row),
+      };
+    });
   rows.sort((a, b) => {
-    if (a.isFill !== b.isFill) return a.isFill ? -1 : 1;
+    if (a.isStandalone !== b.isStandalone) return a.isStandalone ? -1 : 1;
     if (a.disabled !== b.disabled) return a.disabled ? 1 : -1;
     return a.label.localeCompare(b.label);
   });
@@ -2310,7 +2903,10 @@ function onCardAction({ action, item }: { action: string; item: GalleryItem }) {
           const acts = (v.actions as Record<string, unknown>) || {};
           return `${v.modelKey}|${v.versionKey}` === currentKey && imageSupportsExtend(acts);
         });
-        if (currentSupportsExtend && isFillControlNet(currentKey.split('|')[0] || '')) {
+        if (
+          currentSupportsExtend &&
+          isStandaloneEditControlNet(modelRegistry.value[currentKey.split('|')[0] || ''])
+        ) {
           extendModelVersion.value = currentKey;
         } else {
           const first = extendModelOptions.value.find((o) => !o.disabled);
@@ -2319,14 +2915,23 @@ function onCardAction({ action, item }: { action: string; item: GalleryItem }) {
         if (extendModelVersion.value) applyFillEditDefaults(extendModelVersion.value);
       } else if (action === 'retouch') {
         const currentKey = params.model && params.version ? `${params.model}|${params.version}` : '';
+        const currentModelKey = currentKey.split('|')[0] || '';
         const currentSupportsRetouch = allVersions.value.some((v) => {
           const acts = (v.actions as Record<string, unknown>) || {};
           return `${v.modelKey}|${v.versionKey}` === currentKey && imageSupportsRetouch(acts);
         });
-        if (currentSupportsRetouch && isFillControlNet(currentKey.split('|')[0] || '')) {
+        const currentKind = retouchProviderKind(currentModelKey);
+        if (currentSupportsRetouch && currentKind) {
           retouchModelVersion.value = currentKey;
         } else {
-          const first = retouchModelOptions.value.find((o) => !o.disabled);
+          // Prefer companion matching the create base, else first ready option.
+          const baseKey = String(params.model || '');
+          const companionForBase = retouchModelOptions.value.find((o) => {
+            if (o.disabled || o.isStandalone) return false;
+            const row = modelRegistry.value[o.modelKey];
+            return String(row?.base_model || '') === baseKey;
+          });
+          const first = companionForBase || retouchModelOptions.value.find((o) => !o.disabled);
           retouchModelVersion.value = first ? first.value : '';
         }
         if (retouchModelVersion.value) applyFillEditDefaults(retouchModelVersion.value);
@@ -2393,7 +2998,10 @@ async function onEditorSubmit() {
     }
 
     const mask_asset_id = (
-      await api.gen.uploadAsset(new File([maskBlob], 'mask.png', { type: 'image/png' }))
+      await api.gen.uploadAsset(new File([maskBlob], 'mask.png', { type: 'image/png' }), {
+        ephemeral: true,
+        purpose: 'inpaint_mask',
+      })
     ).id as string;
 
     if (!retouchModelVersion.value) {
@@ -2401,35 +3009,81 @@ async function onEditorSubmit() {
       return;
     }
     const [modelKey, versionKey] = retouchModelVersion.value.split('|');
-    if (!isFillControlNet(modelKey)) {
-      toast.warning($tt('studio.retouchFillModelRequired'));
+    const kind = retouchProviderKind(modelKey);
+    if (!kind) {
+      toast.warning($tt('studio.retouchProviderRequired'));
       return;
     }
     if (!isEditModelVersionReady(retouchModelVersion.value)) {
       toast.warning($tt('studio.modelNotReadyDesc', { name: modelKey, version: versionKey }));
       return;
     }
-    const modelStr = versionKey ? `${modelKey}:${versionKey}` : modelKey;
-    const seedNum = params.seed ? parseInt(String(params.seed), 10) : null;
+    const seedNum = seedForSubmit(params.seed);
     const adapters: Array<{ id: string; weight: number }> = [];
     if (params.lora) adapters.push({ id: String(params.lora), weight: Number(params.lora_scale) || 0.8 });
 
-    const submitRes = await api.gen.createImageEdit({
-      model: modelStr,
-      operation: 'retouch',
-      source_asset_id,
-      mask_asset_id,
-      title: String(params.title || '').trim(),
-      prompt: String(params.prompt || '').trim(),
-      negative_prompt: params.negative_prompt || '',
-      n: 1,
-      steps: fillEditParams.steps,
-      guidance: fillEditParams.guidance,
-      seed: seedNum,
-      adapters,
-      metadata: buildCanvasMeta(),
-      priority: 'normal',
-    });
+    let submitRes: unknown;
+    if (kind === 'standalone') {
+      const modelStr = versionKey ? `${modelKey}:${versionKey}` : modelKey;
+      submitRes = await api.gen.createImageEdit({
+        model: modelStr,
+        operation: 'retouch',
+        source_asset_id,
+        mask_asset_id,
+        title: String(params.title || '').trim(),
+        prompt: String(params.prompt || '').trim(),
+        negative_prompt: params.negative_prompt || '',
+        n: 1,
+        steps: fillEditParams.steps,
+        guidance: fillEditParams.guidance,
+        seed: seedNum,
+        adapters,
+        metadata: buildCanvasMeta(),
+        priority: 'normal',
+      });
+    } else {
+      const basePick = defaultBaseVersionForControlNet(modelKey);
+      if (!basePick) {
+        toast.warning($tt('studio.retouchBaseMissing'));
+        return;
+      }
+      const [baseKey, baseVersion] = basePick.split('|');
+      if (!isEditModelVersionReady(basePick)) {
+        toast.warning($tt('studio.modelNotReadyDesc', { name: baseKey, version: baseVersion }));
+        return;
+      }
+      const row = modelRegistry.value[modelKey];
+      const paramBlock =
+        (row?.parameters as Record<string, { default?: number }> | undefined) ||
+        (
+          row?.ui as { parameters?: Record<string, { default?: number }> } | undefined
+        )?.parameters;
+      const strengthRaw = paramBlock?.controlnet_strength?.default;
+      // Registry Union default is 0.9; never silently fall back to a weaker scale.
+      const weight = typeof strengthRaw === 'number' ? strengthRaw : 0.9;
+      const genBody: Record<string, unknown> = {
+        model: baseVersion ? `${baseKey}:${baseVersion}` : baseKey,
+        title: String(params.title || '').trim(),
+        prompt: String(params.prompt || '').trim(),
+        negative_prompt: params.negative_prompt || '',
+        size: retouchSizeFromItem(editDrawerItem.value),
+        n: 1,
+        steps: fillEditParams.steps,
+        guidance: fillEditParams.guidance,
+        seed: seedNum,
+        adapters,
+        metadata: buildCanvasMeta(),
+        priority: 'normal',
+        structural_guide: buildStructuralGuidePayload(
+          modelKey,
+          source_asset_id,
+          weight,
+          { sourceAssetId: source_asset_id, maskAssetId: mask_asset_id },
+          { registry: modelRegistry.value, versionKey },
+        ),
+      };
+      submitRes = await api.gen.createImageGeneration(genBody);
+    }
     attachStreamFromSubmit(submitRes);
     showEditorDrawer.value = false;
     tasksStore.pollQueueOnce();
@@ -2475,8 +3129,8 @@ async function onExtendSubmit() {
       return;
     }
     const [modelKey, versionKey] = extendModelVersion.value.split('|');
-    if (!isFillControlNet(modelKey)) {
-      toast.warning($tt('studio.extendFillModelRequired'));
+    if (!isStandaloneEditControlNet(modelRegistry.value[modelKey])) {
+      toast.warning($tt('studio.extendStandaloneRequired'));
       return;
     }
     if (!isEditModelVersionReady(extendModelVersion.value)) {
@@ -2484,7 +3138,7 @@ async function onExtendSubmit() {
       return;
     }
     const modelStr = versionKey ? `${modelKey}:${versionKey}` : modelKey;
-    const seedNum = params.seed ? parseInt(String(params.seed), 10) : null;
+    const seedNum = seedForSubmit(params.seed);
     const adapters: Array<{ id: string; weight: number }> = [];
     if (params.lora) adapters.push({ id: String(params.lora), weight: Number(params.lora_scale) || 0.8 });
 
@@ -2588,6 +3242,16 @@ onMounted(async () => {
   loadPresets();
   loadRecentImages();
   loadGallery(true);
+  try {
+    const adopt = await imageCanvas.ensureDefaultAndAdoptOrphans();
+    if (adopt.adopted_count > 0) {
+      toast.success($tt('canvas.orphansAdopted', { n: adopt.adopted_count }));
+      await loadGallery(true);
+    }
+    await rebuildSessionAssetIndex();
+  } catch (e) {
+    toast.error($tt('studio.error', { msg: String(e) }));
+  }
   tasksStore.ensureQueuePoller();
   window.addEventListener('keydown', onCreatePageKeydown);
   const promptDraft = consumePromptDraft(DQ_STORAGE.IMAGE_CREATE_PROMPT_DRAFT);
@@ -2599,13 +3263,9 @@ onMounted(async () => {
   if (typeof q.prompt === 'string' && q.prompt) params.prompt = q.prompt;
   if (typeof q.lora === 'string' && q.lora) params.lora = q.lora;
   if (q.verify === '1') {
-    // Apply the exported identity recipe, including the frozen acceleration companion.
+    // Apply exported compose params; companion stack stays on the LoRA metadata
+    // and is expanded server-side. Do not inject recipe-specific adapters here.
     verificationRecipeActive.value = true;
-    verificationExtraAdapters.value = String(q.extra_adapters || '')
-      .split(',')
-      .map((id) => id.trim())
-      .filter((id) => id && id !== String(params.lora || ''))
-      .map((id) => ({ id, weight: 1 }));
     const numberQuery = (key: string): number | undefined => {
       const value = Number(q[key]);
       return q[key] != null && q[key] !== '' && Number.isFinite(value) ? value : undefined;
@@ -2629,6 +3289,8 @@ onMounted(async () => {
     }
     selectedSize.value = `${params.width}x${params.height}`;
     await loadCompatibleAdapters(modelKey);
+    // Prefer LoRA compose_overrides when present; query values re-applied for seed/prompt handoff.
+    syncImageLoraSelection();
     for (const key of ['steps', 'guidance', 'lora_scale', 'width', 'height'] as const) {
       const value = numberQuery(key);
       if (value != null) params[key] = value;
@@ -2724,6 +3386,47 @@ function onCreatePageKeydown(e: KeyboardEvent) {
 
 .studio-drawer-submit {
   margin-top: auto;
+}
+
+.image-create-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.image-create-filters--list {
+  width: 100%;
+  max-width: none;
+}
+
+.image-create-filters__search {
+  flex: 0 1 320px;
+  min-width: 160px;
+  max-width: 420px;
+}
+
+.image-create-filters__spacer {
+  flex: 1 1 auto;
+  min-width: 8px;
+}
+
+.image-create-filters__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.image-create-filters__session-title {
+  font-size: var(--dq-font-size-body);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40vw;
 }
 </style>
 

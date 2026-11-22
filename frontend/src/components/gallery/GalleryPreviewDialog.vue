@@ -1,7 +1,6 @@
 <template>
   <DqDialog
     v-model:open="dialogVisible"
-    :title="media === 'image' ? undefined : dialogTitle"
     :width="dialogWidth"
     center
     variant="glass"
@@ -14,8 +13,112 @@
       media === 'video' ? 'gallery-preview-dialog--video' : '',
     ]"
   >
-    <template v-if="media === 'image'" #header>
-      <span class="gallery-preview-header-fill" aria-hidden="true" />
+    <template #header>
+      <div class="gallery-preview-header">
+        <div class="gallery-preview-header__identity" :title="resourceSummary">
+          <DqIcon :size="16">
+            <Picture v-if="media === 'image'" />
+            <Film v-else-if="media === 'video'" />
+            <Headset v-else />
+          </DqIcon>
+          <span class="gallery-preview-header__summary">{{ resourceSummary }}</span>
+        </div>
+        <p v-if="headerPrompt" class="gallery-preview-header__prompt" :title="headerPrompt">
+          {{ headerPrompt }}
+        </p>
+        <div class="gallery-preview-header__actions">
+          <span v-if="items.length > 1" class="gallery-preview-header__count">
+            {{ currentIndex + 1 }} / {{ items.length }}
+          </span>
+          <div v-if="currentItem" class="gallery-preview-header__tip">
+            <DqIconButton
+              type="text"
+              size="sm"
+              :label="$t('gallery.assetInfo')"
+              :aria-expanded="infoOpen"
+              @click="infoOpen = !infoOpen"
+            >
+              <DqIcon :size="14">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M12 16v-4" />
+                  <path d="M12 8h.01" />
+                </svg>
+              </DqIcon>
+            </DqIconButton>
+            <div v-if="infoOpen && dialogVisible" class="gallery-asset-tip" role="tooltip">
+              <GalleryAssetDetailMeta :item="currentItem" show-prompt />
+            </div>
+          </div>
+          <DqDropdown
+            v-if="transferTargets.length && currentItem"
+            trigger="click"
+            size="sm"
+            @command="onTransferCommand"
+          >
+            <DqIconButton
+              type="text"
+              size="sm"
+              :label="$t('canvas.transferToCanvas')"
+              :title="$t('canvas.transferToCanvas')"
+            >
+              <DqIcon :size="14"><Library /></DqIcon>
+            </DqIconButton>
+            <template #dropdown>
+              <DqDropdownMenu>
+                <DqDropdownItem disabled>
+                  <span class="gallery-preview-header__menu-hint">{{
+                    $t('canvas.transferToCanvas')
+                  }}</span>
+                </DqDropdownItem>
+                <DqDropdownItem
+                  v-for="target in transferTargets"
+                  :key="target.id"
+                  :command="target.id"
+                >
+                  {{ target.title }}
+                </DqDropdownItem>
+              </DqDropdownMenu>
+            </template>
+          </DqDropdown>
+          <DqIconButton
+            type="text"
+            size="sm"
+            :label="$t('gallery.download')"
+            @click="downloadCurrent"
+          >
+            <DqIcon :size="14"><Download /></DqIcon>
+          </DqIconButton>
+          <div v-if="media === 'image'" class="gallery-preview-header__zoom">
+            <button
+              type="button"
+              class="gallery-preview-zoom-btn"
+              :disabled="imageZoom <= IMAGE_ZOOM_MIN"
+              :aria-label="$t('gallery.zoomOut')"
+              @click="nudgeImageZoom(1 / 1.25)"
+            >
+              <span aria-hidden="true">&minus;</span>
+            </button>
+            <button
+              type="button"
+              class="gallery-preview-zoom-label"
+              :aria-label="$t('gallery.zoomReset')"
+              @click="resetImageZoom"
+            >
+              {{ Math.round(imageZoom * 100) }}%
+            </button>
+            <button
+              type="button"
+              class="gallery-preview-zoom-btn"
+              :disabled="imageZoom >= IMAGE_ZOOM_MAX"
+              :aria-label="$t('gallery.zoomIn')"
+              @click="nudgeImageZoom(1.25)"
+            >
+              <DqIcon :size="14"><ZoomIn /></DqIcon>
+            </button>
+          </div>
+        </div>
+      </div>
     </template>
 
     <div
@@ -29,13 +132,15 @@
       }"
       tabindex="0"
     >
-      <div
+      <button
+        type="button"
         class="gallery-preview-nav gallery-preview-nav--left"
-        :class="{ 'is-disabled': !canGoPrev }"
+        :disabled="!canGoPrev"
+        :aria-label="$t('gallery.prev')"
         @click="goPrev"
       >
         <DqIcon><ArrowLeft /></DqIcon>
-      </div>
+      </button>
 
       <div
         class="gallery-preview-media"
@@ -83,70 +188,41 @@
           v-else-if="media === 'audio'"
           :item="currentItem"
           :src="getAudioUrl(currentItem)"
+          :compare-src="audioCompareUrl"
           variant="lightbox"
           :duration-label="audioDurationLabel"
+          :show-meta="false"
           @download="downloadCurrent"
         />
       </div>
 
-      <div
+      <button
+        type="button"
         class="gallery-preview-nav gallery-preview-nav--right"
-        :class="{ 'is-disabled': !canGoNext }"
+        :disabled="!canGoNext"
+        :aria-label="$t('gallery.next')"
         @click="goNext"
       >
         <DqIcon><ArrowRight /></DqIcon>
-      </div>
+      </button>
 
-      <div v-if="media === 'video' && currentItem" class="gallery-preview-detail">
-        <GalleryAssetDetailMeta :item="currentItem" show-prompt />
-      </div>
-
-      <div
-        v-if="media === 'image' && currentItem"
-        class="gallery-preview-detail gallery-preview-detail--image dq-glass--popover"
-      >
-        <GalleryAssetDetailMeta :item="currentItem" show-prompt />
-      </div>
-
-      <div v-if="media === 'image'" class="gallery-preview-zoom-bar">
-        <button
-          type="button"
-          class="gallery-preview-zoom-btn"
-          :disabled="imageZoom <= IMAGE_ZOOM_MIN"
-          :aria-label="$t('gallery.zoomOut')"
-          @click="nudgeImageZoom(1 / 1.25)"
-        >
-          <span aria-hidden="true">&minus;</span>
-        </button>
-        <button
-          type="button"
-          class="gallery-preview-zoom-label"
-          :aria-label="$t('gallery.zoomReset')"
-          @click="resetImageZoom"
-        >
-          {{ Math.round(imageZoom * 100) }}%
-        </button>
-        <button
-          type="button"
-          class="gallery-preview-zoom-btn"
-          :disabled="imageZoom >= IMAGE_ZOOM_MAX"
-          :aria-label="$t('gallery.zoomIn')"
-          @click="nudgeImageZoom(1.25)"
-        >
-          <DqIcon :size="14"><ZoomIn /></DqIcon>
-        </button>
-      </div>
-
-      <div v-if="items.length > 1" class="gallery-preview-counter">
-        {{ currentIndex + 1 }} / {{ items.length }}
-      </div>
     </div>
   </DqDialog>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue';
-import { ArrowLeft, ArrowRight, ZoomIn } from '@danqing/dq-shell';
+import {
+  ArrowLeft,
+  ArrowRight,
+  Download,
+  Film,
+  Headset,
+  Library,
+  Picture,
+  ZoomIn,
+} from '@danqing/dq-shell';
+import { formatGalleryResolution } from '@/utils/galleryAssetMeta';
 import { api } from '@/utils/api';
 import { $tt } from '@/utils/i18n';
 import type { GalleryItem } from '@/types';
@@ -154,17 +230,29 @@ import CreateVideoPlayer from '@/components/create/CreateVideoPlayer.vue';
 import GalleryAudioDetail from '@/components/gallery/GalleryAudioDetail.vue';
 import GalleryAssetDetailMeta from '@/components/gallery/GalleryAssetDetailMeta.vue';
 
-const props = defineProps<{
-  open: boolean;
-  items: GalleryItem[];
-  index: number;
-  media: 'image' | 'video' | 'audio';
-}>();
+const props = withDefaults(
+  defineProps<{
+    open: boolean;
+    items: GalleryItem[];
+    index: number;
+    media: 'image' | 'video' | 'audio';
+    /** Other canvases the current asset can move into. */
+    transferTargets?: { id: string; title: string }[];
+  }>(),
+  { transferTargets: () => [] },
+);
 
 const emit = defineEmits<{
   (e: 'update:open', value: boolean): void;
   (e: 'update:index', value: number): void;
+  (e: 'transfer', payload: { item: GalleryItem; targetSessionId: string }): void;
 }>();
+
+function onTransferCommand(targetSessionId: string) {
+  const item = currentItem.value;
+  if (!item || !targetSessionId) return;
+  emit('transfer', { item, targetSessionId });
+}
 
 const dialogVisible = computed({
   get: () => props.open,
@@ -173,7 +261,7 @@ const dialogVisible = computed({
 
 const containerRef = ref<HTMLElement | null>(null);
 const stageRef = ref<HTMLElement | null>(null);
-
+const infoOpen = ref(false);
 const IMAGE_ZOOM_MIN = 1;
 const IMAGE_ZOOM_MAX = 8;
 const imageZoom = ref(1);
@@ -289,15 +377,7 @@ const currentItem = computed(() => {
   return props.items[currentIndex.value];
 });
 
-const dialogTitle = computed(() => {
-  const item = currentItem.value;
-  if (!item) return '';
-  const prompt = (item.prompt || '').trim();
-  if (prompt) {
-    return prompt.length > 52 ? `${prompt.slice(0, 52)}…` : prompt;
-  }
-  return item.name || $tt('gallery.preview');
-});
+const headerPrompt = computed(() => (currentItem.value?.prompt || '').trim());
 
 const imageCaption = computed(() => (currentItem.value?.prompt || '').trim());
 
@@ -320,12 +400,41 @@ const dialogWidth = computed(() => {
   return 'min(94vw, 1120px)';
 });
 
+const audioCompareUrl = computed(() => {
+  const item = currentItem.value;
+  // Only cover/edit lineages have a real source track. `create` used to
+  // incorrectly stamp canvas selection as parent_asset_id.
+  const relation = String(item?.metadata?.relation_type || '').trim();
+  if (!relation || relation === 'create') return '';
+  const parentId = String(item?.metadata?.parent_asset_id || '').trim();
+  if (!parentId) return '';
+  const parent = props.items.find((candidate) => candidate.path === `asset:${parentId}`);
+  return parent ? getAudioUrl(parent) : '';
+});
+
 const audioDurationLabel = computed(() => {
   const item = currentItem.value;
   if (!item) return '';
   const dur = item.duration_seconds ?? (item.metadata?.duration_seconds as number | undefined);
   if (!dur) return '';
   return formatClock(Number(dur));
+});
+
+const resourceSummary = computed(() => {
+  const item = currentItem.value;
+  if (!item) return $tt('gallery.assetInfo');
+  const bits: string[] = [];
+  if (props.media !== 'audio') {
+    const resolution = formatGalleryResolution(item);
+    if (resolution) bits.push(resolution);
+  }
+  if (props.media === 'audio' && audioDurationLabel.value) bits.push(audioDurationLabel.value);
+  if (props.media === 'video' && videoDurationSeconds.value > 0) {
+    bits.push(formatClock(videoDurationSeconds.value));
+  }
+  if (item.model) bits.push(item.model);
+  if (bits.length) return bits.join(' · ');
+  return item.name || $tt('gallery.assetInfo');
 });
 
 const videoDurationSeconds = computed(() => {
@@ -405,23 +514,41 @@ function handleKeydown(e: KeyboardEvent) {
 
 watch(currentIndex, () => {
   resetImageZoom();
+  infoOpen.value = false;
 });
+
+function onDismissInfo(event: Event) {
+  if (!infoOpen.value) return;
+  const target = event.target;
+  if (!(target instanceof Node)) return;
+  const root = document;
+  const tip = root.querySelector('.gallery-asset-tip');
+  const toggle = root.querySelector('.gallery-preview-header__tip');
+  if (tip?.contains(target) || toggle?.contains(target)) return;
+  infoOpen.value = false;
+}
 
 watch(dialogVisible, (val) => {
   if (val) {
     resetImageZoom();
+    infoOpen.value = false;
     nextTick(() => {
       containerRef.value?.focus();
     });
     document.addEventListener('keydown', handleKeydown);
+    document.addEventListener('pointerdown', onDismissInfo, true);
   } else {
+    infoOpen.value = false;
     document.removeEventListener('keydown', handleKeydown);
+    document.removeEventListener('pointerdown', onDismissInfo, true);
     resetImageZoom();
   }
 });
 
 onBeforeUnmount(() => {
+  infoOpen.value = false;
   document.removeEventListener('keydown', handleKeydown);
+  document.removeEventListener('pointerdown', onDismissInfo, true);
 });
 </script>
 
@@ -432,11 +559,15 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   min-height: 300px;
+}
+
+.gallery-preview-container:focus {
   outline: none;
 }
 
 .gallery-preview-container--image {
-  min-height: min(78vh, 720px);
+  height: min(78vh, 720px);
+  min-height: 300px;
 }
 
 .gallery-preview-container--video {
@@ -468,28 +599,173 @@ onBeforeUnmount(() => {
   padding: 8px 0 12px;
 }
 
-.gallery-preview-container--video .gallery-preview-detail {
-  position: static;
-  grid-column: 2;
-  grid-row: 2;
-  left: auto;
-  right: auto;
-  bottom: auto;
-  margin: 0;
-  max-height: none;
-  box-shadow: none;
-}
-
-.gallery-preview-container--video .gallery-preview-counter {
-  grid-column: 1 / -1;
-  position: static;
-  justify-self: center;
-  margin-top: 8px;
-  transform: none;
-}
-
-.gallery-preview-header-fill {
+.gallery-preview-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   flex: 1;
+  min-width: 0;
+}
+
+.gallery-preview-header__identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 42%;
+  color: var(--dq-label-primary);
+  font-weight: 600;
+}
+
+.gallery-preview-header__summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gallery-preview-header__prompt {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dq-label-tertiary);
+  font-size: var(--dq-font-size-caption);
+}
+
+.gallery-preview-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.gallery-preview-header__count {
+  margin-right: 8px;
+  color: var(--dq-label-tertiary);
+  font-size: var(--dq-font-size-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.gallery-preview-header__menu-hint {
+  font-size: var(--dq-font-size-caption);
+  color: var(--dq-label-secondary);
+}
+
+.gallery-preview-header__zoom {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  padding-left: 4px;
+  border-left: 1px solid var(--dq-border-subtle);
+}
+
+.gallery-asset-tip {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  width: min(440px, 72vw);
+  padding: 12px 14px;
+  border: 1px solid var(--dq-border-subtle);
+  border-radius: var(--dq-radius-control);
+  background: var(--dq-bg-base);
+  box-shadow: var(--dq-shadow-popover);
+  text-align: left;
+  z-index: 20;
+}
+
+.gallery-asset-tip :deep(.gallery-asset-detail-meta__section) {
+  display: grid;
+  grid-template-columns: 5em minmax(0, 1fr) auto;
+  column-gap: 12px;
+  align-items: start;
+  margin-bottom: 10px;
+}
+
+.gallery-asset-tip :deep(.gallery-asset-detail-meta__head) {
+  display: contents;
+  margin: 0;
+}
+
+.gallery-asset-tip :deep(.gallery-asset-detail-meta__prompt) {
+  grid-column: 2;
+  grid-row: 1;
+  margin: 0;
+}
+
+.gallery-asset-tip :deep(.gallery-asset-detail-meta__head .dq-icon-btn) {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.gallery-asset-tip :deep(.gallery-asset-detail-meta__label),
+.gallery-asset-tip :deep(.task-id-badge__label),
+.gallery-asset-tip :deep(.gallery-asset-detail-meta__row dt) {
+  font-size: var(--dq-font-size-caption);
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--dq-label-tertiary);
+}
+
+.gallery-asset-tip :deep(.gallery-asset-detail-meta__task) {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  margin: 0 0 10px;
+}
+
+.gallery-asset-tip :deep(.task-id-badge) {
+  display: grid;
+  grid-template-columns: 5em minmax(0, 1fr) auto;
+  column-gap: 12px;
+  align-items: center;
+  width: 100%;
+  margin: 0;
+}
+
+.gallery-asset-tip :deep(.task-id-badge__value) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gallery-asset-tip :deep(.gallery-asset-detail-meta__task > .dq-btn) {
+  justify-content: flex-start;
+  margin-left: calc(5em + 12px);
+  padding-left: 0;
+}
+
+.gallery-asset-tip :deep(.gallery-asset-detail-meta__rows) {
+  display: grid;
+  grid-template-columns: 5em minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 8px;
+  align-items: center;
+  margin: 0;
+}
+
+.gallery-asset-tip :deep(.gallery-asset-detail-meta__row) {
+  display: contents;
+}
+
+.gallery-asset-tip :deep(.gallery-asset-detail-meta__rows) {
+  padding-top: 10px;
+  border-top: 0.5px solid var(--dq-border-subtle);
+}
+
+.gallery-asset-tip :deep(.gallery-asset-detail-meta__mono) {
+  min-width: 0;
+}
+
+.gallery-asset-tip :deep(.gallery-asset-detail-meta__mono code) {
+  max-width: none;
 }
 
 .gallery-preview-media {
@@ -503,9 +779,11 @@ onBeforeUnmount(() => {
 }
 
 .gallery-preview-container--image .gallery-preview-media {
-  padding: 12px 52px 220px;
-  min-height: min(78vh, 720px);
+  height: 100%;
+  min-height: 0;
+  padding: 20px 52px 24px;
   min-width: 0;
+  transition: padding-bottom 140ms ease;
 }
 
 .gallery-preview-zoom-stage {
@@ -513,8 +791,8 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   width: 100%;
-  height: min(72vh, calc(78vh - 80px));
-  min-height: 240px;
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
   touch-action: none;
   cursor: zoom-in;
@@ -531,31 +809,13 @@ onBeforeUnmount(() => {
 
 .gallery-preview-img {
   max-width: 100%;
-  max-height: 72vh;
+  max-height: 100%;
   border-radius: var(--dq-radius-group);
   object-fit: contain;
   box-shadow: var(--dq-shadow-lg);
   transform-origin: center center;
   will-change: transform;
   pointer-events: none;
-}
-
-.gallery-preview-zoom-bar {
-  position: absolute;
-  right: 56px;
-  top: 12px;
-  left: auto;
-  bottom: auto;
-  z-index: 11;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--dq-radius-pill);
-  border: 0.5px solid var(--dq-glass-border);
-  background: var(--dq-glass-tooltip-bg);
-  -webkit-backdrop-filter: var(--dq-glass-blur-light);
-  backdrop-filter: var(--dq-glass-blur-light);
 }
 
 .gallery-preview-zoom-btn,
@@ -631,6 +891,7 @@ onBeforeUnmount(() => {
   transform: translateY(-50%);
   width: 40px;
   height: 40px;
+  padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -645,7 +906,7 @@ onBeforeUnmount(() => {
   backdrop-filter: var(--dq-glass-blur-light);
 }
 
-.gallery-preview-nav:hover:not(.is-disabled) {
+.gallery-preview-nav:hover:not(:disabled) {
   background: var(--dq-fill-on-glass-hover);
 }
 
@@ -657,10 +918,9 @@ onBeforeUnmount(() => {
   right: 8px;
 }
 
-.gallery-preview-nav.is-disabled {
-  opacity: 0.15;
+.gallery-preview-nav:disabled {
+  opacity: 0.3;
   cursor: not-allowed;
-  pointer-events: none;
 }
 
 .gallery-preview-caption {
@@ -692,103 +952,17 @@ onBeforeUnmount(() => {
   letter-spacing: 0.01em;
 }
 
-.gallery-preview-counter {
-  position: absolute;
-  bottom: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 4px 12px;
-  background: var(--dq-glass-tooltip-bg);
-  color: var(--dq-label-secondary);
-  border-radius: var(--dq-radius-pill);
-  font-size: var(--dq-font-size-caption);
-  font-variant-numeric: tabular-nums;
-  z-index: 10;
-  border: 0.5px solid var(--dq-glass-border);
-  -webkit-backdrop-filter: var(--dq-glass-blur-light);
-  backdrop-filter: var(--dq-glass-blur-light);
-}
-
-.gallery-preview-detail {
-  position: absolute;
-  bottom: 48px;
-  left: 60px;
-  right: 60px;
-  padding: 14px 18px;
-  background: var(--dq-surface-inset);
-  border: 0.5px solid var(--dq-border-subtle);
-  border-radius: var(--dq-radius-group);
-  color: var(--dq-label-primary);
-  z-index: 10;
-  max-height: min(240px, 34vh);
-  overflow-y: auto;
-  box-shadow: var(--dq-shadow-md);
-}
-
-.gallery-preview-detail--image {
-  left: 50%;
-  right: auto;
-  transform: translateX(-50%);
-  width: min(640px, calc(100% - 96px));
-  bottom: 44px;
-}
-
-.gallery-preview-detail__section {
-  margin-bottom: 10px;
-}
-
-.gallery-preview-detail__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
-}
-
-.gallery-preview-detail__label {
-  font-size: var(--dq-font-size-caption);
-  font-weight: 600;
-  letter-spacing: var(--dq-tracking-wide);
-  text-transform: uppercase;
-  color: var(--dq-label-tertiary);
-}
-
-.gallery-preview-detail__prompt {
-  margin: 0;
-  font-size: var(--dq-font-size-body);
-  line-height: 1.5;
-  color: var(--dq-label-primary);
-  word-break: break-word;
-}
-
-.gallery-preview-detail__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 20px;
-  margin: 0;
-  padding-top: 10px;
-  border-top: 0.5px solid var(--dq-border-subtle);
-}
-
-.gallery-preview-detail__meta-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--dq-font-size-caption);
-}
-
-.gallery-preview-detail__meta-row dt {
-  color: var(--dq-label-tertiary);
-}
-
-.gallery-preview-detail__meta-row dd {
-  margin: 0;
-  color: var(--dq-label-secondary);
-}
 </style>
 
 <style>
+.gallery-preview-dialog .dq-dialog-header {
+  padding: 10px 14px;
+  gap: 8px;
+}
+
 .gallery-preview-dialog .dq-dialog-content {
   max-height: min(94vh, 920px);
+  overflow: visible;
 }
 
 .gallery-preview-dialog .dq-dialog-body {
@@ -800,11 +974,12 @@ onBeforeUnmount(() => {
 }
 
 .gallery-preview-dialog--image .dq-dialog-content {
-  overflow: hidden;
+  overflow: visible;
 }
 
 .gallery-preview-dialog--audio .dq-dialog-body {
   padding: 0 4px 12px;
+  overflow-y: auto;
 }
 
 .gallery-preview-dialog--video .dq-dialog-body {

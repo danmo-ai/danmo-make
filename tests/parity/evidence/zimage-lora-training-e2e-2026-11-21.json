@@ -1,0 +1,66 @@
+{
+  "gate": "z_image lora training real-image E2E (short run)",
+  "date": "2026-11-21",
+  "task_id": "tsk_8e560eff-309a-4de0-9549-59af042531c5",
+  "base_model": "z-image-turbo:fp16",
+  "preset": "turbo-sft",
+  "iterations": 20,
+  "dev_override": "metadata.iterations=20 (logged loudly in task log)",
+  "dataset": {
+    "id": "ds_f5cf344d9e3f9702",
+    "images": 9,
+    "caption": "Lyt",
+    "resolution": [
+      1024,
+      1024
+    ]
+  },
+  "pipeline": "VAE latent cache + Qwen3 TE + caption refiner cache + 30-block differentiable DiT (mx.checkpoint per block) + AdamW, MLX Metal",
+  "lora": {
+    "rank": 32,
+    "alpha": 32,
+    "modules": 210,
+    "targets": [
+      "to_q",
+      "to_k",
+      "to_v",
+      "to_out",
+      "w1",
+      "w2",
+      "w3"
+    ]
+  },
+  "loss": {
+    "step1": 0.22578,
+    "step20": 0.56724,
+    "note": "per-step loss is sigma/image/noise-dependent and mid-gaussian weighted; not comparable across steps on a 20-step run"
+  },
+  "timing": {
+    "encode_cache_s": 5,
+    "seconds_per_step": 9.5,
+    "estimated_2500_steps_h": 6.6
+  },
+  "adapter": {
+    "path": "tasks/tsk_8e560eff-309a-4de0-9549-59af042531c5/adapters/final_adapters.safetensors",
+    "tensors": 630,
+    "bytes": 280235324
+  },
+  "inference_roundtrip": {
+    "command": "danmo-generate --model z-image-turbo --prompt Lyt --steps 9 --seed 7 --lora <adapter>",
+    "with_lora": "zimage-lora-train20-with-lora-2026-11-21.png",
+    "baseline": "zimage-lora-train20-baseline-2026-11-21.png",
+    "observation": "baseline renders literal token as garbled text over an unrelated night scene; trained LoRA shifts composition to the dataset's logo-on-dark-canvas style (crisp LYT logotype)"
+  },
+  "unit_evidence": [
+    "danmo-mlx transforms::tests::checkpointed_closure_matches_plain_value_and_grad",
+    "families::z_image::mlx::train::tests::cpu_tiny_dit_lora_training_lowers_loss",
+    "families::z_image::mlx::train::tests::metal_tiny_dit_lora_training_lowers_loss"
+  ],
+  "remaining_gates": [
+    "loss/gradient per-trainable-tensor evidence file",
+    "checkpoint resume round-trip E2E",
+    "full-length 2500-iteration run",
+    "CUDA gate (separate platform)",
+    "face detection for face_crop=on"
+  ]
+}
