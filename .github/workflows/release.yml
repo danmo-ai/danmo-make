@@ -147,13 +147,17 @@ jobs:
     container:
       image: nvidia/cuda:12.9.1-cudnn-devel-ubuntu22.04
       options: --privileged
+    defaults:
+      run:
+        # CUDA image default is dash (`sh`); bashisms like `pipefail` need an explicit shell.
+        shell: bash
     env:
       DANQING_CUDA_SKIP_APT_INSTALL: "1"
     steps:
       - name: Prepare container for checkout
         run: |
           apt-get update
-          apt-get install -y ca-certificates git
+          apt-get install -y ca-certificates git bash
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -286,13 +290,17 @@ jobs:
     container:
       image: nvidia/cuda:12.9.1-cudnn-devel-ubuntu22.04
       options: --privileged
+    defaults:
+      run:
+        # CUDA image default is dash (`sh`); bashisms like `pipefail` need an explicit shell.
+        shell: bash
     env:
       DANQING_CUDA_SKIP_APT_INSTALL: "1"
     steps:
       - name: Prepare container for checkout
         run: |
           apt-get update
-          apt-get install -y ca-certificates git
+          apt-get install -y ca-certificates git bash
 
       - name: Checkout
         uses: actions/checkout@v4

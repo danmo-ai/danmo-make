@@ -26,6 +26,15 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
   echo "==> Signing identity: $SIGN_IDENTITY"
   if [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
     NOTARIZED=1
+    # Fail fast on bad App Store Connect credentials (avoid a long Metal build then 401).
+    echo "==> Probing notarytool credentials"
+    if ! xcrun notarytool history \
+      --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" \
+      >/dev/null; then
+      echo "ERROR: Apple notarization credentials rejected (HTTP 401 / invalid APPLE_ID or APPLE_PASSWORD)." >&2
+      echo "Update the GitHub secrets with a current app-specific password from appleid.apple.com (make set-release-secrets)." >&2
+      exit 1
+    fi
   else
     echo "==> No APPLE_ID/APPLE_PASSWORD/APPLE_TEAM_ID — signed but NOT notarized"
   fi
@@ -99,7 +108,12 @@ echo "    CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
 cleanup_dmg_artifacts
 npm install
 export CI=true
-npm exec tauri build -- --target aarch64-apple-darwin
+# Tauri auto-notarizes when APPLE_ID/PASSWORD/TEAM_ID are set; a 401 aborts bundling
+# before our DMG step. Sign via identity only here; notarize the DMG with notarytool below.
+(
+  unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH
+  npm exec tauri build -- --target aarch64-apple-darwin
+)
 cleanup_dmg_artifacts
 
 bash "$ROOT/scripts/stage_desktop_bundle.sh"
@@ -128,8 +142,7 @@ if APP=$(find "$ROOT/out/desktop/bundle" -name "*.app" -print -quit); then
       if xcrun stapler validate "$APP" >/dev/null 2>&1; then
         echo "==> App bundle already notarized (ticket stapled)"
       else
-        echo "WARNING: .app 没有公证票据，尝试 staple" >&2
-        xcrun stapler staple "$APP" || echo "WARNING: staple 失败，app 可能未公证" >&2
+        notarize "$APP"
       fi
     fi
   else
