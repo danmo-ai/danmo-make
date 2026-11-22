@@ -191,7 +191,6 @@ jobs:
           apt-get update
           apt-get install -y \
             build-essential \
-            cmake \
             ninja-build \
             g++ \
             pkg-config \
@@ -205,7 +204,14 @@ jobs:
             file \
             wget \
             curl \
+            ca-certificates \
             libfuse2
+          # Ubuntu 22.04 apt cmake is 3.22; MLX requires >= 3.25.
+          curl -fsSL https://github.com/Kitware/CMake/releases/download/v3.30.5/cmake-3.30.5-linux-x86_64.tar.gz \
+            | tar -xz -C /usr/local --strip-components=1
+          cmake --version
+          # Ensure kitware cmake wins over any later apt cmake install.
+          hash -r || true
 
       - name: Configure CUDA env (preinstalled toolkit)
         working-directory: danmo-make
@@ -219,6 +225,9 @@ jobs:
           test -f native/third_party/ggml/CMakeLists.txt
           command -v nvcc
           nvcc --version
+          cmake --version | head -1
+          # Fail loud if PATH still points at apt cmake 3.22.
+          cmake --version | grep -qE 'version 3\.(2[5-9]|[3-9][0-9])|version [4-9]\.'
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -332,7 +341,20 @@ jobs:
       - name: Install system dependencies
         run: |
           apt-get update
-          apt-get install -y build-essential cmake ninja-build g++ pkg-config libclang-dev wget
+          apt-get install -y \
+            build-essential \
+            ninja-build \
+            g++ \
+            pkg-config \
+            libclang-dev \
+            wget \
+            curl \
+            ca-certificates
+          # Ubuntu 22.04 apt cmake is 3.22; MLX requires >= 3.25.
+          curl -fsSL https://github.com/Kitware/CMake/releases/download/v3.30.5/cmake-3.30.5-linux-x86_64.tar.gz \
+            | tar -xz -C /usr/local --strip-components=1
+          cmake --version
+          hash -r || true
 
       - name: Configure CUDA env (preinstalled toolkit)
         working-directory: danmo-make
@@ -345,6 +367,9 @@ jobs:
           test -f native/third_party/mlx-c/CMakeLists.txt
           command -v nvcc
           nvcc --version
+          cmake --version | head -1
+          cmake --version | grep -qE 'version 3\.(2[5-9]|[3-9][0-9])|version [4-9]\.'
+          command -v curl
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

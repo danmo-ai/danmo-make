@@ -61,9 +61,19 @@ notarize() {
     fi
     return 0
   fi
-  echo "==> Notarizing $(basename "$path") (may take several minutes)"
-  xcrun notarytool submit "$path" \
+  # notarytool accepts .zip / .dmg / .pkg — not a raw .app bundle.
+  local submit="$path"
+  local tmp_zip=""
+  if [[ -d "$path" && "$path" == *.app ]]; then
+    tmp_zip="$(mktemp "${TMPDIR:-/tmp}/danmo-notarize.XXXXXX").zip"
+    echo "==> Zipping $(basename "$path") for notarytool"
+    ditto -c -k --keepParent "$path" "$tmp_zip"
+    submit="$tmp_zip"
+  fi
+  echo "==> Notarizing $(basename "$submit") (may take several minutes)"
+  xcrun notarytool submit "$submit" \
     --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+  [[ -n "$tmp_zip" ]] && rm -f "$tmp_zip"
   xcrun stapler staple "$path"
   xcrun stapler validate "$path"
 }
