@@ -444,10 +444,18 @@ impl CStringList {
         let raw = check_infallible("mlx_vector_string_new_data", unsafe {
             sys::mlx_vector_string_new_data(pointers.as_mut_ptr(), pointers.len())
         })?;
-        if raw.ctx.is_null() {
+        // Do not read `.ctx`: bindgen may emit `mlx_vector_string` as an opaque
+        // `{ _address: u8 }` blob (no `ctx` field) depending on libclang, while
+        // neighbouring mlx_* handles keep an explicit pointer field. Validate
+        // through the size API instead.
+        let size = unsafe { sys::mlx_vector_string_size(raw) };
+        if size != owned.len() {
             return Err(Error::new(
                 "mlx_vector_string_new_data",
-                "MLX returned an empty string vector",
+                format!(
+                    "MLX string vector has {size} entries after inserting {}",
+                    owned.len()
+                ),
             ));
         }
         Ok(Self { owned, raw })

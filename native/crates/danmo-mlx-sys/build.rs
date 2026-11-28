@@ -199,6 +199,9 @@ fn main() {
 
     let bindings = bindgen::Builder::default()
         .header(manifest.join("wrapper.h").to_string_lossy())
+        // Force C: under C++ libclang, some mlx_vector_* typedefs have been
+        // observed as opaque `{ _address: u8 }` stubs instead of `{ void* ctx }`.
+        .clang_arg("-xc")
         .clang_arg(format!("-I{}", mlx_c_src.display()))
         .allowlist_function("mlx_.*")
         .allowlist_function("_mlx_.*")
