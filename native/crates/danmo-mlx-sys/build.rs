@@ -212,9 +212,8 @@ fn main() {
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .generate()
         .expect("generate mlx-c bindings");
-    bindings
-        .write_to_file(out.join("bindings.rs"))
-        .expect("write mlx-c bindings");
+    let text = rewrite_opaque_mlx_handles(bindings.to_string());
+    std::fs::write(out.join("bindings.rs"), text).expect("write mlx-c bindings");
 
     if prebuilt.is_none() {
         copy_metal_library(&build_dir, &metal_dir);
@@ -335,4 +334,34 @@ fn on(enabled: bool) -> &'static str {
     } else {
         "OFF"
     }
+}
+
+/// Every mlx-c object handle is `{ void* ctx }`. Some libclang/bindgen combos
+/// still emit incomplete `mlx_*_` structs as `{ _address: u8 }`, which breaks
+/// the ABI for returns like `mlx_vector_string_new_data` (SIGSEGV later).
+fn rewrite_opaque_mlx_handles(source: String) -> String {
+    const OPAQUE: &str = "{\n    _address: u8,\n}";
+    const HANDLE: &str = "{\n    pub ctx: *mut ::core::ffi::c_void,\n}";
+    let mut out = String::with_capacity(source.len());
+    let mut rest = source.as_str();
+    while let Some(rel) = rest.find("pub struct mlx_") {
+        out.push_str(&rest[..rel]);
+        let from_struct = &rest[rel..];
+        let Some(body_at) = from_struct.find('{') else {
+            out.push_str(from_struct);
+            return out;
+        };
+        let name = &from_struct[..body_at];
+        let after_brace = &from_struct[body_at..];
+        if after_brace.starts_with(OPAQUE) {
+            out.push_str(name);
+            out.push_str(HANDLE);
+            rest = &after_brace[OPAQUE.len()..];
+        } else {
+            out.push_str(&from_struct[..body_at + 1]);
+            rest = &after_brace[1..];
+        }
+    }
+    out.push_str(rest);
+    out
 }
