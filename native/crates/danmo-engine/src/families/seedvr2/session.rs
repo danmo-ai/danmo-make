@@ -738,6 +738,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mlx")]
     #[test]
     fn upscale_facade_runs_the_smoke_bundle_end_to_end() {
         let dir = scratch("facade");

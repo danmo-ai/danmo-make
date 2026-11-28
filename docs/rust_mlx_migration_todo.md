@@ -77,7 +77,7 @@ P6 已落地、不要重做的部分：ACE XL 的 MLX 生成与 cover / cover-no
 ### P0 剩余
 
 - Linux CUDA Release 与真实 CUDA runtime。
-- 最小 macOS 分发：dylib、metallib、rpath、deployment target、codesign。
+- ~~最小 macOS 分发：dylib、metallib、rpath~~：**已做（sidecar）** — `danmo-server` / `danmo-cli` 写 `@executable_path` LC_RPATH；`build_mlx_sidecar.sh` 把 `libmlx` / `libmlxc` / `mlx.metallib` 拷到 sidecar 旁并补 `@loader_path`。仍待：deployment target 与分发 codesign 门的独立验收。
 - 算子探针补齐：超过 32K packed rows 的 QMM 已有探针；conv3d、conv transpose、FFT/STFT、sliding mask、一个 Metal custom kernel 和对应 CUDA kernel 还没有。
 - 量化 encode 的热性能门。不要为此重编 Qwen3 塔。
 

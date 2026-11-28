@@ -1391,6 +1391,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "mlx")]
     #[tokio::test]
     async fn seedvr2_upscale_runs_end_to_end() {
         let dir = std::env::temp_dir().join(format!(

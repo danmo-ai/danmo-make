@@ -695,6 +695,7 @@ pub fn default_recipe_for(base: &Path) -> Result<String, String> {
 
 /// Default output directory beside the dense base. Same layout rule as the
 /// installer (`danmo_engine::derived_layout`), so CLI and API cannot drift.
+#[cfg(feature = "mlx")]
 pub fn default_output(base: &Path) -> String {
     danmo_engine::derived_layout(Path::new(""), &base.display().to_string(), "q4-mixed")
         .display()
@@ -703,6 +704,7 @@ pub fn default_output(base: &Path) -> String {
 
 /// Convert a dense bundle. Thin wrapper over the engine entry point so the CLI
 /// and the installer cannot drift.
+#[cfg(feature = "mlx")]
 pub fn run_quantize(
     workspace: &Path,
     repo_root: &Path,
@@ -722,6 +724,7 @@ pub fn run_quantize(
 }
 
 /// Find a recipe file for `--print-recipe`.
+#[cfg(feature = "mlx")]
 pub fn find_recipe(workspace: &Path, repo_root: &Path, id: &str) -> Result<String, String> {
     danmo_engine::find_recipe(workspace, repo_root, id).map(|path| path.display().to_string())
 }

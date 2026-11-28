@@ -1552,11 +1552,15 @@ mod tests {
             &got[..8.min(got.len())],
             &expect[..8.min(expect.len())]
         );
+        // encode_samples is a pure shift/scale of encode_conv_out's mean half.
+        // Compare against `got` (not the host expect): the host match above
+        // already allows 1e-3, so deriving the sample reference from expect at
+        // 1e-6 would fail even when the transform itself is exact.
         let samples = super::encode_samples(&ctx, &vae, &image, &spec, 4, 4).unwrap();
         let plane = 2 * 2;
         for c in 0..spec.latent_channels as usize {
             for i in 0..plane {
-                let want = (expect[i + c * plane] - spec.shift) * spec.scaling;
+                let want = (got[i + c * plane] - spec.shift) * spec.scaling;
                 assert!(
                     (samples[i + c * plane] - want).abs() < 1e-6,
                     "channel {c} index {i}"

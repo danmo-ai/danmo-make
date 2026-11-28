@@ -698,6 +698,7 @@ impl Downloads {
         // A family converter (LTX split pack) writes its own layout, so the
         // manifest is stamped here rather than inside the generic rewriter.
         if spec.get("install_hooks").is_some() {
+            #[cfg(feature = "mlx")]
             if let Err(error) = danmo_engine::write_derived_manifest(
                 &self.workspace,
                 &self.repo_root,
@@ -708,6 +709,15 @@ impl Downloads {
                 let _ = fs::create_dir_all(&root);
                 let _ = fs::write(root.join(INSTALL_HOOK_INCOMPLETE), b"quantization failed");
                 return Err(error);
+            }
+            #[cfg(not(feature = "mlx"))]
+            {
+                let _ = (base_local, derived_local, recipe);
+                let _ = fs::create_dir_all(&root);
+                let _ = fs::write(root.join(INSTALL_HOOK_INCOMPLETE), b"quantization failed");
+                return Err(
+                    "derived quantization requires an MLX build (mlx-metal or mlx-cuda)".into(),
+                );
             }
         }
         // Clear the pending marker before readiness — version_ready treats the

@@ -113,7 +113,7 @@ Layout, cache keys, and the dtype policy: [docs/engine_architecture.md](docs/eng
 
 The product generation path is **MLX only**: build `danqing-api` with `metal,mlx-metal` (macOS) or `mlx-cuda` (Linux). There is no runtime Python stack and no GGUF product path. `DANQING_MLX_DEVICE` is not implemented; do not document it as a working switch. `GET /api/system/health` returns the selected backend, the reason, and the probe summary. Task logs carry a `[backend]` prefix.
 
-`scripts/build_mlx_sidecar.sh` builds the release sidecar into `out/sidecar/danqing-api/` with `metal,mlx-metal` on macOS and `mlx-cuda` on Linux when `nvcc` is present (CUDA toolkit only; no GPU needed to compile). Override with `DANQING_SIDECAR_FEATURES`. CI uses the NVIDIA CUDA devel container and `scripts/ci_install_cuda_ubuntu.sh` for env only.
+`scripts/build_mlx_sidecar.sh` builds the release sidecar into `out/sidecar/danqing-api/` with `metal,mlx-metal` on macOS and `mlx-cuda` on Linux when `nvcc` is present (CUDA toolkit only; no GPU needed to compile). Override with `DANQING_SIDECAR_FEATURES`. CI uses the NVIDIA CUDA devel container and `scripts/ci_install_cuda_ubuntu.sh` for env only. MLX packs also stage `libmlx` / `libmlxc` (and `mlx.metallib` on macOS) next to `danqing-api` and rely on `@executable_path` / `$ORIGIN` LC_RPATH — a bare binary without those libs dies at launch with `Library not loaded: @rpath/libmlxc.dylib` / `no LC_RPATH's found`.
 
 ```bash
 make pack-mlx-sidecar

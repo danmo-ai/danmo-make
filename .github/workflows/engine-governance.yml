@@ -27,4 +27,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Test ggml backend
-        run: cargo test --manifest-path native/Cargo.toml
+        # Workspace members include danmo-mlx / danmo-mlx-sys; this job is the
+        # non-MLX (ggml) gate. Exclude them so CI does not compile or SIGSEGV
+        # the MLX CPU backend without metal/cuda features.
+        run: >
+          cargo test --manifest-path native/Cargo.toml --workspace
+          --exclude danmo-mlx --exclude danmo-mlx-sys

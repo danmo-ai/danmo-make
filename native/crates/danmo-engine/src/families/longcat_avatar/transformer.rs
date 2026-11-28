@@ -40,7 +40,11 @@ pub struct DitInputs {
 
 impl AvatarDit {
     pub fn open(component_dir: &std::path::Path, config: &DitConfig) -> Result<Self> {
-        let weights = load_mlx_directory(component_dir, WeightDtype::Native, config.quantization)?;
+        let quantization = config.quantization.map(|q| danmo_mlx::AffineQuantization {
+            bits: q.bits,
+            group_size: q.group_size,
+        });
+        let weights = load_mlx_directory(component_dir, WeightDtype::Native, quantization)?;
         let dit = Self {
             config: config.clone(),
             weights,
