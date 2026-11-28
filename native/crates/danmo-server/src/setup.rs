@@ -489,6 +489,7 @@ mod tests {
         assert_eq!(parse_human_size_to_gb(None), None);
     }
 
+    #[cfg(feature = "mlx")]
     #[test]
     fn low_memory_picks_a_quantized_image_version() {
         let catalog = factory_catalog();
@@ -503,6 +504,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "mlx")]
     #[test]
     fn high_memory_recommends_a_published_image_base_model() {
         let catalog = factory_catalog();
@@ -515,6 +517,17 @@ mod tests {
             "{model}"
         );
         assert!(image["version_key"].is_string());
+    }
+
+    #[cfg(not(feature = "mlx"))]
+    #[test]
+    fn without_mlx_image_slot_is_explicitly_unavailable() {
+        let catalog = factory_catalog();
+        let payload = recommendations(&catalog, 64.0, 32.0, 0.0, &|_| false);
+        let image = slot(&payload, "image");
+        assert_eq!(image["status"], "unavailable");
+        assert_eq!(image["reason"], "mlx_required");
+        assert!(image["model_id"].is_null());
     }
 
     #[test]
