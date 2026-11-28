@@ -5,6 +5,14 @@
 use serde_json::Value;
 use std::path::Path;
 
+/// Bits/group for MLX affine-quantized DiT weights. Plain POD so config
+/// parsing compiles without the `mlx` feature (ggml CI / non-MLX builds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AffineQuantization {
+    pub bits: i32,
+    pub group_size: i32,
+}
+
 #[derive(Debug, Clone)]
 pub struct DitConfig {
     pub in_channels: usize,
@@ -25,7 +33,7 @@ pub struct DitConfig {
     pub context_tokens: usize,
     pub vae_scale: usize,
     pub audio_prenorm: bool,
-    pub quantization: Option<danmo_mlx::AffineQuantization>,
+    pub quantization: Option<AffineQuantization>,
 }
 
 #[derive(Debug, Clone)]
@@ -76,7 +84,7 @@ impl DitConfig {
                 .get("group_size")
                 .and_then(Value::as_u64)
                 .unwrap_or(64) as i32;
-            Some(danmo_mlx::AffineQuantization { bits, group_size })
+            Some(AffineQuantization { bits, group_size })
         });
         Ok(Self {
             in_channels: integer("in_channels", 16),
