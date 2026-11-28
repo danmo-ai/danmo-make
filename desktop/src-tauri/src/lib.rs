@@ -432,17 +432,14 @@ fn start_sidecar(app: &AppHandle) -> Result<u16, String> {
         .ok_or_else(|| format!("sidecar has no parent dir: {}", exe.display()))?;
 
     let mut cmd = Command::new(&exe);
+    // cwd is the staged sidecar dir (Contents/Resources/danqing-api). MLX
+    // dylibs + mlx.metallib are colocated there; danqing-api carries
+    // @executable_path / $ORIGIN LC_RPATH (see scripts/build_mlx_sidecar.sh).
+    // Do not set DYLD_LIBRARY_PATH: hardened runtime ignores it for signed apps.
     cmd.current_dir(cwd)
         .env("DANQING_HTTP_HOST", "127.0.0.1")
         .env("DANQING_HTTP_PORT", port.to_string())
         .env("DANQING_USER_DATA_DIR", user_dir.as_os_str());
-    #[cfg(target_os = "macos")]
-    {
-        let mlx_lib = cwd.join("_internal").join("mlx").join("lib");
-        if mlx_lib.is_dir() {
-            cmd.env("DYLD_LIBRARY_PATH", mlx_lib.as_os_str());
-        }
-    }
     apply_process_group(&mut cmd);
 
     let (stdout, stderr) = open_log(&log_path)?;

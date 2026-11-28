@@ -6,7 +6,7 @@ Run from the repo root. Paths live in `out_paths.sh`.
 |--------|------|
 | `start.sh` / `stop.sh` | `make dev` / `make stop` |
 | `start_desktop.sh` | `make dev-desktop` |
-| `build_mlx_sidecar.sh` | Release `danqing-api` (MLX: `metal,mlx-metal` or `mlx-cuda`) into `out/sidecar/danqing-api/` |
+| `build_mlx_sidecar.sh` | Release `danqing-api` (MLX: `metal,mlx-metal` or `mlx-cuda`) into `out/sidecar/danqing-api/`, including colocated `libmlx` / `libmlxc` (+ `mlx.metallib` on macOS) and runtime rpaths |
 | `prepare_tauri_resources.sh` | Copy that sidecar into the Tauri bundle |
 | `package_mlx_server.sh` | Headless server tar.gz (`danmo-make-linux-mlx-cuda-*.tar.gz`, etc.) |
 | `pack_desktop_macos.sh` / `pack_desktop_linux.sh` | Desktop packs |

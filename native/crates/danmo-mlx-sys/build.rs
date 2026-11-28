@@ -175,9 +175,10 @@ fn main() {
     }
 
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    // Downstream bin crates (danmo-cli) re-emit this as their own LC_RPATH;
-    // `cargo:rustc-link-arg` above only covers this package's own targets.
+    // Downstream bin crates (danmo-cli, danmo-server) re-emit this as their
+    // own LC_RPATH; `cargo:rustc-link-arg` only covers this package's targets.
     println!("cargo:lib_dir={}", lib_dir.display());
+    println!("cargo:metal_dir={}", metal_dir.display());
     if let Some(prefix) = &prebuilt {
         let prefix_lib = prefix.join("lib");
         println!("cargo:rustc-link-search=native={}", prefix_lib.display());
